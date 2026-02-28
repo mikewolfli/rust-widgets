@@ -1,0 +1,173 @@
+[package]
+name = "rust_widgets"
+version = "0.0.1"
+edition = "2021"
+description = "Pure Rust cross-platform native GUI architecture"
+license = "MIT"
+
+[lints.rust]
+unexpected_cfgs = "allow"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = ["full"]
+full = ["print", "pdf", "chart"]
+embedded = []
+mobile-api = []
+print = []
+pdf = []
+chart = []
+gtk-native = ["gtk"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+threadpool = "1.8"
+crossbeam-channel = "0.5"
+lazy_static = "1.4"
+roxmltree = "0.20"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "commctrl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+objc-foundation = "0.1"
+objc_id = "0.1"
+cocoa = "0.25"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.16", optional = true }
+
+[target.'cfg(target_os = "harmony")'.dependencies]
+# 鸿蒙相关依赖
+
+[[example]]
+name = "demo_main"
+path = "demos/demo_main.rs"
+
+[[example]]
+name = "demo_window"
+path = "demos/demo_window.rs"
+
+[[example]]
+name = "demo_button"
+path = "demos/demo_button.rs"
+
+[[example]]
+name = "demo_table"
+path = "demos/demo_table.rs"
+
+[[example]]
+name = "demo_chart"
+path = "demos/demo_chart.rs"
+
+[[example]]
+name = "demo_layout"
+path = "demos/demo_layout.rs"
+
+[[example]]
+name = "demo_xml"
+path = "demos/demo_xml.rs"
+
+[[example]]
+name = "demo_i18n"
+path = "demos/demo_i18n.rs"
+
+[[example]]
+name = "demo_dialog"
+path = "demos/demo_dialog.rs"
+
+[[example]]
+name = "demo_popup"
+path = "demos/demo_popup.rs"
+
+[[example]]
+name = "demo_checkbox"
+path = "demos/demo_checkbox.rs"
+
+[[example]]
+name = "demo_radiobutton"
+path = "demos/demo_radiobutton.rs"
+
+[[example]]
+name = "demo_label"
+path = "demos/demo_label.rs"
+
+[[example]]
+name = "demo_line_edit"
+path = "demos/demo_line_edit.rs"
+
+[[example]]
+name = "demo_text_edit"
+path = "demos/demo_text_edit.rs"
+
+[[example]]
+name = "demo_combobox"
+path = "demos/demo_combobox.rs"
+
+[[example]]
+name = "demo_listbox"
+path = "demos/demo_listbox.rs"
+
+[[example]]
+name = "demo_treeview"
+path = "demos/demo_treeview.rs"
+
+[[example]]
+name = "demo_progress"
+path = "demos/demo_progress.rs"
+
+[[example]]
+name = "demo_slider"
+path = "demos/demo_slider.rs"
+
+[[example]]
+name = "demo_scrollbar"
+path = "demos/demo_scrollbar.rs"
+
+[[example]]
+name = "demo_panel"
+path = "demos/demo_panel.rs"
+
+[[example]]
+name = "demo_groupbox"
+path = "demos/demo_groupbox.rs"
+
+[[example]]
+name = "demo_tab_widget"
+path = "demos/demo_tab_widget.rs"
+
+[[example]]
+name = "demo_stack_widget"
+path = "demos/demo_stack_widget.rs"
+
+[[example]]
+name = "demo_menubar"
+path = "demos/demo_menubar.rs"
+
+[[example]]
+name = "demo_menu"
+path = "demos/demo_menu.rs"
+
+[[example]]
+name = "demo_toolbar"
+path = "demos/demo_toolbar.rs"
+
+[[example]]
+name = "demo_statusbar"
+path = "demos/demo_statusbar.rs"
+
+[[example]]
+name = "demo_canvas"
+path = "demos/demo_canvas.rs"
+
+[[example]]
+name = "demo_grid"
+path = "demos/demo_grid.rs"
+
+[[example]]
+name = "demo_native_events"
+path = "demos/demo_native_events.rs"

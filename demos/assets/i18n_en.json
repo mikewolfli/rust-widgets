@@ -1,0 +1,12 @@
+{
+  "language": "en",
+  "translations": {
+    "hello": {
+      "context": null,
+      "message": "Hello",
+      "plural": {
+        "2": "Hello all"
+      }
+    }
+  }
+}

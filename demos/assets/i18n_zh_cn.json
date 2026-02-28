@@ -1,0 +1,12 @@
+{
+  "language": "zh-CN",
+  "translations": {
+    "hello": {
+      "context": null,
+      "message": "你好",
+      "plural": {
+        "2": "大家好"
+      }
+    }
+  }
+}
