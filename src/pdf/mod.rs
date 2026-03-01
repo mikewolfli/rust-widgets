@@ -3,6 +3,7 @@
 use crate::core::{Rect, Size, Color};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Error, ErrorKind};
 
 /// PDF page
 pub trait PdfPage {
@@ -133,30 +134,41 @@ impl Default for PdfSecurity {
 
 /// PDF writer
 pub struct PdfWriter {
-    // PDF writer properties
+    /// Backend profile name used by writer diagnostics.
+    backend_name: &'static str,
 }
 
 impl PdfWriter {
     /// Create a new PDF writer
     pub fn new() -> Self {
-        Self {}
+        Self {
+            backend_name: "pdf-minimal-v1",
+        }
     }
     
     /// Create a new document
     pub fn create_document(&self, page_size: Size) -> Box<dyn PdfDocument> {
         Box::new(PdfDocumentImpl::new(page_size))
     }
+
+    /// Return active writer backend name.
+    pub fn backend_name(&self) -> &'static str {
+        self.backend_name
+    }
 }
 
 /// PDF reader
 pub struct PdfReader {
-    // PDF reader properties
+    /// Backend profile name used by reader diagnostics.
+    backend_name: &'static str,
 }
 
 impl PdfReader {
     /// Create a new PDF reader
     pub fn new() -> Self {
-        Self {}
+        Self {
+            backend_name: "pdf-minimal-v1",
+        }
     }
     
     /// Load PDF from file
@@ -169,11 +181,24 @@ impl PdfReader {
     pub fn load_from_bytes(&self, data: &[u8]) -> Result<Box<dyn PdfDocument>, std::io::Error> {
         let text = String::from_utf8_lossy(data);
         let mut page_count = 1;
+
+        // Legacy fallback parser for older fake format.
         for line in text.lines() {
             if let Some(num) = line.strip_prefix("pages:") {
                 if let Ok(parsed) = num.parse::<usize>() {
                     page_count = parsed.max(1);
                 }
+            }
+        }
+
+        // Parse real PDF `/Count N` tokens and use the largest value found.
+        for token in text.split("/Count ").skip(1) {
+            let digits: String = token
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect();
+            if let Ok(parsed) = digits.parse::<usize>() {
+                page_count = page_count.max(parsed.max(1));
             }
         }
 
@@ -188,12 +213,20 @@ impl PdfReader {
 
         Ok(Box::new(doc))
     }
+
+    /// Return active reader backend name.
+    pub fn backend_name(&self) -> &'static str {
+        self.backend_name
+    }
 }
 
 /// PDF document implementation
 struct PdfDocumentImpl {
+    /// Ordered page list.
     pages: Vec<Box<dyn PdfPage>>,
+    /// Document metadata block.
     metadata: PdfMetadata,
+    /// Document security policy.
     security: PdfSecurity,
 }
 
@@ -288,20 +321,17 @@ impl PdfDocument for PdfDocumentImpl {
     }
     
     fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"%PDF-FAKE\n");
-        out.extend_from_slice(format!("pages:{}\n", self.pages.len()).as_bytes());
-        for (i, page) in self.pages.iter().enumerate() {
-            out.extend_from_slice(format!("page:{i}:{}bytes\n", page.content().len()).as_bytes());
-        }
-        Ok(out)
+        build_minimal_pdf_bytes(self)
     }
 }
 
 /// PDF page implementation
 struct PdfPageImpl {
+    /// Page size in points.
     size: Size,
+    /// Encoded draw command payload (placeholder implementation).
     content: Vec<u8>,
+    /// Form field definitions keyed by field name.
     form_fields: HashMap<String, PdfFormField>,
 }
 
@@ -324,24 +354,85 @@ impl PdfPage for PdfPageImpl {
         self.size = size;
     }
     
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, _color: Color) {
-        self.content.extend_from_slice(format!("text:{text}@{x},{y}:{font_size}\n").as_bytes());
+    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
+        let escaped = pdf_escape_literal(text);
+        self.content.extend_from_slice(
+            format!(
+                "{:.3} {:.3} {:.3} rg\nBT /F1 {:.2} Tf {:.2} {:.2} Td ({}) Tj ET\n",
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                font_size,
+                x,
+                y,
+                escaped
+            )
+            .as_bytes(),
+        );
     }
     
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, _color: Color) {
-        self.content.extend_from_slice(format!("line:{x1},{y1}->{x2},{y2}:{width}\n").as_bytes());
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+        self.content.extend_from_slice(
+            format!(
+                "{:.3} {:.3} {:.3} RG\n{:.2} w {:.2} {:.2} m {:.2} {:.2} l S\n",
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                width,
+                x1,
+                y1,
+                x2,
+                y2
+            )
+            .as_bytes(),
+        );
     }
     
-    fn draw_rect(&mut self, rect: Rect, width: f32, _color: Color) {
-        self.content.extend_from_slice(format!("rect:{},{},{},{}:{width}\n", rect.x, rect.y, rect.width, rect.height).as_bytes());
+    fn draw_rect(&mut self, rect: Rect, width: f32, color: Color) {
+        self.content.extend_from_slice(
+            format!(
+                "{:.3} {:.3} {:.3} RG\n{:.2} w {} {} {} {} re S\n",
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                width,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            )
+            .as_bytes(),
+        );
     }
     
-    fn fill_rect(&mut self, rect: Rect, _color: Color) {
-        self.content.extend_from_slice(format!("fill:{},{},{},{}\n", rect.x, rect.y, rect.width, rect.height).as_bytes());
+    fn fill_rect(&mut self, rect: Rect, color: Color) {
+        self.content.extend_from_slice(
+            format!(
+                "{:.3} {:.3} {:.3} rg\n{} {} {} {} re f\n",
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            )
+            .as_bytes(),
+        );
     }
     
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
-        self.content.extend_from_slice(format!("img:{}:{},{},{},{}\n", image.len(), rect.x, rect.y, rect.width, rect.height).as_bytes());
+        self.content.extend_from_slice(
+            format!(
+                "% image {} bytes at {},{},{},{}\n",
+                image.len(),
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            )
+            .as_bytes(),
+        );
     }
     
     fn add_text_field(&mut self, name: &str, rect: Rect, default_text: &str) {
@@ -378,16 +469,19 @@ impl PdfPage for PdfPageImpl {
 
 /// PDF form field types
 pub enum PdfFormField {
+    /// Text field with default value.
     TextField {
         name: String,
         rect: Rect,
         value: String,
     },
+    /// Checkbox field.
     CheckBox {
         name: String,
         rect: Rect,
         checked: bool,
     },
+    /// Button field.
     Button {
         name: String,
         rect: Rect,
@@ -405,4 +499,103 @@ pub enum PdfFormField {
         selected: Vec<usize>,
         options: Vec<String>,
     },
+}
+
+fn pdf_escape_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
+}
+
+fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Error> {
+    if doc.pages.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "document must contain at least one page",
+        ));
+    }
+
+    let mut objects: Vec<String> = Vec::new();
+
+    // 1: Catalog (filled after objects known)
+    objects.push(String::new());
+    // 2: Pages tree (filled after page objects known)
+    objects.push(String::new());
+    // 3: Font object
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string());
+
+    let mut page_object_ids = Vec::new();
+
+    for page in &doc.pages {
+        let content_obj_id = (objects.len() + 1) as u32;
+        let stream = page.content();
+        let stream_text = String::from_utf8_lossy(&stream);
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{}\nendstream",
+            stream.len(),
+            stream_text
+        ));
+
+        let page_obj_id = (objects.len() + 1) as u32;
+        let size = page.size();
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            size.width,
+            size.height,
+            content_obj_id
+        ));
+        page_object_ids.push(page_obj_id);
+    }
+
+    let info_obj_id = (objects.len() + 1) as u32;
+    objects.push(format!(
+        "<< /Title ({}) /Author ({}) /Subject ({}) /Creator ({}) /Producer ({}) >>",
+        pdf_escape_literal(&doc.metadata.title),
+        pdf_escape_literal(&doc.metadata.author),
+        pdf_escape_literal(&doc.metadata.subject),
+        pdf_escape_literal(&doc.metadata.creator),
+        pdf_escape_literal(&doc.metadata.producer),
+    ));
+
+    let kids = page_object_ids
+        .iter()
+        .map(|id| format!("{id} 0 R"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    objects[0] = "<< /Type /Catalog /Pages 2 0 R >>".to_string();
+    objects[1] = format!(
+        "<< /Type /Pages /Count {} /Kids [{}] >>",
+        page_object_ids.len(),
+        kids
+    );
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+
+    let mut offsets: Vec<usize> = Vec::new();
+    for (idx, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        let obj_id = idx + 1;
+        out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", obj_id, body).as_bytes());
+    }
+
+    let xref_offset = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets {
+        out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+    }
+
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R /Info {} 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objects.len() + 1,
+            info_obj_id,
+            xref_offset
+        )
+        .as_bytes(),
+    );
+
+    Ok(out)
 }

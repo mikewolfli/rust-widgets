@@ -1,13 +1,17 @@
 //! Printing and print preview support.
 
 use crate::core::{Rect, Size};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Print document
 pub trait PrintDocument {
     /// Get number of pages
     fn page_count(&self) -> u32;
     
-    /// Draw page
+    /// Draw one page into provided print context.
     fn draw_page(&self, page_num: u32, context: &mut dyn PrintContext);
 }
 
@@ -34,6 +38,7 @@ pub trait PrintContext {
 
 /// Print dialog
 pub struct PrintDialog {
+    /// Requested copy count.
     copies: u32,
 }
 
@@ -59,7 +64,9 @@ impl Default for PrintDialog {
 
 /// Print preview dialog
 pub struct PrintPreviewDialog {
+    /// Total document pages.
     page_count: u32,
+    /// Currently selected page index.
     current_page: u32,
 }
 
@@ -96,7 +103,10 @@ impl PrintPreviewDialog {
 
 /// Printer
 pub struct Printer {
+    /// Target output page size.
     page_size: Size,
+    /// Selected print backend.
+    backend: PrintBackend,
 }
 
 impl Printer {
@@ -106,15 +116,33 @@ impl Printer {
                 width: 595,
                 height: 842,
             },
+            backend: PrintBackend::default_for_platform(),
         }
     }
 
     pub fn print(&self, document: &dyn PrintDocument) {
+        let _ = self.print_with_result(document);
+    }
+
+    /// Print and return backend execution result.
+    pub fn print_with_result(&self, document: &dyn PrintDocument) -> Result<(), String> {
         let mut context = MemoryPrintContext::new(self.page_size);
         for page in 0..document.page_count() {
             document.draw_page(page, &mut context);
             context.end_page();
         }
+
+        let job = PrintJob {
+            page_size: self.page_size,
+            commands: context.commands,
+        };
+
+        self.backend.submit(&job)
+    }
+
+    /// Get active print backend name.
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.name()
     }
 }
 
@@ -124,8 +152,125 @@ impl Default for Printer {
     }
 }
 
+struct PrintJob {
+    /// Page size used while recording drawing commands.
+    page_size: Size,
+    /// Flattened draw command stream with page-break markers.
+    commands: Vec<String>,
+}
+
+enum PrintBackend {
+    /// Submit printable text output to system spool command.
+    System,
+    /// Keep print output in memory only (fallback mode).
+    Memory,
+}
+
+impl PrintBackend {
+    fn default_for_platform() -> Self {
+        if std::env::var("RUST_WIDGETS_PRINT_BACKEND")
+            .map(|value| value.eq_ignore_ascii_case("memory"))
+            .unwrap_or(false)
+        {
+            return PrintBackend::Memory;
+        }
+        PrintBackend::System
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            PrintBackend::System => "system-spool",
+            PrintBackend::Memory => "memory",
+        }
+    }
+
+    fn submit(&self, job: &PrintJob) -> Result<(), String> {
+        match self {
+            PrintBackend::System => submit_system_print_job(job),
+            PrintBackend::Memory => Ok(()),
+        }
+    }
+}
+
+fn submit_system_print_job(job: &PrintJob) -> Result<(), String> {
+    let path = write_print_job_file(job)?;
+    let result = run_print_command(&path);
+    let _ = fs::remove_file(&path);
+    result
+}
+
+fn write_print_job_file(job: &PrintJob) -> Result<PathBuf, String> {
+    let mut path = std::env::temp_dir();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("clock error: {err}"))?
+        .as_millis();
+    path.push(format!("rust_widgets_print_job_{ts}.txt"));
+
+    let mut content = String::new();
+    content.push_str(&format!(
+        "rust_widgets print job\npage_size={}x{}\n\n",
+        job.page_size.width, job.page_size.height
+    ));
+    for cmd in &job.commands {
+        content.push_str(cmd);
+        content.push('\n');
+    }
+
+    fs::write(&path, content).map_err(|err| format!("write print job file failed: {err}"))?;
+    Ok(path)
+}
+
+fn run_print_command(path: &PathBuf) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let lpr_status = Command::new("lpr").arg(path).status();
+        if let Ok(status) = lpr_status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        let lp_status = Command::new("lp").arg(path).status();
+        if let Ok(status) = lp_status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        return Err("no available system print command succeeded (tried: lpr, lp)".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "Start-Process -FilePath '{}' -Verb Print -PassThru | Out-Null",
+                path.display()
+            ))
+            .status();
+
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        return Err("system print command failed on windows".to_string());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = path;
+        Err("system print backend is not supported on this platform".to_string())
+    }
+}
+
 pub struct MemoryPrintContext {
     page_size: Size,
+    /// Recorded drawing commands for tests/demos.
     pub commands: Vec<String>,
 }
 
