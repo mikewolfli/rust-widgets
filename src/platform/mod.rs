@@ -2,7 +2,10 @@
 
 pub mod harmony;
 pub mod linux;
+#[cfg(not(all(target_os = "macos", feature = "objc2-macos")))]
 pub mod macos;
+#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
 mod state;
@@ -653,6 +656,12 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(macos_objc2::MacOSObjc2Platform::new())
+}
+
+#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(macos::MacOSPlatform::new())
 }

@@ -9,6 +9,38 @@ This file mirrors staged execution status.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
 
+## Current Requirements (v8)
+
+## Stage Progress
+
+- [ ] P0a Switch macOS backend factory default to objc2 path behind release-safe gating (no behavior regression on init/run/quit)
+- [ ] P0b Implement objc2-native window lifecycle path (`create_window`, visibility, title, geometry) with parity tests
+- [ ] P0c Implement objc2 run-loop integration (foreground activation + deterministic quit) and pass platform lifecycle tests
+
+- [ ] P1a Implement objc2 controls: `create_button` / `create_checkbox` / `create_line_edit` (text + enabled + visible parity)
+- [ ] P1b Wire objc2 trigger semantics for value/click paths and keep `poll_widget_trigger_event` parity contract
+- [ ] P1c Implement objc2 IME/accessibility state bridge parity (`set/get_widget_ime_enabled`, accessibility name roundtrip)
+
+- [ ] P2a Implement objc2 menu stack (`menu_bar`, `menu`, `menu_add_item`, attach-to-window) with trigger queue parity
+- [ ] P2b Implement objc2 toolbar/statusbar creation path with text and visibility semantics parity
+- [ ] P2c Add migration regression matrix script path for `default` vs `objc2-macos` backend behavior snapshots
+
+- [ ] P3a Make default publish path warning-clean on macOS backend (remove/gate deprecated cocoa call sites from default compile route)
+- [ ] P3b Decide dependency policy: retain `cocoa` as fallback-only optional path or remove after objc2 reaches release criteria
+- [ ] P3c Update docs/changelog migration notes with backend selection, feature flags, and risk/rollback guidance
+
+## Architecture Upgrades
+
+- [ ] macOS backend architecture parity: objc2-first runtime path for lifecycle/widget/menu/event/clipboard APIs
+- [ ] Contract parity: identical `Platform` trait behavior between `default` and `objc2-macos` routes for covered APIs
+- [ ] Release diagnostics parity: warning-clean default publish pipeline on macOS backend
+
+## Notes
+
+- `v8` tracks the planned objc2 migration and macOS warning cleanup; no immediate behavior expansion beyond backend modernization.
+- Completion criteria for `v8`: publish dry-run without macOS deprecation warning flood on default path and parity matrix green.
+- `v7` remains completed and is preserved below as history.
+
 ## Current Requirements (v7)
 
 ## Stage Progress
