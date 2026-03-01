@@ -4,13 +4,18 @@ use crate::core::{Color, Font};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeInsets {
+    /// Top inset.
     pub top: u32,
+    /// Right inset.
     pub right: u32,
+    /// Bottom inset.
     pub bottom: u32,
+    /// Left inset.
     pub left: u32,
 }
 
 impl EdgeInsets {
+    /// Create equal inset values on all sides.
     pub fn all(value: u32) -> Self {
         Self {
             top: value,
@@ -23,9 +28,13 @@ impl EdgeInsets {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadow {
+    /// Horizontal offset.
     pub x: i32,
+    /// Vertical offset.
     pub y: i32,
+    /// Blur radius.
     pub blur: u32,
+    /// Shadow color.
     pub color: Color,
 }
 

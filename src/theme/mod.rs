@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 
-/// Theme definition
+/// High-level theme definition used by runtime style resolution.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Theme {
     pub name: String,
@@ -16,7 +16,7 @@ pub struct Theme {
     pub borders: Borders,
 }
 
-/// Colors definition
+/// Semantic color palette tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Colors {
     pub background: Color,
@@ -30,7 +30,7 @@ pub struct Colors {
     pub disabled: Color,
 }
 
-/// Fonts definition
+/// Font token set used by theme consumers.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Fonts {
     pub regular: Font,
@@ -39,7 +39,7 @@ pub struct Fonts {
     pub monospace: Font,
 }
 
-/// Spacing definition
+/// Spacing scale tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Spacing {
     pub small: u32,
@@ -48,7 +48,7 @@ pub struct Spacing {
     pub extra_large: u32,
 }
 
-/// Borders definition
+/// Border and elevation behavior tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Borders {
     pub width: u32,
@@ -71,7 +71,9 @@ pub struct ThemeStyleToken {
 }
 
 pub struct ThemeManager {
+    /// Registered themes keyed by theme name.
     themes: HashMap<String, Theme>,
+    /// Active theme name.
     current_theme: String,
 }
 

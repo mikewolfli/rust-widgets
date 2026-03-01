@@ -10,6 +10,7 @@ use crate::style::WidgetStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetKind {
+    /// Top-level window.
     Window,
     Dialog,
     PopupWindow,
@@ -36,11 +37,14 @@ pub enum WidgetKind {
     Canvas,
     Table,
     Grid,
+    /// Chart surface widget.
     Chart,
 }
 
 pub trait Widget: EventHandler {
+    /// Get stable widget id.
     fn id(&self) -> ObjectId;
+    /// Get widget runtime kind.
     fn kind(&self) -> WidgetKind;
     fn geometry(&self) -> Rect;
     fn set_geometry(&mut self, geometry: Rect);
@@ -49,7 +53,9 @@ pub trait Widget: EventHandler {
     fn add_child(&mut self, child: ObjectId);
     fn remove_child(&mut self, child: ObjectId);
     fn children(&self) -> &[ObjectId];
+    /// Show widget.
     fn show(&mut self);
+    /// Hide widget.
     fn hide(&mut self);
     fn is_visible(&self) -> bool;
     fn set_enabled(&mut self, enabled: bool);
@@ -70,11 +76,14 @@ pub struct BaseWidget {
     enabled: bool,
     tooltip: String,
     style: WidgetStyle,
+    /// Emitted when a click-like interaction is received.
     pub clicked: GenericSignal,
+    /// Emitted when widget internal value/state changes.
     pub changed: GenericSignal,
 }
 
 impl BaseWidget {
+    /// Create base widget state and core signals.
     pub fn new(kind: WidgetKind, geometry: Rect, class_name: &'static str) -> Self {
         Self {
             object: Object::new(class_name),
@@ -234,12 +243,10 @@ pub struct ListBox { base: BaseWidget, items: Vec<String> }
 impl ListBox { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"), items: Vec::new() } } pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); } }
 impl_widget_delegate!(ListBox, base);
 
-pub struct TreeView { base: BaseWidget, nodes: Vec<String> }
-impl TreeView { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"), nodes: Vec::new() } } pub fn add_node(&mut self, node: impl Into<String>) { self.nodes.push(node.into()); } }
-impl_widget_delegate!(TreeView, base);
-
 pub trait ListModel: Send + Sync {
+    /// Number of rows exposed by model.
     fn row_count(&self) -> usize;
+    /// Data for row index, if present.
     fn data(&self, row: usize) -> Option<String>;
 }
 
@@ -248,11 +255,117 @@ pub trait TreeModel: Send + Sync {
     fn node_path(&self, index: usize) -> Option<String>;
 }
 
+pub struct VecTreeModel {
+    paths: Vec<String>,
+}
+
+impl VecTreeModel {
+    pub fn new(paths: Vec<String>) -> Self {
+        Self { paths }
+    }
+
+    pub fn add_node(&mut self, path: impl Into<String>) {
+        self.paths.push(path.into());
+    }
+}
+
+impl TreeModel for VecTreeModel {
+    fn node_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    fn node_path(&self, index: usize) -> Option<String> {
+        self.paths.get(index).cloned()
+    }
+}
+
+pub struct SortFilterTreeModel {
+    /// Underlying source tree model.
+    source: Arc<dyn TreeModel>,
+    /// Optional case-insensitive substring filter.
+    filter_text: Option<String>,
+    /// Ascending path sort flag.
+    sort_ascending: bool,
+}
+
+impl SortFilterTreeModel {
+    pub fn new(source: Arc<dyn TreeModel>) -> Self {
+        Self {
+            source,
+            filter_text: None,
+            sort_ascending: true,
+        }
+    }
+
+    pub fn set_filter_text(&mut self, text: Option<String>) {
+        self.filter_text = text;
+    }
+
+    pub fn set_sort_ascending(&mut self, ascending: bool) {
+        self.sort_ascending = ascending;
+    }
+
+    fn visible_nodes(&self) -> Vec<usize> {
+        let mut nodes = if let Some(filter) = self.filter_text.as_ref() {
+            (0..self.source.node_count())
+                .filter(|index| {
+                    self.source
+                        .node_path(*index)
+                        .map(|path| path.to_lowercase().contains(&filter.to_lowercase()))
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            (0..self.source.node_count()).collect::<Vec<_>>()
+        };
+
+        nodes.sort_by(|left, right| {
+            let left_value = self.source.node_path(*left).unwrap_or_default();
+            let right_value = self.source.node_path(*right).unwrap_or_default();
+            if self.sort_ascending {
+                left_value.cmp(&right_value)
+            } else {
+                right_value.cmp(&left_value)
+            }
+        });
+
+        nodes
+    }
+
+    /// Map view node index to source node index.
+    pub fn source_index(&self, view_index: usize) -> Option<usize> {
+        self.visible_nodes().get(view_index).copied()
+    }
+}
+
+impl TreeModel for SortFilterTreeModel {
+    fn node_count(&self) -> usize {
+        self.visible_nodes().len()
+    }
+
+    fn node_path(&self, index: usize) -> Option<String> {
+        self.visible_nodes()
+            .get(index)
+            .and_then(|source_index| self.source.node_path(*source_index))
+    }
+}
+
 pub trait TableModel: Send + Sync {
+    /// Number of rows.
     fn row_count(&self) -> usize;
+    /// Number of columns.
     fn column_count(&self) -> usize;
+    /// Cell value at row/column.
     fn data(&self, row: usize, col: usize) -> Option<String>;
+    /// Header label for a column.
     fn header(&self, col: usize) -> Option<String>;
+}
+
+/// Sort order for table view projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    Asc,
+    Desc,
 }
 
 pub struct VecTableModel {
@@ -285,8 +398,14 @@ impl TableModel for VecTableModel {
 }
 
 pub struct SortFilterTableModel {
+    /// Underlying source table model.
     source: Arc<dyn TableModel>,
+    /// Optional case-insensitive substring filter.
     filter_text: Option<String>,
+    /// Optional sort key column.
+    sort_column: Option<usize>,
+    /// Sort order for `sort_column`.
+    sort_order: SortOrder,
 }
 
 impl SortFilterTableModel {
@@ -294,6 +413,8 @@ impl SortFilterTableModel {
         Self {
             source,
             filter_text: None,
+            sort_column: None,
+            sort_order: SortOrder::Asc,
         }
     }
 
@@ -301,21 +422,61 @@ impl SortFilterTableModel {
         self.filter_text = text;
     }
 
+    /// Configure sort projection by source column and order.
+    pub fn set_sort(&mut self, column: usize, order: SortOrder) {
+        self.sort_column = Some(column);
+        self.sort_order = order;
+    }
+
+    /// Clear configured sort projection.
+    pub fn clear_sort(&mut self) {
+        self.sort_column = None;
+    }
+
+    /// Return current sort configuration.
+    pub fn sort(&self) -> Option<(usize, SortOrder)> {
+        self.sort_column.map(|column| (column, self.sort_order))
+    }
+
     fn visible_rows(&self) -> Vec<usize> {
-        let Some(filter) = self.filter_text.as_ref() else {
-            return (0..self.source.row_count()).collect();
+        let mut rows = if let Some(filter) = self.filter_text.as_ref() {
+            (0..self.source.row_count())
+                .filter(|row| {
+                    (0..self.source.column_count()).any(|col| {
+                        self.source
+                            .data(*row, col)
+                            .map(|cell| cell.to_lowercase().contains(&filter.to_lowercase()))
+                            .unwrap_or(false)
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            (0..self.source.row_count()).collect::<Vec<_>>()
         };
 
-        (0..self.source.row_count())
-            .filter(|row| {
-                (0..self.source.column_count()).any(|col| {
-                    self.source
-                        .data(*row, col)
-                        .map(|cell| cell.to_lowercase().contains(&filter.to_lowercase()))
-                        .unwrap_or(false)
-                })
-            })
-            .collect()
+        if let Some(sort_column) = self.sort_column {
+            rows.sort_by(|left, right| {
+                let left_value = self
+                    .source
+                    .data(*left, sort_column)
+                    .unwrap_or_default();
+                let right_value = self
+                    .source
+                    .data(*right, sort_column)
+                    .unwrap_or_default();
+                match self.sort_order {
+                    SortOrder::Asc => left_value.cmp(&right_value),
+                    SortOrder::Desc => right_value.cmp(&left_value),
+                }
+            });
+        }
+
+        rows
+    }
+
+    /// Map view row index to source row index.
+    pub fn source_row(&self, view_row: usize) -> Option<usize> {
+        self.visible_rows().get(view_row).copied()
     }
 }
 
@@ -369,9 +530,75 @@ simple_control!(ToolBar, WidgetKind::ToolBar);
 simple_control!(StatusBar, WidgetKind::StatusBar);
 simple_control!(Canvas, WidgetKind::Canvas);
 
+pub struct TreeView {
+    base: BaseWidget,
+    /// Optional bound tree model.
+    model: Option<Arc<dyn TreeModel>>,
+    /// Fallback path storage used when no external model is bound.
+    fallback_nodes: Vec<String>,
+    /// View-side selected node index.
+    selected_node: Option<usize>,
+}
+
+impl TreeView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
+            model: None,
+            fallback_nodes: Vec::new(),
+            selected_node: None,
+        }
+    }
+
+    pub fn set_model(&mut self, model: Arc<dyn TreeModel>) {
+        self.model = Some(model);
+    }
+
+    /// Backward-compatible imperative insertion when no external model is used.
+    pub fn add_node(&mut self, node: impl Into<String>) {
+        self.fallback_nodes.push(node.into());
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.model
+            .as_ref()
+            .map(|model| model.node_count())
+            .unwrap_or(self.fallback_nodes.len())
+    }
+
+    pub fn node_path(&self, index: usize) -> Option<String> {
+        self.model
+            .as_ref()
+            .and_then(|model| model.node_path(index))
+            .or_else(|| self.fallback_nodes.get(index).cloned())
+    }
+
+    pub fn select_node(&mut self, index: usize) -> bool {
+        if index < self.node_count() {
+            self.selected_node = Some(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected_node = None;
+    }
+
+    pub fn selected_node(&self) -> Option<usize> {
+        self.selected_node
+    }
+}
+
+impl_widget_delegate!(TreeView, base);
+
 pub struct TableWidget {
     base: BaseWidget,
+    /// Optional bound data model.
     model: Option<Arc<dyn TableModel>>,
+    /// View-side selected row index.
+    selected_row: Option<usize>,
 }
 
 impl TableWidget {
@@ -379,6 +606,7 @@ impl TableWidget {
         Self {
             base: BaseWidget::new(WidgetKind::Table, geometry, "TableWidget"),
             model: None,
+            selected_row: None,
         }
     }
 
@@ -392,6 +620,36 @@ impl TableWidget {
 
     pub fn column_count(&self) -> usize {
         self.model.as_ref().map(|m| m.column_count()).unwrap_or(0)
+    }
+
+    /// Read table header text by view column.
+    pub fn header(&self, col: usize) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.header(col))
+    }
+
+    /// Read table cell value by view row/column.
+    pub fn cell(&self, row: usize, col: usize) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.data(row, col))
+    }
+
+    /// Select one row in the current view projection.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        if row < self.row_count() {
+            self.selected_row = Some(row);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear current row selection.
+    pub fn clear_selection(&mut self) {
+        self.selected_row = None;
+    }
+
+    /// Current selected row index.
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selected_row
     }
 }
 

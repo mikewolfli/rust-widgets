@@ -21,12 +21,14 @@ use super::Platform;
 
 #[derive(Clone, Copy)]
 enum HandleKind {
+    /// Top-level NSWindow.
     Window,
     Button,
     CheckBox,
     LineEdit,
     MenuBar,
     Menu,
+    /// NSMenuItem instance that represents a selectable action.
     MenuItem,
     ToolBar,
     StatusBar,
@@ -34,13 +36,18 @@ enum HandleKind {
 
 #[derive(Clone, Copy)]
 struct CocoaHandle {
+    /// Opaque native pointer cast to usize.
     ptr: usize,
+    /// Runtime handle kind used for dispatch.
     kind: HandleKind,
 }
 
 pub struct MacOSPlatform {
+    /// Source of logical widget ids.
     next_id: AtomicU64,
+    /// Logical id -> native handle mapping.
     handles: Mutex<HashMap<u64, CocoaHandle>>,
+    /// Text cache for quick get_widget_text behavior.
     texts: Mutex<HashMap<u64, String>>,
 }
 
@@ -48,10 +55,12 @@ static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
 static MENU_TARGET: OnceLock<usize> = OnceLock::new();
 
 fn menu_events() -> &'static Mutex<Vec<u64>> {
+    // Shared menu-trigger queue used by Cocoa selector bridge.
     MENU_EVENTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
+    // Selector callback invoked by NSMenuItem actions.
     unsafe {
         if sender == nil {
             return;
@@ -98,6 +107,7 @@ const MOD_OPTION: u64 = 1 << 19;
 const MOD_COMMAND: u64 = 1 << 20;
 
 fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
+    // Parse textual accelerator into Cocoa key + modifier mask.
     let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         return (String::new(), 0);
     };

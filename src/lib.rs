@@ -6,11 +6,16 @@ pub mod event;
 pub mod signal;
 pub mod widget;
 pub mod layout;
+pub mod render_engine;
+#[cfg(not(feature = "embedded"))]
 pub mod xml;
+#[cfg(not(feature = "embedded"))]
 pub mod i18n;
 pub mod platform;
+#[cfg(not(feature = "embedded"))]
 pub mod theme;
 pub mod style;
+#[cfg(not(feature = "embedded"))]
 pub mod bindings;
 
 #[cfg(feature = "print")]
@@ -22,18 +27,26 @@ pub mod pdf;
 #[cfg(feature = "chart")]
 pub mod chart;
 
-/// Initialize the GUI library
+/// Initialize global platform and i18n subsystems.
 pub fn init() {
-    platform::init();
+    render_engine::default_render_engine().init();
+    init_i18n_runtime();
+}
+
+/// Run platform main event loop.
+pub fn run() {
+    render_engine::default_render_engine().run();
+}
+
+/// Request platform event loop shutdown.
+pub fn quit() {
+    render_engine::default_render_engine().quit();
+}
+
+#[cfg(not(feature = "embedded"))]
+fn init_i18n_runtime() {
     i18n::init();
 }
 
-/// Run the main event loop
-pub fn run() {
-    platform::run();
-}
-
-/// Quit the application
-pub fn quit() {
-    platform::quit();
-}
+#[cfg(feature = "embedded")]
+fn init_i18n_runtime() {}

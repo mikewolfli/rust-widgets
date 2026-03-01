@@ -3,14 +3,19 @@
 use crate::core::{ObjectId, Rect};
 
 pub trait Layout {
+    /// Add widget into layout with optional stretch factor.
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32);
+    /// Remove widget from layout.
     fn remove_widget(&mut self, widget_id: ObjectId);
+    /// Recompute child geometries within given rect.
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
+    /// Main axis is horizontal.
     Horizontal,
+    /// Main axis is vertical.
     Vertical,
 }
 
@@ -22,6 +27,7 @@ pub struct BoxLayout {
 }
 
 impl BoxLayout {
+    /// Create a box layout with orientation, spacing and margin.
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
         Self { orientation, spacing, margin, items: Vec::new() }
     }
@@ -86,6 +92,7 @@ pub struct GridLayout {
 }
 
 impl GridLayout {
+    /// Create a grid layout with fixed rows/columns.
     pub fn new(rows: u32, cols: u32, spacing: u32, margin: u32) -> Self {
         let safe_rows = rows.max(1);
         let safe_cols = cols.max(1);
@@ -98,6 +105,7 @@ impl GridLayout {
         }
     }
 
+    /// Assign widget to explicit cell.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
         if row < self.rows && col < self.cols {
             self.cells[(row * self.cols + col) as usize] = Some(widget_id);
@@ -151,10 +159,12 @@ pub struct FormLayout {
 }
 
 impl FormLayout {
+    /// Create a two-column form layout.
     pub fn new(spacing: u32, margin: u32) -> Self {
         Self { spacing, margin, rows: Vec::new() }
     }
 
+    /// Add one form row as `(label, field)` pair.
     pub fn add_row(&mut self, label_id: ObjectId, field_id: ObjectId) {
         self.rows.push((label_id, field_id));
     }
@@ -204,10 +214,12 @@ pub struct StackLayout {
 }
 
 impl StackLayout {
+    /// Create stack layout with no pages.
     pub fn new() -> Self {
         Self { items: Vec::new(), current: 0 }
     }
 
+    /// Select visible page by index.
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.items.len() {
             self.current = index;

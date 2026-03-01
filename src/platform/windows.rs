@@ -39,11 +39,17 @@ use winapi::um::winuser::{
 
 #[cfg(target_os = "windows")]
 struct Win32MenuState {
+    /// Logical menu id -> native HMENU mapping.
     handles: Mutex<HashMap<u64, HMENU>>,
+    /// Command id -> logical menu item id.
     menu_command_to_item: Mutex<HashMap<u32, u64>>,
+    /// Command id -> logical widget id.
     control_command_to_widget: Mutex<HashMap<u32, u64>>,
+    /// FIFO menu trigger queue.
     pending_menu_events: Mutex<VecDeque<u64>>,
+    /// FIFO typed widget trigger queue.
     pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
+    /// Source of unique Win32 command ids.
     next_command_id: AtomicU64,
 }
 
@@ -63,6 +69,7 @@ impl Win32MenuState {
 
 #[cfg(target_os = "windows")]
 struct Win32HandleState {
+    /// Logical widget id -> native HWND mapping.
     handles: Mutex<HashMap<u64, HWND>>,
 }
 
@@ -84,6 +91,7 @@ pub struct WindowsPlatform {
 }
 
 impl WindowsPlatform {
+    /// Create Windows backend with stub state and native state stores.
     pub fn new() -> Self {
         Self {
             inner: StubPlatform::new("win32", PlatformFamily::Desktop),
@@ -96,6 +104,7 @@ impl WindowsPlatform {
 
     #[cfg(target_os = "windows")]
     fn to_wide(text: &str) -> Vec<u16> {
+        // Win32 APIs consume UTF-16 zero-terminated strings.
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
@@ -199,6 +208,7 @@ impl WindowsPlatform {
 
     #[cfg(target_os = "windows")]
     fn try_poll_native_menu_command(&self) -> Option<u64> {
+        // Drain pending Win32 messages and map WM_COMMAND to logical events.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {

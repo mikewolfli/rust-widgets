@@ -6,7 +6,7 @@ use std::fs::{File, read_dir};
 use std::io::Read;
 use std::sync::Mutex;
 
-/// Translation entry
+/// Translation entry for one key (optionally context and plural forms).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Translation {
     pub context: Option<String>,
@@ -14,14 +14,14 @@ pub struct Translation {
     pub plural: Option<HashMap<u32, String>>,
 }
 
-/// Translation file
+/// Translation file grouped by language code.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranslationFile {
     pub language: String,
     pub translations: HashMap<String, Translation>,
 }
 
-/// i18n manager
+/// Runtime translation manager with language fallback.
 pub struct I18nManager {
     translations: HashMap<String, TranslationFile>,
     current_language: String,
@@ -147,12 +147,12 @@ impl I18nManager {
     }
 }
 
-// Global i18n manager instance
+// Global i18n manager instance used by top-level helper functions.
 lazy_static::lazy_static! {
     pub static ref I18N_MANAGER: Mutex<I18nManager> = Mutex::new(I18nManager::new());
 }
 
-/// Initialize i18n system
+/// Initialize i18n system (reserved hook for future startup logic).
 pub fn init() {
     // Default initialization
 }

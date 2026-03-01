@@ -1,26 +1,48 @@
 //! Object system and identity management.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::core::{CoreObject, ObjectId};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Dynamic property value used by reflective object metadata APIs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyValue {
+    /// Boolean scalar value.
+    Bool(bool),
+    /// Signed integer scalar value.
+    Int(i64),
+    /// Floating-point scalar value.
+    Float(f64),
+    /// UTF-8 string scalar value.
+    String(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct Object {
+    /// Unique object id allocated from global atomic counter.
     id: ObjectId,
+    /// Lightweight runtime class tag.
     class_name: &'static str,
+    /// Shared marker used for reference-count introspection.
     ref_count: Arc<()>,
+    /// Dynamic property bag for reflection-style metadata.
+    properties: Arc<Mutex<HashMap<String, PropertyValue>>>,
 }
 
 impl Object {
+    /// Create an object with generated id and class name.
     pub fn new(class_name: &'static str) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             id,
             class_name,
             ref_count: Arc::new(()),
+            properties: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -34,6 +56,41 @@ impl Object {
 
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.ref_count)
+    }
+
+    /// Set or replace a dynamic property.
+    pub fn set_property(&self, key: impl Into<String>, value: PropertyValue) {
+        self.properties
+            .lock()
+            .expect("object properties lock poisoned")
+            .insert(key.into(), value);
+    }
+
+    /// Get a dynamic property by key.
+    pub fn property(&self, key: &str) -> Option<PropertyValue> {
+        self.properties
+            .lock()
+            .expect("object properties lock poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    /// Remove a dynamic property.
+    pub fn remove_property(&self, key: &str) -> Option<PropertyValue> {
+        self.properties
+            .lock()
+            .expect("object properties lock poisoned")
+            .remove(key)
+    }
+
+    /// List all known property keys.
+    pub fn property_keys(&self) -> Vec<String> {
+        self.properties
+            .lock()
+            .expect("object properties lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 

@@ -25,10 +25,15 @@ enum LinuxHandleKind {
 
 #[derive(Default)]
 struct LinuxMenuState {
+    /// Tracks menu bar attachment by window id.
     attached_menu_bar: HashMap<u64, u64>,
+    /// Maintains menu tree relationships.
     menu_children: HashMap<u64, Vec<u64>>,
+    /// Parent lookup for geometry updates in gtk-native fixed containers.
     widget_parent: HashMap<u64, u64>,
+    /// FIFO queue for menu triggers.
     pending_menu_events: VecDeque<u64>,
+    /// FIFO queue for typed widget triggers.
     pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
@@ -43,9 +48,13 @@ pub struct LinuxPlatform {
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 #[derive(Default)]
 struct LinuxNativeState {
+    /// Native GTK windows indexed by logical widget id.
     windows: HashMap<u64, gtk::Window>,
+    /// Root vertical containers hosting menu bar and content area.
     root_boxes: HashMap<u64, gtk::Box>,
+    /// Absolute-position container for child controls.
     content_fixed: HashMap<u64, gtk::Fixed>,
+    /// Generic widget registry for visibility/text/enabled operations.
     widgets: HashMap<u64, gtk::Widget>,
     menu_bars: HashMap<u64, gtk::MenuBar>,
     menus: HashMap<u64, gtk::Menu>,
@@ -86,12 +95,14 @@ impl Platform for LinuxPlatform {
         self.inner.init();
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
+            // Initialize GTK runtime when native path is enabled.
             let _ = gtk::init();
         }
     }
     fn run(&self) {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
+            // Enter GTK event loop for native-backed Linux runtime.
             gtk::main();
             return;
         }
@@ -144,6 +155,7 @@ impl Platform for LinuxPlatform {
 
             let menus = Arc::clone(&self.menus);
             button.connect_clicked(move |_| {
+                // Normalize native button activation to typed trigger event.
                 menus
                     .lock()
                     .expect("linux menu lock poisoned")
@@ -179,6 +191,7 @@ impl Platform for LinuxPlatform {
 
             let menus = Arc::clone(&self.menus);
             checkbox.connect_toggled(move |_| {
+                // Normalize checkbox toggles to click-like activation trigger.
                 menus
                     .lock()
                     .expect("linux menu lock poisoned")
@@ -215,6 +228,7 @@ impl Platform for LinuxPlatform {
 
             let menus = Arc::clone(&self.menus);
             entry.connect_changed(move |_| {
+                // Normalize text changes to value-changed trigger.
                 menus
                     .lock()
                     .expect("linux menu lock poisoned")
@@ -327,6 +341,7 @@ impl Platform for LinuxPlatform {
 
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
         let attached = self.inner.attach_menu_bar_to_window(window, menu_bar);
+        // Validate shape first, then attach native menu bar when available.
         if matches!(self.kind_of(window), Some(LinuxHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(LinuxHandleKind::MenuBar))
         {
@@ -359,6 +374,7 @@ impl Platform for LinuxPlatform {
             let menu_item = gtk::MenuItem::with_label(text);
             let menus_arc = Arc::clone(&self.menus);
             menu_item.connect_activate(move |_| {
+                // Native menu activation is forwarded to platform queue.
                 menus_arc
                     .lock()
                     .expect("linux menu lock poisoned")
@@ -387,6 +403,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
+        // Keep injected events type-safe: only known menu items are accepted.
         if !matches!(self.kind_of(menu_item_id), Some(LinuxHandleKind::MenuItem)) {
             return false;
         }
@@ -412,6 +429,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        // Keep injected events deterministic: only known widget ids are accepted.
         if self.kind_of(widget_id).is_none() {
             return false;
         }
