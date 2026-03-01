@@ -46,7 +46,7 @@ winapi = { version = "0.3", features = ["winuser", "commctrl"] }
 objc = "0.2"
 objc-foundation = "0.1"
 objc_id = "0.1"
-cocoa = "0.25"
+cocoa = "0.26"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
