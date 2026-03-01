@@ -9,6 +9,7 @@
 - Aide en chinois traditionnel : [HELP.zh-TW.md](HELP.zh-TW.md)
 - Aide en russe : [HELP.ru.md](HELP.ru.md)
 - Démarrage rapide C ABI : [C_ABI_QUICKSTART.md](C_ABI_QUICKSTART.md)
+- Pont natif Harmony : [HARMONY_NATIVE_BRIDGE.fr.md](HARMONY_NATIVE_BRIDGE.fr.md)
 
 ## Résumé
 
@@ -61,6 +62,8 @@ cargo check --no-default-features --features "embedded,mobile-api"
 L’ABI C est définie dans `src/bindings/mod.rs`, avec points d’extension réservés pour Python/C++/Java.
 Elle expose aussi les APIs de polling natif : `rust_widgets_poll_menu_triggered` et `rust_widgets_poll_widget_triggered`.
 Pour un événement widget typé, utilisez `rust_widgets_poll_widget_trigger_event(widget_id_out)` avec codes : `0` aucun, `1` clic, `2` changement de valeur.
+Pour le câblage direct ArkUI/NAPI sur Harmony, utilisez les entrées `rust_widgets_harmony_on_*` et `rust_widgets_harmony_on_node_*`.
+Le flux `node_handle ↔ widget_id` et l’exemple d’intégration sont décrits dans `docs/HARMONY_NATIVE_BRIDGE.fr.md` et `examples/harmony_napi_bridge_sample.c`.
 Pour les commandes complètes de build/run C ABI, consultez `docs/C_ABI_QUICKSTART.md`.
 
 Compilation/exécution rapide (depuis la racine du projet) :

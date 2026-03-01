@@ -9,6 +9,7 @@
 - 法文帮助：[HELP.fr.md](HELP.fr.md)
 - 俄文帮助：[HELP.ru.md](HELP.ru.md)
 - C ABI 快速开始：[C_ABI_QUICKSTART.md](C_ABI_QUICKSTART.md)
+- 鸿蒙原生桥接：[HARMONY_NATIVE_BRIDGE.zh-CN.md](HARMONY_NATIVE_BRIDGE.zh-CN.md)
 
 ## 功能概览
 
@@ -60,6 +61,8 @@ cargo check --no-default-features --features "embedded,mobile-api"
 C ABI 在 `src/bindings/mod.rs`，已预留 Python/C++/Java 标准扩展入口。
 同时提供原生触发轮询接口：`rust_widgets_poll_menu_triggered`、`rust_widgets_poll_widget_triggered`。
 如需类型化控件触发，请使用 `rust_widgets_poll_widget_trigger_event(widget_id_out)`，返回值类型码为：`0` 无、`1` 点击、`2` 值变更。
+鸿蒙 ArkUI/NAPI 直连请使用 `rust_widgets_harmony_on_*` 与 `rust_widgets_harmony_on_node_*` 系列接口。
+如需 `node_handle ↔ widget_id` 映射与回调接入流程，请参考 `docs/HARMONY_NATIVE_BRIDGE.zh-CN.md` 与 `examples/harmony_napi_bridge_sample.c`。
 完整 C ABI 构建/运行命令请参考 `docs/C_ABI_QUICKSTART.md`。
 
 快速构建/运行（在项目根目录）：

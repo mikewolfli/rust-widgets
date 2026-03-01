@@ -9,6 +9,7 @@
 - Справка на китайском (традиционный): [HELP.zh-TW.md](HELP.zh-TW.md)
 - Справка на французском: [HELP.fr.md](HELP.fr.md)
 - Быстрый старт C ABI: [C_ABI_QUICKSTART.md](C_ABI_QUICKSTART.md)
+- Нативный мост Harmony: [HARMONY_NATIVE_BRIDGE.ru.md](HARMONY_NATIVE_BRIDGE.ru.md)
 
 ## Кратко
 
@@ -61,6 +62,8 @@ cargo check --no-default-features --features "embedded,mobile-api"
 C ABI находится в `src/bindings/mod.rs`, зарезервированы точки расширения для Python/C++/Java.
 Также доступны API опроса нативных триггеров: `rust_widgets_poll_menu_triggered` и `rust_widgets_poll_widget_triggered`.
 Для типизированного события виджета используйте `rust_widgets_poll_widget_trigger_event(widget_id_out)`, коды: `0` нет, `1` клик, `2` изменение значения.
+Для прямого подключения ArkUI/NAPI на Harmony используйте интерфейсы `rust_widgets_harmony_on_*` и `rust_widgets_harmony_on_node_*`.
+Поток `node_handle ↔ widget_id` и пример интеграции описаны в `docs/HARMONY_NATIVE_BRIDGE.ru.md` и `examples/harmony_napi_bridge_sample.c`.
 Полные команды сборки/запуска C ABI смотрите в `docs/C_ABI_QUICKSTART.md`.
 
 Быстрая сборка/запуск (из корня проекта):

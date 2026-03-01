@@ -13,7 +13,7 @@ cargo run --example demo_main
 ## Runtime Profiles
 
 - `default + full`: complete desktop-oriented stack.
-- `embedded`: minimal runtime for embedded targets.
+- `embedded`: minimal runtime for embedded targets (excludes `xml`, `i18n`, `theme`, and `bindings` modules at compile time).
 - `mobile-api`: reserved unified extension points for mobile targets.
 
 ## Feature Toggle Examples
@@ -46,7 +46,9 @@ cargo check --no-default-features --features "embedded,mobile-api"
 
 ## Documentation Index
 
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Commenting Guidelines: [docs/COMMENTING_GUIDELINES.md](docs/COMMENTING_GUIDELINES.md)
 - Demo catalog: [demos/README.md](demos/README.md)
 - Help (English): [docs/HELP.en.md](docs/HELP.en.md)
 - 帮助（简体中文）: [docs/HELP.zh-CN.md](docs/HELP.zh-CN.md)
@@ -54,6 +56,11 @@ cargo check --no-default-features --features "embedded,mobile-api"
 - Aide (Français): [docs/HELP.fr.md](docs/HELP.fr.md)
 - Справка (Русский): [docs/HELP.ru.md](docs/HELP.ru.md)
 - C ABI Quickstart: [docs/C_ABI_QUICKSTART.md](docs/C_ABI_QUICKSTART.md)
+- Harmony Native Bridge: [docs/HARMONY_NATIVE_BRIDGE.md](docs/HARMONY_NATIVE_BRIDGE.md)
+- 鸿蒙原生桥接（简体中文）: [docs/HARMONY_NATIVE_BRIDGE.zh-CN.md](docs/HARMONY_NATIVE_BRIDGE.zh-CN.md)
+- 鴻蒙原生橋接（繁體中文）: [docs/HARMONY_NATIVE_BRIDGE.zh-TW.md](docs/HARMONY_NATIVE_BRIDGE.zh-TW.md)
+- Pont natif Harmony (Français): [docs/HARMONY_NATIVE_BRIDGE.fr.md](docs/HARMONY_NATIVE_BRIDGE.fr.md)
+- Нативный мост Harmony (Русский): [docs/HARMONY_NATIVE_BRIDGE.ru.md](docs/HARMONY_NATIVE_BRIDGE.ru.md)
 
 ## Demo Highlights
 
@@ -67,7 +74,10 @@ For the complete categorized list and command set, open [demos/README.md](demos/
 
 - Header: [examples/rust_widgets.h](examples/rust_widgets.h)
 - Typed trigger polling demo: [examples/c_abi_poll_demo.c](examples/c_abi_poll_demo.c)
+- Harmony NAPI bridge sample: [examples/harmony_napi_bridge_sample.c](examples/harmony_napi_bridge_sample.c)
+- Harmony NAPI bridge flow: [examples/harmony_napi_bridge_flow.md](examples/harmony_napi_bridge_flow.md)
 - Full build/run guide: [docs/C_ABI_QUICKSTART.md](docs/C_ABI_QUICKSTART.md)
+- Harmony direct callback bridge: [docs/HARMONY_NATIVE_BRIDGE.md](docs/HARMONY_NATIVE_BRIDGE.md)
 
 Build and run (from project root):
 

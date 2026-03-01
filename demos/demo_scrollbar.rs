@@ -5,6 +5,7 @@ use rust_widgets::widget::{ScrollBar, Widget, Window};
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize the runtime before creating widgets.
     init();
 
     let mut window = Window::new(
@@ -12,10 +13,12 @@ fn main() {
         Rect { x: 120, y: 120, width: 700, height: 300 },
     );
 
+    // Create and set an initial scroll position.
     let mut scrollbar = ScrollBar::new(Rect { x: 24, y: 24, width: 320, height: 28 });
     scrollbar.set_value(48);
     window.add_child(scrollbar.id());
 
+    // Show the demo window and enter the event loop.
     window.show();
     run();
 }

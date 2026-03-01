@@ -9,6 +9,7 @@
 - French: [HELP.fr.md](HELP.fr.md)
 - Russian: [HELP.ru.md](HELP.ru.md)
 - C ABI Quickstart: [C_ABI_QUICKSTART.md](C_ABI_QUICKSTART.md)
+- Harmony Native Bridge: [HARMONY_NATIVE_BRIDGE.md](HARMONY_NATIVE_BRIDGE.md)
 
 ## Summary
 
@@ -62,6 +63,7 @@ It also exposes polling APIs for native triggers: `rust_widgets_poll_menu_trigge
 For typed widget triggers use `rust_widgets_poll_widget_trigger_event(widget_id_out)`, which returns kind code (`0` none, `1` clicked, `2` value-changed).
 Ready-to-use C sample assets are available at `examples/rust_widgets.h` and `examples/c_abi_poll_demo.c`.
 For complete build/run commands, see `docs/C_ABI_QUICKSTART.md`.
+For direct ArkUI/NAPI callback wiring on Harmony, see `docs/HARMONY_NATIVE_BRIDGE.md`.
 
 Quick build/run (project root):
 

@@ -5,6 +5,7 @@ use rust_widgets::widget::{ProgressBar, Widget, Window};
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize the runtime before creating widgets.
     init();
 
     let mut window = Window::new(
@@ -12,10 +13,12 @@ fn main() {
         Rect { x: 120, y: 120, width: 700, height: 300 },
     );
 
+    // Create and set an initial progress value.
     let mut progress = ProgressBar::new(Rect { x: 24, y: 24, width: 320, height: 28 });
     progress.set_value(72);
     window.add_child(progress.id());
 
+    // Show the demo window and enter the event loop.
     window.show();
     run();
 }

@@ -7,6 +7,7 @@ use rust_widgets::platform::{get_platform, WidgetTriggerKind};
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize runtime and create native controls through platform APIs.
     init();
 
     let platform = get_platform();
@@ -16,6 +17,7 @@ fn main() {
     let _line = platform.create_line_edit(window, "Type here", 24, 92, 280, 34);
     let _check = platform.create_checkbox(window, "Enable option", 24, 140, 180, 30);
 
+    // Add a menu bar and quit action for event testing.
     let menu_bar = platform.create_menu_bar(window, 0, 0, 860, 28);
     let _ = platform.attach_menu_bar_to_window(window, menu_bar);
     let file_menu = platform.create_menu(menu_bar, "File", 0, 0, 0, 0);
@@ -24,10 +26,12 @@ fn main() {
 
     platform.show_widget(window);
 
+    // Poll menu and widget trigger queues in a background loop.
     thread::spawn(move || {
         let mut ticks: u32 = 0;
         loop {
             if (backend == "gtk" || backend == "harmony-desktop") && ticks == 60 {
+                // Inject synthetic events for backends that need deterministic demo input.
                 let _ = get_platform().inject_widget_trigger_event(_button, WidgetTriggerKind::Clicked);
                 let _ = get_platform().inject_widget_trigger_event(_line, WidgetTriggerKind::ValueChanged);
                 let _ = get_platform().inject_menu_trigger(quit_item);

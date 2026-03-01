@@ -5,6 +5,7 @@ use rust_widgets::widget::{Button, Label, Widget, Window};
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize the runtime before creating widgets.
     init();
 
     let mut window = Window::new(
@@ -17,6 +18,7 @@ fn main() {
         },
     );
 
+    // Create a title label for the window.
     let label = Label::new(
         "Cross-platform native GUI architecture".to_string(),
         Rect {
@@ -27,6 +29,7 @@ fn main() {
         },
     );
 
+    // Create an action button.
     let button = Button::new(
         "Start".to_string(),
         Rect {
@@ -39,6 +42,7 @@ fn main() {
 
     window.add_child(label.id());
     window.add_child(button.id());
+    // Show the main demo window and enter the event loop.
     window.show();
 
     run();

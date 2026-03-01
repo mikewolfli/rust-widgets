@@ -5,15 +5,18 @@ use rust_widgets::widget::{PopupWindow, Widget, Window};
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize the runtime before creating widgets.
     init();
 
     let mut window = Window::new(
         "Popup Demo".to_string(),
         Rect { x: 120, y: 120, width: 700, height: 420 },
     );
+    // Create a popup child window widget.
     let popup = PopupWindow::new(Rect { x: 120, y: 90, width: 260, height: 140 });
 
     window.add_child(popup.id());
+    // Show the demo window and enter the event loop.
     window.show();
     run();
 }

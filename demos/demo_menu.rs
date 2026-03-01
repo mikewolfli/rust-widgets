@@ -7,10 +7,12 @@ use rust_widgets::platform::get_platform;
 use rust_widgets::{init, run};
 
 fn main() {
+    // Initialize runtime and acquire platform abstraction.
     init();
 
     let platform = get_platform();
 
+    // Build the native window and menu hierarchy.
     let window = platform.create_window("Menu Demo", 120, 120, 760, 460);
     let menu_bar = platform.create_menu_bar(window, 0, 0, 760, 28);
     let _ = platform.attach_menu_bar_to_window(window, menu_bar);
@@ -27,6 +29,7 @@ fn main() {
     let _copy_item = platform.menu_add_item(edit_menu, "Copy", Some("cmd+c"));
     let _paste_item = platform.menu_add_item(edit_menu, "Paste", Some("cmd+v"));
 
+    // Show window and poll menu triggers in a helper thread.
     platform.show_widget(window);
 
     thread::spawn(move || loop {
