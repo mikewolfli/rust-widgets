@@ -1,13 +1,17 @@
 //! Harmony desktop backend shell.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 use crate::core::PlatformFamily;
 
-use super::{Platform, StubPlatform, WidgetTriggerEvent, WidgetTriggerKind};
+use super::state::BackendState;
+use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum HarmonyHandleKind {
     Window,
     Button,
@@ -32,77 +36,111 @@ struct HarmonyMenuState {
     pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
+struct HarmonyRuntimeState {
+    initialized: AtomicBool,
+    running: AtomicBool,
+}
+
+impl HarmonyRuntimeState {
+    fn new() -> Self {
+        Self {
+            initialized: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Harmony backend platform adapter.
 pub struct HarmonyPlatform {
-    inner: StubPlatform,
-    kinds: Mutex<HashMap<u64, HarmonyHandleKind>>,
+    state: BackendState<HarmonyHandleKind>,
     menus: Mutex<HarmonyMenuState>,
+    runtime: HarmonyRuntimeState,
 }
 
 impl HarmonyPlatform {
+    /// Creates a new Harmony platform adapter.
     pub fn new() -> Self {
         Self {
-            inner: StubPlatform::new("harmony-desktop", PlatformFamily::Desktop),
-            kinds: Mutex::new(HashMap::new()),
+            state: BackendState::new(),
             menus: Mutex::new(HarmonyMenuState::default()),
+            runtime: HarmonyRuntimeState::new(),
         }
     }
 
-    fn set_kind(&self, id: u64, kind: HarmonyHandleKind) {
-        self.kinds
-            .lock()
-            .expect("harmony kind lock poisoned")
-            .insert(id, kind);
+    /// Insert widget state and return allocated logical id.
+    fn insert_widget(
+        &self,
+        kind: HarmonyHandleKind,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.state.create_widget(kind, text, x, y, width, height)
     }
 
     fn kind_of(&self, id: u64) -> Option<HarmonyHandleKind> {
-        self.kinds
-            .lock()
-            .expect("harmony kind lock poisoned")
-            .get(&id)
-            .copied()
+        self.state.kind_of(id)
     }
 }
 
 impl Platform for HarmonyPlatform {
-    fn backend_name(&self) -> &'static str { self.inner.backend_name() }
-    fn family(&self) -> PlatformFamily { self.inner.family() }
-    fn init(&self) { self.inner.init(); }
-    fn run(&self) { self.inner.run(); }
-    fn quit(&self) { self.inner.quit(); }
+    fn backend_name(&self) -> &'static str { "harmony-desktop" }
+    fn family(&self) -> PlatformFamily { PlatformFamily::Desktop }
+    fn init(&self) {
+        self.runtime.initialized.store(true, Ordering::SeqCst);
+    }
+    fn run(&self) {
+        if !self.runtime.initialized.load(Ordering::SeqCst) {
+            self.init();
+        }
+        self.runtime.running.store(true, Ordering::SeqCst);
+        while self.runtime.running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(16));
+        }
+    }
+    fn quit(&self) {
+        self.runtime.running.store(false, Ordering::SeqCst);
+    }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_window(title, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::Window);
-        id
+        self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }
 
     fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_button(parent, text, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::Button);
-        id
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::Button, text, x, y, width, height)
     }
 
     fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_checkbox(parent, text, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::CheckBox);
-        id
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::CheckBox, text, x, y, width, height)
     }
 
     fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_line_edit(parent, text, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::LineEdit);
-        id
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::LineEdit, text, x, y, width, height)
     }
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_menu_bar(parent, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::MenuBar);
-        id
+        if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::Window)) {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::MenuBar, "MenuBar", x, y, width, height)
     }
 
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_menu(parent, text, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::Menu);
+        if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::MenuBar | HarmonyHandleKind::Menu)) {
+            return 0;
+        }
+        let id = self.insert_widget(HarmonyHandleKind::Menu, text, x, y, width, height);
         self.menus
             .lock()
             .expect("harmony menu lock poisoned")
@@ -114,20 +152,20 @@ impl Platform for HarmonyPlatform {
     }
 
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_tool_bar(parent, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::ToolBar);
-        id
+        if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::Window)) {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ToolBar, "ToolBar", x, y, width, height)
     }
 
     fn create_status_bar(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_status_bar(parent, text, x, y, width, height);
-        self.set_kind(id, HarmonyHandleKind::StatusBar);
-        id
+        if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::Window)) {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::StatusBar, text, x, y, width, height)
     }
 
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
-        let attached = self.inner.attach_menu_bar_to_window(window, menu_bar);
-        // Backend-side validation keeps behavior aligned with native backends.
         if matches!(self.kind_of(window), Some(HarmonyHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(HarmonyHandleKind::MenuBar))
         {
@@ -138,24 +176,26 @@ impl Platform for HarmonyPlatform {
                 .insert(window, menu_bar);
             return true;
         }
-        attached
+        false
     }
 
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
-        let item_id = self.inner.menu_add_item(parent_menu, text, shortcut);
-        self.set_kind(item_id, HarmonyHandleKind::MenuItem);
+        if !matches!(self.kind_of(parent_menu), Some(HarmonyHandleKind::Menu)) {
+            return 0;
+        }
+        let item_id = self.insert_widget(HarmonyHandleKind::MenuItem, text, 0, 0, 0, 0);
+        let _ = shortcut;
         let mut menus = self.menus.lock().expect("harmony menu lock poisoned");
         menus.menu_children.entry(parent_menu).or_default().push(item_id);
         item_id
     }
 
     fn poll_menu_triggered(&self) -> Option<u64> {
-        let mut menus = self.menus.lock().expect("harmony menu lock poisoned");
-        if let Some(item_id) = menus.pending_menu_events.pop_front() {
-            return Some(item_id);
-        }
-        drop(menus);
-        self.inner.poll_menu_triggered()
+        self.menus
+            .lock()
+            .expect("harmony menu lock poisoned")
+            .pending_menu_events
+            .pop_front()
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
@@ -176,12 +216,11 @@ impl Platform for HarmonyPlatform {
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        let mut menus = self.menus.lock().expect("harmony menu lock poisoned");
-        if let Some(event) = menus.pending_widget_events.pop_front() {
-            return Some(event);
-        }
-        drop(menus);
-        self.inner.poll_widget_trigger_event()
+        self.menus
+            .lock()
+            .expect("harmony menu lock poisoned")
+            .pending_widget_events
+            .pop_front()
     }
 
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
@@ -197,16 +236,22 @@ impl Platform for HarmonyPlatform {
         true
     }
 
-    fn show_widget(&self, widget_id: u64) { self.inner.show_widget(widget_id); }
+    fn show_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, true);
+    }
 
-    fn hide_widget(&self, widget_id: u64) { self.inner.hide_widget(widget_id); }
+    fn hide_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, false);
+    }
 
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.inner.set_widget_geometry(widget_id, x, y, width, height);
+        self.state.set_geometry(widget_id, x, y, width, height);
     }
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
-        self.inner.set_widget_text(widget_id, text);
+        if !self.state.set_text(widget_id, text) {
+            return;
+        }
         // Keep line-edit behavior consistent with value-changed semantics.
         if matches!(self.kind_of(widget_id), Some(HarmonyHandleKind::LineEdit)) {
             self.menus
@@ -220,13 +265,59 @@ impl Platform for HarmonyPlatform {
         }
     }
 
-    fn get_widget_text(&self, widget_id: u64) -> String { self.inner.get_widget_text(widget_id) }
+    fn get_widget_text(&self, widget_id: u64) -> String {
+        self.state.text(widget_id)
+    }
 
-    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) { self.inner.set_widget_enabled(widget_id, enabled); }
+    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
+        self.state.set_enabled(widget_id, enabled);
+    }
 
-    fn is_widget_enabled(&self, widget_id: u64) -> bool { self.inner.is_widget_enabled(widget_id) }
+    fn is_widget_enabled(&self, widget_id: u64) -> bool {
+        self.state.enabled(widget_id)
+    }
 
-    fn set_widget_visible(&self, widget_id: u64, visible: bool) { self.inner.set_widget_visible(widget_id, visible); }
+    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
+        self.state.set_visible(widget_id, visible);
+    }
 
-    fn is_widget_visible(&self, widget_id: u64) -> bool { self.inner.is_widget_visible(widget_id) }
+    fn is_widget_visible(&self, widget_id: u64) -> bool {
+        self.state.visible(widget_id)
+    }
+
+    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
+
+    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
+        self.state.set_accessibility_name(widget_id, name)
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
+        self.state.accessibility_name(widget_id)
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        self.state.set_clipboard_text(text)
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
+    }
+
+    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    fn poll_drop_event(&self) -> Option<DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    fn inject_drop_event(&self, event: DropEvent) -> bool {
+        self.state.inject_drop_event(event)
+    }
 }

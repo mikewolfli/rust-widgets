@@ -22,6 +22,7 @@ pub enum PropertyValue {
     String(String),
 }
 
+/// Lightweight object identity and dynamic property container.
 #[derive(Debug, Clone)]
 pub struct Object {
     /// Unique object id allocated from global atomic counter.
@@ -46,14 +47,17 @@ impl Object {
         }
     }
 
+    /// Returns runtime class name.
     pub fn class_name(&self) -> &'static str {
         self.class_name
     }
 
+    /// Returns stable object id.
     pub fn id(&self) -> ObjectId {
         self.id
     }
 
+    /// Returns strong reference count for internal marker.
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.ref_count)
     }

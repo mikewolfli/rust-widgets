@@ -1,9 +1,16 @@
 [package]
 name = "rust_widgets"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI architecture"
 license = "MIT"
+rust-version = "1.70"
+repository = "https://github.com/mikewolfli/rust-widgets"
+homepage = "https://github.com/mikewolfli/rust-widgets"
+documentation = "https://docs.rs/rust_widgets"
+readme = "README.md"
+keywords = ["gui", "widgets", "native", "cross-platform", "ffi"]
+categories = ["gui", "api-bindings"]
 
 [lints.rust]
 unexpected_cfgs = "allow"
@@ -30,6 +37,7 @@ threadpool = "1.8"
 crossbeam-channel = "0.5"
 lazy_static = { version = "1.4", optional = true }
 roxmltree = { version = "0.20", optional = true }
+font8x8 = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "commctrl"] }
@@ -44,7 +52,7 @@ cocoa = "0.25"
 gtk = { version = "0.18", optional = true }
 
 [target.'cfg(target_os = "harmony")'.dependencies]
-# 鸿蒙相关依赖
+# dependency for Huawei HarmonyOS, if applicable. Placeholder for now since HarmonyOS support is in early stages and may require custom bindings or FFI.
 
 [[example]]
 name = "demo_main"
@@ -177,3 +185,7 @@ path = "demos/demo_native_events.rs"
 [[example]]
 name = "demo_p0_e2e_native"
 path = "demos/demo_p0_e2e_native.rs"
+
+[[example]]
+name = "demo_render_quality"
+path = "demos/demo_render_quality.rs"

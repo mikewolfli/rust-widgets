@@ -1,3 +1,4 @@
+// C ABI polling demo for runtime events and capability checks.
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>

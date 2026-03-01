@@ -9,67 +9,101 @@ use std::fs;
 /// High-level theme definition used by runtime style resolution.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Theme {
+    /// Theme unique name.
     pub name: String,
+    /// Semantic color tokens.
     pub colors: Colors,
+    /// Font tokens.
     pub fonts: Fonts,
+    /// Spacing tokens.
     pub spacing: Spacing,
+    /// Border/elevation tokens.
     pub borders: Borders,
 }
 
 /// Semantic color palette tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Colors {
+    /// Default background color.
     pub background: Color,
+    /// Default foreground/text color.
     pub foreground: Color,
+    /// Primary brand/action color.
     pub primary: Color,
+    /// Secondary neutral color.
     pub secondary: Color,
+    /// Accent color.
     pub accent: Color,
+    /// Error state color.
     pub error: Color,
+    /// Warning state color.
     pub warning: Color,
+    /// Success state color.
     pub success: Color,
+    /// Disabled-state color.
     pub disabled: Color,
 }
 
 /// Font token set used by theme consumers.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Fonts {
+    /// Regular text font token.
     pub regular: Font,
+    /// Bold text font token.
     pub bold: Font,
+    /// Italic text font token.
     pub italic: Font,
+    /// Monospace font token.
     pub monospace: Font,
 }
 
 /// Spacing scale tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Spacing {
+    /// Small spacing unit.
     pub small: u32,
+    /// Medium spacing unit.
     pub medium: u32,
+    /// Large spacing unit.
     pub large: u32,
+    /// Extra-large spacing unit.
     pub extra_large: u32,
 }
 
 /// Border and elevation behavior tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Borders {
+    /// Default border width.
     pub width: u32,
+    /// Default corner radius.
     pub radius: u32,
+    /// Whether drop shadows are enabled.
     pub shadow: bool,
 }
 
+/// Style override map used for class-level theme customization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeOverrides {
+    /// Overrides keyed by style/class name.
     pub styles: HashMap<String, ThemeStyleToken>,
 }
 
+/// Optional style tokens used to override resolved widget styles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeStyleToken {
+    /// Optional background override.
     pub background: Option<Color>,
+    /// Optional foreground/text override.
     pub foreground: Option<Color>,
+    /// Optional border color override.
     pub border: Option<Color>,
+    /// Optional border width override.
     pub border_width: Option<u32>,
+    /// Optional corner radius override.
     pub radius: Option<u32>,
 }
 
+/// Theme registry and active-theme resolver.
 pub struct ThemeManager {
     /// Registered themes keyed by theme name.
     themes: HashMap<String, Theme>,
@@ -78,6 +112,7 @@ pub struct ThemeManager {
 }
 
 impl ThemeManager {
+    /// Creates a theme manager seeded with the default theme.
     pub fn new() -> Self {
         let default = Theme::default();
         let current_theme = default.name.clone();
@@ -89,6 +124,7 @@ impl ThemeManager {
         }
     }
 
+    /// Loads and registers a theme from a JSON file path.
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
@@ -96,10 +132,12 @@ impl ThemeManager {
         Ok(())
     }
 
+    /// Registers a theme in memory.
     pub fn register_theme(&mut self, theme: Theme) {
         self.themes.insert(theme.name.clone(), theme);
     }
 
+    /// Selects active theme by name.
     pub fn set_theme(&mut self, name: &str) -> bool {
         if self.themes.contains_key(name) {
             self.current_theme = name.to_string();
@@ -108,14 +146,17 @@ impl ThemeManager {
         false
     }
 
+    /// Returns currently active theme.
     pub fn current_theme(&self) -> Option<&Theme> {
         self.themes.get(&self.current_theme)
     }
 
+    /// Returns a registered theme by name.
     pub fn get_theme(&self, name: &str) -> Option<&Theme> {
         self.themes.get(name)
     }
 
+    /// Resolves a widget style for a class using current theme tokens.
     pub fn resolve_style(&self, class_name: &str) -> WidgetStyle {
         let Some(theme) = self.current_theme() else {
             return WidgetStyle::default();

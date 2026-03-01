@@ -49,6 +49,16 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## Процесс релиза v3
+
+```bash
+# smoke-проверка демо (default + embedded)
+tools/smoke_demos.sh
+
+# проверка публикации без загрузки
+cargo publish --dry-run
+```
+
 ## Демонстрации
 
 - Полный каталог по категориям: `demos/README.md`.
@@ -62,6 +72,7 @@ cargo check --no-default-features --features "embedded,mobile-api"
 C ABI находится в `src/bindings/mod.rs`, зарезервированы точки расширения для Python/C++/Java.
 Также доступны API опроса нативных триггеров: `rust_widgets_poll_menu_triggered` и `rust_widgets_poll_widget_triggered`.
 Для типизированного события виджета используйте `rust_widgets_poll_widget_trigger_event(widget_id_out)`, коды: `0` нет, `1` клик, `2` изменение значения.
+Качество рендера настраивается через C ABI: `rust_widgets_set_render_aa_samples_per_axis` / `rust_widgets_get_render_aa_samples_per_axis` (значение ограничивается диапазоном `1..=8`).
 Для прямого подключения ArkUI/NAPI на Harmony используйте интерфейсы `rust_widgets_harmony_on_*` и `rust_widgets_harmony_on_node_*`.
 Поток `node_handle ↔ widget_id` и пример интеграции описаны в `docs/HARMONY_NATIVE_BRIDGE.ru.md` и `examples/harmony_napi_bridge_sample.c`.
 Полные команды сборки/запуска C ABI смотрите в `docs/C_ABI_QUICKSTART.md`.

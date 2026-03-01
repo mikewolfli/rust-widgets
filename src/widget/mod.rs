@@ -1,5 +1,6 @@
 //! Widget models and controls.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::core::{Alignment, ObjectId, Rect};
@@ -8,6 +9,7 @@ use crate::object::Object;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 
+/// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetKind {
     /// Top-level window.
@@ -41,6 +43,7 @@ pub enum WidgetKind {
     Chart,
 }
 
+/// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler {
     /// Get stable widget id.
     fn id(&self) -> ObjectId;
@@ -66,6 +69,7 @@ pub trait Widget: EventHandler {
     fn set_style(&mut self, style: WidgetStyle);
 }
 
+/// Shared widget state and signals used by concrete controls.
 pub struct BaseWidget {
     object: Object,
     kind: WidgetKind,
@@ -161,13 +165,16 @@ macro_rules! impl_widget_delegate {
     };
 }
 
+/// Top-level window widget.
 pub struct Window {
     base: BaseWidget,
     title: String,
+    /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }
 
 impl Window {
+    /// Creates a new window with title and geometry.
     pub fn new(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Window, geometry, "Window"),
@@ -175,74 +182,104 @@ impl Window {
             closed: GenericSignal::new(),
         }
     }
+    /// Returns window title.
     pub fn title(&self) -> &str { &self.title }
+    /// Updates window title.
     pub fn set_title(&mut self, title: String) { self.title = title; }
 }
 impl_widget_delegate!(Window, base);
 
+/// Dialog widget.
 pub struct Dialog {
     base: BaseWidget,
 }
+/// Creates a dialog with geometry.
 impl Dialog { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Dialog, geometry, "Dialog") } } }
 impl_widget_delegate!(Dialog, base);
 
+/// Popup window widget.
 pub struct PopupWindow { base: BaseWidget }
+/// Creates a popup window with geometry.
 impl PopupWindow { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupWindow") } } }
 impl_widget_delegate!(PopupWindow, base);
 
+/// Push button widget.
 pub struct Button { base: BaseWidget, text: String, pub activated: GenericSignal }
 impl Button {
+    /// Creates a button with initial text and geometry.
     pub fn new(text: String, geometry: Rect) -> Self {
         Self { base: BaseWidget::new(WidgetKind::Button, geometry, "Button"), text, activated: GenericSignal::new() }
     }
+    /// Returns button text.
     pub fn text(&self) -> &str { &self.text }
 }
 impl_widget_delegate!(Button, base);
 
+/// Checkbox widget.
 pub struct CheckBox { base: BaseWidget, checked: bool, pub toggled: Signal1<bool> }
 impl CheckBox {
+    /// Creates an unchecked checkbox with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self { base: BaseWidget::new(WidgetKind::CheckBox, geometry, "CheckBox"), checked: false, toggled: Signal1::new() }
     }
+    /// Sets checked state and emits `toggled`.
     pub fn set_checked(&mut self, checked: bool) { self.checked = checked; self.toggled.emit(checked); }
 }
 impl_widget_delegate!(CheckBox, base);
 
+/// Radio button widget.
 pub struct RadioButton { base: BaseWidget, checked: bool }
+/// Creates an unchecked radio button with geometry.
 impl RadioButton { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::RadioButton, geometry, "RadioButton"), checked: false } } pub fn set_checked(&mut self, checked: bool) { self.checked = checked; } }
 impl_widget_delegate!(RadioButton, base);
 
+/// Text label widget.
 pub struct Label { base: BaseWidget, text: String, alignment: Alignment }
 impl Label {
+    /// Creates a label with text and geometry.
     pub fn new(text: String, geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Label, geometry, "Label"), text, alignment: Alignment::Left } }
+    /// Sets label text alignment.
     pub fn set_alignment(&mut self, alignment: Alignment) { self.alignment = alignment; }
+    /// Returns label text.
     pub fn text(&self) -> &str { &self.text }
 }
 impl_widget_delegate!(Label, base);
 
+/// Single-line text editor widget.
 pub struct LineEdit { base: BaseWidget, text: String, pub text_changed: Signal1<String> }
 impl LineEdit {
+    /// Creates an empty line editor.
     pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::LineEdit, geometry, "LineEdit"), text: String::new(), text_changed: Signal1::new() } }
+    /// Sets text and emits `text_changed`.
     pub fn set_text(&mut self, text: String) { self.text = text.clone(); self.text_changed.emit(text); }
 }
 impl_widget_delegate!(LineEdit, base);
 
+/// Multi-line text editor widget.
 pub struct TextEdit { base: BaseWidget, text: String }
+/// Creates an empty text editor.
 impl TextEdit { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TextEdit"), text: String::new() } } pub fn set_text(&mut self, text: String) { self.text = text; } }
 impl_widget_delegate!(TextEdit, base);
 
+/// Combo-box widget with simple string item storage.
 pub struct ComboBox { base: BaseWidget, items: Vec<String>, current: usize }
 impl ComboBox {
+    /// Creates an empty combo-box.
     pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ComboBox, geometry, "ComboBox"), items: Vec::new(), current: 0 } }
+    /// Appends one item.
     pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); }
+    /// Updates current item index when in range.
     pub fn set_current_index(&mut self, index: usize) { if index < self.items.len() { self.current = index; } }
 }
 impl_widget_delegate!(ComboBox, base);
 
+/// List-box widget with simple string item storage.
 pub struct ListBox { base: BaseWidget, items: Vec<String> }
+/// Creates an empty list-box and appends items.
 impl ListBox { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"), items: Vec::new() } } pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); } }
 impl_widget_delegate!(ListBox, base);
 
+/// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
     /// Number of rows exposed by model.
     fn row_count(&self) -> usize;
@@ -250,20 +287,24 @@ pub trait ListModel: Send + Sync {
     fn data(&self, row: usize) -> Option<String>;
 }
 
+/// Tree model abstraction for node/path-style views.
 pub trait TreeModel: Send + Sync {
     fn node_count(&self) -> usize;
     fn node_path(&self, index: usize) -> Option<String>;
 }
 
+/// In-memory tree model backed by a vector of paths.
 pub struct VecTreeModel {
     paths: Vec<String>,
 }
 
 impl VecTreeModel {
+    /// Creates a tree model from path list.
     pub fn new(paths: Vec<String>) -> Self {
         Self { paths }
     }
 
+    /// Appends one node path.
     pub fn add_node(&mut self, path: impl Into<String>) {
         self.paths.push(path.into());
     }
@@ -279,6 +320,7 @@ impl TreeModel for VecTreeModel {
     }
 }
 
+/// Filter/sort proxy model for tree views.
 pub struct SortFilterTreeModel {
     /// Underlying source tree model.
     source: Arc<dyn TreeModel>,
@@ -289,6 +331,7 @@ pub struct SortFilterTreeModel {
 }
 
 impl SortFilterTreeModel {
+    /// Creates a tree proxy model over a source model.
     pub fn new(source: Arc<dyn TreeModel>) -> Self {
         Self {
             source,
@@ -297,10 +340,12 @@ impl SortFilterTreeModel {
         }
     }
 
+    /// Sets optional filter text.
     pub fn set_filter_text(&mut self, text: Option<String>) {
         self.filter_text = text;
     }
 
+    /// Sets sort direction for visible nodes.
     pub fn set_sort_ascending(&mut self, ascending: bool) {
         self.sort_ascending = ascending;
     }
@@ -350,6 +395,7 @@ impl TreeModel for SortFilterTreeModel {
     }
 }
 
+/// Table model abstraction for tabular views.
 pub trait TableModel: Send + Sync {
     /// Number of rows.
     fn row_count(&self) -> usize;
@@ -359,6 +405,38 @@ pub trait TableModel: Send + Sync {
     fn data(&self, row: usize, col: usize) -> Option<String>;
     /// Header label for a column.
     fn header(&self, col: usize) -> Option<String>;
+
+    /// Data payload by semantic role.
+    fn data_with_role(&self, row: usize, col: usize, role: DataRole) -> Option<String> {
+        match role {
+            DataRole::Display | DataRole::Edit => self.data(row, col),
+            DataRole::Tooltip | DataRole::Decoration | DataRole::Foreground | DataRole::Background => None,
+            DataRole::User(_) => None,
+        }
+    }
+
+    /// Whether a cell is editable by default model contract.
+    fn is_editable(&self, _row: usize, _col: usize) -> bool {
+        false
+    }
+}
+
+/// Semantic model data role similar to common model/view frameworks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataRole {
+    Display,
+    Edit,
+    Tooltip,
+    Decoration,
+    Foreground,
+    Background,
+    User(u32),
+}
+
+/// Editable model contract for in-place editor workflows.
+pub trait EditableTableModel: TableModel {
+    /// Set cell value in model storage.
+    fn set_data(&mut self, row: usize, col: usize, value: String) -> bool;
 }
 
 /// Sort order for table view projection.
@@ -368,14 +446,28 @@ pub enum SortOrder {
     Desc,
 }
 
+/// In-memory table model backed by headers and string rows.
 pub struct VecTableModel {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
 }
 
 impl VecTableModel {
+    /// Creates a table model from headers and row data.
     pub fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         Self { headers, rows }
+    }
+
+    /// Updates one cell value, returning false for out-of-range indices.
+    pub fn set_cell(&mut self, row: usize, col: usize, value: impl Into<String>) -> bool {
+        let Some(row_data) = self.rows.get_mut(row) else {
+            return false;
+        };
+        let Some(cell) = row_data.get_mut(col) else {
+            return false;
+        };
+        *cell = value.into();
+        true
     }
 }
 
@@ -395,8 +487,122 @@ impl TableModel for VecTableModel {
     fn header(&self, col: usize) -> Option<String> {
         self.headers.get(col).cloned()
     }
+
+    fn is_editable(&self, row: usize, col: usize) -> bool {
+        row < self.rows.len() && col < self.headers.len()
+    }
 }
 
+impl EditableTableModel for VecTableModel {
+    fn set_data(&mut self, row: usize, col: usize, value: String) -> bool {
+        self.set_cell(row, col, value)
+    }
+}
+
+/// Row selection mode for item/table views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionMode {
+    Single,
+    Multi,
+}
+
+/// Selection state container for row-oriented views.
+#[derive(Debug, Clone)]
+pub struct SelectionModel {
+    mode: SelectionMode,
+    current_row: Option<usize>,
+    selected_rows: HashSet<usize>,
+}
+
+impl Default for SelectionModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SelectionModel {
+    /// Creates an empty single-selection model.
+    pub fn new() -> Self {
+        Self {
+            mode: SelectionMode::Single,
+            current_row: None,
+            selected_rows: HashSet::new(),
+        }
+    }
+
+    /// Returns active selection mode.
+    pub fn mode(&self) -> SelectionMode {
+        self.mode
+    }
+
+    /// Updates selection mode and normalizes selected rows.
+    pub fn set_mode(&mut self, mode: SelectionMode) {
+        self.mode = mode;
+        if mode == SelectionMode::Single {
+            if let Some(current) = self.current_row {
+                self.selected_rows.clear();
+                self.selected_rows.insert(current);
+            } else {
+                self.selected_rows.clear();
+            }
+        }
+    }
+
+    /// Selects a row according to active mode.
+    pub fn select_row(&mut self, row: usize) {
+        self.current_row = Some(row);
+        match self.mode {
+            SelectionMode::Single => {
+                self.selected_rows.clear();
+                self.selected_rows.insert(row);
+            }
+            SelectionMode::Multi => {
+                self.selected_rows.insert(row);
+            }
+        }
+    }
+
+    /// Clears selection state.
+    pub fn clear(&mut self) {
+        self.current_row = None;
+        self.selected_rows.clear();
+    }
+
+    /// Returns current row if present.
+    pub fn current_row(&self) -> Option<usize> {
+        self.current_row
+    }
+
+    /// Returns selected rows in ascending order.
+    pub fn rows(&self) -> Vec<usize> {
+        let mut rows = self.selected_rows.iter().copied().collect::<Vec<_>>();
+        rows.sort_unstable();
+        rows
+    }
+}
+
+/// Delegate abstraction for view display/editor conversion.
+pub trait ItemDelegate: Send + Sync {
+    /// Convert model value to display text.
+    fn format_display(&self, value: &str) -> String;
+    /// Convert editor text back into model value.
+    fn parse_editor(&self, edited: &str) -> String;
+}
+
+/// Default pass-through item delegate.
+pub struct PlainTextItemDelegate;
+
+impl ItemDelegate for PlainTextItemDelegate {
+    fn format_display(&self, value: &str) -> String {
+        value.to_string()
+    }
+
+    fn parse_editor(&self, edited: &str) -> String {
+        edited.to_string()
+    }
+}
+
+/// Filter/sort proxy model for table views.
 pub struct SortFilterTableModel {
     /// Underlying source table model.
     source: Arc<dyn TableModel>,
@@ -409,6 +615,7 @@ pub struct SortFilterTableModel {
 }
 
 impl SortFilterTableModel {
+    /// Creates a table proxy model over a source model.
     pub fn new(source: Arc<dyn TableModel>) -> Self {
         Self {
             source,
@@ -418,6 +625,7 @@ impl SortFilterTableModel {
         }
     }
 
+    /// Sets optional filter text.
     pub fn set_filter_text(&mut self, text: Option<String>) {
         self.filter_text = text;
     }
@@ -500,20 +708,27 @@ impl TableModel for SortFilterTableModel {
     }
 }
 
+/// Progress bar widget.
 pub struct ProgressBar { base: BaseWidget, value: u32 }
+/// Creates a progress bar and updates current value.
 impl ProgressBar { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ProgressBar, geometry, "ProgressBar"), value: 0 } } pub fn set_value(&mut self, value: u32) { self.value = value.min(100); } }
 impl_widget_delegate!(ProgressBar, base);
 
+/// Slider widget.
 pub struct Slider { base: BaseWidget, value: i32 }
+/// Creates a slider and updates current value.
 impl Slider { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Slider, geometry, "Slider"), value: 0 } } pub fn set_value(&mut self, value: i32) { self.value = value; } }
 impl_widget_delegate!(Slider, base);
 
+/// Scroll bar widget.
 pub struct ScrollBar { base: BaseWidget, value: i32 }
+/// Creates a scroll bar and updates current value.
 impl ScrollBar { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ScrollBar, geometry, "ScrollBar"), value: 0 } } pub fn set_value(&mut self, value: i32) { self.value = value; } }
 impl_widget_delegate!(ScrollBar, base);
 
 macro_rules! simple_control {
     ($name:ident, $kind:expr) => {
+        /// Simple widget control wrapper around `BaseWidget`.
         pub struct $name { base: BaseWidget }
         impl $name { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new($kind, geometry, stringify!($name)) } } }
         impl_widget_delegate!($name, base);
@@ -530,6 +745,7 @@ simple_control!(ToolBar, WidgetKind::ToolBar);
 simple_control!(StatusBar, WidgetKind::StatusBar);
 simple_control!(Canvas, WidgetKind::Canvas);
 
+/// Tree view widget with optional external model binding.
 pub struct TreeView {
     base: BaseWidget,
     /// Optional bound tree model.
@@ -541,6 +757,7 @@ pub struct TreeView {
 }
 
 impl TreeView {
+    /// Creates an empty tree view.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
@@ -550,6 +767,7 @@ impl TreeView {
         }
     }
 
+    /// Binds an external tree model.
     pub fn set_model(&mut self, model: Arc<dyn TreeModel>) {
         self.model = Some(model);
     }
@@ -559,6 +777,7 @@ impl TreeView {
         self.fallback_nodes.push(node.into());
     }
 
+    /// Returns current visible node count.
     pub fn node_count(&self) -> usize {
         self.model
             .as_ref()
@@ -566,6 +785,7 @@ impl TreeView {
             .unwrap_or(self.fallback_nodes.len())
     }
 
+            /// Returns node path by visible index.
     pub fn node_path(&self, index: usize) -> Option<String> {
         self.model
             .as_ref()
@@ -573,6 +793,7 @@ impl TreeView {
             .or_else(|| self.fallback_nodes.get(index).cloned())
     }
 
+            /// Selects a node by visible index.
     pub fn select_node(&mut self, index: usize) -> bool {
         if index < self.node_count() {
             self.selected_node = Some(index);
@@ -582,10 +803,12 @@ impl TreeView {
         }
     }
 
+    /// Clears node selection.
     pub fn clear_selection(&mut self) {
         self.selected_node = None;
     }
 
+    /// Returns selected node index if present.
     pub fn selected_node(&self) -> Option<usize> {
         self.selected_node
     }
@@ -593,31 +816,45 @@ impl TreeView {
 
 impl_widget_delegate!(TreeView, base);
 
+/// Table widget with model/view helpers and selection state.
 pub struct TableWidget {
     base: BaseWidget,
     /// Optional bound data model.
     model: Option<Arc<dyn TableModel>>,
-    /// View-side selected row index.
-    selected_row: Option<usize>,
+    /// View-side selection state.
+    selection: SelectionModel,
+    /// Explicit column width overrides in logical pixels.
+    column_widths: HashMap<usize, u32>,
+    /// Explicit row height overrides in logical pixels.
+    row_heights: HashMap<usize, u32>,
+    /// Optional display/editor delegate.
+    delegate: Option<Arc<dyn ItemDelegate>>,
 }
 
 impl TableWidget {
+    /// Creates an empty table widget.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Table, geometry, "TableWidget"),
             model: None,
-            selected_row: None,
+            selection: SelectionModel::new(),
+            column_widths: HashMap::new(),
+            row_heights: HashMap::new(),
+            delegate: None,
         }
     }
 
+    /// Binds an external table model.
     pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
         self.model = Some(model);
     }
 
+    /// Returns visible row count.
     pub fn row_count(&self) -> usize {
         self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
     }
 
+    /// Returns visible column count.
     pub fn column_count(&self) -> usize {
         self.model.as_ref().map(|m| m.column_count()).unwrap_or(0)
     }
@@ -632,10 +869,35 @@ impl TableWidget {
         self.model.as_ref().and_then(|m| m.data(row, col))
     }
 
+    /// Read table cell value by role.
+    pub fn cell_with_role(&self, row: usize, col: usize, role: DataRole) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.data_with_role(row, col, role))
+    }
+
+    /// Read formatted display cell (delegate-aware).
+    pub fn display_cell(&self, row: usize, col: usize) -> Option<String> {
+        let value = self.cell_with_role(row, col, DataRole::Display)?;
+        if let Some(delegate) = &self.delegate {
+            Some(delegate.format_display(&value))
+        } else {
+            Some(value)
+        }
+    }
+
+    /// Sets item delegate for display/editor conversion.
+    pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
+        self.delegate = Some(delegate);
+    }
+
+    /// Clears custom item delegate.
+    pub fn clear_delegate(&mut self) {
+        self.delegate = None;
+    }
+
     /// Select one row in the current view projection.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
-            self.selected_row = Some(row);
+            self.selection.select_row(row);
             true
         } else {
             false
@@ -644,12 +906,47 @@ impl TableWidget {
 
     /// Clear current row selection.
     pub fn clear_selection(&mut self) {
-        self.selected_row = None;
+        self.selection.clear();
     }
 
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selected_row
+        self.selection.current_row()
+    }
+
+    /// All selected rows in stable order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selection.rows()
+    }
+
+    /// Sets row selection mode.
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        self.selection.set_mode(mode);
+    }
+
+    /// Returns current selection mode.
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.selection.mode()
+    }
+
+    /// Sets explicit width override for a column.
+    pub fn set_column_width(&mut self, col: usize, width: u32) {
+        self.column_widths.insert(col, width.max(1));
+    }
+
+    /// Returns explicit width override for a column.
+    pub fn column_width(&self, col: usize) -> Option<u32> {
+        self.column_widths.get(&col).copied()
+    }
+
+    /// Sets explicit height override for a row.
+    pub fn set_row_height(&mut self, row: usize, height: u32) {
+        self.row_heights.insert(row, height.max(1));
+    }
+
+    /// Returns explicit height override for a row.
+    pub fn row_height(&self, row: usize) -> Option<u32> {
+        self.row_heights.get(&row).copied()
     }
 }
 
@@ -657,3 +954,29 @@ impl_widget_delegate!(TableWidget, base);
 
 simple_control!(GridWidget, WidgetKind::Grid);
 simple_control!(ChartWidget, WidgetKind::Chart);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vec_table_model_edit_contract() {
+        let mut model = VecTableModel::new(
+            vec!["name".to_string(), "value".to_string()],
+            vec![vec!["a".to_string(), "1".to_string()]],
+        );
+        assert!(model.is_editable(0, 1));
+        assert!(EditableTableModel::set_data(&mut model, 0, 1, "2".to_string()));
+        assert_eq!(model.data(0, 1).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn selection_model_multi_select() {
+        let mut sel = SelectionModel::new();
+        sel.set_mode(SelectionMode::Multi);
+        sel.select_row(2);
+        sel.select_row(5);
+        assert_eq!(sel.current_row(), Some(5));
+        assert_eq!(sel.rows(), vec![2, 5]);
+    }
+}

@@ -1,30 +1,52 @@
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 
+/// Core types and shared contracts.
 pub mod core;
+/// Action/command system.
+pub mod action;
+/// Object tree and object utilities.
 pub mod object;
+/// Event types and dispatch helpers.
 pub mod event;
+/// Signal-slot utilities.
 pub mod signal;
+/// Widget definitions and widget helpers.
 pub mod widget;
+/// Layout managers.
 pub mod layout;
+/// Rendering traits and primitives.
+pub mod render;
+/// Runtime render-engine abstraction.
 pub mod render_engine;
 #[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// XML utilities for desktop runtime.
 pub mod xml;
 #[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// Internationalization module for desktop runtime.
 pub mod i18n;
+/// Platform abstraction and backend adapters.
 pub mod platform;
 #[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// Theme management for desktop runtime.
 pub mod theme;
+/// Style system primitives.
 pub mod style;
 #[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// C ABI bindings for desktop runtime.
 pub mod bindings;
+/// Clipboard helpers.
+pub mod clipboard;
 
 #[cfg(feature = "print")]
+/// Print and preview support.
 pub mod print;
 
 #[cfg(feature = "pdf")]
+/// PDF rendering/export support.
 pub mod pdf;
 
 #[cfg(feature = "chart")]
+/// Charting primitives.
 pub mod chart;
 
 /// Initialize global platform and i18n subsystems.
@@ -48,8 +70,23 @@ pub fn quit() {
 
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        eprintln!("[rust_widgets] stage={stage} route={}", runtime_route_name());
+        eprintln!(
+            "[rust_widgets.runtime] stage={stage} profile={} backend={} route={}",
+            runtime_profile_name(),
+            platform::get_platform().backend_name(),
+            runtime_route_name()
+        );
     }
+}
+
+#[cfg(not(feature = "embedded"))]
+fn runtime_profile_name() -> &'static str {
+    "full"
+}
+
+#[cfg(feature = "embedded")]
+fn runtime_profile_name() -> &'static str {
+    "embedded"
 }
 
 #[cfg(not(feature = "embedded"))]

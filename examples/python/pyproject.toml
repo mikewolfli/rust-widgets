@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rust-widgets"
+version = "0.1.0"
+description = "Python ctypes adapter for rust_widgets C ABI"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "rust_widgets contributors" }]
+
+[tool.setuptools]
+py-modules = ["rust_widgets"]

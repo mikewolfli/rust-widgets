@@ -1,7 +1,6 @@
 //! Native macOS backend using Cocoa.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use cocoa::appkit::{
@@ -15,11 +14,12 @@ use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 
-use crate::core::PlatformFamily;
+use crate::core::{ObjectId, PlatformFamily};
 
+use super::state::BackendState;
 use super::Platform;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum HandleKind {
     /// Top-level NSWindow.
     Window,
@@ -42,13 +42,12 @@ struct CocoaHandle {
     kind: HandleKind,
 }
 
+/// macOS desktop platform adapter.
 pub struct MacOSPlatform {
-    /// Source of logical widget ids.
-    next_id: AtomicU64,
+    /// Shared logical widget state split from native handles.
+    state: BackendState<HandleKind>,
     /// Logical id -> native handle mapping.
-    handles: Mutex<HashMap<u64, CocoaHandle>>,
-    /// Text cache for quick get_widget_text behavior.
-    texts: Mutex<HashMap<u64, String>>,
+    handles: Mutex<HashMap<ObjectId, CocoaHandle>>,
 }
 
 static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
@@ -138,16 +137,12 @@ fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
 }
 
 impl MacOSPlatform {
+    /// Creates a new macOS platform adapter.
     pub fn new() -> Self {
         Self {
-            next_id: AtomicU64::new(1),
+            state: BackendState::new(),
             handles: Mutex::new(HashMap::new()),
-            texts: Mutex::new(HashMap::new()),
         }
-    }
-
-    fn new_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
@@ -164,12 +159,30 @@ impl MacOSPlatform {
             | NSWindowStyleMask::NSMiniaturizableWindowMask
     }
 
-    fn get_handle(&self, widget_id: u64) -> Option<CocoaHandle> {
+    fn get_handle(&self, widget_id: ObjectId) -> Option<CocoaHandle> {
         self.handles
             .lock()
             .expect("macos handle lock poisoned")
             .get(&widget_id)
             .copied()
+    }
+
+    fn register_handle(
+        &self,
+        kind: HandleKind,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        ptr: usize,
+    ) -> ObjectId {
+        let id = self.state.create_widget(kind, text, x, y, width, height);
+        self.handles
+            .lock()
+            .expect("macos handle lock poisoned")
+            .insert(id, CocoaHandle { ptr, kind });
+        id
     }
 
     fn as_id(handle: CocoaHandle) -> id {
@@ -214,7 +227,6 @@ impl Platform for MacOSPlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let window = NSWindow::alloc(nil).initWithContentRect_styleMask_backing_defer_(
                 Self::make_rect(x, y, width, height),
@@ -226,14 +238,7 @@ impl Platform for MacOSPlatform {
             NSWindow::setTitle_(window, NSString::alloc(nil).init_str(title));
             window.makeKeyAndOrderFront_(nil);
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: window as usize, kind: HandleKind::Window });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, title.to_string());
+            let id = self.register_handle(HandleKind::Window, title, x, y, width, height, window as usize);
 
             pool.drain();
             id
@@ -243,7 +248,6 @@ impl Platform for MacOSPlatform {
     fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let button = NSButton::initWithFrame_(NSButton::alloc(nil), Self::make_rect(x, y, width, height));
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
@@ -256,14 +260,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: button as usize, kind: HandleKind::Button });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, text.to_string());
+            let id = self.register_handle(HandleKind::Button, text, x, y, width, height, button as usize);
 
             pool.drain();
             id
@@ -273,7 +270,6 @@ impl Platform for MacOSPlatform {
     fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let button = NSButton::initWithFrame_(NSButton::alloc(nil), Self::make_rect(x, y, width, height));
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
@@ -286,14 +282,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: button as usize, kind: HandleKind::CheckBox });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, text.to_string());
+            let id = self.register_handle(HandleKind::CheckBox, text, x, y, width, height, button as usize);
 
             pool.drain();
             id
@@ -303,7 +292,6 @@ impl Platform for MacOSPlatform {
     fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
             NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
@@ -315,14 +303,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: field as usize, kind: HandleKind::LineEdit });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, text.to_string());
+            let id = self.register_handle(HandleKind::LineEdit, text, x, y, width, height, field as usize);
 
             pool.drain();
             id
@@ -332,7 +313,6 @@ impl Platform for MacOSPlatform {
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let menu_bar: id = msg_send![class!(NSMenu), alloc];
             let menu_bar: id = msg_send![menu_bar, initWithTitle: NSString::alloc(nil).init_str("MainMenu")];
@@ -346,14 +326,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: menu_bar as usize, kind: HandleKind::MenuBar });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, "MenuBar".to_string());
+            let id = self.register_handle(HandleKind::MenuBar, "MenuBar", x, y, width, height, menu_bar as usize);
 
             pool.drain();
             id
@@ -363,7 +336,6 @@ impl Platform for MacOSPlatform {
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let menu_item: id = msg_send![class!(NSMenuItem), alloc];
             let empty = NSString::alloc(nil).init_str("");
@@ -396,14 +368,7 @@ impl Platform for MacOSPlatform {
 
             let _ = (x, y, width, height);
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: menu_item as usize, kind: HandleKind::Menu });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, text.to_string());
+            let id = self.register_handle(HandleKind::Menu, text, x, y, width, height, menu_item as usize);
 
             pool.drain();
             id
@@ -413,7 +378,6 @@ impl Platform for MacOSPlatform {
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let view = NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
             if let Some(parent_handle) = self.get_handle(parent) {
@@ -423,14 +387,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: view as usize, kind: HandleKind::ToolBar });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, "ToolBar".to_string());
+            let id = self.register_handle(HandleKind::ToolBar, "ToolBar", x, y, width, height, view as usize);
 
             pool.drain();
             id
@@ -440,7 +397,6 @@ impl Platform for MacOSPlatform {
     fn create_status_bar(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let id = self.new_id();
 
             let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
             NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
@@ -454,14 +410,7 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            self.handles
-                .lock()
-                .expect("macos handle lock poisoned")
-                .insert(id, CocoaHandle { ptr: field as usize, kind: HandleKind::StatusBar });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(id, text.to_string());
+            let id = self.register_handle(HandleKind::StatusBar, text, x, y, width, height, field as usize);
 
             pool.drain();
             id
@@ -500,7 +449,7 @@ impl Platform for MacOSPlatform {
                 _ => return 0,
             };
 
-            let item_id = self.new_id();
+            let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
             let (key, modifier_mask) = parse_shortcut(shortcut);
             let item: id = msg_send![class!(NSMenuItem), alloc];
             let item: id = msg_send![
@@ -525,10 +474,6 @@ impl Platform for MacOSPlatform {
                 .lock()
                 .expect("macos handle lock poisoned")
                 .insert(item_id, CocoaHandle { ptr: item as usize, kind: HandleKind::MenuItem });
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(item_id, text.to_string());
 
             item_id
         }
@@ -544,6 +489,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn show_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, true);
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -559,6 +505,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn hide_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, false);
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -574,6 +521,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
+        self.state.set_geometry(widget_id, x, y, width, height);
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -591,6 +539,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
+        let _ = self.state.set_text(widget_id, text);
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let ns_text = NSString::alloc(nil).init_str(text);
@@ -605,23 +554,15 @@ impl Platform for MacOSPlatform {
                     _ => NSButton::setTitle_(native, ns_text),
                 }
             }
-            self.texts
-                .lock()
-                .expect("macos text lock poisoned")
-                .insert(widget_id, text.to_string());
         }
     }
 
     fn get_widget_text(&self, widget_id: u64) -> String {
-        self.texts
-            .lock()
-            .expect("macos text lock poisoned")
-            .get(&widget_id)
-            .cloned()
-            .unwrap_or_default()
+        self.state.text(widget_id)
     }
 
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
+        self.state.set_enabled(widget_id, enabled);
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 match handle.kind {
@@ -641,21 +582,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn is_widget_enabled(&self, widget_id: u64) -> bool {
-        unsafe {
-            self.get_handle(widget_id)
-                .map(|handle| match handle.kind {
-                    HandleKind::Button
-                    | HandleKind::CheckBox
-                    | HandleKind::LineEdit
-                    | HandleKind::StatusBar => NSControl::isEnabled_(Self::as_id(handle)) == YES,
-                    HandleKind::Menu | HandleKind::MenuItem => {
-                        let enabled: bool = msg_send![Self::as_id(handle), isEnabled];
-                        enabled
-                    }
-                    _ => true,
-                })
-                .unwrap_or(false)
-        }
+        self.state.enabled(widget_id)
     }
 
     fn set_widget_visible(&self, widget_id: u64, visible: bool) {
@@ -667,15 +594,96 @@ impl Platform for MacOSPlatform {
     }
 
     fn is_widget_visible(&self, widget_id: u64) -> bool {
-        self.get_handle(widget_id)
-            .map(|handle| match handle.kind {
-                HandleKind::Window => unsafe { NSWindow::isVisible(Self::as_id(handle)) == YES },
-                HandleKind::MenuBar => true,
-                _ => {
-                    let hidden: bool = unsafe { msg_send![Self::as_id(handle), isHidden] };
-                    !hidden
-                }
-            })
-            .unwrap_or(false)
+        self.state.visible(widget_id)
+    }
+
+    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
+
+    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
+        self.state.set_accessibility_name(widget_id, name)
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
+        self.state.accessibility_name(widget_id)
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        self.state.set_clipboard_text(text)
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
+    }
+
+    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    fn poll_drop_event(&self) -> Option<super::DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    fn inject_drop_event(&self, event: super::DropEvent) -> bool {
+        self.state.inject_drop_event(event)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_dummy_widget(platform: &MacOSPlatform) -> u64 {
+        platform
+            .state
+            .create_widget(HandleKind::Button, "dummy", 0, 0, 10, 10)
+    }
+
+    #[test]
+    fn macos_backend_ime_and_accessibility_state_roundtrip() {
+        let platform = MacOSPlatform::new();
+        let widget_id = insert_dummy_widget(&platform);
+
+        assert!(Platform::set_widget_ime_enabled(&platform, widget_id, true));
+        assert!(Platform::is_widget_ime_enabled(&platform, widget_id));
+
+        assert!(Platform::set_widget_accessibility_name(
+            &platform,
+            widget_id,
+            "Accessible"
+        ));
+        assert_eq!(
+            Platform::get_widget_accessibility_name(&platform, widget_id),
+            "Accessible".to_string()
+        );
+    }
+
+    #[test]
+    fn macos_backend_clipboard_and_drag_drop_roundtrip() {
+        let platform = MacOSPlatform::new();
+        let widget_id = insert_dummy_widget(&platform);
+
+        assert!(Platform::set_clipboard_text(&platform, "hello"));
+        assert_eq!(Platform::get_clipboard_text(&platform), "hello".to_string());
+
+        assert!(Platform::begin_drag(&platform, widget_id, "text/plain", b"abc"));
+        let event = Platform::poll_drop_event(&platform).expect("drop event should exist");
+        assert_eq!(event.source_widget_id, widget_id);
+        assert_eq!(event.mime, "text/plain");
+        assert_eq!(event.payload, b"abc".to_vec());
+
+        let injected = super::super::DropEvent {
+            source_widget_id: widget_id,
+            target_widget_id: widget_id,
+            mime: "application/octet-stream".to_string(),
+            payload: vec![1, 2, 3],
+        };
+        assert!(Platform::inject_drop_event(&platform, injected.clone()));
+        assert_eq!(Platform::poll_drop_event(&platform), Some(injected));
     }
 }

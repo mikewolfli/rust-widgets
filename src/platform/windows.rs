@@ -2,20 +2,21 @@
 
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "windows")]
-use std::collections::VecDeque;
-#[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use std::sync::Mutex;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 use crate::core::PlatformFamily;
 
-#[cfg(target_os = "windows")]
-use super::WidgetTriggerKind;
-use super::{Platform, StubPlatform, WidgetTriggerEvent};
+use super::state::BackendState;
+use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 #[cfg(target_os = "windows")]
 use std::ptr::null_mut;
@@ -82,24 +83,46 @@ impl Win32HandleState {
     }
 }
 
+/// Windows desktop platform adapter.
 pub struct WindowsPlatform {
-    inner: StubPlatform,
+    state: BackendState<WindowsHandleKind>,
+    runtime_initialized: AtomicBool,
+    runtime_running: AtomicBool,
     #[cfg(target_os = "windows")]
     menu_state: Win32MenuState,
     #[cfg(target_os = "windows")]
     handle_state: Win32HandleState,
 }
 
+/// Logical kind used by Windows backend state validation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum WindowsHandleKind {
+    Window,
+    Button,
+    CheckBox,
+    LineEdit,
+    MenuBar,
+    Menu,
+    MenuItem,
+}
+
 impl WindowsPlatform {
-    /// Create Windows backend with stub state and native state stores.
+    /// Create Windows backend state and optional native integration stores.
     pub fn new() -> Self {
         Self {
-            inner: StubPlatform::new("win32", PlatformFamily::Desktop),
+            state: BackendState::new(),
+            runtime_initialized: AtomicBool::new(false),
+            runtime_running: AtomicBool::new(false),
             #[cfg(target_os = "windows")]
             menu_state: Win32MenuState::new(),
             #[cfg(target_os = "windows")]
             handle_state: Win32HandleState::new(),
         }
+    }
+
+    /// Return `true` when widget id exists and has expected kind.
+    fn is_kind(&self, widget_id: u64, kind: WindowsHandleKind) -> bool {
+        self.state.is_kind(widget_id, kind)
     }
 
     #[cfg(target_os = "windows")]
@@ -292,10 +315,10 @@ unsafe extern "system" fn widgets_wnd_proc(
 }
 
 impl Platform for WindowsPlatform {
-    fn backend_name(&self) -> &'static str { self.inner.backend_name() }
-    fn family(&self) -> PlatformFamily { self.inner.family() }
+    fn backend_name(&self) -> &'static str { "win32" }
+    fn family(&self) -> PlatformFamily { PlatformFamily::Desktop }
     fn init(&self) {
-        self.inner.init();
+        self.runtime_initialized.store(true, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         {
             let _ = Self::register_window_class();
@@ -310,17 +333,25 @@ impl Platform for WindowsPlatform {
                 DispatchMessageW(&msg);
             }
         }
-        self.inner.run();
+        if !self.runtime_initialized.load(Ordering::SeqCst) {
+            self.init();
+        }
+        self.runtime_running.store(true, Ordering::SeqCst);
+        while self.runtime_running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(16));
+        }
     }
     fn quit(&self) {
+        self.runtime_running.store(false, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         unsafe {
             PostQuitMessage(0);
         }
-        self.inner.quit();
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let window_id = self.inner.create_window(title, x, y, width, height);
+        let window_id = self
+            .state
+            .create_widget(WindowsHandleKind::Window, title, x, y, width, height);
         #[cfg(target_os = "windows")]
         unsafe {
             if Self::register_window_class() {
@@ -350,7 +381,12 @@ impl Platform for WindowsPlatform {
         window_id
     }
     fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let widget_id = self.inner.create_button(parent, text, x, y, width, height);
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
+        let widget_id = self
+            .state
+            .create_widget(WindowsHandleKind::Button, text, x, y, width, height);
         #[cfg(target_os = "windows")]
         {
             let command_id = self
@@ -369,7 +405,12 @@ impl Platform for WindowsPlatform {
         widget_id
     }
     fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let widget_id = self.inner.create_checkbox(parent, text, x, y, width, height);
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
+        let widget_id = self
+            .state
+            .create_widget(WindowsHandleKind::CheckBox, text, x, y, width, height);
         #[cfg(target_os = "windows")]
         {
             let command_id = self
@@ -398,7 +439,12 @@ impl Platform for WindowsPlatform {
         widget_id
     }
     fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let widget_id = self.inner.create_line_edit(parent, text, x, y, width, height);
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
+        let widget_id = self
+            .state
+            .create_widget(WindowsHandleKind::LineEdit, text, x, y, width, height);
         #[cfg(target_os = "windows")]
         {
             let command_id = self
@@ -427,7 +473,12 @@ impl Platform for WindowsPlatform {
         widget_id
     }
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let menu_id = self.inner.create_menu_bar(parent, x, y, width, height);
+        if !self.is_kind(parent, WindowsHandleKind::Window) {
+            return 0;
+        }
+        let menu_id = self
+            .state
+            .create_widget(WindowsHandleKind::MenuBar, "MenuBar", x, y, width, height);
         #[cfg(target_os = "windows")]
         unsafe {
             let menu = CreateMenu();
@@ -438,7 +489,12 @@ impl Platform for WindowsPlatform {
         menu_id
     }
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let menu_id = self.inner.create_menu(parent, text, x, y, width, height);
+        if !(self.is_kind(parent, WindowsHandleKind::MenuBar) || self.is_kind(parent, WindowsHandleKind::Menu)) {
+            return 0;
+        }
+        let menu_id = self
+            .state
+            .create_widget(WindowsHandleKind::Menu, text, x, y, width, height);
         #[cfg(target_os = "windows")]
         unsafe {
             let popup = CreatePopupMenu();
@@ -453,7 +509,9 @@ impl Platform for WindowsPlatform {
         menu_id
     }
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
-        let attached = self.inner.attach_menu_bar_to_window(window, menu_bar);
+        if !(self.is_kind(window, WindowsHandleKind::Window) && self.is_kind(menu_bar, WindowsHandleKind::MenuBar)) {
+            return false;
+        }
         #[cfg(target_os = "windows")]
         unsafe {
             if let (Some(hwnd), Some(menu)) = (self.get_native_handle(window), self.get_menu_handle(menu_bar)) {
@@ -463,10 +521,19 @@ impl Platform for WindowsPlatform {
                 }
             }
         }
-        attached
+        true
     }
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
-        let item_id = self.inner.menu_add_item(parent_menu, text, shortcut);
+        if !self.is_kind(parent_menu, WindowsHandleKind::Menu) {
+            return 0;
+        }
+        let item_id = self
+            .state
+            .create_widget(WindowsHandleKind::MenuItem, text, 0, 0, 0, 0);
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = shortcut;
+        }
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(menu_handle) = self.get_menu_handle(parent_menu) {
@@ -490,6 +557,9 @@ impl Platform for WindowsPlatform {
         item_id
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
+        if let Some(item_id) = self.state.pop_menu_event() {
+            return Some(item_id);
+        }
         #[cfg(target_os = "windows")]
         {
             if let Some(item_id) = self
@@ -505,12 +575,22 @@ impl Platform for WindowsPlatform {
                 return Some(item_id);
             }
         }
-        self.inner.poll_menu_triggered()
+        None
+    }
+    fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
+        if !self.is_kind(menu_item_id, WindowsHandleKind::MenuItem) {
+            return false;
+        }
+        self.state.push_menu_event(menu_item_id);
+        true
     }
     fn poll_widget_triggered(&self) -> Option<u64> {
         self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        if let Some(event) = self.state.pop_widget_event() {
+            return Some(event);
+        }
         #[cfg(target_os = "windows")]
         {
             if let Some(event) = self
@@ -528,8 +608,15 @@ impl Platform for WindowsPlatform {
         }
         None
     }
+    fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
+        true
+    }
     fn show_widget(&self, widget_id: u64) {
-        self.inner.show_widget(widget_id);
+        self.state.set_visible(widget_id, true);
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(hwnd) = self.get_native_handle(widget_id) {
@@ -538,7 +625,7 @@ impl Platform for WindowsPlatform {
         }
     }
     fn hide_widget(&self, widget_id: u64) {
-        self.inner.hide_widget(widget_id);
+        self.state.set_visible(widget_id, false);
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(hwnd) = self.get_native_handle(widget_id) {
@@ -547,7 +634,7 @@ impl Platform for WindowsPlatform {
         }
     }
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.inner.set_widget_geometry(widget_id, x, y, width, height);
+        self.state.set_geometry(widget_id, x, y, width, height);
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(hwnd) = self.get_native_handle(widget_id) {
@@ -556,7 +643,10 @@ impl Platform for WindowsPlatform {
         }
     }
     fn set_widget_text(&self, widget_id: u64, text: &str) {
-        self.inner.set_widget_text(widget_id, text);
+        if !self.state.set_text(widget_id, text) {
+            return;
+        }
+        let is_line_edit = matches!(self.state.kind_of(widget_id), Some(WindowsHandleKind::LineEdit));
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(hwnd) = self.get_native_handle(widget_id) {
@@ -564,10 +654,18 @@ impl Platform for WindowsPlatform {
                 SetWindowTextW(hwnd, text_w.as_ptr());
             }
         }
+        if is_line_edit {
+            self.state.push_widget_event(WidgetTriggerEvent {
+                    widget_id,
+                    kind: WidgetTriggerKind::ValueChanged,
+            });
+        }
     }
-    fn get_widget_text(&self, widget_id: u64) -> String { self.inner.get_widget_text(widget_id) }
+    fn get_widget_text(&self, widget_id: u64) -> String {
+        self.state.text(widget_id)
+    }
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
-        self.inner.set_widget_enabled(widget_id, enabled);
+        self.state.set_enabled(widget_id, enabled);
         #[cfg(target_os = "windows")]
         unsafe {
             if let Some(hwnd) = self.get_native_handle(widget_id) {
@@ -582,9 +680,16 @@ impl Platform for WindowsPlatform {
                 return IsWindowEnabled(hwnd) != 0;
             }
         }
-        self.inner.is_widget_enabled(widget_id)
+        self.state.enabled(widget_id)
     }
-    fn set_widget_visible(&self, widget_id: u64, visible: bool) { self.inner.set_widget_visible(widget_id, visible); }
+    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
+        self.state.set_visible(widget_id, visible);
+        if visible {
+            self.show_widget(widget_id);
+        } else {
+            self.hide_widget(widget_id);
+        }
+    }
     fn is_widget_visible(&self, widget_id: u64) -> bool {
         #[cfg(target_os = "windows")]
         unsafe {
@@ -592,6 +697,42 @@ impl Platform for WindowsPlatform {
                 return IsWindowVisible(hwnd) != 0;
             }
         }
-        self.inner.is_widget_visible(widget_id)
+        self.state.visible(widget_id)
+    }
+
+    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
+
+    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
+        self.state.set_accessibility_name(widget_id, name)
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
+        self.state.accessibility_name(widget_id)
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        self.state.set_clipboard_text(text)
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
+    }
+
+    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    fn poll_drop_event(&self) -> Option<DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    fn inject_drop_event(&self, event: DropEvent) -> bool {
+        self.state.inject_drop_event(event)
     }
 }

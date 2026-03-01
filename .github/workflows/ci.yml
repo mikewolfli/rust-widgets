@@ -29,3 +29,47 @@ jobs:
 
       - name: Cargo check examples
         run: cargo check --examples
+
+  validation-gates:
+    name: Validation gates (profiles + ABI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run profile matrix gate
+        shell: bash
+        run: |
+          chmod +x tools/check_profiles.sh
+          ./tools/check_profiles.sh
+
+      - name: Run ABI gate
+        shell: bash
+        run: |
+          chmod +x tools/check_abi.sh
+          ./tools/check_abi.sh
+
+  feature-completeness-matrix:
+    name: Feature completeness matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate feature completeness report
+        shell: bash
+        run: |
+          chmod +x tools/check_feature_completeness_matrix.sh
+          ./tools/check_feature_completeness_matrix.sh
+
+      - name: Upload feature completeness artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-completeness-matrix
+          path: target/qa/feature_completeness_matrix.md

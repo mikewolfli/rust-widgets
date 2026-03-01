@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs::{File, read_dir};
 use std::io::Read;
 use std::sync::Mutex;
@@ -9,15 +10,20 @@ use std::sync::Mutex;
 /// Translation entry for one key (optionally context and plural forms).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Translation {
+    /// Optional translation context namespace.
     pub context: Option<String>,
+    /// Base translated message.
     pub message: String,
+    /// Optional plural forms keyed by count category.
     pub plural: Option<HashMap<u32, String>>,
 }
 
 /// Translation file grouped by language code.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranslationFile {
+    /// Language code (for example `en` or `zh-CN`).
     pub language: String,
+    /// Translation entries keyed by message id.
     pub translations: HashMap<String, Translation>,
 }
 
@@ -26,6 +32,57 @@ pub struct I18nManager {
     translations: HashMap<String, TranslationFile>,
     current_language: String,
     default_language: String,
+}
+
+/// Startup options used to initialize i18n behavior deterministically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitOptions {
+    /// Preferred language used for both current/default language slots.
+    pub language: String,
+    /// Optional directory containing language JSON files to preload.
+    pub preload_dir: Option<String>,
+    /// Emit diagnostics to stderr.
+    pub diagnostics: bool,
+}
+
+impl InitOptions {
+    /// Build options from process environment.
+    pub fn from_env() -> Self {
+        let language = detect_language_from_env().unwrap_or_else(|| "en".to_string());
+        let preload_dir = env::var("RUST_WIDGETS_I18N_DIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let diagnostics = env_flag_enabled("RUST_WIDGETS_I18N_DIAGNOSTICS");
+        Self {
+            language,
+            preload_dir,
+            diagnostics,
+        }
+    }
+}
+
+impl Default for InitOptions {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
+            preload_dir: None,
+            diagnostics: false,
+        }
+    }
+}
+
+/// Result summary returned by i18n initialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitReport {
+    /// Effective language set for current/default slots.
+    pub language: String,
+    /// Optional preload directory used.
+    pub preload_dir: Option<String>,
+    /// Number of translation files loaded during init.
+    pub loaded_languages: usize,
+    /// Optional preload error if loading failed.
+    pub preload_error: Option<String>,
 }
 
 impl I18nManager {
@@ -149,12 +206,99 @@ impl I18nManager {
 
 // Global i18n manager instance used by top-level helper functions.
 lazy_static::lazy_static! {
+    /// Global i18n manager instance used by top-level helpers.
     pub static ref I18N_MANAGER: Mutex<I18nManager> = Mutex::new(I18nManager::new());
 }
 
-/// Initialize i18n system (reserved hook for future startup logic).
+/// Initialize i18n system with deterministic defaults and environment-based preload.
+///
+/// Behavior:
+/// - Resolves language from `RUST_WIDGETS_I18N_LANG`, then `LC_ALL`, then `LANG`, falling back to `en`.
+/// - Applies resolved language to both current and default language.
+/// - If `RUST_WIDGETS_I18N_DIR` is set, attempts to preload all `*.json` translation files.
+/// - If `RUST_WIDGETS_I18N_DIAGNOSTICS` is truthy (`1/true/yes/on`), prints initialization diagnostics.
 pub fn init() {
-    // Default initialization
+    let _ = init_with_options(InitOptions::from_env());
+}
+
+/// Initialize i18n with explicit options and return initialization report.
+pub fn init_with_options(options: InitOptions) -> InitReport {
+    let mut manager = I18N_MANAGER.lock().unwrap();
+    manager.set_default_language(&options.language);
+    manager.set_language(&options.language);
+
+    let mut preload_error = None;
+    if let Some(dir) = &options.preload_dir {
+        if let Err(error) = manager.load_translations_from_dir(dir) {
+            preload_error = Some(error.to_string());
+        }
+    }
+
+    let report = InitReport {
+        language: options.language,
+        preload_dir: options.preload_dir,
+        loaded_languages: manager.translations.len(),
+        preload_error,
+    };
+
+    if options.diagnostics {
+        emit_init_diagnostics(&report);
+    }
+
+    report
+}
+
+fn emit_init_diagnostics(report: &InitReport) {
+    match &report.preload_dir {
+        Some(dir) => {
+            eprintln!(
+                "[rust_widgets::i18n] init language={} preload_dir={} loaded_languages={} preload_error={}",
+                report.language,
+                dir,
+                report.loaded_languages,
+                report.preload_error.as_deref().unwrap_or("none")
+            );
+        }
+        None => {
+            eprintln!(
+                "[rust_widgets::i18n] init language={} preload_dir=none loaded_languages={} preload_error={}",
+                report.language,
+                report.loaded_languages,
+                report.preload_error.as_deref().unwrap_or("none")
+            );
+        }
+    }
+}
+
+fn detect_language_from_env() -> Option<String> {
+    ["RUST_WIDGETS_I18N_LANG", "LC_ALL", "LANG"]
+        .iter()
+        .filter_map(|key| env::var(key).ok())
+        .find_map(|value| normalize_language_tag(&value))
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn normalize_language_tag(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_encoding = trimmed.split('.').next().unwrap_or(trimmed);
+    let without_modifier = without_encoding.split('@').next().unwrap_or(without_encoding);
+    let normalized = without_modifier.replace('_', "-");
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 /// Load translations from file
@@ -209,4 +353,42 @@ macro_rules! tr {
     ($key:expr, $context:expr, $count:expr) => {
         $crate::i18n::translate_with_context($key, Some($context), $count)
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_language_tag_removes_encoding_and_modifier() {
+        assert_eq!(normalize_language_tag("zh_CN.UTF-8"), Some("zh-CN".to_string()));
+        assert_eq!(normalize_language_tag("en_US@POSIX"), Some("en-US".to_string()));
+        assert_eq!(normalize_language_tag("  fr-FR  "), Some("fr-FR".to_string()));
+        assert_eq!(normalize_language_tag(""), None);
+    }
+
+    #[test]
+    fn init_with_options_applies_language_without_preload() {
+        let report = init_with_options(InitOptions {
+            language: "de-DE".to_string(),
+            preload_dir: None,
+            diagnostics: false,
+        });
+
+        assert_eq!(report.language, "de-DE");
+        assert_eq!(report.preload_dir, None);
+    }
+
+    #[test]
+    fn init_with_options_reports_preload_errors_deterministically() {
+        let report = init_with_options(InitOptions {
+            language: "en".to_string(),
+            preload_dir: Some("/path/that/does/not/exist".to_string()),
+            diagnostics: false,
+        });
+
+        assert_eq!(report.language, "en");
+        assert_eq!(report.preload_dir, Some("/path/that/does/not/exist".to_string()));
+        assert!(report.preload_error.is_some());
+    }
 }

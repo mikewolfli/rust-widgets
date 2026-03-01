@@ -1,3 +1,4 @@
+// Harmony N-API bridge sample for rust_widgets trigger polling.
 #include <stdint.h>
 #include <stdbool.h>
 

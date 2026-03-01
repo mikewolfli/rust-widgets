@@ -33,6 +33,44 @@ fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
     }
 }
 
+fn capability_contract_mask(contract: crate::platform::CapabilityContract) -> c_uint {
+    match contract {
+        crate::platform::CapabilityContract::Native(native) => {
+            let mut mask: c_uint = 0;
+            mask |= 1 << 0;
+            if native.dpi_scaling {
+                mask |= 1 << 1;
+            }
+            if native.ime {
+                mask |= 1 << 2;
+            }
+            if native.accessibility {
+                mask |= 1 << 3;
+            }
+            if native.native_menu {
+                mask |= 1 << 4;
+            }
+            if native.typed_widget_trigger {
+                mask |= 1 << 5;
+            }
+            mask
+        }
+        crate::platform::CapabilityContract::Embedded(embedded) => {
+            let mut mask: c_uint = 0;
+            if embedded.fixed_dpi {
+                mask |= 1 << 1;
+            }
+            if embedded.low_memory_mode {
+                mask |= 1 << 2;
+            }
+            if embedded.typed_widget_trigger {
+                mask |= 1 << 3;
+            }
+            mask
+        }
+    }
+}
+
 /// Convert nullable C string pointer to owned Rust `String`.
 fn c_str_or_default(ptr: *const c_char) -> String {
     if ptr.is_null() {
@@ -449,6 +487,30 @@ pub extern "C" fn rust_widgets_is_widget_visible(widget_id: u64) -> CBool {
 }
 
 #[no_mangle]
+pub extern "C" fn rust_widgets_set_widget_ime_enabled(widget_id: u64, enabled: CBool) -> CBool {
+    crate::platform::get_platform().set_widget_ime_enabled(widget_id, enabled)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_is_widget_ime_enabled(widget_id: u64) -> CBool {
+    crate::platform::get_platform().is_widget_ime_enabled(widget_id)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_set_widget_accessibility_name(widget_id: u64, name: *const c_char) -> CBool {
+    crate::platform::get_platform().set_widget_accessibility_name(widget_id, &c_str_or_default(name))
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_get_widget_accessibility_name(widget_id: u64) -> *const c_char {
+    let name = crate::platform::get_platform().get_widget_accessibility_name(widget_id);
+    match CString::new(name) {
+        Ok(s) => s.into_raw(),
+        Err(_) => CString::new("").expect("static string is valid").into_raw(),
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn rust_widgets_backend_name() -> *const c_char {
     CString::new(crate::platform::get_platform().backend_name())
         .expect("backend string is valid")
@@ -483,23 +545,159 @@ pub extern "C" fn rust_widgets_platform_dpi_scale_factor() -> c_float {
 }
 
 #[no_mangle]
+pub extern "C" fn rust_widgets_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
+    let config = crate::render::SoftwareRenderConfig {
+        aa_samples_per_axis: samples as u8,
+    }
+    .normalized();
+    crate::render::set_default_software_render_config(config);
+    crate::render::default_software_render_config().aa_samples_per_axis as c_uint
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_get_render_aa_samples_per_axis() -> c_uint {
+    crate::render::default_software_render_config().aa_samples_per_axis as c_uint
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_set_embedded_target_fps(fps: c_uint) -> c_uint {
+    crate::render_engine::set_embedded_target_fps(fps) as c_uint
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_get_embedded_target_fps() -> c_uint {
+    crate::render_engine::embedded_target_fps() as c_uint
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_submit_embedded_noop_task(label: *const c_char) -> u64 {
+    crate::render_engine::submit_embedded_task(c_str_or_default(label), |_| {})
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_is_initialized() -> CBool {
+    crate::render_engine::embedded_engine_stats().initialized
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_is_running() -> CBool {
+    crate::render_engine::embedded_engine_stats().running
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_frame_count() -> u64 {
+    crate::render_engine::embedded_engine_stats().frame_count
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_pending_task_count() -> u64 {
+    crate::render_engine::embedded_engine_stats().pending_task_count as u64
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_window_count() -> u64 {
+    crate::render_engine::embedded_engine_stats().window_count as u64
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_embedded_engine_button_count() -> u64 {
+    crate::render_engine::embedded_engine_stats().button_count as u64
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_platform_capability_contract(profile_code: c_uint) -> c_uint {
+    let profile = if profile_code == 1 {
+        crate::core::RuntimeProfile::Embedded
+    } else {
+        crate::core::RuntimeProfile::Full
+    };
+    let contract = crate::platform::negotiate_capability_contract(profile);
+    capability_contract_mask(contract)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
+    #[cfg(feature = "mobile-api")]
+    {
+        return CString::new(crate::platform::mobile_backend_name())
+            .expect("backend string is valid")
+            .into_raw();
+    }
+    #[cfg(not(feature = "mobile-api"))]
+    {
+        CString::new("").expect("static string is valid").into_raw()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_mobile_attach_native_view(native_handle: u64) -> CBool {
+    #[cfg(feature = "mobile-api")]
+    {
+        return crate::platform::mobile_attach_to_native_view(native_handle as usize);
+    }
+    #[cfg(not(feature = "mobile-api"))]
+    {
+        let _ = native_handle;
+        false
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn rust_widgets_bindings_api_version() -> c_uint {
-    5
+    7
+}
+
+/// Return Python binding status bitmask.
+///
+/// Bit layout:
+/// - bit0: C ABI entry points available
+/// - bit1: Python adapter/example available
+/// - bit2: profile-aware capability query available
+#[no_mangle]
+pub extern "C" fn rust_widgets_python_binding_status() -> c_uint {
+    (1 << 0) | (1 << 1) | (1 << 2)
+}
+
+/// Return C++ wrapper status bitmask.
+///
+/// Bit layout:
+/// - bit0: C ABI entry points available
+/// - bit1: C++ wrapper skeleton/example available
+#[no_mangle]
+pub extern "C" fn rust_widgets_cpp_binding_status() -> c_uint {
+    (1 << 0) | (1 << 1)
+}
+
+/// Return Java/JNI binding status bitmask.
+///
+/// Bit layout:
+/// - bit0: C ABI entry points available
+/// - bit1: Java native-method skeleton available
+/// - bit2: JNI bridge skeleton available
+#[no_mangle]
+pub extern "C" fn rust_widgets_java_binding_status() -> c_uint {
+    (1 << 0) | (1 << 1) | (1 << 2)
+}
+
+/// Return Java/JNI skeleton ABI version.
+#[no_mangle]
+pub extern "C" fn rust_widgets_java_jni_skeleton_version() -> c_uint {
+    1
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_python_reserved() -> c_uint {
-    0
+    rust_widgets_python_binding_status()
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_cpp_reserved() -> c_uint {
-    0
+    rust_widgets_cpp_binding_status()
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_java_reserved() -> c_uint {
-    0
+    rust_widgets_java_binding_status()
 }
 
 #[no_mangle]
@@ -509,5 +707,42 @@ pub extern "C" fn rust_widgets_free_string(ptr: *const c_char) {
     }
     unsafe {
         let _ = CString::from_raw(ptr as *mut c_char);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_aa_sample_abi_roundtrip_clamps_values() {
+        let original = rust_widgets_get_render_aa_samples_per_axis();
+
+        let low = rust_widgets_set_render_aa_samples_per_axis(0);
+        assert_eq!(low, 1);
+        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 1);
+
+        let high = rust_widgets_set_render_aa_samples_per_axis(100);
+        assert_eq!(high, 8);
+        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 8);
+
+        rust_widgets_set_render_aa_samples_per_axis(original);
+        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), original.clamp(1, 8));
+    }
+
+    #[test]
+    fn embedded_target_fps_abi_roundtrip_clamps_values() {
+        let original = rust_widgets_get_embedded_target_fps();
+
+        let low = rust_widgets_set_embedded_target_fps(0);
+        assert_eq!(low, 1);
+        assert_eq!(rust_widgets_get_embedded_target_fps(), 1);
+
+        let high = rust_widgets_set_embedded_target_fps(1000);
+        assert_eq!(high, 240);
+        assert_eq!(rust_widgets_get_embedded_target_fps(), 240);
+
+        rust_widgets_set_embedded_target_fps(original);
+        assert_eq!(rust_widgets_get_embedded_target_fps(), original.clamp(1, 240));
     }
 }

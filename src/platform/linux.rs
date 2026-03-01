@@ -1,16 +1,20 @@
 //! Linux backend shell.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use crate::core::PlatformFamily;
 
-use super::{Platform, StubPlatform, WidgetTriggerEvent, WidgetTriggerKind};
+use super::state::BackendState;
+use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum LinuxHandleKind {
     Window,
     Button,
@@ -37,10 +41,26 @@ struct LinuxMenuState {
     pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
+/// Runtime lifecycle state for Linux backend main loop fallback.
+struct LinuxRuntimeState {
+    initialized: AtomicBool,
+    running: AtomicBool,
+}
+
+impl LinuxRuntimeState {
+    fn new() -> Self {
+        Self {
+            initialized: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Linux desktop platform adapter.
 pub struct LinuxPlatform {
-    inner: StubPlatform,
-    kinds: Mutex<HashMap<u64, LinuxHandleKind>>,
+    state: BackendState<LinuxHandleKind>,
     menus: Arc<Mutex<LinuxMenuState>>,
+    runtime: LinuxRuntimeState,
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     native: Mutex<LinuxNativeState>,
 }
@@ -61,38 +81,41 @@ struct LinuxNativeState {
 }
 
 impl LinuxPlatform {
+    /// Creates a new Linux platform adapter.
     pub fn new() -> Self {
         Self {
-            inner: StubPlatform::new("gtk", PlatformFamily::Desktop),
-            kinds: Mutex::new(HashMap::new()),
+            state: BackendState::new(),
             menus: Arc::new(Mutex::new(LinuxMenuState::default())),
+            runtime: LinuxRuntimeState::new(),
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
         }
     }
 
-    fn set_kind(&self, id: u64, kind: LinuxHandleKind) {
-        self.kinds
-            .lock()
-            .expect("linux kind lock poisoned")
-            .insert(id, kind);
+    /// Insert and initialize one widget state record.
+    fn insert_widget(
+        &self,
+        kind: LinuxHandleKind,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.state.create_widget(kind, text, x, y, width, height)
     }
 
     fn kind_of(&self, id: u64) -> Option<LinuxHandleKind> {
-        self.kinds
-            .lock()
-            .expect("linux kind lock poisoned")
-            .get(&id)
-            .copied()
+        self.state.kind_of(id)
     }
 
 }
 
 impl Platform for LinuxPlatform {
-    fn backend_name(&self) -> &'static str { self.inner.backend_name() }
-    fn family(&self) -> PlatformFamily { self.inner.family() }
+    fn backend_name(&self) -> &'static str { "gtk" }
+    fn family(&self) -> PlatformFamily { PlatformFamily::Desktop }
     fn init(&self) {
-        self.inner.init();
+        self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             // Initialize GTK runtime when native path is enabled.
@@ -106,19 +129,24 @@ impl Platform for LinuxPlatform {
             gtk::main();
             return;
         }
-        self.inner.run();
+        if !self.runtime.initialized.load(Ordering::SeqCst) {
+            self.init();
+        }
+        self.runtime.running.store(true, Ordering::SeqCst);
+        while self.runtime.running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(16));
+        }
     }
     fn quit(&self) {
+        self.runtime.running.store(false, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             gtk::main_quit();
         }
-        self.inner.quit();
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_window(title, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::Window);
+        let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
@@ -141,8 +169,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_button(parent, text, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::Button);
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::Button, text, x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -177,8 +207,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_checkbox(parent, text, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::CheckBox);
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::CheckBox, text, x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -213,8 +245,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_line_edit(parent, text, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::LineEdit);
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::LineEdit, text, x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -250,8 +284,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_menu_bar(parent, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::MenuBar);
+        if !matches!(self.kind_of(parent), Some(LinuxHandleKind::Window)) {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::MenuBar, "MenuBar", x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let menu_bar = gtk::MenuBar::new();
@@ -266,8 +302,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_menu(parent, text, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::Menu);
+        if !matches!(self.kind_of(parent), Some(LinuxHandleKind::MenuBar | LinuxHandleKind::Menu)) {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::Menu, text, x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -296,8 +334,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_tool_bar(parent, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::ToolBar);
+        if !matches!(self.kind_of(parent), Some(LinuxHandleKind::Window)) {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::ToolBar, "ToolBar", x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -318,8 +358,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn create_status_bar(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let id = self.inner.create_status_bar(parent, text, x, y, width, height);
-        self.set_kind(id, LinuxHandleKind::StatusBar);
+        if !matches!(self.kind_of(parent), Some(LinuxHandleKind::Window)) {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::StatusBar, text, x, y, width, height);
         self.menus
             .lock()
             .expect("linux menu lock poisoned")
@@ -340,7 +382,6 @@ impl Platform for LinuxPlatform {
     }
 
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
-        let attached = self.inner.attach_menu_bar_to_window(window, menu_bar);
         // Validate shape first, then attach native menu bar when available.
         if matches!(self.kind_of(window), Some(LinuxHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(LinuxHandleKind::MenuBar))
@@ -361,12 +402,15 @@ impl Platform for LinuxPlatform {
             }
             return true;
         }
-        attached
+        false
     }
 
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
-        let item_id = self.inner.menu_add_item(parent_menu, text, shortcut);
-        self.set_kind(item_id, LinuxHandleKind::MenuItem);
+        if !matches!(self.kind_of(parent_menu), Some(LinuxHandleKind::Menu)) {
+            return 0;
+        }
+        let item_id = self.insert_widget(LinuxHandleKind::MenuItem, text, 0, 0, 0, 0);
+        let _ = shortcut;
         let mut menus = self.menus.lock().expect("linux menu lock poisoned");
         menus.menu_children.entry(parent_menu).or_default().push(item_id);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -394,12 +438,11 @@ impl Platform for LinuxPlatform {
     }
 
     fn poll_menu_triggered(&self) -> Option<u64> {
-        let mut menus = self.menus.lock().expect("linux menu lock poisoned");
-        if let Some(item_id) = menus.pending_menu_events.pop_front() {
-            return Some(item_id);
-        }
-        drop(menus);
-        self.inner.poll_menu_triggered()
+        self.menus
+            .lock()
+            .expect("linux menu lock poisoned")
+            .pending_menu_events
+            .pop_front()
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
@@ -420,12 +463,11 @@ impl Platform for LinuxPlatform {
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        let mut menus = self.menus.lock().expect("linux menu lock poisoned");
-        if let Some(event) = menus.pending_widget_events.pop_front() {
-            return Some(event);
-        }
-        drop(menus);
-        self.inner.poll_widget_trigger_event()
+        self.menus
+            .lock()
+            .expect("linux menu lock poisoned")
+            .pending_widget_events
+            .pop_front()
     }
 
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
@@ -442,7 +484,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn show_widget(&self, widget_id: u64) {
-        self.inner.show_widget(widget_id);
+        self.state.set_visible(widget_id, true);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let native = self.native.lock().expect("linux native lock poisoned");
@@ -457,7 +499,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn hide_widget(&self, widget_id: u64) {
-        self.inner.hide_widget(widget_id);
+        self.state.set_visible(widget_id, false);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let native = self.native.lock().expect("linux native lock poisoned");
@@ -472,7 +514,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.inner.set_widget_geometry(widget_id, x, y, width, height);
+        self.state.set_geometry(widget_id, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let parent_id = self
@@ -500,7 +542,9 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
-        self.inner.set_widget_text(widget_id, text);
+        if !self.state.set_text(widget_id, text) {
+            return;
+        }
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let native = self.native.lock().expect("linux native lock poisoned");
@@ -532,10 +576,12 @@ impl Platform for LinuxPlatform {
         }
     }
 
-    fn get_widget_text(&self, widget_id: u64) -> String { self.inner.get_widget_text(widget_id) }
+    fn get_widget_text(&self, widget_id: u64) -> String {
+        self.state.text(widget_id)
+    }
 
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
-        self.inner.set_widget_enabled(widget_id, enabled);
+        self.state.set_enabled(widget_id, enabled);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let native = self.native.lock().expect("linux native lock poisoned");
@@ -553,11 +599,11 @@ impl Platform for LinuxPlatform {
                 return widget.is_sensitive();
             }
         }
-        self.inner.is_widget_enabled(widget_id)
+        self.state.enabled(widget_id)
     }
 
     fn set_widget_visible(&self, widget_id: u64, visible: bool) {
-        self.inner.set_widget_visible(widget_id, visible);
+        self.state.set_visible(widget_id, visible);
         if visible {
             self.show_widget(widget_id);
         } else {
@@ -576,6 +622,42 @@ impl Platform for LinuxPlatform {
                 return widget.is_visible();
             }
         }
-        self.inner.is_widget_visible(widget_id)
+        self.state.visible(widget_id)
+    }
+
+    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
+
+    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
+        self.state.set_accessibility_name(widget_id, name)
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
+        self.state.accessibility_name(widget_id)
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        self.state.set_clipboard_text(text)
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
+    }
+
+    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    fn poll_drop_event(&self) -> Option<DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    fn inject_drop_event(&self, event: DropEvent) -> bool {
+        self.state.inject_drop_event(event)
     }
 }

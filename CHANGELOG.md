@@ -4,6 +4,51 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-01
+
+### Added
+
+- CI validation gate job in `.github/workflows/ci.yml`:
+  - profile matrix gate via `tools/check_profiles.sh`
+  - ABI gate via `tools/check_abi.sh`
+- New C ABI profile-aware capability contract query:
+  - `rust_widgets_platform_capability_contract(profile_code)`
+- Demo smoke script:
+  - `tools/smoke_demos.sh` for `default` (`demo_main`) and `embedded` (`demo_button`) checks.
+- First Python binding adapter path:
+  - `examples/python/rust_widgets.py` (ctypes adapter)
+  - `examples/python/demo_basic.py` (basic usage demo)
+- Feature-completeness CI artifact pipeline:
+  - `feature-completeness-matrix` job in `.github/workflows/ci.yml`
+  - artifact upload for `target/qa/feature_completeness_matrix.md`
+- Allowlist-aware matrix auditing inputs:
+  - `tools/feature_completeness_allowlist.toml`
+
+### Implemented
+
+- PDF form serialization baseline in `src/pdf/mod.rs`:
+  - `PdfPage` form APIs now emit `/AcroForm` and page `/Annots` widget objects
+  - text/checkbox/button widgets are serialized into the object graph
+- PDF security persistence diagnostics path in `src/pdf/mod.rs`:
+  - `PdfSecurity` settings are persisted via explicit unsupported-encryption diagnostic entries
+  - reader path restores those diagnostics on round-trip load
+- PDF image deterministic encoding route in `src/pdf/mod.rs`:
+  - image normalization routes (`exact-rgb`, `exact-rgba-drop-alpha`, `exact-gray-expand`, `raw-truncate-pad`)
+  - removed synthetic payload-tiling behavior and added stream route metadata comments
+- PDF regression expansion:
+  - focused and combined tests now cover forms + security + image pipelines and reader round-trip behavior
+
+### Changed
+
+- Release preparation baseline for `0.1.0` (metadata hardening + publish dry-run workflow).
+- Runtime diagnostics output is now structured as:
+  - `[rust_widgets.runtime] stage=<...> profile=<...> backend=<...> route=<...>`
+- Feature-completeness report format now includes:
+  - raw/effective/suppressed signal counts
+  - allowlist suppression reasons by file/category
+
+## [0.0.2] - 2026-03-01
+
 ### Added
 
 - GitHub project governance and collaboration files:

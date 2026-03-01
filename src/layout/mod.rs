@@ -2,6 +2,34 @@
 
 use crate::core::{ObjectId, Rect};
 
+/// Space allocation preference used by layout items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizePolicy {
+    /// Use fixed size defined by constraints.
+    Fixed,
+    /// Prefer natural size while allowing negotiation.
+    Preferred,
+    /// Expand to consume remaining space.
+    Expanding,
+}
+
+/// Min/max limits applied during layout calculation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutConstraints {
+    /// Minimum major-axis size.
+    pub min: u32,
+    /// Optional maximum major-axis size.
+    pub max: Option<u32>,
+}
+
+impl LayoutConstraints {
+    /// Creates new layout constraints.
+    pub fn new(min: u32, max: Option<u32>) -> Self {
+        Self { min, max }
+    }
+}
+
+/// Common interface implemented by all layout managers.
 pub trait Layout {
     /// Add widget into layout with optional stretch factor.
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32);
@@ -11,6 +39,7 @@ pub trait Layout {
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 }
 
+/// Orientation used by directional layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
     /// Main axis is horizontal.
@@ -19,11 +48,19 @@ pub enum Orientation {
     Vertical,
 }
 
+/// Linear layout that arranges items in one direction.
 pub struct BoxLayout {
     orientation: Orientation,
     spacing: u32,
     margin: u32,
-    items: Vec<(ObjectId, u32)>,
+    items: Vec<BoxLayoutItem>,
+}
+
+struct BoxLayoutItem {
+    widget_id: Option<ObjectId>,
+    stretch: u32,
+    constraints: LayoutConstraints,
+    policy: SizePolicy,
 }
 
 impl BoxLayout {
@@ -31,15 +68,52 @@ impl BoxLayout {
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
         Self { orientation, spacing, margin, items: Vec::new() }
     }
+
+    /// Adds an empty spacer item with the provided stretch factor.
+    pub fn add_spacer(&mut self, stretch: u32) {
+        self.items.push(BoxLayoutItem {
+            widget_id: None,
+            stretch: stretch.max(1),
+            constraints: LayoutConstraints::new(0, None),
+            policy: SizePolicy::Expanding,
+        });
+    }
+
+    /// Sets size constraints for an existing widget item.
+    pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.widget_id == Some(widget_id))
+        {
+            item.constraints = constraints;
+        }
+    }
+
+    /// Sets size policy for an existing widget item.
+    pub fn set_size_policy(&mut self, widget_id: ObjectId, policy: SizePolicy) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.widget_id == Some(widget_id))
+        {
+            item.policy = policy;
+        }
+    }
 }
 
 impl Layout for BoxLayout {
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
-        self.items.push((widget_id, stretch.max(1)));
+        self.items.push(BoxLayoutItem {
+            widget_id: Some(widget_id),
+            stretch: stretch.max(1),
+            constraints: LayoutConstraints::new(0, None),
+            policy: SizePolicy::Expanding,
+        });
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.items.retain(|(id, _)| *id != widget_id);
+        self.items.retain(|item| item.widget_id != Some(widget_id));
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -54,12 +128,21 @@ impl Layout for BoxLayout {
         .saturating_sub(self.margin * 2)
         .saturating_sub(gaps * self.spacing);
 
-        let total_stretch: u32 = self.items.iter().map(|(_, stretch)| *stretch).sum::<u32>().max(1);
+        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
         let mut cursor_x = rect.x + self.margin as i32;
         let mut cursor_y = rect.y + self.margin as i32;
 
-        for (widget_id, stretch) in &self.items {
-            let major = primary.saturating_mul(*stretch) / total_stretch;
+        for item in &self.items {
+            let mut major = primary.saturating_mul(item.stretch) / total_stretch;
+            major = major.max(item.constraints.min);
+            if let Some(max) = item.constraints.max {
+                major = major.min(max);
+            }
+
+            if item.policy == SizePolicy::Fixed {
+                major = item.constraints.max.unwrap_or(item.constraints.min).max(item.constraints.min);
+            }
+
             let child_rect = match self.orientation {
                 Orientation::Horizontal => Rect {
                     x: cursor_x,
@@ -74,7 +157,9 @@ impl Layout for BoxLayout {
                     height: major,
                 },
             };
-            widgets(*widget_id, child_rect);
+            if let Some(widget_id) = item.widget_id {
+                widgets(widget_id, child_rect);
+            }
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
                 Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
@@ -83,6 +168,7 @@ impl Layout for BoxLayout {
     }
 }
 
+/// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
     cols: u32,
@@ -152,6 +238,7 @@ impl Layout for GridLayout {
     }
 }
 
+/// Two-column form layout storing `(label, field)` row pairs.
 pub struct FormLayout {
     spacing: u32,
     margin: u32,
@@ -208,6 +295,7 @@ impl Layout for FormLayout {
     }
 }
 
+/// Stack layout that shows one child page at a time.
 pub struct StackLayout {
     items: Vec<ObjectId>,
     current: usize,
@@ -249,5 +337,138 @@ impl Layout for StackLayout {
         if let Some(widget_id) = self.items.get(self.current) {
             widgets(*widget_id, rect);
         }
+    }
+}
+
+/// Splitter-like layout distributing space by pane ratios.
+pub struct SplitterLayout {
+    orientation: Orientation,
+    spacing: u32,
+    panes: Vec<ObjectId>,
+    ratios: Vec<f32>,
+}
+
+impl SplitterLayout {
+    /// Creates a splitter layout with orientation and pane spacing.
+    pub fn new(orientation: Orientation, spacing: u32) -> Self {
+        Self {
+            orientation,
+            spacing,
+            panes: Vec::new(),
+            ratios: Vec::new(),
+        }
+    }
+
+    /// Sets relative size ratio for a pane index.
+    pub fn set_ratio(&mut self, index: usize, ratio: f32) {
+        if index < self.ratios.len() {
+            self.ratios[index] = ratio.max(0.01);
+        }
+    }
+}
+
+impl Layout for SplitterLayout {
+    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.panes.push(widget_id);
+        self.ratios.push((stretch.max(1) as f32).max(0.01));
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        if let Some(index) = self.panes.iter().position(|id| *id == widget_id) {
+            self.panes.remove(index);
+            self.ratios.remove(index);
+        }
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        if self.panes.is_empty() {
+            return;
+        }
+
+        let total_ratio = self.ratios.iter().copied().sum::<f32>().max(0.01);
+        let gaps = (self.panes.len().saturating_sub(1)) as u32;
+        let primary = match self.orientation {
+            Orientation::Horizontal => rect.width.saturating_sub(gaps * self.spacing),
+            Orientation::Vertical => rect.height.saturating_sub(gaps * self.spacing),
+        };
+
+        let mut cursor_x = rect.x;
+        let mut cursor_y = rect.y;
+        for (index, pane) in self.panes.iter().enumerate() {
+            let ratio = self.ratios.get(index).copied().unwrap_or(1.0) / total_ratio;
+            let major = ((primary as f32) * ratio).max(1.0) as u32;
+            let pane_rect = match self.orientation {
+                Orientation::Horizontal => Rect {
+                    x: cursor_x,
+                    y: rect.y,
+                    width: major,
+                    height: rect.height,
+                },
+                Orientation::Vertical => Rect {
+                    x: rect.x,
+                    y: cursor_y,
+                    width: rect.width,
+                    height: major,
+                },
+            };
+            widgets(*pane, pane_rect);
+            match self.orientation {
+                Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_layout_applies_constraints() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_constraints(1, LayoutConstraints::new(80, Some(80)));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+
+        let mut rects = std::collections::HashMap::new();
+        layout.update(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 40,
+            },
+            &mut |id, rect| {
+                rects.insert(id, rect);
+            },
+        );
+
+        assert_eq!(rects.get(&1).map(|rect| rect.width), Some(80));
+    }
+
+    #[test]
+    fn splitter_layout_distributes_space() {
+        let mut splitter = SplitterLayout::new(Orientation::Horizontal, 0);
+        splitter.add_widget(1, 1);
+        splitter.add_widget(2, 3);
+
+        let mut rects = std::collections::HashMap::new();
+        splitter.update(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 40,
+            },
+            &mut |id, rect| {
+                rects.insert(id, rect);
+            },
+        );
+
+        let left = rects.get(&1).map(|rect| rect.width).unwrap_or(0);
+        let right = rects.get(&2).map(|rect| rect.width).unwrap_or(0);
+        assert!(right > left);
     }
 }

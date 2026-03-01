@@ -2,8 +2,10 @@
 
 use std::fmt::Debug;
 
+/// Stable numeric identifier used for widgets and objects.
 pub type ObjectId = u64;
 
+/// Runtime profile controlling feature and backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeProfile {
     /// Full desktop-oriented profile with optional advanced modules.
@@ -12,6 +14,7 @@ pub enum RuntimeProfile {
     Embedded,
 }
 
+/// Platform family classification for backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformFamily {
     /// Traditional desktop runtime targets.
@@ -22,6 +25,7 @@ pub enum PlatformFamily {
     Mobile,
 }
 
+/// Two-dimensional point in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     /// Horizontal coordinate.
@@ -30,6 +34,7 @@ pub struct Point {
     pub y: i32,
 }
 
+/// Width/height pair in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Size {
     /// Width in logical pixels.
@@ -38,6 +43,7 @@ pub struct Size {
     pub height: u32,
 }
 
+/// Axis-aligned rectangle in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     /// Left/top origin x.
@@ -50,11 +56,16 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// RGBA color value.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Color {
+    /// Red channel.
     pub r: u8,
+    /// Green channel.
     pub g: u8,
+    /// Blue channel.
     pub b: u8,
+    /// Alpha channel.
     pub a: u8,
 }
 
@@ -65,23 +76,35 @@ impl Color {
     }
 }
 
+/// Font descriptor used by text rendering and themes.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Font {
+    /// Font family name.
     pub family: String,
+    /// Font point size.
     pub size: f32,
+    /// Whether bold style is requested.
     pub bold: bool,
+    /// Whether italic style is requested.
     pub italic: bool,
 }
 
+/// Generic alignment options for layout/rendering APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Alignment {
+    /// Align to left edge.
     Left,
+    /// Align to center.
     Center,
+    /// Align to right edge.
     Right,
+    /// Align to top edge.
     Top,
+    /// Align to bottom edge.
     Bottom,
 }
 
+/// Common trait implemented by id-addressable core objects.
 pub trait CoreObject: Debug + Send + Sync {
     /// Get stable object id.
     fn id(&self) -> ObjectId;

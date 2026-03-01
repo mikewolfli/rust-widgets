@@ -1,0 +1,44 @@
+# Feature completeness matrix allowlist
+#
+# Keys under [files] use workspace-relative file paths.
+# Keys under [modules] use top-level src module names.
+#
+# For each signal category, provide:
+# - <category> = <non-negative integer>
+# - <category>_reason = "human explanation"
+
+[files."src/clipboard/mod.rs"]
+placeholder = 9
+placeholder_reason = "Contains intentional StubPlatform references in unit tests and test helper backend naming."
+
+[files."src/platform/mod.rs"]
+placeholder = 1
+placeholder_reason = "StubPlatform is an intentional in-memory backend for tests and deterministic profile checks."
+fallback = 2
+fallback_reason = "Capability-contract fallback functions are deliberate runtime negotiation defaults."
+
+[files."src/pdf/mod.rs"]
+fallback = 1
+fallback_reason = "Legacy parser fallback path preserves backward compatibility for historical pseudo-format fixtures."
+placeholder = 1
+placeholder_reason = "Residual wording in comments tracks staged implementation context and is not a functional hole."
+
+[files."src/xml/mod.rs"]
+fallback = 2
+fallback_reason = "XML defaults/fallbacks are explicit declarative parsing behavior."
+
+[modules.i18n]
+fallback = 3
+fallback_reason = "Language fallback chain (current -> default -> key) is intentional product behavior."
+
+[modules.print]
+fallback = 1
+fallback_reason = "Print fallback wording describes expected compatibility path for platform variance."
+
+[modules.render]
+fallback = 1
+fallback_reason = "Rendering fallback marker documents deterministic degradation strategy, not missing implementation."
+
+[modules.widget]
+fallback = 1
+fallback_reason = "Widget fallback note documents optional model binding behavior by design."

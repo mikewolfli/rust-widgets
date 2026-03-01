@@ -49,6 +49,16 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## Workflow de publication v3
+
+```bash
+# smoke tests des démos (default + embedded)
+tools/smoke_demos.sh
+
+# validation de publication sans upload
+cargo publish --dry-run
+```
+
 ## Démos
 
 - Liste complète catégorisée : `demos/README.md`.
@@ -62,6 +72,7 @@ cargo check --no-default-features --features "embedded,mobile-api"
 L’ABI C est définie dans `src/bindings/mod.rs`, avec points d’extension réservés pour Python/C++/Java.
 Elle expose aussi les APIs de polling natif : `rust_widgets_poll_menu_triggered` et `rust_widgets_poll_widget_triggered`.
 Pour un événement widget typé, utilisez `rust_widgets_poll_widget_trigger_event(widget_id_out)` avec codes : `0` aucun, `1` clic, `2` changement de valeur.
+La qualité de rendu se configure via l’ABI C avec `rust_widgets_set_render_aa_samples_per_axis` / `rust_widgets_get_render_aa_samples_per_axis` (valeur bornée à `1..=8`).
 Pour le câblage direct ArkUI/NAPI sur Harmony, utilisez les entrées `rust_widgets_harmony_on_*` et `rust_widgets_harmony_on_node_*`.
 Le flux `node_handle ↔ widget_id` et l’exemple d’intégration sont décrits dans `docs/HARMONY_NATIVE_BRIDGE.fr.md` et `examples/harmony_napi_bridge_sample.c`.
 Pour les commandes complètes de build/run C ABI, consultez `docs/C_ABI_QUICKSTART.md`.

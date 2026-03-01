@@ -49,6 +49,16 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## v3 發佈流程
+
+```bash
+# demo 煙霧檢查（default + embedded）
+tools/smoke_demos.sh
+
+# 僅做發佈驗證，不上傳
+cargo publish --dry-run
+```
+
 ## 範例
 
 - 完整分類清單請參考 `demos/README.md`。
@@ -61,6 +71,7 @@ cargo check --no-default-features --features "embedded,mobile-api"
 C ABI 位置：`src/bindings/mod.rs`，已保留 Python/C++/Java 擴充入口。
 同時提供原生觸發輪詢介面：`rust_widgets_poll_menu_triggered`、`rust_widgets_poll_widget_triggered`。
 若需型別化控制項觸發，請使用 `rust_widgets_poll_widget_trigger_event(widget_id_out)`，回傳類型碼：`0` 無、`1` 點擊、`2` 值變更。
+渲染品質可透過 C ABI 設定：`rust_widgets_set_render_aa_samples_per_axis` / `rust_widgets_get_render_aa_samples_per_axis`（取值會限制在 `1..=8`）。
 鴻蒙 ArkUI/NAPI 直連可使用 `rust_widgets_harmony_on_*` 與 `rust_widgets_harmony_on_node_*` 介面。
 若需 `node_handle ↔ widget_id` 映射與回調接入流程，請參考 `docs/HARMONY_NATIVE_BRIDGE.zh-TW.md` 與 `examples/harmony_napi_bridge_sample.c`。
 完整 C ABI 建置/執行命令請參考 `docs/C_ABI_QUICKSTART.md`。

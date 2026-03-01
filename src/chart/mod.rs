@@ -38,6 +38,7 @@ pub enum ChartType {
 }
 
 #[derive(Default)]
+/// In-memory chart draw-command collector used by tests/demos.
 pub struct MemoryChartContext {
     /// Recorded draw commands for tests/demos.
     pub commands: Vec<String>,
@@ -207,6 +208,175 @@ pub struct LineChart {
     x_axis_label: String,
     y_axis_label: String,
     series: Vec<ChartSeries>,
+    x_tick_count: usize,
+    y_tick_count: usize,
+    show_grid: bool,
+}
+
+/// Common cartesian layout for line/bar style charts.
+struct CartesianLayout {
+    plot_x: f32,
+    plot_y: f32,
+    plot_w: f32,
+    plot_h: f32,
+    legend_x: f32,
+    legend_y: f32,
+}
+
+fn compute_cartesian_layout(rect: Rect, has_x_label: bool, has_y_label: bool, legend_items: usize) -> CartesianLayout {
+    let left_margin = if has_y_label { 64.0 } else { 48.0 };
+    let top_margin = 32.0;
+    let bottom_margin = if has_x_label { 52.0 } else { 36.0 };
+    let right_margin = if legend_items > 0 { 170.0 } else { 24.0 };
+
+    let plot_x = rect.x as f32 + left_margin;
+    let plot_y = rect.y as f32 + top_margin;
+    let plot_w = (rect.width as f32 - left_margin - right_margin).max(1.0);
+    let plot_h = (rect.height as f32 - top_margin - bottom_margin).max(1.0);
+
+    CartesianLayout {
+        plot_x,
+        plot_y,
+        plot_w,
+        plot_h,
+        legend_x: plot_x + plot_w + 16.0,
+        legend_y: plot_y + 8.0,
+    }
+}
+
+fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
+    let axis_color = Color { r: 90, g: 90, b: 90, a: 255 };
+    context.draw_line(
+        layout.plot_x,
+        layout.plot_y + layout.plot_h,
+        layout.plot_x + layout.plot_w,
+        layout.plot_y + layout.plot_h,
+        1.0,
+        axis_color,
+    );
+    context.draw_line(
+        layout.plot_x,
+        layout.plot_y,
+        layout.plot_x,
+        layout.plot_y + layout.plot_h,
+        1.0,
+        axis_color,
+    );
+}
+
+fn draw_y_ticks(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    min_y: f64,
+    max_y: f64,
+    tick_count: usize,
+    draw_grid: bool,
+) {
+    let tick_count = tick_count.max(2);
+    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
+    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
+    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    for tick in 0..=tick_count {
+        let t = tick as f32 / tick_count as f32;
+        let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
+        if draw_grid {
+            context.draw_line(layout.plot_x, y, layout.plot_x + layout.plot_w, y, 1.0, grid_color);
+        }
+        context.draw_line(layout.plot_x - 4.0, y, layout.plot_x, y, 1.0, axis_color);
+        let value = min_y + (max_y - min_y) * t as f64;
+        context.draw_text(
+            &format!("{value:.1}"),
+            layout.plot_x - 44.0,
+            y + 4.0,
+            10.0,
+            label_color,
+        );
+    }
+}
+
+fn draw_x_ticks(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    min_x: f64,
+    max_x: f64,
+    tick_count: usize,
+    draw_grid: bool,
+) {
+    let tick_count = tick_count.max(2);
+    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
+    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
+    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    for tick in 0..=tick_count {
+        let t = tick as f32 / tick_count as f32;
+        let x = layout.plot_x + t * layout.plot_w;
+        if draw_grid {
+            context.draw_line(x, layout.plot_y, x, layout.plot_y + layout.plot_h, 1.0, grid_color);
+        }
+        context.draw_line(
+            x,
+            layout.plot_y + layout.plot_h,
+            x,
+            layout.plot_y + layout.plot_h + 4.0,
+            1.0,
+            axis_color,
+        );
+        let value = min_x + (max_x - min_x) * t as f64;
+        context.draw_text(
+            &format!("{value:.1}"),
+            x - 12.0,
+            layout.plot_y + layout.plot_h + 16.0,
+            10.0,
+            label_color,
+        );
+    }
+}
+
+fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series: &[&ChartSeries]) {
+    if series.is_empty() {
+        return;
+    }
+
+    // Keep one legend row roughly every 18 px and reserve one row for overflow summary.
+    let max_rows = ((layout.plot_h / 18.0).floor() as usize).max(1);
+    let max_items = max_rows.saturating_sub(1).max(1);
+    let max_label_chars = 20usize;
+
+    let mut cursor_y = layout.legend_y;
+    for item in series.iter().take(max_items) {
+        context.draw_line(layout.legend_x, cursor_y, layout.legend_x + 20.0, cursor_y, 3.0, item.color);
+        context.draw_text(
+            &truncate_legend_label(&item.name, max_label_chars),
+            layout.legend_x + 26.0,
+            cursor_y + 4.0,
+            11.0,
+            Color { r: 40, g: 40, b: 40, a: 255 },
+        );
+        cursor_y += 18.0;
+    }
+
+    let hidden = series.len().saturating_sub(max_items);
+    if hidden > 0 {
+        context.draw_text(
+            &format!("+{hidden} more"),
+            layout.legend_x + 26.0,
+            cursor_y + 4.0,
+            10.0,
+            Color { r: 90, g: 90, b: 90, a: 255 },
+        );
+    }
+}
+
+fn truncate_legend_label(label: &str, max_chars: usize) -> String {
+    let char_count = label.chars().count();
+    if char_count <= max_chars {
+        return label.to_string();
+    }
+    if max_chars <= 3 {
+        return "...".to_string();
+    }
+    let kept = max_chars - 3;
+    let prefix = label.chars().take(kept).collect::<String>();
+    format!("{prefix}...")
 }
 
 impl LineChart {
@@ -217,7 +387,25 @@ impl LineChart {
             x_axis_label: String::new(),
             y_axis_label: String::new(),
             series: Vec::new(),
+            x_tick_count: 5,
+            y_tick_count: 5,
+            show_grid: false,
         }
+    }
+
+    /// Configure x-axis tick density for line chart rendering.
+    pub fn set_x_tick_count(&mut self, tick_count: usize) {
+        self.x_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Configure y-axis tick density for line chart rendering.
+    pub fn set_y_tick_count(&mut self, tick_count: usize) {
+        self.y_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Enable or disable cartesian gridline rendering.
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.show_grid = enabled;
     }
 }
 
@@ -250,16 +438,24 @@ impl Chart for LineChart {
         context.draw_rect(rect, Color { r: 230, g: 230, b: 230, a: 255 });
         context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
 
-        let plot_x = rect.x as f32 + 32.0;
-        let plot_y = rect.y as f32 + 32.0;
-        let plot_w = (rect.width as f32 - 48.0).max(1.0);
-        let plot_h = (rect.height as f32 - 56.0).max(1.0);
+        let visible_series: Vec<&ChartSeries> = self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .collect();
+        let layout = compute_cartesian_layout(
+            rect,
+            !self.x_axis_label.is_empty(),
+            !self.y_axis_label.is_empty(),
+            visible_series.len(),
+        );
+        draw_cartesian_axes(context, &layout);
 
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
         let mut max_y = f64::MIN;
-        for series in &self.series {
+        for series in &visible_series {
             for point in &series.data {
                 min_x = min_x.min(point.x);
                 max_x = max_x.max(point.x);
@@ -273,17 +469,40 @@ impl Chart for LineChart {
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
 
-        for series in &self.series {
-            if !series.visible || series.data.len() < 2 {
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+
+        if !self.x_axis_label.is_empty() {
+            context.draw_text(
+                &self.x_axis_label,
+                layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                layout.plot_y + layout.plot_h + 36.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        if !self.y_axis_label.is_empty() {
+            context.draw_text(
+                &self.y_axis_label,
+                layout.plot_x - 56.0,
+                layout.plot_y - 10.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        for series in &visible_series {
+            if series.data.len() < 2 {
                 continue;
             }
             for i in 1..series.data.len() {
                 let p1 = &series.data[i - 1];
                 let p2 = &series.data[i];
-                let x1 = plot_x + (((p1.x - min_x) / span_x) as f32) * plot_w;
-                let y1 = plot_y + plot_h - (((p1.y - min_y) / span_y) as f32) * plot_h;
-                let x2 = plot_x + (((p2.x - min_x) / span_x) as f32) * plot_w;
-                let y2 = plot_y + plot_h - (((p2.y - min_y) / span_y) as f32) * plot_h;
+                let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y1 = layout.plot_y + layout.plot_h - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
+                let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y2 = layout.plot_y + layout.plot_h - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
                 context.draw_line(
                     x1,
                     y1,
@@ -294,6 +513,8 @@ impl Chart for LineChart {
                 );
             }
         }
+
+        draw_legend(context, &layout, &visible_series);
     }
 }
 
@@ -303,6 +524,9 @@ pub struct BarChart {
     x_axis_label: String,
     y_axis_label: String,
     series: Vec<ChartSeries>,
+    x_tick_count: usize,
+    y_tick_count: usize,
+    show_grid: bool,
 }
 
 impl BarChart {
@@ -313,7 +537,25 @@ impl BarChart {
             x_axis_label: String::new(),
             y_axis_label: String::new(),
             series: Vec::new(),
+            x_tick_count: 5,
+            y_tick_count: 5,
+            show_grid: false,
         }
+    }
+
+    /// Configure x-axis tick density for bar chart rendering.
+    pub fn set_x_tick_count(&mut self, tick_count: usize) {
+        self.x_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Configure y-axis tick density for bar chart rendering.
+    pub fn set_y_tick_count(&mut self, tick_count: usize) {
+        self.y_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Enable or disable cartesian gridline rendering.
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.show_grid = enabled;
     }
 }
 
@@ -344,32 +586,82 @@ impl Chart for BarChart {
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
         context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
-        let plot_x = rect.x + 24;
-        let plot_y = rect.y + 32;
-        let plot_h = rect.height.saturating_sub(48).max(1);
+
+        let visible_series: Vec<&ChartSeries> = self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .collect();
+        if visible_series.is_empty() {
+            return;
+        }
+        let layout = compute_cartesian_layout(
+            rect,
+            !self.x_axis_label.is_empty(),
+            !self.y_axis_label.is_empty(),
+            visible_series.len(),
+        );
+        draw_cartesian_axes(context, &layout);
 
         let mut max_y = 1.0f64;
-        for series in &self.series {
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut points_per_series = 0usize;
+        for series in &visible_series {
+            points_per_series = points_per_series.max(series.data.len());
             for point in &series.data {
                 max_y = max_y.max(point.y.max(1.0));
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
             }
         }
+        if min_x == f64::MAX {
+            return;
+        }
+        let span_x = (max_x - min_x).max(1.0);
 
-        for series in &self.series {
-            if !series.visible {
-                continue;
-            }
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, 0.0, max_y, self.y_tick_count, self.show_grid);
+
+        if !self.x_axis_label.is_empty() {
+            context.draw_text(
+                &self.x_axis_label,
+                layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                layout.plot_y + layout.plot_h + 36.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        if !self.y_axis_label.is_empty() {
+            context.draw_text(
+                &self.y_axis_label,
+                layout.plot_x - 56.0,
+                layout.plot_y - 10.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        let point_slots = points_per_series.max(1) * visible_series.len();
+        let bar_width = (layout.plot_w / (point_slots as f32 + 1.0)).clamp(4.0, 24.0);
+
+        for (series_index, series) in visible_series.iter().enumerate() {
             for point in &series.data {
-                let bar_h = ((point.y / max_y) * plot_h as f64) as u32;
+                let base_x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * (layout.plot_w - bar_width);
+                let x = base_x + series_index as f32 * bar_width;
+                let bar_h = ((point.y / max_y) * layout.plot_h as f64) as u32;
                 let bar = Rect {
-                    x: plot_x + point.x as i32,
-                    y: plot_y + plot_h as i32 - bar_h as i32,
-                    width: 18,
+                    x: x as i32,
+                    y: (layout.plot_y + layout.plot_h) as i32 - bar_h as i32,
+                    width: bar_width.max(1.0) as u32,
                     height: bar_h,
                 };
                 context.draw_rect(bar, series.color);
             }
         }
+
+        draw_legend(context, &layout, &visible_series);
     }
 }
 
@@ -442,4 +734,378 @@ fn svg_escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stable_hash64(input: &str) -> u64 {
+        // FNV-1a 64-bit stable hash for deterministic snapshot checks.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in input.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    fn count_numeric_text_labels(commands: &[String]) -> usize {
+        commands
+            .iter()
+            .filter_map(|cmd| cmd.strip_prefix("text:"))
+            .filter_map(|payload| payload.split_once('@').map(|(text, _)| text))
+            .filter(|text| text.parse::<f64>().is_ok())
+            .count()
+    }
+
+    fn sample_series(name: &str, color: Color, points: &[(f64, f64)]) -> ChartSeries {
+        ChartSeries {
+            name: name.to_string(),
+            data: points
+                .iter()
+                .map(|(x, y)| DataPoint {
+                    x: *x,
+                    y: *y,
+                    label: None,
+                })
+                .collect(),
+            color,
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn line_chart_draws_axis_labels_and_legend() {
+        let mut chart = LineChart::new();
+        chart.set_title("Latency".to_string());
+        chart.set_x_axis_label("Time".to_string());
+        chart.set_y_axis_label("ms".to_string());
+        chart.add_series(sample_series(
+            "p50",
+            Color { r: 0, g: 120, b: 255, a: 255 },
+            &[(0.0, 10.0), (1.0, 20.0), (2.0, 16.0)],
+        ));
+        chart.add_series(sample_series(
+            "p95",
+            Color { r: 255, g: 128, b: 0, a: 255 },
+            &[(0.0, 15.0), (1.0, 30.0), (2.0, 24.0)],
+        ));
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+            },
+            &mut context,
+        );
+
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:Time@")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:ms@")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:p50@")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:p95@")));
+    }
+
+    #[test]
+    fn bar_chart_draws_legend_and_axis_ticks() {
+        let mut chart = BarChart::new();
+        chart.set_title("Throughput".to_string());
+        chart.set_x_axis_label("Bucket".to_string());
+        chart.set_y_axis_label("req/s".to_string());
+        chart.add_series(sample_series(
+            "region-a",
+            Color { r: 40, g: 180, b: 99, a: 255 },
+            &[(0.0, 20.0), (1.0, 40.0), (2.0, 30.0)],
+        ));
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 280,
+            },
+            &mut context,
+        );
+
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:Bucket@")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:req/s@")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:region-a@")));
+        assert!(context.commands.iter().any(|cmd| cmd.starts_with("line:")));
+    }
+
+    #[test]
+    fn legend_truncates_long_labels() {
+        let mut chart = LineChart::new();
+        chart.set_title("Legend".to_string());
+        chart.add_series(sample_series(
+            "this-is-a-very-long-legend-label-that-should-truncate",
+            Color { r: 0, g: 100, b: 220, a: 255 },
+            &[(0.0, 1.0), (1.0, 2.0)],
+        ));
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 220,
+            },
+            &mut context,
+        );
+
+        let truncated_entry = context
+            .commands
+            .iter()
+            .find(|cmd| cmd.starts_with("text:this-is-a-very-") && cmd.contains("...@"));
+        assert!(truncated_entry.is_some());
+        assert!(!context
+            .commands
+            .iter()
+            .any(|cmd| cmd.contains("text:this-is-a-very-long-legend-label-that-should-truncate@")));
+    }
+
+    #[test]
+    fn legend_shows_overflow_summary() {
+        let mut chart = LineChart::new();
+        chart.set_title("Overflow".to_string());
+        for index in 0..10 {
+            chart.add_series(sample_series(
+                &format!("s{index}"),
+                Color { r: 20, g: 120, b: 200, a: 255 },
+                &[(0.0, index as f64 + 1.0), (1.0, index as f64 + 2.0)],
+            ));
+        }
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 110,
+            },
+            &mut context,
+        );
+
+        assert!(context.commands.iter().any(|cmd| cmd.contains("text:+")));
+        assert!(context.commands.iter().any(|cmd| cmd.contains("more@")));
+    }
+
+    #[test]
+    fn line_chart_respects_tick_density_configuration() {
+        let mut chart = LineChart::new();
+        chart.set_title("Ticks".to_string());
+        chart.set_x_tick_count(3);
+        chart.set_y_tick_count(4);
+        chart.add_series(sample_series(
+            "s1",
+            Color { r: 0, g: 120, b: 255, a: 255 },
+            &[(0.0, 0.0), (1.0, 10.0), (2.0, 20.0)],
+        ));
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 320,
+            },
+            &mut context,
+        );
+
+        // x ticks: 4 labels (0..=3), y ticks: 5 labels (0..=4)
+        assert_eq!(count_numeric_text_labels(&context.commands), 9);
+    }
+
+    #[test]
+    fn bar_chart_respects_tick_density_configuration() {
+        let mut chart = BarChart::new();
+        chart.set_title("Bars".to_string());
+        chart.set_x_tick_count(6);
+        chart.set_y_tick_count(2);
+        chart.add_series(sample_series(
+            "s1",
+            Color { r: 20, g: 160, b: 100, a: 255 },
+            &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
+        ));
+
+        let mut context = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 520,
+                height: 280,
+            },
+            &mut context,
+        );
+
+        // x ticks: 7 labels (0..=6), y ticks: 3 labels (0..=2)
+        assert_eq!(count_numeric_text_labels(&context.commands), 10);
+    }
+
+    #[test]
+    fn line_chart_gridline_toggle_changes_line_count() {
+        let mut chart = LineChart::new();
+        chart.set_title("Grid".to_string());
+        chart.set_x_tick_count(3);
+        chart.set_y_tick_count(3);
+        chart.add_series(sample_series(
+            "s1",
+            Color { r: 0, g: 120, b: 255, a: 255 },
+            &[(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)],
+        ));
+
+        let mut without_grid = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 320,
+            },
+            &mut without_grid,
+        );
+        let without_count = without_grid
+            .commands
+            .iter()
+            .filter(|cmd| cmd.starts_with("line:"))
+            .count();
+
+        chart.set_grid_enabled(true);
+        let mut with_grid = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 320,
+            },
+            &mut with_grid,
+        );
+        let with_count = with_grid
+            .commands
+            .iter()
+            .filter(|cmd| cmd.starts_with("line:"))
+            .count();
+
+        assert!(with_count > without_count);
+    }
+
+    #[test]
+    fn bar_chart_gridline_toggle_changes_line_count() {
+        let mut chart = BarChart::new();
+        chart.set_title("GridBar".to_string());
+        chart.set_x_tick_count(4);
+        chart.set_y_tick_count(2);
+        chart.add_series(sample_series(
+            "s1",
+            Color { r: 20, g: 160, b: 100, a: 255 },
+            &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
+        ));
+
+        let mut without_grid = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 520,
+                height: 280,
+            },
+            &mut without_grid,
+        );
+        let without_count = without_grid
+            .commands
+            .iter()
+            .filter(|cmd| cmd.starts_with("line:"))
+            .count();
+
+        chart.set_grid_enabled(true);
+        let mut with_grid = MemoryChartContext::default();
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 520,
+                height: 280,
+            },
+            &mut with_grid,
+        );
+        let with_count = with_grid
+            .commands
+            .iter()
+            .filter(|cmd| cmd.starts_with("line:"))
+            .count();
+
+        assert!(with_count > without_count);
+    }
+
+    #[test]
+    fn svg_snapshot_line_chart_stable() {
+        let mut chart = LineChart::new();
+        chart.set_title("SnapshotLine".to_string());
+        chart.set_x_axis_label("X".to_string());
+        chart.set_y_axis_label("Y".to_string());
+        chart.set_grid_enabled(true);
+        chart.set_x_tick_count(4);
+        chart.set_y_tick_count(3);
+        chart.add_series(sample_series(
+            "line-a",
+            Color { r: 15, g: 120, b: 240, a: 255 },
+            &[(0.0, 1.0), (1.0, 4.0), (2.0, 2.0), (3.0, 5.0)],
+        ));
+
+        let mut context = SvgChartContext::new(640, 360);
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+            },
+            &mut context,
+        );
+        let svg = context.to_svg_string();
+        let got = stable_hash64(&svg);
+        let expected = 11261639005027384391u64;
+        assert_eq!(got, expected, "line snapshot hash changed: {got}");
+    }
+
+    #[test]
+    fn svg_snapshot_bar_chart_stable() {
+        let mut chart = BarChart::new();
+        chart.set_title("SnapshotBar".to_string());
+        chart.set_x_axis_label("Bucket".to_string());
+        chart.set_y_axis_label("Value".to_string());
+        chart.set_grid_enabled(true);
+        chart.set_x_tick_count(5);
+        chart.set_y_tick_count(4);
+        chart.add_series(sample_series(
+            "bar-a",
+            Color { r: 20, g: 170, b: 100, a: 255 },
+            &[(0.0, 2.0), (1.0, 5.0), (2.0, 3.0)],
+        ));
+
+        let mut context = SvgChartContext::new(640, 360);
+        chart.draw(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+            },
+            &mut context,
+        );
+        let svg = context.to_svg_string();
+        let got = stable_hash64(&svg);
+        let expected = 13616823873602107208u64;
+        assert_eq!(got, expected, "bar snapshot hash changed: {got}");
+    }
 }

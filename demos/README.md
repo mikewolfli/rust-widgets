@@ -69,6 +69,7 @@ cargo check --examples
 ### Graphics, Chart, Layout, XML, i18n
 
 - `cargo run --example demo_canvas` - custom drawing canvas shell.
+- `cargo run --example demo_render_quality` - configurable AA sample quality comparison.
 - `cargo run --example demo_chart` - chart rendering model.
 - `cargo run --example demo_layout` - code-based layout.
 - `cargo run --example demo_xml` - XML layout loading and lookup by ID.

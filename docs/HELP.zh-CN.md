@@ -49,6 +49,25 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## v3 发布流程
+
+```bash
+# demo 烟雾校验（default + embedded）
+tools/smoke_demos.sh
+
+# 仅做发布校验，不上传
+cargo publish --dry-run
+```
+
+## 嵌入式渲染引擎（完整版）
+
+- `embedded` 路径现在使用共享状态的渲染引擎运行时（不再是单纯 sleep 循环）。
+- 可配置目标帧率：`rust_widgets::render_engine::set_embedded_target_fps(fps)`，会限制在 `1..=240`。
+- 可查询当前配置：`rust_widgets::render_engine::embedded_target_fps()`。
+- 可提交下一帧任务：`rust_widgets::render_engine::submit_embedded_task(label, task)`。
+- 可读取运行时统计：`rust_widgets::render_engine::embedded_engine_stats()`，包含运行状态、帧计数、队列长度、窗口/按钮登记数量等。
+- 嵌入式窗口与按钮创建会自动进入引擎资源登记，用于运行态诊断与测试回归。
+
 ## 示例列表
 
 - 完整分类清单请查看 `demos/README.md`。
@@ -61,6 +80,7 @@ cargo check --no-default-features --features "embedded,mobile-api"
 C ABI 在 `src/bindings/mod.rs`，已预留 Python/C++/Java 标准扩展入口。
 同时提供原生触发轮询接口：`rust_widgets_poll_menu_triggered`、`rust_widgets_poll_widget_triggered`。
 如需类型化控件触发，请使用 `rust_widgets_poll_widget_trigger_event(widget_id_out)`，返回值类型码为：`0` 无、`1` 点击、`2` 值变更。
+渲染质量支持通过 C ABI 配置：`rust_widgets_set_render_aa_samples_per_axis` / `rust_widgets_get_render_aa_samples_per_axis`（取值会限制在 `1..=8`）。
 鸿蒙 ArkUI/NAPI 直连请使用 `rust_widgets_harmony_on_*` 与 `rust_widgets_harmony_on_node_*` 系列接口。
 如需 `node_handle ↔ widget_id` 映射与回调接入流程，请参考 `docs/HARMONY_NATIVE_BRIDGE.zh-CN.md` 与 `examples/harmony_napi_bridge_sample.c`。
 完整 C ABI 构建/运行命令请参考 `docs/C_ABI_QUICKSTART.md`。

@@ -53,6 +53,26 @@ tools/check_profiles.sh
 tools/check_abi.sh
 ```
 
+## v3 Release Workflow
+
+```bash
+# demo smoke (default + embedded)
+tools/smoke_demos.sh
+
+# package validation without upload
+cargo publish --dry-run
+```
+
+## QA Harness
+
+```bash
+# cross-profile behavior matrix
+tools/check_behavior_matrix.sh
+
+# deterministic visual snapshot regression checks
+tools/check_visual_regression.sh
+```
+
 ## Platform Scope
 
 - Desktop: Windows (Win32), macOS (Cocoa), Linux (GTK), Harmony Desktop.
@@ -69,6 +89,9 @@ tools/check_abi.sh
 
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- ABI policy: [docs/ABI_POLICY.md](docs/ABI_POLICY.md)
+- QA harness: [docs/QA_HARNESS.md](docs/QA_HARNESS.md)
+- v3 handoff template: [docs/V3_HANDOFF_TEMPLATE.md](docs/V3_HANDOFF_TEMPLATE.md)
 - Commenting Guidelines: [docs/COMMENTING_GUIDELINES.md](docs/COMMENTING_GUIDELINES.md)
 - Demo catalog: [demos/README.md](demos/README.md)
 - Help (English): [docs/HELP.en.md](docs/HELP.en.md)
@@ -97,6 +120,12 @@ For the complete categorized list and command set, open [demos/README.md](demos/
 - Typed trigger polling demo: [examples/c_abi_poll_demo.c](examples/c_abi_poll_demo.c)
 - Harmony NAPI bridge sample: [examples/harmony_napi_bridge_sample.c](examples/harmony_napi_bridge_sample.c)
 - Harmony NAPI bridge flow: [examples/harmony_napi_bridge_flow.md](examples/harmony_napi_bridge_flow.md)
+- Python ctypes adapter: [examples/python/rust_widgets.py](examples/python/rust_widgets.py)
+- Python basic demo: [examples/python/demo_basic.py](examples/python/demo_basic.py)
+- C++ wrapper skeleton: [examples/cpp/rust_widgets.hpp](examples/cpp/rust_widgets.hpp)
+- C++ basic demo: [examples/cpp/demo_basic.cpp](examples/cpp/demo_basic.cpp)
+- Java native-method skeleton: [examples/java/RustWidgets.java](examples/java/RustWidgets.java)
+- JNI bridge skeleton: [examples/java/rust_widgets_jni_bridge.c](examples/java/rust_widgets_jni_bridge.c)
 - Full build/run guide: [docs/C_ABI_QUICKSTART.md](docs/C_ABI_QUICKSTART.md)
 - Harmony direct callback bridge: [docs/HARMONY_NATIVE_BRIDGE.md](docs/HARMONY_NATIVE_BRIDGE.md)
 

@@ -2,6 +2,7 @@
 
 use crate::core::{Color, Font};
 
+/// Insets for top/right/bottom/left spacing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeInsets {
     /// Top inset.
@@ -26,6 +27,7 @@ impl EdgeInsets {
     }
 }
 
+/// Drop-shadow style token.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadow {
     /// Horizontal offset.
@@ -38,16 +40,26 @@ pub struct Shadow {
     pub color: Color,
 }
 
+/// Resolved style values applied to a widget.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetStyle {
+    /// Optional background color.
     pub background_color: Option<Color>,
+    /// Optional text color.
     pub text_color: Option<Color>,
+    /// Optional text font.
     pub font: Option<Font>,
+    /// Optional border color.
     pub border_color: Option<Color>,
+    /// Border width in logical pixels.
     pub border_width: u32,
+    /// Border radius in logical pixels.
     pub border_radius: u32,
+    /// Inner content padding.
     pub padding: EdgeInsets,
+    /// Outer widget margin.
     pub margin: EdgeInsets,
+    /// Optional drop shadow.
     pub shadow: Option<Shadow>,
 }
 
