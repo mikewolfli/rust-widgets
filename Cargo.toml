@@ -20,6 +20,7 @@ print = []
 pdf = []
 chart = []
 gtk-native = ["gtk"]
+harmony-native = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -171,3 +172,7 @@ path = "demos/demo_grid.rs"
 [[example]]
 name = "demo_native_events"
 path = "demos/demo_native_events.rs"
+
+[[example]]
+name = "demo_p0_e2e_native"
+path = "demos/demo_p0_e2e_native.rs"

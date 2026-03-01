@@ -22,9 +22,13 @@ enum HarmonyHandleKind {
 
 #[derive(Default)]
 struct HarmonyMenuState {
+    /// Tracks menu bar attachment by window id.
     attached_menu_bar: HashMap<u64, u64>,
+    /// Maintains menu tree relationships for backend-side validation.
     menu_children: HashMap<u64, Vec<u64>>,
+    /// FIFO menu trigger queue, filled by native bridge injection APIs.
     pending_menu_events: VecDeque<u64>,
+    /// FIFO typed widget trigger queue, filled by bridge callbacks and local fallbacks.
     pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
@@ -123,6 +127,7 @@ impl Platform for HarmonyPlatform {
 
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
         let attached = self.inner.attach_menu_bar_to_window(window, menu_bar);
+        // Backend-side validation keeps behavior aligned with native backends.
         if matches!(self.kind_of(window), Some(HarmonyHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(HarmonyHandleKind::MenuBar))
         {
@@ -154,6 +159,7 @@ impl Platform for HarmonyPlatform {
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
+        // Only menu items may generate menu trigger events.
         if !matches!(self.kind_of(menu_item_id), Some(HarmonyHandleKind::MenuItem)) {
             return false;
         }
@@ -179,6 +185,7 @@ impl Platform for HarmonyPlatform {
     }
 
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        // Any known widget may enqueue a typed trigger event.
         if self.kind_of(widget_id).is_none() {
             return false;
         }
@@ -200,6 +207,7 @@ impl Platform for HarmonyPlatform {
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
         self.inner.set_widget_text(widget_id, text);
+        // Keep line-edit behavior consistent with value-changed semantics.
         if matches!(self.kind_of(widget_id), Some(HarmonyHandleKind::LineEdit)) {
             self.menus
                 .lock()

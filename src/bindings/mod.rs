@@ -1,10 +1,30 @@
 //! Stable C ABI for foreign language bindings.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_char, c_float, c_int, c_uint};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 type CBool = bool;
 
+/// Global node-handle registry used by Harmony native bridge callbacks.
+fn harmony_node_registry() -> &'static Mutex<HashMap<u64, u64>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn harmony_lookup_widget(node_handle: u64) -> Option<u64> {
+    if node_handle == 0 {
+        return None;
+    }
+    harmony_node_registry()
+        .lock()
+        .expect("harmony node registry lock poisoned")
+        .get(&node_handle)
+        .copied()
+}
+
+/// Convert stable C ABI trigger code to internal typed trigger enum.
 fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
     match code {
         1 => crate::platform::WidgetTriggerKind::Clicked,
@@ -13,6 +33,7 @@ fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
     }
 }
 
+/// Convert nullable C string pointer to owned Rust `String`.
 fn c_str_or_default(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
@@ -80,6 +101,85 @@ pub extern "C" fn rust_widgets_create_line_edit(
     height: c_uint,
 ) -> u64 {
     crate::platform::get_platform().create_line_edit(parent, &c_str_or_default(text), x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_label(
+    parent: u64,
+    text: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_label(parent, &c_str_or_default(text), x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_radio_button(
+    parent: u64,
+    text: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_radio_button(parent, &c_str_or_default(text), x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_slider(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_slider(parent, x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_progress_bar(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_progress_bar(parent, x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_combo_box(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_combo_box(parent, x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_list_box(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_list_box(parent, x, y, width, height)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_panel(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    crate::platform::get_platform().create_panel(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -155,13 +255,126 @@ pub extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64
     event.kind as c_uint
 }
 
+/// Generic menu trigger injection entrypoint for native hosts.
 #[no_mangle]
 pub extern "C" fn rust_widgets_inject_menu_trigger(menu_item_id: u64) -> CBool {
     crate::platform::get_platform().inject_menu_trigger(menu_item_id)
 }
 
+/// Generic typed widget trigger injection entrypoint for native hosts.
 #[no_mangle]
 pub extern "C" fn rust_widgets_inject_widget_trigger_event(widget_id: u64, kind_code: c_uint) -> CBool {
+    crate::platform::get_platform().inject_widget_trigger_event(
+        widget_id,
+        trigger_kind_from_code(kind_code),
+    )
+}
+
+/// Harmony callback alias: direct menu item trigger by widget id.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_menu_item(menu_item_id: u64) -> CBool {
+    crate::platform::get_platform().inject_menu_trigger(menu_item_id)
+}
+
+/// Harmony callback alias: direct click trigger by widget id.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_click(widget_id: u64) -> CBool {
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+}
+
+/// Harmony callback alias: direct value-changed trigger by widget id.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool {
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+}
+
+/// Harmony callback alias: direct typed trigger by widget id and kind code.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
+    crate::platform::get_platform().inject_widget_trigger_event(
+        widget_id,
+        trigger_kind_from_code(kind_code),
+    )
+}
+
+/// Register a Harmony node handle to logical widget id mapping.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_bind_node(node_handle: u64, widget_id: u64) -> CBool {
+    if node_handle == 0 || widget_id == 0 {
+        return false;
+    }
+    harmony_node_registry()
+        .lock()
+        .expect("harmony node registry lock poisoned")
+        .insert(node_handle, widget_id);
+    true
+}
+
+/// Remove a single Harmony node-handle mapping.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_unbind_node(node_handle: u64) -> CBool {
+    if node_handle == 0 {
+        return false;
+    }
+    harmony_node_registry()
+        .lock()
+        .expect("harmony node registry lock poisoned")
+        .remove(&node_handle)
+        .is_some()
+}
+
+/// Resolve mapped widget id from Harmony node handle.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_lookup_widget_id(node_handle: u64) -> u64 {
+    harmony_lookup_widget(node_handle).unwrap_or(0)
+}
+
+/// Clear all Harmony node-handle mappings.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_clear_node_bindings() {
+    harmony_node_registry()
+        .lock()
+        .expect("harmony node registry lock poisoned")
+        .clear();
+}
+
+/// Harmony callback alias: menu trigger by node handle.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_node_menu_item(node_handle: u64) -> CBool {
+    let Some(widget_id) = harmony_lookup_widget(node_handle) else {
+        return false;
+    };
+    crate::platform::get_platform().inject_menu_trigger(widget_id)
+}
+
+/// Harmony callback alias: click trigger by node handle.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_node_click(node_handle: u64) -> CBool {
+    let Some(widget_id) = harmony_lookup_widget(node_handle) else {
+        return false;
+    };
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+}
+
+/// Harmony callback alias: value-changed trigger by node handle.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -> CBool {
+    let Some(widget_id) = harmony_lookup_widget(node_handle) else {
+        return false;
+    };
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+}
+
+/// Harmony callback alias: typed trigger by node handle and kind code.
+#[no_mangle]
+pub extern "C" fn rust_widgets_harmony_on_node_widget_event(node_handle: u64, kind_code: c_uint) -> CBool {
+    let Some(widget_id) = harmony_lookup_widget(node_handle) else {
+        return false;
+    };
     crate::platform::get_platform().inject_widget_trigger_event(
         widget_id,
         trigger_kind_from_code(kind_code),
@@ -243,8 +456,35 @@ pub extern "C" fn rust_widgets_backend_name() -> *const c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn rust_widgets_platform_capabilities() -> c_uint {
+    let caps = crate::platform::capabilities();
+    let mut mask: c_uint = 0;
+    if caps.dpi_scaling {
+        mask |= 1 << 0;
+    }
+    if caps.ime {
+        mask |= 1 << 1;
+    }
+    if caps.accessibility {
+        mask |= 1 << 2;
+    }
+    if caps.native_menu {
+        mask |= 1 << 3;
+    }
+    if caps.typed_widget_trigger {
+        mask |= 1 << 4;
+    }
+    mask
+}
+
+#[no_mangle]
+pub extern "C" fn rust_widgets_platform_dpi_scale_factor() -> c_float {
+    crate::platform::dpi_scale_factor()
+}
+
+#[no_mangle]
 pub extern "C" fn rust_widgets_bindings_api_version() -> c_uint {
-    1
+    5
 }
 
 #[no_mangle]

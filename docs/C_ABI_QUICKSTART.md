@@ -7,7 +7,14 @@ This guide shows the minimal steps to call `rust_widgets` from C with the curren
 ## Provided files
 
 - Header: `examples/rust_widgets.h`
+- Auto-generated header: `examples/rust_widgets.generated.h`
 - C sample: `examples/c_abi_poll_demo.c`
+
+Regenerate header declarations from Rust C ABI exports:
+
+```bash
+python3 tools/generate_c_header.py
+```
 
 ## Build library
 
@@ -53,6 +60,18 @@ set PATH=target\debug;%PATH%
 - `1`: clicked
 - `2`: value-changed
 
+## Core control constructors (P2 coverage)
+
+The C ABI now exposes additional core control constructors:
+
+- `rust_widgets_create_label(parent, text, x, y, width, height)`
+- `rust_widgets_create_radio_button(parent, text, x, y, width, height)`
+- `rust_widgets_create_slider(parent, x, y, width, height)`
+- `rust_widgets_create_progress_bar(parent, x, y, width, height)`
+- `rust_widgets_create_combo_box(parent, x, y, width, height)`
+- `rust_widgets_create_list_box(parent, x, y, width, height)`
+- `rust_widgets_create_panel(parent, x, y, width, height)`
+
 Backward-compatible APIs are still available:
 
 - `rust_widgets_poll_menu_triggered`
@@ -69,3 +88,12 @@ To feed external/native events into the same polling pipeline:
 
 - `1`: clicked
 - `2`: value-changed
+
+Harmony direct callback aliases (for ArkUI/NAPI handlers):
+
+- `rust_widgets_harmony_on_menu_item(menu_item_id)`
+- `rust_widgets_harmony_on_click(widget_id)`
+- `rust_widgets_harmony_on_value_changed(widget_id)`
+- `rust_widgets_harmony_on_widget_event(widget_id, kind_code)`
+
+Node-handle registry and aliases are documented in `docs/HARMONY_NATIVE_BRIDGE.md`.
