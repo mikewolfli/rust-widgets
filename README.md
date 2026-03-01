@@ -32,6 +32,27 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## v2 Runtime and Validation Workflow
+
+- Lifecycle routing is now profile-explicit:
+    - desktop (`not embedded`) routes `init/run/quit` directly to native platform backends
+    - embedded routes lifecycle through `RenderEngine`
+- Runtime route diagnostics can be enabled with:
+
+```bash
+RUST_WIDGETS_TRACE_RUNTIME=1 cargo run --example demo_main
+```
+
+- Unified validation scripts:
+
+```bash
+# default + examples + embedded profile matrix
+tools/check_profiles.sh
+
+# ABI consistency gate (version + symbols + generated header drift)
+tools/check_abi.sh
+```
+
 ## Platform Scope
 
 - Desktop: Windows (Win32), macOS (Cocoa), Linux (GTK), Harmony Desktop.

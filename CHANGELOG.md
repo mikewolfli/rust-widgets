@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file.
   - `examples/harmony_napi_bridge_sample.c`
 - New runtime demo:
   - `demos/demo_native_events.rs`
+- v2 validation tooling:
+  - `tools/check_profiles.sh` for default/examples/embedded matrix checks
+  - `tools/check_abi.sh` for ABI header drift + symbol and version gate checks
 
 ### Implemented
 
@@ -67,6 +70,10 @@ All notable changes to this project are documented in this file.
 - Linux backend now supports optional native GTK signal path under feature `gtk-native`.
 - Documentation index expanded in `README.md` and localized help docs for C ABI and Harmony bridge coverage.
 - C ABI version increased to `5` to reflect newly added public ABI functions.
+- Lifecycle routing boundaries are profile-explicit:
+  - desktop profile calls native platform lifecycle directly
+  - embedded profile keeps lifecycle routed through `RenderEngine`
+- Desktop-only dependencies (`serde_json`, `lazy_static`, `roxmltree`) are now optional via `desktop-runtime` feature to reduce embedded footprint.
 
 ### Notes
 

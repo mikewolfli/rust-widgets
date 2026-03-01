@@ -49,6 +49,24 @@ cargo check --features "full,mobile-api"
 cargo check --no-default-features --features "embedded,mobile-api"
 ```
 
+## v2 Hardening Checks
+
+- Lifecycle routing is explicit by profile:
+    - desktop builds route directly to native platform backends
+    - embedded builds route through `RenderEngine`
+- To trace active runtime route during `init/run/quit`:
+
+```bash
+RUST_WIDGETS_TRACE_RUNTIME=1 cargo run --example demo_main
+```
+
+- Validation gates:
+
+```bash
+tools/check_profiles.sh
+tools/check_abi.sh
+```
+
 ## Demos
 
 - Full categorized demo list: see `demos/README.md`.

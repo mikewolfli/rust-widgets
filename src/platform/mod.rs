@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use crate::core::{ObjectId, PlatformFamily};
+use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetTriggerKind {
@@ -59,6 +59,45 @@ pub struct PlatformCapabilities {
     pub typed_widget_trigger: bool,
 }
 
+/// Native-runtime capability contract used by desktop-oriented negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeCapabilityContract {
+    pub dpi_scaling: bool,
+    pub ime: bool,
+    pub accessibility: bool,
+    pub native_menu: bool,
+    pub typed_widget_trigger: bool,
+}
+
+/// Embedded-runtime capability contract used by constrained-profile negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedCapabilityContract {
+    /// Whether the runtime assumes a fixed DPI scale factor.
+    pub fixed_dpi: bool,
+    /// Whether low-memory behavior is expected by default.
+    pub low_memory_mode: bool,
+    pub typed_widget_trigger: bool,
+}
+
+/// Runtime capability negotiation result split by profile contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityContract {
+    Native(NativeCapabilityContract),
+    Embedded(EmbeddedCapabilityContract),
+}
+
+impl NativeCapabilityContract {
+    fn from_platform_caps(caps: PlatformCapabilities) -> Self {
+        Self {
+            dpi_scaling: caps.dpi_scaling,
+            ime: caps.ime,
+            accessibility: caps.accessibility,
+            native_menu: caps.native_menu,
+            typed_widget_trigger: caps.typed_widget_trigger,
+        }
+    }
+}
+
 pub trait Platform: Send + Sync {
     fn backend_name(&self) -> &'static str;
     fn family(&self) -> PlatformFamily;
@@ -71,6 +110,26 @@ pub trait Platform: Send + Sync {
             accessibility: desktop,
             native_menu: desktop,
             typed_widget_trigger: true,
+        }
+    }
+    /// Native capability contract published by desktop-capable runtimes.
+    fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
+        if matches!(self.family(), PlatformFamily::Desktop) {
+            Some(NativeCapabilityContract::from_platform_caps(self.capabilities()))
+        } else {
+            None
+        }
+    }
+    /// Embedded capability contract published by constrained runtimes.
+    fn embedded_capability_contract(&self) -> Option<EmbeddedCapabilityContract> {
+        if matches!(self.family(), PlatformFamily::Embedded) {
+            Some(EmbeddedCapabilityContract {
+                fixed_dpi: self.dpi_scale_factor() == 1.0,
+                low_memory_mode: true,
+                typed_widget_trigger: self.capabilities().typed_widget_trigger,
+            })
+        } else {
+            None
         }
     }
     /// Logical DPI scale factor for coordinate transforms.
@@ -426,3 +485,35 @@ pub fn run() { get_platform().run(); }
 pub fn quit() { get_platform().quit(); }
 pub fn capabilities() -> PlatformCapabilities { get_platform().capabilities() }
 pub fn dpi_scale_factor() -> f32 { get_platform().dpi_scale_factor() }
+
+fn fallback_native_capability_contract() -> NativeCapabilityContract {
+    NativeCapabilityContract {
+        dpi_scaling: true,
+        ime: true,
+        accessibility: true,
+        native_menu: true,
+        typed_widget_trigger: true,
+    }
+}
+
+fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
+    EmbeddedCapabilityContract {
+        fixed_dpi: true,
+        low_memory_mode: true,
+        typed_widget_trigger: true,
+    }
+}
+
+/// Negotiate capabilities using profile-specific contracts with deterministic fallbacks.
+pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContract {
+    match profile {
+        RuntimeProfile::Full => get_platform()
+            .native_capability_contract()
+            .map(CapabilityContract::Native)
+            .unwrap_or(CapabilityContract::Native(fallback_native_capability_contract())),
+        RuntimeProfile::Embedded => get_platform()
+            .embedded_capability_contract()
+            .map(CapabilityContract::Embedded)
+            .unwrap_or(CapabilityContract::Embedded(fallback_embedded_capability_contract())),
+    }
+}
