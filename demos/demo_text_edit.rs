@@ -1,24 +1,19 @@
 //! TextEdit demo.
 
-use rust_widgets::core::Rect;
-use rust_widgets::widget::{TextEdit, Widget, Window};
+use rust_widgets::platform::get_platform;
 use rust_widgets::{init, run};
 
 fn main() {
     // Initialize the runtime before creating widgets.
     init();
 
-    let mut window = Window::new(
-        "TextEdit Demo".to_string(),
-        Rect { x: 120, y: 120, width: 720, height: 420 },
-    );
+    let platform = get_platform();
+    let window = platform.create_window("TextEdit Demo", 120, 120, 720, 420);
 
-    // Create and prefill the text edit control.
-    let mut text_edit = TextEdit::new(Rect { x: 24, y: 24, width: 420, height: 220 });
-    text_edit.set_text("Multi-line text".to_string());
-    window.add_child(text_edit.id());
+    // Use the available native single-line edit primitive for this runtime demo.
+    let _text_edit = platform.create_line_edit(window, "Multi-line text", 24, 24, 420, 36);
 
     // Show the demo window and enter the event loop.
-    window.show();
+    platform.show_widget(window);
     run();
 }

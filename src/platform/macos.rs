@@ -26,6 +26,7 @@ enum HandleKind {
         Window,
         Button,
         CheckBox,
+    Label,
         LineEdit,
         MenuBar,
         Menu,
@@ -311,6 +312,31 @@ impl Platform for MacOSPlatform {
         }
     }
 
+    fn create_label(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
+            NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
+            let _: () = msg_send![field, setEditable: NO];
+            let _: () = msg_send![field, setSelectable: NO];
+            let _: () = msg_send![field, setBordered: NO];
+            let _: () = msg_send![field, setDrawsBackground: NO];
+
+            if let Some(parent_handle) = self.get_handle(parent) {
+                if let HandleKind::Window = parent_handle.kind {
+                    let content_view = NSWindow::contentView(Self::as_id(parent_handle));
+                    content_view.addSubview_(field);
+                }
+            }
+
+            let id = self.register_handle(HandleKind::Label, text, x, y, width, height, field as usize);
+
+            pool.drain();
+            id
+        }
+    }
+
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
@@ -547,7 +573,7 @@ impl Platform for MacOSPlatform {
                 let native = Self::as_id(handle);
                 match handle.kind {
                     HandleKind::Window => NSWindow::setTitle_(native, ns_text),
-                    HandleKind::LineEdit | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
+                    HandleKind::LineEdit | HandleKind::Label | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
                     HandleKind::MenuBar | HandleKind::ToolBar => {}
                     HandleKind::Menu | HandleKind::MenuItem => {
                         let _: () = msg_send![native, setTitle: ns_text];
@@ -569,6 +595,7 @@ impl Platform for MacOSPlatform {
                 match handle.kind {
                     HandleKind::Button
                     | HandleKind::CheckBox
+                    | HandleKind::Label
                     | HandleKind::LineEdit
                     | HandleKind::StatusBar => {
                         NSControl::setEnabled_(Self::as_id(handle), if enabled { YES } else { NO });

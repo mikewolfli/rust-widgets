@@ -1,27 +1,19 @@
 //! ComboBox demo.
 
-use rust_widgets::core::Rect;
-use rust_widgets::widget::{ComboBox, Widget, Window};
+use rust_widgets::platform::get_platform;
 use rust_widgets::{init, run};
 
 fn main() {
     // Initialize the runtime before creating widgets.
     init();
 
-    let mut window = Window::new(
-        "ComboBox Demo".to_string(),
-        Rect { x: 120, y: 120, width: 700, height: 320 },
-    );
+    let platform = get_platform();
+    let window = platform.create_window("ComboBox Demo", 120, 120, 700, 320);
 
-    // Create and populate the combo box options.
-    let mut combo = ComboBox::new(Rect { x: 24, y: 24, width: 220, height: 36 });
-    combo.add_item("Option A");
-    combo.add_item("Option B");
-    combo.add_item("Option C");
-    combo.set_current_index(1);
-    window.add_child(combo.id());
+    // Create combo-box placeholder control.
+    let _combo = platform.create_combo_box(window, 24, 24, 220, 36);
 
     // Show the demo window and enter the event loop.
-    window.show();
+    platform.show_widget(window);
     run();
 }
