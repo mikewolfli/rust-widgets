@@ -1,7 +1,7 @@
 //! Theme system and runtime switching.
 
 use crate::core::{Color, Font};
-use crate::style::{EdgeInsets, Shadow, WidgetStyle};
+use crate::style::{Margin, Padding, Shadow, WidgetStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -168,8 +168,8 @@ impl ThemeManager {
         style.border_color = Some(theme.colors.secondary);
         style.border_width = theme.borders.width;
         style.border_radius = theme.borders.radius;
-        style.padding = EdgeInsets::all(theme.spacing.medium);
-        style.margin = EdgeInsets::all(theme.spacing.small);
+        style.padding = Padding::all(theme.spacing.medium);
+        style.margin = Margin::all(theme.spacing.small);
         if theme.borders.shadow {
             style.shadow = Some(Shadow {
                 x: 0,
@@ -210,10 +210,34 @@ impl Default for Theme {
                 disabled: Color { r: 200, g: 200, b: 200, a: 255 },
             },
             fonts: Fonts {
-                regular: Font { family: "Arial".to_string(), size: 14.0, bold: false, italic: false },
-                bold: Font { family: "Arial".to_string(), size: 14.0, bold: true, italic: false },
-                italic: Font { family: "Arial".to_string(), size: 14.0, bold: false, italic: true },
-                monospace: Font { family: "Courier New".to_string(), size: 12.0, bold: false, italic: false },
+                regular: Font {
+                    family: "Arial".to_string(),
+                    size: 14.0,
+                    weight: Font::REGULAR_WEIGHT,
+                    bold: false,
+                    italic: false,
+                },
+                bold: Font {
+                    family: "Arial".to_string(),
+                    size: 14.0,
+                    weight: Font::BOLD_WEIGHT,
+                    bold: true,
+                    italic: false,
+                },
+                italic: Font {
+                    family: "Arial".to_string(),
+                    size: 14.0,
+                    weight: Font::REGULAR_WEIGHT,
+                    bold: false,
+                    italic: true,
+                },
+                monospace: Font {
+                    family: "Courier New".to_string(),
+                    size: 12.0,
+                    weight: Font::REGULAR_WEIGHT,
+                    bold: false,
+                    italic: false,
+                },
             },
             spacing: Spacing {
                 small: 4,

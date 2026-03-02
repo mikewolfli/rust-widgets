@@ -1,6 +1,6 @@
 //! Layout managers.
 
-use crate::core::{ObjectId, Rect};
+use crate::core::{ObjectId, Point, Rect, Size};
 
 /// Space allocation preference used by layout items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,15 @@ pub trait Layout {
     fn remove_widget(&mut self, widget_id: ObjectId);
     /// Recompute child geometries within given rect.
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
+    /// Recompute child geometries from explicit position/size primitives.
+    fn update_from_position_size(
+        &self,
+        position: Point,
+        size: Size,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(Rect::from_position_size(position, size), widgets);
+    }
 }
 
 /// Orientation used by directional layouts.
@@ -144,18 +153,12 @@ impl Layout for BoxLayout {
             }
 
             let child_rect = match self.orientation {
-                Orientation::Horizontal => Rect {
-                    x: cursor_x,
-                    y: cursor_y,
-                    width: major,
-                    height: rect.height.saturating_sub(self.margin * 2),
-                },
-                Orientation::Vertical => Rect {
-                    x: cursor_x,
-                    y: cursor_y,
-                    width: rect.width.saturating_sub(self.margin * 2),
-                    height: major,
-                },
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y, major, rect.height.saturating_sub(self.margin * 2))
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x, cursor_y, rect.width.saturating_sub(self.margin * 2), major)
+                }
             };
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
@@ -231,7 +234,7 @@ impl Layout for GridLayout {
                 if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
                     let x = rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
                     let y = rect.y + self.margin as i32 + (row * (cell_height + self.spacing)) as i32;
-                    widgets(widget_id, Rect { x, y, width: cell_width, height: cell_height });
+                    widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
                 }
             }
         }
@@ -280,16 +283,16 @@ impl Layout for FormLayout {
             let y = rect.y + self.margin as i32 + index as i32 * (row_height + self.spacing) as i32;
             widgets(
                 *label,
-                Rect { x: rect.x + self.margin as i32, y, width: label_width, height: row_height },
+                Rect::new(rect.x + self.margin as i32, y, label_width, row_height),
             );
             widgets(
                 *field,
-                Rect {
-                    x: rect.x + self.margin as i32 + label_width as i32 + self.spacing as i32,
+                Rect::new(
+                    rect.x + self.margin as i32 + label_width as i32 + self.spacing as i32,
                     y,
-                    width: field_width,
-                    height: row_height,
-                },
+                    field_width,
+                    row_height,
+                ),
             );
         }
     }
@@ -398,18 +401,8 @@ impl Layout for SplitterLayout {
             let ratio = self.ratios.get(index).copied().unwrap_or(1.0) / total_ratio;
             let major = ((primary as f32) * ratio).max(1.0) as u32;
             let pane_rect = match self.orientation {
-                Orientation::Horizontal => Rect {
-                    x: cursor_x,
-                    y: rect.y,
-                    width: major,
-                    height: rect.height,
-                },
-                Orientation::Vertical => Rect {
-                    x: rect.x,
-                    y: cursor_y,
-                    width: rect.width,
-                    height: major,
-                },
+                Orientation::Horizontal => Rect::new(cursor_x, rect.y, major, rect.height),
+                Orientation::Vertical => Rect::new(rect.x, cursor_y, rect.width, major),
             };
             widgets(*pane, pane_rect);
             match self.orientation {
@@ -434,12 +427,7 @@ mod tests {
 
         let mut rects = std::collections::HashMap::new();
         layout.update(
-            Rect {
-                x: 0,
-                y: 0,
-                width: 200,
-                height: 40,
-            },
+            Rect::new(0, 0, 200, 40),
             &mut |id, rect| {
                 rects.insert(id, rect);
             },
@@ -456,12 +444,7 @@ mod tests {
 
         let mut rects = std::collections::HashMap::new();
         splitter.update(
-            Rect {
-                x: 0,
-                y: 0,
-                width: 400,
-                height: 40,
-            },
+            Rect::new(0, 0, 400, 40),
             &mut |id, rect| {
                 rects.insert(id, rect);
             },
@@ -470,5 +453,24 @@ mod tests {
         let left = rects.get(&1).map(|rect| rect.width).unwrap_or(0);
         let right = rects.get(&2).map(|rect| rect.width).unwrap_or(0);
         assert!(right > left);
+    }
+
+    #[test]
+    fn layout_update_from_position_size_routes_through_rect_conversion() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(42, 1);
+
+        let mut out = None;
+        layout.update_from_position_size(
+            Point::new(9, 11),
+            Size::new(30, 12),
+            &mut |id, rect| {
+                if id == 42 {
+                    out = Some(rect);
+                }
+            },
+        );
+
+        assert_eq!(out, Some(Rect::new(9, 11, 30, 12)));
     }
 }

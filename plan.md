@@ -6,6 +6,7 @@
 1. This file uses hierarchical TODO management, listing each top-level ITEM one by one.
 2. Unfinished items are left blank; completed items are marked "Completed" with a timestamp (e.g., Completed 2026-03-02).
 3. Deleted or canceled items are marked "Canceled" or "Deleted" with a timestamp.
+4. After all todo list are finished, review and check if there are gaps, added them after current version todo list. 
 
 ## ITEM List
 
@@ -21,7 +22,7 @@
 	- All widget interactions use signals (clicked, text_changed, selection_changed, closed, etc.)
 	- No alternative event system
 
-- [ ] Basic Geometry & Style Types
+- [x] Basic Geometry & Style Types — Completed 2026-03-02
 	- Point (x, y)
 	- Size (w, h)
 	- Rect (x, y, w, h)

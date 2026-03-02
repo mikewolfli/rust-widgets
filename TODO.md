@@ -9,25 +9,49 @@ This file mirrors staged execution status.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
 
-## Current Requirements (v10)
+## Current Requirements (v11)
 
 ## Stage Progress
 
-- [ ] P0a Introduce `Point`/`Size`/`Rect` constructors and validation helpers with consistent semantics
-- [ ] P0b Add geometry conversion helpers (position/size to rect and rect decomposition) used by widget/layout code
-- [ ] P1a Implement `Color` utility API (`rgba`/hex parse/serialize-safe normalization) with deterministic behavior
-- [ ] P1b Add `Font` descriptor baseline (`family`, `size`, `weight`) and shared defaults
-- [ ] P2a Add `Margin`/`Padding` per-side types and normalization helpers
-- [ ] P2b Add horizontal/vertical alignment enums and mapping utilities for widgets/layout
-- [ ] P3a Wire new geometry/style primitives through representative widget/layout entry points
-- [ ] P3b Add focused regression tests for geometry/style primitives and edge-case normalization
-- [ ] P3c Update docs/changelog notes for geometry/style type contract and migration guidance
+- [x] P0a Expose widget base geometry helpers (`position/size/rect` getters + setters)
+- [x] P0b Add widget base min/max size constraints with deterministic geometry clamping
+- [x] P1a Add widget base style shorthands for background/foreground/border/font common paths
+- [ ] P1b Add widget base mouse/keyboard/focus signal surface (`hover`, `mouse_down/up`, `key_down/up`, `focus_gained/lost`)
+- [ ] P2a Add widget base redraw/layout request signal surface
+- [ ] P2b Ensure widget interaction/input routes are signal-first for base-class covered paths
 
 ## Architecture Upgrades
 
-- [ ] Geometry architecture baseline: canonical shared primitives for coordinate/size/rect contracts
-- [ ] Style architecture baseline: canonical color/font/spacing/alignment primitives shared across modules
-- [ ] API consistency baseline: normalized construction/validation behavior for geometry and style inputs
+- [x] Widget geometry contract baseline: direct position/size/rect APIs + size-constraint clamping
+- [x] Widget style contract baseline: base-class shorthand style operations over canonical style primitives
+- [ ] Widget input contract baseline: base-class signal-first input/lifecycle surface
+
+## Notes
+
+- `v11` is generated from `plan.md` item3 (Widget Base Class).
+- `v11` focuses on the base widget contract (geometry, style, input/focus signals, redraw/layout signaling).
+- `v10` is completed and preserved below as history.
+
+## Requirement History (v10)
+
+## Stage Progress
+
+- [x] P3d Close Font normalization consistency gap: derive `bold` from normalized `weight` (e.g. `650 -> 700 => bold=true`) and add deserialize/load normalization guard
+- [x] P0a Introduce `Point`/`Size`/`Rect` constructors and validation helpers with consistent semantics
+- [x] P0b Add geometry conversion helpers (position/size to rect and rect decomposition) used by widget/layout code
+- [x] P1a Implement `Color` utility API (`rgba`/hex parse/serialize-safe normalization) with deterministic behavior
+- [x] P1b Add `Font` descriptor baseline (`family`, `size`, `weight`) and shared defaults
+- [x] P2a Add `Margin`/`Padding` per-side types and normalization helpers
+- [x] P2b Add horizontal/vertical alignment enums and mapping utilities for widgets/layout
+- [x] P3a Wire new geometry/style primitives through representative widget/layout entry points
+- [x] P3b Add focused regression tests for geometry/style primitives and edge-case normalization
+- [x] P3c Update docs/changelog notes for geometry/style type contract and migration guidance
+
+## Architecture Upgrades
+
+- [x] Geometry architecture baseline: canonical shared primitives for coordinate/size/rect contracts
+- [x] Style architecture baseline: canonical color/font/spacing/alignment primitives shared across modules
+- [x] API consistency baseline: normalized construction/validation behavior for geometry and style inputs
 
 ## Notes
 

@@ -1448,6 +1448,7 @@ mod tests {
         Font {
             family: "Sans".to_string(),
             size: 14.0,
+            weight: Font::REGULAR_WEIGHT,
             bold: false,
             italic: false,
         }

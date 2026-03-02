@@ -174,3 +174,25 @@ cargo run --example demo_layout
 cargo run --example demo_xml
 cargo run --example demo_i18n
 ```
+
+## 8. Geometry & style primitive contract (v10)
+
+- Geometry is standardized around `Point`, `Size`, and `Rect` conversions:
+  - `Rect::from_position_size(position, size)` for construction
+  - `rect.position()` / `rect.size()` / `rect.decompose()` for extraction
+- Color parsing/serialization is centralized in `core::Color`:
+  - accepted input forms: `#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`
+  - canonical output forms: uppercase `#RRGGBB` and `#RRGGBBAA`
+- Font descriptors now include normalized `weight` (`100..=900`, nearest-100 step).
+  - Compatibility constructor `Font::new(family, size, bold, italic)` is preserved.
+  - New explicit constructor `Font::with_weight(...)` is preferred for deterministic typography.
+- Spacing contracts now distinguish content and outer spacing:
+  - `Padding` for content insets
+  - `Margin` for outer spacing
+  - both support `all`, `symmetric`, and `normalized` helpers.
+
+### Migration guidance
+
+- Existing `Rect`-based call sites remain valid; adopt point/size helpers incrementally.
+- Existing bold/italic call sites remain valid; migrate to explicit `weight` only where needed.
+- Existing uniform spacing remains valid via `Padding::all`/`Margin::all`; migrate to per-side values when required.

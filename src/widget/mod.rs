@@ -3,11 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::core::{Alignment, ObjectId, Rect};
+use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::style::{Margin, Padding, WidgetStyle};
 
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +51,30 @@ pub trait Widget: EventHandler {
     fn kind(&self) -> WidgetKind;
     fn geometry(&self) -> Rect;
     fn set_geometry(&mut self, geometry: Rect);
+    /// Returns widget position from its geometry origin.
+    fn position(&self) -> Point {
+        self.geometry().position()
+    }
+    /// Returns widget size from its geometry extent.
+    fn size(&self) -> Size {
+        self.geometry().size()
+    }
+    /// Updates widget position while preserving size.
+    fn set_position(&mut self, position: Point) {
+        self.set_geometry(Rect::from_position_size(position, self.size()));
+    }
+    /// Updates widget size while preserving position.
+    fn set_size(&mut self, size: Size) {
+        self.set_geometry(Rect::from_position_size(self.position(), size));
+    }
+    /// Returns minimum size constraint when configured.
+    fn min_size(&self) -> Option<Size>;
+    /// Returns maximum size constraint when configured.
+    fn max_size(&self) -> Option<Size>;
+    /// Sets minimum size constraint.
+    fn set_min_size(&mut self, min_size: Option<Size>);
+    /// Sets maximum size constraint.
+    fn set_max_size(&mut self, max_size: Option<Size>);
     fn parent(&self) -> Option<ObjectId>;
     fn set_parent(&mut self, parent: Option<ObjectId>);
     fn add_child(&mut self, child: ObjectId);
@@ -67,6 +91,94 @@ pub trait Widget: EventHandler {
     fn tooltip(&self) -> &str;
     fn style(&self) -> &WidgetStyle;
     fn set_style(&mut self, style: WidgetStyle);
+    /// Returns optional background color shorthand.
+    fn background_color(&self) -> Option<Color> {
+        self.style().background_color
+    }
+    /// Sets optional background color shorthand.
+    fn set_background_color(&mut self, color: Option<Color>) {
+        let mut style = self.style().clone();
+        style.background_color = color;
+        self.set_style(style);
+    }
+    /// Returns optional foreground (text) color shorthand.
+    fn foreground_color(&self) -> Option<Color> {
+        self.style().text_color
+    }
+    /// Sets optional foreground (text) color shorthand.
+    fn set_foreground_color(&mut self, color: Option<Color>) {
+        let mut style = self.style().clone();
+        style.text_color = color;
+        self.set_style(style);
+    }
+    /// Returns optional font shorthand.
+    fn font(&self) -> Option<&Font> {
+        self.style().font.as_ref()
+    }
+    /// Sets optional font shorthand.
+    fn set_font(&mut self, font: Option<Font>) {
+        let mut style = self.style().clone();
+        style.font = font;
+        self.set_style(style);
+    }
+    /// Returns optional border color shorthand.
+    fn border_color(&self) -> Option<Color> {
+        self.style().border_color
+    }
+    /// Returns border width shorthand.
+    fn border_width(&self) -> u32 {
+        self.style().border_width
+    }
+    /// Returns border radius shorthand.
+    fn border_radius(&self) -> u32 {
+        self.style().border_radius
+    }
+    /// Sets optional border color shorthand.
+    fn set_border_color(&mut self, color: Option<Color>) {
+        let mut style = self.style().clone();
+        style.border_color = color;
+        self.set_style(style);
+    }
+    /// Sets border width shorthand.
+    fn set_border_width(&mut self, width: u32) {
+        let mut style = self.style().clone();
+        style.border_width = width;
+        self.set_style(style);
+    }
+    /// Sets border radius shorthand.
+    fn set_border_radius(&mut self, radius: u32) {
+        let mut style = self.style().clone();
+        style.border_radius = radius;
+        self.set_style(style);
+    }
+    /// Sets border shorthand in one call.
+    fn set_border(&mut self, color: Option<Color>, width: u32, radius: u32) {
+        let mut style = self.style().clone();
+        style.border_color = color;
+        style.border_width = width;
+        style.border_radius = radius;
+        self.set_style(style);
+    }
+    /// Returns current per-side content padding.
+    fn padding(&self) -> &Padding {
+        &self.style().padding
+    }
+    /// Returns current per-side outer margin.
+    fn margin(&self) -> &Margin {
+        &self.style().margin
+    }
+    /// Updates widget content padding while preserving other style properties.
+    fn set_padding(&mut self, padding: Padding) {
+        let mut style = self.style().clone();
+        style.padding = padding;
+        self.set_style(style);
+    }
+    /// Updates widget margin while preserving other style properties.
+    fn set_margin(&mut self, margin: Margin) {
+        let mut style = self.style().clone();
+        style.margin = margin;
+        self.set_style(style);
+    }
     /// Returns connection scope used to auto-disconnect slots when widget drops.
     fn connection_scope(&self) -> &ConnectionScope;
 }
@@ -76,6 +188,8 @@ pub struct BaseWidget {
     object: Object,
     kind: WidgetKind,
     geometry: Rect,
+    min_size: Option<Size>,
+    max_size: Option<Size>,
     parent: Option<ObjectId>,
     children: Vec<ObjectId>,
     visible: bool,
@@ -96,6 +210,8 @@ impl BaseWidget {
             object: Object::new(class_name),
             kind,
             geometry,
+            min_size: None,
+            max_size: None,
             parent: None,
             children: Vec::new(),
             visible: true,
@@ -113,7 +229,19 @@ impl Widget for BaseWidget {
     fn id(&self) -> ObjectId { self.object.id() }
     fn kind(&self) -> WidgetKind { self.kind }
     fn geometry(&self) -> Rect { self.geometry }
-    fn set_geometry(&mut self, geometry: Rect) { self.geometry = geometry; }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.geometry = Rect::from_position_size(geometry.position(), self.constrained_size(geometry.size()));
+    }
+    fn min_size(&self) -> Option<Size> { self.min_size }
+    fn max_size(&self) -> Option<Size> { self.max_size }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.min_size = min_size;
+        self.geometry = Rect::from_position_size(self.geometry.position(), self.constrained_size(self.geometry.size()));
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.max_size = max_size;
+        self.geometry = Rect::from_position_size(self.geometry.position(), self.constrained_size(self.geometry.size()));
+    }
     fn parent(&self) -> Option<ObjectId> { self.parent }
     fn set_parent(&mut self, parent: Option<ObjectId>) { self.parent = parent; }
     fn add_child(&mut self, child: ObjectId) { self.children.push(child); }
@@ -140,6 +268,26 @@ impl EventHandler for BaseWidget {
     }
 }
 
+impl BaseWidget {
+    fn constrained_size(&self, size: Size) -> Size {
+        let mut width = size.width;
+        let mut height = size.height;
+
+        if let Some(min) = self.min_size {
+            width = width.max(min.width);
+            height = height.max(min.height);
+        }
+        if let Some(max) = self.max_size {
+            let effective_max_width = self.min_size.map(|min| max.width.max(min.width)).unwrap_or(max.width);
+            let effective_max_height = self.min_size.map(|min| max.height.max(min.height)).unwrap_or(max.height);
+            width = width.min(effective_max_width);
+            height = height.min(effective_max_height);
+        }
+
+        Size::new(width, height)
+    }
+}
+
 macro_rules! impl_widget_delegate {
     ($ty:ty, $field:ident) => {
         impl Widget for $ty {
@@ -147,6 +295,10 @@ macro_rules! impl_widget_delegate {
             fn kind(&self) -> WidgetKind { self.$field.kind() }
             fn geometry(&self) -> Rect { self.$field.geometry() }
             fn set_geometry(&mut self, geometry: Rect) { self.$field.set_geometry(geometry); }
+            fn min_size(&self) -> Option<Size> { self.$field.min_size() }
+            fn max_size(&self) -> Option<Size> { self.$field.max_size() }
+            fn set_min_size(&mut self, min_size: Option<Size>) { self.$field.set_min_size(min_size); }
+            fn set_max_size(&mut self, max_size: Option<Size>) { self.$field.set_max_size(max_size); }
             fn parent(&self) -> Option<ObjectId> { self.$field.parent() }
             fn set_parent(&mut self, parent: Option<ObjectId>) { self.$field.set_parent(parent); }
             fn add_child(&mut self, child: ObjectId) { self.$field.add_child(child); }
@@ -202,6 +354,10 @@ impl Widget for Window {
     fn kind(&self) -> WidgetKind { self.base.kind() }
     fn geometry(&self) -> Rect { self.base.geometry() }
     fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
+    fn min_size(&self) -> Option<Size> { self.base.min_size() }
+    fn max_size(&self) -> Option<Size> { self.base.max_size() }
+    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
+    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
     fn parent(&self) -> Option<ObjectId> { self.base.parent() }
     fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
     fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
@@ -1147,5 +1303,67 @@ mod tests {
         });
 
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn widget_geometry_helpers_roundtrip_position_and_size() {
+        let mut button = Button::new("ok".to_string(), Rect::new(10, 20, 80, 30));
+        assert_eq!(button.position(), Point::new(10, 20));
+        assert_eq!(button.size(), Size::new(80, 30));
+
+        button.set_position(Point::new(3, 4));
+        assert_eq!(button.geometry(), Rect::new(3, 4, 80, 30));
+
+        button.set_size(Size::new(12, 8));
+        assert_eq!(button.geometry(), Rect::new(3, 4, 12, 8));
+    }
+
+    #[test]
+    fn widget_style_helpers_update_padding_and_margin() {
+        let mut panel = Panel::new(Rect::new(0, 0, 40, 20));
+        panel.set_padding(Padding::normalized(-1, 4, 2, -8));
+        panel.set_margin(Margin::symmetric(3, 7));
+
+        assert_eq!(panel.padding(), &Padding::new(0, 4, 2, 0));
+        assert_eq!(panel.margin(), &Margin::new(3, 7, 3, 7));
+    }
+
+    #[test]
+    fn widget_min_max_size_constraints_clamp_geometry() {
+        let mut button = Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        button.set_min_size(Some(Size::new(20, 12)));
+        button.set_geometry(Rect::new(1, 2, 5, 6));
+        assert_eq!(button.geometry(), Rect::new(1, 2, 20, 12));
+
+        button.set_max_size(Some(Size::new(24, 16)));
+        button.set_geometry(Rect::new(3, 4, 100, 100));
+        assert_eq!(button.geometry(), Rect::new(3, 4, 24, 16));
+    }
+
+    #[test]
+    fn widget_conflicting_min_max_constraints_use_safe_effective_max() {
+        let mut panel = Panel::new(Rect::new(0, 0, 10, 10));
+        panel.set_min_size(Some(Size::new(30, 40)));
+        panel.set_max_size(Some(Size::new(5, 6)));
+        panel.set_size(Size::new(8, 9));
+        assert_eq!(panel.size(), Size::new(30, 40));
+    }
+
+    #[test]
+    fn widget_style_shorthands_cover_background_foreground_border_font() {
+        let mut panel = Panel::new(Rect::new(0, 0, 10, 10));
+        let font = Font::with_weight("Sans", 13.0, 600, true);
+
+        panel.set_background_color(Some(Color::rgba(1, 2, 3, 255)));
+        panel.set_foreground_color(Some(Color::rgba(9, 8, 7, 255)));
+        panel.set_border(Some(Color::rgba(20, 21, 22, 255)), 3, 4);
+        panel.set_font(Some(font.clone()));
+
+        assert_eq!(panel.background_color(), Some(Color::rgba(1, 2, 3, 255)));
+        assert_eq!(panel.foreground_color(), Some(Color::rgba(9, 8, 7, 255)));
+        assert_eq!(panel.border_color(), Some(Color::rgba(20, 21, 22, 255)));
+        assert_eq!(panel.border_width(), 3);
+        assert_eq!(panel.border_radius(), 4);
+        assert_eq!(panel.font(), Some(&font));
     }
 }

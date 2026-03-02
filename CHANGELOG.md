@@ -13,6 +13,12 @@ All notable changes to this project are documented in this file.
 - Expanded typed widget trigger kinds in platform/C ABI routing:
   - `3`: `selection-changed`
   - `4`: `closed`
+- Geometry/style baseline primitives for `v10`:
+  - `Point::new/origin`, `Size::new/is_empty`, `Rect::new/from_position_size/position/size/decompose/is_valid`
+  - `Color::parse_hex` (`#RGB/#RGBA/#RRGGBB/#RRGGBBAA`), canonical hex serializers, `u32` pack/unpack
+  - `Font` weight baseline (`100..=900`), shared defaults, and normalization helpers
+  - `Padding`/`Margin` per-side types with `all/symmetric/normalized` constructors
+  - axis-specific alignment enums and mapping helpers (`HorizontalAlignment`/`VerticalAlignment`)
 
 ### Changed
 
@@ -20,6 +26,18 @@ All notable changes to this project are documented in this file.
   (`clicked`, `value-changed`, `selection-changed`, `closed`) instead of per-kind ad-hoc paths.
 - Widget interaction baseline now emits explicit selection/closed signals for covered controls
   (window, combo box, tree view, table widget).
+- Representative widget/layout entry points now accept primitive geometry/style workflows:
+  - widget trait helpers: `position/size`, `set_position/set_size`, `padding/margin`, `set_padding/set_margin`
+  - layout trait helper: `update_from_position_size(position, size, ...)`
+- XML style parsing now reuses shared color parser (`Color::parse_hex`) and supports short/alpha hex forms.
+
+### Migration Notes
+
+- Existing `Font::new(family, size, bold, italic)` remains supported; it now derives normalized `weight`
+  (`400` regular, `700` bold). Prefer `Font::with_weight(...)` for explicit typography contracts.
+- Existing uniform spacing behavior is preserved (`Padding::all`, `Margin::all`), while per-side values are
+  now available for forward-compatible style contracts.
+- Geometry callers can incrementally adopt primitive helpers without breaking existing `Rect` call sites.
 
 ## [0.1.0] - 2026-03-01
 

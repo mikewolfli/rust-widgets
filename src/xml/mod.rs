@@ -6,7 +6,7 @@ use std::fs;
 use std::sync::Arc;
 
 use crate::core::{Color, Rect};
-use crate::style::{EdgeInsets, WidgetStyle};
+use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{
     Button, Canvas, ChartWidget, CheckBox, ComboBox, Dialog, GridWidget, GroupBox, Label,
     LineEdit, ListBox, Menu, MenuBar, Panel, PopupWindow, ProgressBar, RadioButton, ScrollBar,
@@ -557,12 +557,12 @@ fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
     if let Some(padding) = parse_u32_property(properties, "style.padding")
         .or_else(|| parse_u32_property(properties, "padding"))
     {
-        style.padding = EdgeInsets::all(padding);
+        style.padding = Padding::all(padding);
     }
     if let Some(margin) = parse_u32_property(properties, "style.margin")
         .or_else(|| parse_u32_property(properties, "margin"))
     {
-        style.margin = EdgeInsets::all(margin);
+        style.margin = Margin::all(margin);
     }
 
     style
@@ -590,32 +590,7 @@ fn parse_i32_property(properties: &HashMap<String, String>, key: &str) -> Option
 }
 
 fn parse_color_property(properties: &HashMap<String, String>, key: &str) -> Option<Color> {
-    parse_color(properties.get(key)?)
-}
-
-fn parse_color(value: &str) -> Option<Color> {
-    let text = value.trim();
-    if !text.starts_with('#') {
-        return None;
-    }
-    let hex = &text[1..];
-    let parse_hex = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
-
-    match hex.len() {
-        6 => Some(Color {
-            r: parse_hex(0..2)?,
-            g: parse_hex(2..4)?,
-            b: parse_hex(4..6)?,
-            a: 255,
-        }),
-        8 => Some(Color {
-            r: parse_hex(0..2)?,
-            g: parse_hex(2..4)?,
-            b: parse_hex(4..6)?,
-            a: parse_hex(6..8)?,
-        }),
-        _ => None,
-    }
+    Color::parse_hex(properties.get(key)?)
 }
 
 fn parse_rect(properties: &HashMap<String, String>) -> Rect {
@@ -632,12 +607,12 @@ fn parse_rect(properties: &HashMap<String, String>) -> Rect {
             .unwrap_or(default)
     };
 
-    Rect {
-        x: parse_i32("x", 0),
-        y: parse_i32("y", 0),
-        width: parse_u32("width", 120),
-        height: parse_u32("height", 36),
-    }
+    Rect::new(
+        parse_i32("x", 0),
+        parse_i32("y", 0),
+        parse_u32("width", 120),
+        parse_u32("height", 36),
+    )
 }
 
 #[cfg(test)]
@@ -686,8 +661,38 @@ mod tests {
         assert_eq!(style.border_color, Some(Color { r: 0x33, g: 0x44, b: 0x55, a: 255 }));
         assert_eq!(style.border_width, 2);
         assert_eq!(style.border_radius, 4);
-        assert_eq!(style.padding, EdgeInsets::all(3));
-        assert_eq!(style.margin, EdgeInsets::all(5));
+        assert_eq!(style.padding, Padding::all(3));
+        assert_eq!(style.margin, Margin::all(5));
+    }
+
+    #[test]
+    fn xml_instantiation_accepts_short_and_alpha_hex_colors() {
+        let mut loader = XmlLayoutLoader::new();
+        loader
+            .load_layout_from_xml_str(
+                "hex_layout",
+                r##"
+                <window id="root" class="window" x="0" y="0" width="320" height="200" title="root">
+                    <button
+                        id="btn"
+                        class="button"
+                        x="10" y="10" width="80" height="24"
+                        style.background="#abc"
+                        style.text="#11223344"
+                        style.border="#0F08" />
+                </window>
+                    "##,
+            )
+            .expect("load xml");
+
+        let registry = loader.instantiate_layout("hex_layout").expect("instantiate");
+        let button_id = registry.id_by_name("btn").expect("button id exists");
+        let button = registry.widget(button_id).expect("button exists");
+
+        let style = button.style();
+        assert_eq!(style.background_color, Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF)));
+        assert_eq!(style.text_color, Some(Color::rgba(0x11, 0x22, 0x33, 0x44)));
+        assert_eq!(style.border_color, Some(Color::rgba(0x00, 0xFF, 0x00, 0x88)));
     }
 
     #[test]
