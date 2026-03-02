@@ -23,6 +23,7 @@ pub enum WidgetKind {
     LineEdit,
     TextEdit,
     ComboBox,
+    SpinBox,
     ListBox,
     TreeView,
     ProgressBar,
@@ -51,6 +52,14 @@ pub trait Widget: EventHandler {
     fn kind(&self) -> WidgetKind;
     fn geometry(&self) -> Rect;
     fn set_geometry(&mut self, geometry: Rect);
+    /// Returns widget rectangle aliasing `geometry()`.
+    fn rect(&self) -> Rect {
+        self.geometry()
+    }
+    /// Sets widget rectangle aliasing `set_geometry()`.
+    fn set_rect(&mut self, rect: Rect) {
+        self.set_geometry(rect);
+    }
     /// Returns widget position from its geometry origin.
     fn position(&self) -> Point {
         self.geometry().position()
@@ -181,6 +190,32 @@ pub trait Widget: EventHandler {
     }
     /// Returns connection scope used to auto-disconnect slots when widget drops.
     fn connection_scope(&self) -> &ConnectionScope;
+    /// Emits on hover/move interactions while pointer is over widget.
+    fn hover_signal(&self) -> &Signal1<Point>;
+    /// Emits on mouse/pointer press interactions.
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)>;
+    /// Emits on mouse/pointer release interactions.
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)>;
+    /// Emits on keyboard press interactions.
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)>;
+    /// Emits on keyboard release interactions.
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)>;
+    /// Emits when logical focus is gained.
+    fn focus_gained_signal(&self) -> &GenericSignal;
+    /// Emits when logical focus is lost.
+    fn focus_lost_signal(&self) -> &GenericSignal;
+    /// Emits when redraw is requested.
+    fn redraw_requested_signal(&self) -> &GenericSignal;
+    /// Emits when layout pass is requested.
+    fn layout_requested_signal(&self) -> &GenericSignal;
+    /// Requests redraw and emits redraw signal.
+    fn request_redraw(&self) {
+        self.redraw_requested_signal().emit();
+    }
+    /// Requests layout and emits layout signal.
+    fn request_layout(&self) {
+        self.layout_requested_signal().emit();
+    }
 }
 
 /// Shared widget state and signals used by concrete controls.
@@ -201,6 +236,24 @@ pub struct BaseWidget {
     pub clicked: GenericSignal,
     /// Emitted when widget internal value/state changes.
     pub changed: GenericSignal,
+    /// Emitted when hover/move interaction is observed.
+    pub hover: Signal1<Point>,
+    /// Emitted when mouse/pointer button is pressed.
+    pub mouse_down: Signal1<(Point, u32)>,
+    /// Emitted when mouse/pointer button is released.
+    pub mouse_up: Signal1<(Point, u32)>,
+    /// Emitted when keyboard key is pressed.
+    pub key_down: Signal1<(u32, u32)>,
+    /// Emitted when keyboard key is released.
+    pub key_up: Signal1<(u32, u32)>,
+    /// Emitted when focus-like state is gained.
+    pub focus_gained: GenericSignal,
+    /// Emitted when focus-like state is lost.
+    pub focus_lost: GenericSignal,
+    /// Emitted when redraw is requested.
+    pub redraw_requested: GenericSignal,
+    /// Emitted when layout is requested.
+    pub layout_requested: GenericSignal,
 }
 
 impl BaseWidget {
@@ -221,6 +274,15 @@ impl BaseWidget {
             connection_scope: ConnectionScope::new(),
             clicked: GenericSignal::new(),
             changed: GenericSignal::new(),
+            hover: Signal1::new(),
+            mouse_down: Signal1::new(),
+            mouse_up: Signal1::new(),
+            key_down: Signal1::new(),
+            key_up: Signal1::new(),
+            focus_gained: GenericSignal::new(),
+            focus_lost: GenericSignal::new(),
+            redraw_requested: GenericSignal::new(),
+            layout_requested: GenericSignal::new(),
         }
     }
 }
@@ -257,6 +319,15 @@ impl Widget for BaseWidget {
     fn style(&self) -> &WidgetStyle { &self.style }
     fn set_style(&mut self, style: WidgetStyle) { self.style = style; }
     fn connection_scope(&self) -> &ConnectionScope { &self.connection_scope }
+    fn hover_signal(&self) -> &Signal1<Point> { &self.hover }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { &self.mouse_down }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { &self.mouse_up }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { &self.key_down }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { &self.key_up }
+    fn focus_gained_signal(&self) -> &GenericSignal { &self.focus_gained }
+    fn focus_lost_signal(&self) -> &GenericSignal { &self.focus_lost }
+    fn redraw_requested_signal(&self) -> &GenericSignal { &self.redraw_requested }
+    fn layout_requested_signal(&self) -> &GenericSignal { &self.layout_requested }
 }
 
 impl EventHandler for BaseWidget {
@@ -264,7 +335,19 @@ impl EventHandler for BaseWidget {
         if !self.enabled || !self.visible {
             return;
         }
-        let _ = event;
+        match event {
+            Event::MouseMove { pos } | Event::MouseEnter { pos } => self.hover.emit(*pos),
+            Event::MousePress { pos, button } => self.mouse_down.emit((*pos, *button)),
+            Event::MouseRelease { pos, button } => self.mouse_up.emit((*pos, *button)),
+            Event::MouseLeave { .. } => self.focus_lost.emit(),
+            Event::KeyPress { key, modifiers } => self.key_down.emit((*key, *modifiers)),
+            Event::KeyRelease { key, modifiers } => self.key_up.emit((*key, *modifiers)),
+            Event::Custom { name, .. } if name == "focus_gained" => self.focus_gained.emit(),
+            Event::Custom { name, .. } if name == "focus_lost" => self.focus_lost.emit(),
+            Event::Paint => self.redraw_requested.emit(),
+            Event::Resize { .. } => self.layout_requested.emit(),
+            _ => {}
+        }
     }
 }
 
@@ -314,6 +397,15 @@ macro_rules! impl_widget_delegate {
             fn style(&self) -> &WidgetStyle { self.$field.style() }
             fn set_style(&mut self, style: WidgetStyle) { self.$field.set_style(style); }
             fn connection_scope(&self) -> &ConnectionScope { self.$field.connection_scope() }
+            fn hover_signal(&self) -> &Signal1<Point> { self.$field.hover_signal() }
+            fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.$field.mouse_down_signal() }
+            fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.$field.mouse_up_signal() }
+            fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.$field.key_down_signal() }
+            fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.$field.key_up_signal() }
+            fn focus_gained_signal(&self) -> &GenericSignal { self.$field.focus_gained_signal() }
+            fn focus_lost_signal(&self) -> &GenericSignal { self.$field.focus_lost_signal() }
+            fn redraw_requested_signal(&self) -> &GenericSignal { self.$field.redraw_requested_signal() }
+            fn layout_requested_signal(&self) -> &GenericSignal { self.$field.layout_requested_signal() }
         }
         impl EventHandler for $ty {
             fn handle_event(&mut self, event: &Event) { self.$field.handle_event(event); }
@@ -373,6 +465,15 @@ impl Widget for Window {
     fn style(&self) -> &WidgetStyle { self.base.style() }
     fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
     fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
+    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
+    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
+    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
+    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
+    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
 }
 
 impl EventHandler for Window {
@@ -399,56 +500,558 @@ impl PopupWindow { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget:
 impl_widget_delegate!(PopupWindow, base);
 
 /// Push button widget.
-pub struct Button { base: BaseWidget, text: String, pub activated: GenericSignal }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonState {
+    Normal,
+    Pressed,
+    Disabled,
+}
+
+pub struct Button {
+    base: BaseWidget,
+    text: String,
+    pressed: bool,
+    pub activated: GenericSignal,
+    pub pressed_signal: GenericSignal,
+    pub released_signal: GenericSignal,
+    pub state_changed: Signal1<ButtonState>,
+}
 impl Button {
     /// Creates a button with initial text and geometry.
     pub fn new(text: String, geometry: Rect) -> Self {
-        Self { base: BaseWidget::new(WidgetKind::Button, geometry, "Button"), text, activated: GenericSignal::new() }
+        Self {
+            base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
+            text,
+            pressed: false,
+            activated: GenericSignal::new(),
+            pressed_signal: GenericSignal::new(),
+            released_signal: GenericSignal::new(),
+            state_changed: Signal1::new(),
+        }
     }
     /// Returns button text.
     pub fn text(&self) -> &str { &self.text }
+
+    /// Returns current button interaction state.
+    pub fn state(&self) -> ButtonState {
+        if !self.base.is_enabled() {
+            ButtonState::Disabled
+        } else if self.pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Normal
+        }
+    }
+
+    /// Returns whether button is in pressed state.
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+
+    /// Sets pressed state and emits transition signals when changed.
+    pub fn set_pressed(&mut self, pressed: bool) {
+        if !self.base.is_enabled() {
+            return;
+        }
+        if self.pressed == pressed {
+            return;
+        }
+
+        self.pressed = pressed;
+        if pressed {
+            self.pressed_signal.emit();
+        } else {
+            self.released_signal.emit();
+        }
+        self.state_changed.emit(self.state());
+    }
+
+    pub fn press(&mut self) {
+        self.set_pressed(true);
+    }
+
+    pub fn release(&mut self) {
+        self.set_pressed(false);
+    }
+
+    /// Enables/disables button while preserving deterministic state transitions.
+    pub fn set_enabled_state(&mut self, enabled: bool) {
+        let previous = self.state();
+        self.base.set_enabled(enabled);
+        if !enabled {
+            self.pressed = false;
+        }
+        let current = self.state();
+        if previous != current {
+            self.state_changed.emit(current);
+        }
+    }
 }
-impl_widget_delegate!(Button, base);
+
+impl Widget for Button {
+    fn id(&self) -> ObjectId { self.base.id() }
+    fn kind(&self) -> WidgetKind { self.base.kind() }
+    fn geometry(&self) -> Rect { self.base.geometry() }
+    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
+    fn min_size(&self) -> Option<Size> { self.base.min_size() }
+    fn max_size(&self) -> Option<Size> { self.base.max_size() }
+    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
+    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
+    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
+    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
+    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
+    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
+    fn children(&self) -> &[ObjectId] { self.base.children() }
+    fn show(&mut self) { self.base.show(); }
+    fn hide(&mut self) { self.base.hide(); }
+    fn is_visible(&self) -> bool { self.base.is_visible() }
+    fn set_enabled(&mut self, enabled: bool) { self.set_enabled_state(enabled); }
+    fn is_enabled(&self) -> bool { self.base.is_enabled() }
+    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
+    fn tooltip(&self) -> &str { self.base.tooltip() }
+    fn style(&self) -> &WidgetStyle { self.base.style() }
+    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
+    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
+    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
+    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
+    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
+    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
+    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+}
+
+impl EventHandler for Button {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MousePress { .. } => self.press(),
+            Event::MouseRelease { .. } => {
+                let was_pressed = self.is_pressed();
+                self.release();
+                if was_pressed && self.is_enabled() {
+                    self.activated.emit();
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Checkbox widget.
-pub struct CheckBox { base: BaseWidget, checked: bool, pub toggled: Signal1<bool> }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckState {
+    Unchecked,
+    PartiallyChecked,
+    Checked,
+}
+
+pub struct CheckBox {
+    base: BaseWidget,
+    state: CheckState,
+    tristate_enabled: bool,
+    pub toggled: Signal1<bool>,
+    pub state_changed: Signal1<CheckState>,
+}
 impl CheckBox {
     /// Creates an unchecked checkbox with geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self { base: BaseWidget::new(WidgetKind::CheckBox, geometry, "CheckBox"), checked: false, toggled: Signal1::new() }
+        Self {
+            base: BaseWidget::new(WidgetKind::CheckBox, geometry, "CheckBox"),
+            state: CheckState::Unchecked,
+            tristate_enabled: false,
+            toggled: Signal1::new(),
+            state_changed: Signal1::new(),
+        }
     }
-    /// Sets checked state and emits `toggled`.
-    pub fn set_checked(&mut self, checked: bool) { self.checked = checked; self.toggled.emit(checked); }
+
+    /// Returns current check state.
+    pub fn state(&self) -> CheckState { self.state }
+
+    /// Returns true when the checkbox is fully checked.
+    pub fn is_checked(&self) -> bool { self.state == CheckState::Checked }
+
+    /// Enables/disables tri-state semantics.
+    pub fn set_tristate_enabled(&mut self, enabled: bool) {
+        self.tristate_enabled = enabled;
+        if !enabled && self.state == CheckState::PartiallyChecked {
+            self.set_state(CheckState::Unchecked);
+        }
+    }
+
+    /// Returns whether tri-state semantics are enabled.
+    pub fn is_tristate_enabled(&self) -> bool { self.tristate_enabled }
+
+    /// Sets state and emits deterministic state/toggle signals when changed.
+    pub fn set_state(&mut self, state: CheckState) {
+        let normalized = if !self.tristate_enabled && state == CheckState::PartiallyChecked {
+            CheckState::Unchecked
+        } else {
+            state
+        };
+        if self.state == normalized {
+            return;
+        }
+
+        let previous_checked = self.is_checked();
+        self.state = normalized;
+        let checked = self.is_checked();
+        if previous_checked != checked {
+            self.toggled.emit(checked);
+        }
+        self.state_changed.emit(self.state);
+    }
+
+    /// Sets checked/unchecked state.
+    pub fn set_checked(&mut self, checked: bool) {
+        self.set_state(if checked { CheckState::Checked } else { CheckState::Unchecked });
+    }
+
+    /// Toggles checkbox according to tri-state configuration.
+    pub fn toggle(&mut self) {
+        let next = if self.tristate_enabled {
+            match self.state {
+                CheckState::Unchecked => CheckState::PartiallyChecked,
+                CheckState::PartiallyChecked => CheckState::Checked,
+                CheckState::Checked => CheckState::Unchecked,
+            }
+        } else if self.is_checked() {
+            CheckState::Unchecked
+        } else {
+            CheckState::Checked
+        };
+        self.set_state(next);
+    }
 }
 impl_widget_delegate!(CheckBox, base);
 
 /// Radio button widget.
-pub struct RadioButton { base: BaseWidget, checked: bool }
-/// Creates an unchecked radio button with geometry.
-impl RadioButton { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::RadioButton, geometry, "RadioButton"), checked: false } } pub fn set_checked(&mut self, checked: bool) { self.checked = checked; } }
+pub struct RadioButton {
+    base: BaseWidget,
+    checked: bool,
+    group_id: Option<String>,
+    pub selected: GenericSignal,
+    pub checked_changed: Signal1<bool>,
+}
+
+impl RadioButton {
+    /// Creates an unchecked radio button with geometry.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::RadioButton, geometry, "RadioButton"),
+            checked: false,
+            group_id: None,
+            selected: GenericSignal::new(),
+            checked_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current checked state.
+    pub fn is_checked(&self) -> bool { self.checked }
+
+    /// Sets optional group identifier.
+    pub fn set_group_id(&mut self, group_id: Option<String>) {
+        self.group_id = group_id;
+    }
+
+    /// Returns optional group identifier.
+    pub fn group_id(&self) -> Option<&str> {
+        self.group_id.as_deref()
+    }
+
+    /// Sets checked state and emits deterministic signals.
+    pub fn set_checked(&mut self, checked: bool) {
+        if self.checked == checked {
+            return;
+        }
+        self.checked = checked;
+        self.checked_changed.emit(checked);
+        if checked {
+            self.selected.emit();
+        }
+    }
+
+    /// Selects one radio button within a peer group.
+    pub fn select_in_group(peers: &mut [&mut RadioButton], selected_index: usize) -> bool {
+        if selected_index >= peers.len() {
+            return false;
+        }
+
+        let selected_group = peers[selected_index].group_id.clone();
+        for (index, peer) in peers.iter_mut().enumerate() {
+            if selected_group.is_some() && peer.group_id != selected_group {
+                continue;
+            }
+            peer.set_checked(index == selected_index);
+        }
+        true
+    }
+}
 impl_widget_delegate!(RadioButton, base);
 
 /// Text label widget.
-pub struct Label { base: BaseWidget, text: String, alignment: Alignment }
+pub struct Label {
+    base: BaseWidget,
+    text: String,
+    image_source: Option<String>,
+    alignment: Alignment,
+    word_wrap: bool,
+    pub text_changed: Signal1<String>,
+    pub alignment_changed: Signal1<Alignment>,
+    pub image_changed: Signal1<Option<String>>,
+    pub word_wrap_changed: Signal1<bool>,
+}
 impl Label {
     /// Creates a label with text and geometry.
-    pub fn new(text: String, geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Label, geometry, "Label"), text, alignment: Alignment::Left } }
+    pub fn new(text: String, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Label, geometry, "Label"),
+            text,
+            image_source: None,
+            alignment: Alignment::Left,
+            word_wrap: false,
+            text_changed: Signal1::new(),
+            alignment_changed: Signal1::new(),
+            image_changed: Signal1::new(),
+            word_wrap_changed: Signal1::new(),
+        }
+    }
+
+    /// Sets label text and emits `text_changed` when value changes.
+    pub fn set_text(&mut self, text: String) {
+        if self.text == text {
+            return;
+        }
+        self.text = text.clone();
+        self.text_changed.emit(text);
+    }
+
+    /// Returns optional image source path/identifier.
+    pub fn image_source(&self) -> Option<&str> {
+        self.image_source.as_deref()
+    }
+
+    /// Sets optional image source and emits `image_changed` when value changes.
+    pub fn set_image_source(&mut self, image_source: Option<String>) {
+        if self.image_source == image_source {
+            return;
+        }
+        self.image_source = image_source.clone();
+        self.image_changed.emit(image_source);
+    }
+
+    /// Returns current label alignment.
+    pub fn alignment(&self) -> Alignment {
+        self.alignment
+    }
+
     /// Sets label text alignment.
-    pub fn set_alignment(&mut self, alignment: Alignment) { self.alignment = alignment; }
+    pub fn set_alignment(&mut self, alignment: Alignment) {
+        if self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.alignment_changed.emit(alignment);
+    }
+
+    /// Enables/disables word wrap behavior.
+    pub fn set_word_wrap(&mut self, word_wrap: bool) {
+        if self.word_wrap == word_wrap {
+            return;
+        }
+        self.word_wrap = word_wrap;
+        self.word_wrap_changed.emit(word_wrap);
+    }
+
+    /// Returns whether word wrap is enabled.
+    pub fn word_wrap(&self) -> bool {
+        self.word_wrap
+    }
+
     /// Returns label text.
     pub fn text(&self) -> &str { &self.text }
 }
 impl_widget_delegate!(Label, base);
 
 /// Single-line text editor widget.
-pub struct LineEdit { base: BaseWidget, text: String, pub text_changed: Signal1<String> }
+pub struct LineEdit {
+    base: BaseWidget,
+    text: String,
+    password_mode: bool,
+    selection: Option<(usize, usize)>,
+    pub text_changed: Signal1<String>,
+    pub return_pressed: GenericSignal,
+    pub selection_changed: Signal1<Option<(usize, usize)>>,
+    pub password_mode_changed: Signal1<bool>,
+}
 impl LineEdit {
     /// Creates an empty line editor.
-    pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::LineEdit, geometry, "LineEdit"), text: String::new(), text_changed: Signal1::new() } }
-    /// Sets text and emits `text_changed`.
-    pub fn set_text(&mut self, text: String) { self.text = text.clone(); self.text_changed.emit(text); }
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::LineEdit, geometry, "LineEdit"),
+            text: String::new(),
+            password_mode: false,
+            selection: None,
+            text_changed: Signal1::new(),
+            return_pressed: GenericSignal::new(),
+            selection_changed: Signal1::new(),
+            password_mode_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current editor text.
+    pub fn text(&self) -> &str { &self.text }
+
+    /// Sets text and emits `text_changed` when content changes.
+    pub fn set_text(&mut self, text: String) {
+        if self.text == text {
+            return;
+        }
+        self.text = text.clone();
+        self.text_changed.emit(text);
+        self.normalize_selection();
+    }
+
+    /// Returns whether password mode is enabled.
+    pub fn password_mode(&self) -> bool { self.password_mode }
+
+    /// Enables/disables password mode.
+    pub fn set_password_mode(&mut self, password_mode: bool) {
+        if self.password_mode == password_mode {
+            return;
+        }
+        self.password_mode = password_mode;
+        self.password_mode_changed.emit(password_mode);
+    }
+
+    /// Returns display text (masked in password mode).
+    pub fn display_text(&self) -> String {
+        if self.password_mode {
+            "•".repeat(self.text.chars().count())
+        } else {
+            self.text.clone()
+        }
+    }
+
+    /// Returns current selected byte range.
+    pub fn selection(&self) -> Option<(usize, usize)> { self.selection }
+
+    /// Updates selected byte range, clamped to text bounds.
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        let text_len = self.text.len();
+        let start = start.min(text_len);
+        let end = end.min(text_len);
+        let normalized = if start == end {
+            None
+        } else {
+            Some((start.min(end), start.max(end)))
+        };
+        if self.selection == normalized {
+            return;
+        }
+        self.selection = normalized;
+        self.selection_changed.emit(self.selection);
+    }
+
+    /// Clears selected text range.
+    pub fn clear_selection(&mut self) {
+        self.set_selection(0, 0);
+    }
+
+    /// Copies selected text when selection is valid.
+    pub fn copy_selection(&self) -> Option<String> {
+        let (start, end) = self.selection?;
+        self.text.get(start..end).map(ToString::to_string)
+    }
+
+    /// Cuts selected text and returns removed text.
+    pub fn cut_selection(&mut self) -> Option<String> {
+        let (start, end) = self.selection?;
+        let cut = self.text.get(start..end)?.to_string();
+        self.text.replace_range(start..end, "");
+        self.text_changed.emit(self.text.clone());
+        self.selection = None;
+        self.selection_changed.emit(None);
+        Some(cut)
+    }
+
+    /// Pastes text into selection or appends when no selection exists.
+    pub fn paste_text(&mut self, text: &str) {
+        if let Some((start, end)) = self.selection {
+            if self.text.get(start..end).is_some() {
+                self.text.replace_range(start..end, text);
+                self.text_changed.emit(self.text.clone());
+                self.selection = None;
+                self.selection_changed.emit(None);
+                return;
+            }
+        }
+
+        self.text.push_str(text);
+        self.text_changed.emit(self.text.clone());
+    }
+
+    fn normalize_selection(&mut self) {
+        if let Some((start, end)) = self.selection {
+            let text_len = self.text.len();
+            if start > text_len || end > text_len {
+                let clamped_start = start.min(text_len);
+                let clamped_end = end.min(text_len);
+                self.selection = if clamped_start == clamped_end {
+                    None
+                } else {
+                    Some((clamped_start.min(clamped_end), clamped_start.max(clamped_end)))
+                };
+                self.selection_changed.emit(self.selection);
+            }
+        }
+    }
 }
-impl_widget_delegate!(LineEdit, base);
+impl Widget for LineEdit {
+    fn id(&self) -> ObjectId { self.base.id() }
+    fn kind(&self) -> WidgetKind { self.base.kind() }
+    fn geometry(&self) -> Rect { self.base.geometry() }
+    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
+    fn min_size(&self) -> Option<Size> { self.base.min_size() }
+    fn max_size(&self) -> Option<Size> { self.base.max_size() }
+    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
+    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
+    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
+    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
+    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
+    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
+    fn children(&self) -> &[ObjectId] { self.base.children() }
+    fn show(&mut self) { self.base.show(); }
+    fn hide(&mut self) { self.base.hide(); }
+    fn is_visible(&self) -> bool { self.base.is_visible() }
+    fn set_enabled(&mut self, enabled: bool) { self.base.set_enabled(enabled); }
+    fn is_enabled(&self) -> bool { self.base.is_enabled() }
+    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
+    fn tooltip(&self) -> &str { self.base.tooltip() }
+    fn style(&self) -> &WidgetStyle { self.base.style() }
+    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
+    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
+    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
+    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
+    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
+    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
+    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+}
+
+impl EventHandler for LineEdit {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if matches!(event, Event::KeyPress { key: 13, .. }) {
+            self.return_pressed.emit();
+        }
+    }
+}
 
 /// Multi-line text editor widget.
 pub struct TextEdit { base: BaseWidget, text: String }
@@ -460,9 +1063,20 @@ impl_widget_delegate!(TextEdit, base);
 pub struct ComboBox {
     base: BaseWidget,
     items: Vec<String>,
-    current: usize,
+    current: Option<usize>,
+    dropdown_open: bool,
     /// Emitted when selected index changes.
     pub selection_changed: Signal1<usize>,
+    /// Emitted when selected index changes.
+    pub index_changed: Signal1<usize>,
+    /// Emitted when selected value changes.
+    pub value_changed: Signal1<String>,
+    /// Emitted when dropdown visibility changes.
+    pub dropdown_visibility_changed: Signal1<bool>,
+    /// Emitted when dropdown opens.
+    pub dropdown_opened: GenericSignal,
+    /// Emitted when dropdown closes.
+    pub dropdown_closed: GenericSignal,
 }
 impl ComboBox {
     /// Creates an empty combo-box.
@@ -470,21 +1084,155 @@ impl ComboBox {
         Self {
             base: BaseWidget::new(WidgetKind::ComboBox, geometry, "ComboBox"),
             items: Vec::new(),
-            current: 0,
+            current: None,
+            dropdown_open: false,
             selection_changed: Signal1::new(),
+            index_changed: Signal1::new(),
+            value_changed: Signal1::new(),
+            dropdown_visibility_changed: Signal1::new(),
+            dropdown_opened: GenericSignal::new(),
+            dropdown_closed: GenericSignal::new(),
         }
     }
     /// Appends one item.
     pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); }
-    /// Updates current item index when in range.
-    pub fn set_current_index(&mut self, index: usize) {
-        if index < self.items.len() {
-            self.current = index;
-            self.selection_changed.emit(index);
+
+    /// Returns selected index when available.
+    pub fn current_index(&self) -> Option<usize> { self.current }
+
+    /// Returns selected text when available.
+    pub fn current_text(&self) -> Option<&str> {
+        self.current.and_then(|index| self.items.get(index).map(String::as_str))
+    }
+
+    /// Returns whether dropdown list is currently open.
+    pub fn is_dropdown_open(&self) -> bool {
+        self.dropdown_open
+    }
+
+    /// Opens dropdown list and emits visibility signals when state changes.
+    pub fn open_dropdown(&mut self) {
+        if self.dropdown_open {
+            return;
         }
+        self.dropdown_open = true;
+        self.dropdown_visibility_changed.emit(true);
+        self.dropdown_opened.emit();
+    }
+
+    /// Closes dropdown list and emits visibility signals when state changes.
+    pub fn close_dropdown(&mut self) {
+        if !self.dropdown_open {
+            return;
+        }
+        self.dropdown_open = false;
+        self.dropdown_visibility_changed.emit(false);
+        self.dropdown_closed.emit();
+    }
+
+    /// Toggles dropdown list visibility.
+    pub fn toggle_dropdown(&mut self) {
+        if self.dropdown_open {
+            self.close_dropdown();
+        } else {
+            self.open_dropdown();
+        }
+    }
+
+    /// Updates current item index when in range.
+    pub fn set_current_index(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        if self.current == Some(index) {
+            return true;
+        }
+        self.current = Some(index);
+        self.selection_changed.emit(index);
+        self.index_changed.emit(index);
+        if let Some(value) = self.items.get(index) {
+            self.value_changed.emit(value.clone());
+        }
+        true
+    }
+
+    /// Clears all items and selection.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.current = None;
+        self.close_dropdown();
     }
 }
 impl_widget_delegate!(ComboBox, base);
+
+/// Spin-box widget.
+pub struct SpinBox {
+    base: BaseWidget,
+    min: i32,
+    max: i32,
+    value: i32,
+    single_step: i32,
+    pub value_changed: Signal1<i32>,
+}
+
+impl SpinBox {
+    /// Creates a spin-box with default range/value and step.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::SpinBox, geometry, "SpinBox"),
+            min: 0,
+            max: 100,
+            value: 0,
+            single_step: 1,
+            value_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns minimum value.
+    pub fn min(&self) -> i32 { self.min }
+
+    /// Returns maximum value.
+    pub fn max(&self) -> i32 { self.max }
+
+    /// Returns current value.
+    pub fn value(&self) -> i32 { self.value }
+
+    /// Returns configured step value.
+    pub fn single_step(&self) -> i32 { self.single_step }
+
+    /// Sets minimum/maximum range and clamps current value.
+    pub fn set_range(&mut self, min: i32, max: i32) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    /// Sets step used by increment/decrement operations.
+    pub fn set_single_step(&mut self, step: i32) {
+        self.single_step = step.max(1);
+    }
+
+    /// Sets value with deterministic clamping and change signal behavior.
+    pub fn set_value(&mut self, value: i32) {
+        let clamped = value.clamp(self.min, self.max);
+        if self.value == clamped {
+            return;
+        }
+        self.value = clamped;
+        self.value_changed.emit(clamped);
+    }
+
+    /// Increments value by one step.
+    pub fn step_up(&mut self) {
+        self.set_value(self.value.saturating_add(self.single_step));
+    }
+
+    /// Decrements value by one step.
+    pub fn step_down(&mut self) {
+        self.set_value(self.value.saturating_sub(self.single_step));
+    }
+}
+impl_widget_delegate!(SpinBox, base);
 
 /// List-box widget with simple string item storage.
 pub struct ListBox { base: BaseWidget, items: Vec<String> }
@@ -922,15 +1670,101 @@ impl TableModel for SortFilterTableModel {
 }
 
 /// Progress bar widget.
-pub struct ProgressBar { base: BaseWidget, value: u32 }
-/// Creates a progress bar and updates current value.
-impl ProgressBar { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ProgressBar, geometry, "ProgressBar"), value: 0 } } pub fn set_value(&mut self, value: u32) { self.value = value.min(100); } }
+pub struct ProgressBar {
+    base: BaseWidget,
+    min: u32,
+    max: u32,
+    value: u32,
+    pub value_changed: Signal1<u32>,
+}
+
+impl ProgressBar {
+    /// Creates a progress bar and initializes default range/value.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ProgressBar, geometry, "ProgressBar"),
+            min: 0,
+            max: 100,
+            value: 0,
+            value_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current minimum.
+    pub fn min(&self) -> u32 { self.min }
+
+    /// Returns current maximum.
+    pub fn max(&self) -> u32 { self.max }
+
+    /// Returns current value.
+    pub fn value(&self) -> u32 { self.value }
+
+    /// Sets range and clamps current value.
+    pub fn set_range(&mut self, min: u32, max: u32) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    /// Sets progress value with deterministic clamping and change emission.
+    pub fn set_value(&mut self, value: u32) {
+        let clamped = value.clamp(self.min, self.max);
+        if self.value == clamped {
+            return;
+        }
+        self.value = clamped;
+        self.value_changed.emit(clamped);
+    }
+}
 impl_widget_delegate!(ProgressBar, base);
 
 /// Slider widget.
-pub struct Slider { base: BaseWidget, value: i32 }
-/// Creates a slider and updates current value.
-impl Slider { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Slider, geometry, "Slider"), value: 0 } } pub fn set_value(&mut self, value: i32) { self.value = value; } }
+pub struct Slider {
+    base: BaseWidget,
+    min: i32,
+    max: i32,
+    value: i32,
+    pub value_changed: Signal1<i32>,
+}
+
+impl Slider {
+    /// Creates a slider and initializes default range/value.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Slider, geometry, "Slider"),
+            min: 0,
+            max: 100,
+            value: 0,
+            value_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current minimum.
+    pub fn min(&self) -> i32 { self.min }
+
+    /// Returns current maximum.
+    pub fn max(&self) -> i32 { self.max }
+
+    /// Returns current value.
+    pub fn value(&self) -> i32 { self.value }
+
+    /// Sets slider range and clamps current value.
+    pub fn set_range(&mut self, min: i32, max: i32) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    /// Sets slider value with deterministic clamping and change emission.
+    pub fn set_value(&mut self, value: i32) {
+        let clamped = value.clamp(self.min, self.max);
+        if self.value == clamped {
+            return;
+        }
+        self.value = clamped;
+        self.value_changed.emit(clamped);
+    }
+}
 impl_widget_delegate!(Slider, base);
 
 /// Scroll bar widget.
@@ -1297,12 +2131,19 @@ mod tests {
             hits_ref.fetch_add(1, Ordering::SeqCst);
         });
 
+        let mouse_down_hits = Arc::new(AtomicUsize::new(0));
+        let mouse_down_ref = Arc::clone(&mouse_down_hits);
+        base.mouse_down_signal().connect(move |_| {
+            mouse_down_ref.fetch_add(1, Ordering::SeqCst);
+        });
+
         base.handle_event(&Event::MousePress {
             pos: crate::core::Point { x: 1, y: 1 },
             button: 1,
         });
 
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(mouse_down_hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1310,12 +2151,16 @@ mod tests {
         let mut button = Button::new("ok".to_string(), Rect::new(10, 20, 80, 30));
         assert_eq!(button.position(), Point::new(10, 20));
         assert_eq!(button.size(), Size::new(80, 30));
+        assert_eq!(button.rect(), Rect::new(10, 20, 80, 30));
 
         button.set_position(Point::new(3, 4));
         assert_eq!(button.geometry(), Rect::new(3, 4, 80, 30));
 
         button.set_size(Size::new(12, 8));
         assert_eq!(button.geometry(), Rect::new(3, 4, 12, 8));
+
+        button.set_rect(Rect::new(7, 9, 21, 22));
+        assert_eq!(button.geometry(), Rect::new(7, 9, 21, 22));
     }
 
     #[test]
@@ -1365,5 +2210,344 @@ mod tests {
         assert_eq!(panel.border_width(), 3);
         assert_eq!(panel.border_radius(), 4);
         assert_eq!(panel.font(), Some(&font));
+    }
+
+    #[test]
+    fn base_widget_emits_mouse_keyboard_and_focus_signals() {
+        let mut base = BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 20, 20), "Panel");
+
+        let hover_hits = Arc::new(AtomicUsize::new(0));
+        let mouse_down_hits = Arc::new(AtomicUsize::new(0));
+        let mouse_up_hits = Arc::new(AtomicUsize::new(0));
+        let key_down_hits = Arc::new(AtomicUsize::new(0));
+        let key_up_hits = Arc::new(AtomicUsize::new(0));
+        let focus_gained_hits = Arc::new(AtomicUsize::new(0));
+        let focus_lost_hits = Arc::new(AtomicUsize::new(0));
+
+        {
+            let hits = Arc::clone(&hover_hits);
+            base.hover_signal().connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&mouse_down_hits);
+            base.mouse_down_signal().connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&mouse_up_hits);
+            base.mouse_up_signal().connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&key_down_hits);
+            base.key_down_signal().connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&key_up_hits);
+            base.key_up_signal().connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&focus_gained_hits);
+            base.focus_gained_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&focus_lost_hits);
+            base.focus_lost_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        base.handle_event(&Event::MouseEnter { pos: Point::new(1, 2) });
+        base.handle_event(&Event::MouseMove { pos: Point::new(2, 3) });
+        base.handle_event(&Event::MousePress {
+            pos: Point::new(4, 5),
+            button: 1,
+        });
+        base.handle_event(&Event::MouseRelease {
+            pos: Point::new(4, 5),
+            button: 1,
+        });
+        base.handle_event(&Event::KeyPress {
+            key: 13,
+            modifiers: 0,
+        });
+        base.handle_event(&Event::KeyRelease {
+            key: 13,
+            modifiers: 0,
+        });
+        base.handle_event(&Event::Custom {
+            name: "focus_gained".to_string(),
+            payload: Vec::new(),
+        });
+        base.handle_event(&Event::MouseLeave { pos: Point::new(9, 9) });
+
+        assert_eq!(hover_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(mouse_down_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(mouse_up_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(key_down_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(key_up_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(focus_gained_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(focus_lost_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn base_widget_emits_redraw_and_layout_request_signals() {
+        let mut base = BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 20, 20), "Panel");
+
+        let redraw_hits = Arc::new(AtomicUsize::new(0));
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+
+        {
+            let hits = Arc::clone(&redraw_hits);
+            base.redraw_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&layout_hits);
+            base.layout_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        base.handle_event(&Event::Paint);
+        base.handle_event(&Event::Resize {
+            size: Size::new(100, 80),
+        });
+        base.request_redraw();
+        base.request_layout();
+
+        assert_eq!(redraw_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(layout_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn button_state_machine_emits_press_release_and_activation() {
+        let mut button = Button::new("ok".to_string(), Rect::new(0, 0, 40, 20));
+
+        let pressed_hits = Arc::new(AtomicUsize::new(0));
+        let released_hits = Arc::new(AtomicUsize::new(0));
+        let activated_hits = Arc::new(AtomicUsize::new(0));
+        let state_hits = Arc::new(AtomicUsize::new(0));
+
+        {
+            let hits = Arc::clone(&pressed_hits);
+            button.pressed_signal.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&released_hits);
+            button.released_signal.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&activated_hits);
+            button.activated.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&state_hits);
+            button.state_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert_eq!(button.state(), ButtonState::Normal);
+
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(1, 1),
+            button: 1,
+        });
+        assert_eq!(button.state(), ButtonState::Pressed);
+
+        button.handle_event(&Event::MouseRelease {
+            pos: Point::new(1, 1),
+            button: 1,
+        });
+        assert_eq!(button.state(), ButtonState::Normal);
+
+        button.set_enabled(false);
+        assert_eq!(button.state(), ButtonState::Disabled);
+
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(1, 1),
+            button: 1,
+        });
+        assert_eq!(button.state(), ButtonState::Disabled);
+
+        assert_eq!(pressed_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(released_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(activated_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(state_hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn label_full_contract_emits_text_alignment_image_and_wrap_signals() {
+        let mut label = Label::new("hello".to_string(), Rect::new(0, 0, 80, 20));
+
+        let text_hits = Arc::new(AtomicUsize::new(0));
+        let alignment_hits = Arc::new(AtomicUsize::new(0));
+        let image_hits = Arc::new(AtomicUsize::new(0));
+        let wrap_hits = Arc::new(AtomicUsize::new(0));
+
+        {
+            let hits = Arc::clone(&text_hits);
+            label.text_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&alignment_hits);
+            label.alignment_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&image_hits);
+            label.image_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&wrap_hits);
+            label.word_wrap_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert_eq!(label.alignment(), Alignment::Left);
+        assert!(!label.word_wrap());
+        assert_eq!(label.image_source(), None);
+
+        label.set_text("hello".to_string());
+        label.set_text("world".to_string());
+        label.set_alignment(Alignment::Left);
+        label.set_alignment(Alignment::Center);
+        label.set_image_source(Some("icon.png".to_string()));
+        label.set_word_wrap(true);
+
+        assert_eq!(text_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(alignment_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(image_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(wrap_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn line_edit_full_contract_covers_return_password_and_edit_ops() {
+        let mut edit = LineEdit::new(Rect::new(0, 0, 120, 24));
+        let return_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&return_hits);
+            edit.return_pressed.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        edit.set_text("hello".to_string());
+        edit.set_selection(1, 4);
+        assert_eq!(edit.copy_selection().as_deref(), Some("ell"));
+        assert_eq!(edit.cut_selection().as_deref(), Some("ell"));
+        assert_eq!(edit.text(), "ho");
+
+        edit.paste_text("abc");
+        assert_eq!(edit.text(), "hoabc");
+
+        edit.set_password_mode(true);
+        assert_eq!(edit.display_text(), "•••••");
+
+        edit.handle_event(&Event::KeyPress {
+            key: 13,
+            modifiers: 0,
+        });
+        edit.handle_event(&Event::KeyPress {
+            key: 9,
+            modifiers: 0,
+        });
+
+        assert_eq!(return_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn checkbox_and_radio_full_contracts_cover_tristate_and_group_selection() {
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 20, 20));
+        checkbox.toggle();
+        assert_eq!(checkbox.state(), CheckState::Checked);
+
+        checkbox.set_tristate_enabled(true);
+        checkbox.toggle();
+        assert_eq!(checkbox.state(), CheckState::Unchecked);
+        checkbox.toggle();
+        assert_eq!(checkbox.state(), CheckState::PartiallyChecked);
+
+        let mut radio_a = RadioButton::new(Rect::new(0, 0, 20, 20));
+        let mut radio_b = RadioButton::new(Rect::new(0, 0, 20, 20));
+        let mut radio_c = RadioButton::new(Rect::new(0, 0, 20, 20));
+        radio_a.set_group_id(Some("g".to_string()));
+        radio_b.set_group_id(Some("g".to_string()));
+        radio_c.set_group_id(Some("h".to_string()));
+
+        let mut peers = vec![&mut radio_a, &mut radio_b, &mut radio_c];
+        assert!(RadioButton::select_in_group(&mut peers, 1));
+
+        assert!(!peers[0].is_checked());
+        assert!(peers[1].is_checked());
+        assert!(!peers[2].is_checked());
+    }
+
+    #[test]
+    fn combo_slider_progress_and_spinbox_full_contracts_emit_deterministic_value_signals() {
+        let mut combo = ComboBox::new(Rect::new(0, 0, 80, 24));
+        let dropdown_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&dropdown_hits);
+            combo.dropdown_visibility_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        combo.add_item("A");
+        combo.add_item("B");
+        assert!(combo.set_current_index(1));
+        assert!(!combo.set_current_index(9));
+        assert_eq!(combo.current_index(), Some(1));
+        assert_eq!(combo.current_text(), Some("B"));
+        assert!(!combo.is_dropdown_open());
+        combo.open_dropdown();
+        assert!(combo.is_dropdown_open());
+        combo.close_dropdown();
+        assert!(!combo.is_dropdown_open());
+        assert_eq!(dropdown_hits.load(Ordering::SeqCst), 2);
+
+        let mut slider = Slider::new(Rect::new(0, 0, 80, 24));
+        slider.set_range(-10, 10);
+        slider.set_value(25);
+        assert_eq!(slider.value(), 10);
+
+        let mut spin = SpinBox::new(Rect::new(0, 0, 80, 24));
+        spin.set_range(-5, 5);
+        spin.set_single_step(3);
+        spin.set_value(9);
+        assert_eq!(spin.value(), 5);
+        spin.step_down();
+        assert_eq!(spin.value(), 2);
+        spin.step_up();
+        assert_eq!(spin.value(), 5);
+
+        let mut progress = ProgressBar::new(Rect::new(0, 0, 80, 24));
+        progress.set_range(20, 60);
+        progress.set_value(5);
+        assert_eq!(progress.value(), 20);
     }
 }

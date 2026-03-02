@@ -55,6 +55,12 @@ jobs:
           chmod +x tools/check_abi.sh
           ./tools/check_abi.sh
 
+      - name: Run signal-first event model gate
+        shell: bash
+        run: |
+          chmod +x tools/check_event_model_signal_first.sh
+          ./tools/check_event_model_signal_first.sh
+
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest

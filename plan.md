@@ -31,7 +31,7 @@
 	- Margin/Padding (per side)
 	- Alignment (left/center/right, top/center/bottom)
 
-- [ ] Widget Base Class
+- [x] Widget Base Class — Completed 2026-03-02
 	- Position/size/rect methods
 	- Show/hide, enable/disable
 	- Min/max size constraints
@@ -40,7 +40,7 @@
 	- Redraw/layout signals
 	- All input as signals, no virtual functions or inheritance magic
 
-- [ ] Basic Widgets
+- [x] Basic Widgets — Completed 2026-03-02
 	- Button: text/icon, clicked signal, press/release/disable states
 	- Label: text/image, word wrap, alignment
 	- LineEdit: text_changed, return_pressed, selection/copy/cut/paste, password mode
@@ -50,7 +50,7 @@
 	- SpinBox/Slider: value_changed
 	- ProgressBar: set/get value
 
-- [ ] Layout System
+- [x] Layout System — Completed 2026-03-02
 	- HBox (horizontal)
 	- VBox (vertical)
 	- Grid (grid)
@@ -58,7 +58,7 @@
 	- Auto position/size calculation
 	- Stretch factors, spacing, margins
 
-- [ ] Action System
+- [x] Action System — Completed 2026-03-02
 	- Shared logic for menu/button/shortcut
 	- triggered signal
 	- Checkable, enable/disable

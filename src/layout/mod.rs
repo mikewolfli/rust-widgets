@@ -78,6 +78,36 @@ impl BoxLayout {
         Self { orientation, spacing, margin, items: Vec::new() }
     }
 
+    /// Returns layout orientation.
+    pub fn orientation(&self) -> Orientation {
+        self.orientation
+    }
+
+    /// Returns inter-item spacing.
+    pub fn spacing(&self) -> u32 {
+        self.spacing
+    }
+
+    /// Updates inter-item spacing.
+    pub fn set_spacing(&mut self, spacing: u32) {
+        self.spacing = spacing;
+    }
+
+    /// Returns outer margin.
+    pub fn margin(&self) -> u32 {
+        self.margin
+    }
+
+    /// Updates outer margin.
+    pub fn set_margin(&mut self, margin: u32) {
+        self.margin = margin;
+    }
+
+    /// Returns number of managed items (widgets + spacers).
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
     /// Adds an empty spacer item with the provided stretch factor.
     pub fn add_spacer(&mut self, stretch: u32) {
         self.items.push(BoxLayoutItem {
@@ -109,6 +139,69 @@ impl BoxLayout {
             item.policy = policy;
         }
     }
+
+    fn allocate_major_lengths(&self, primary: u32) -> Vec<u32> {
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+
+        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
+        let mut assigned = Vec::with_capacity(self.items.len());
+
+        for item in &self.items {
+            let mut major = if item.policy == SizePolicy::Fixed {
+                item.constraints.max.unwrap_or(item.constraints.min)
+            } else {
+                primary.saturating_mul(item.stretch) / total_stretch
+            };
+
+            major = major.max(item.constraints.min);
+            if let Some(max) = item.constraints.max {
+                major = major.min(max.max(item.constraints.min));
+            }
+            assigned.push(major);
+        }
+
+        let mut total_assigned: u32 = assigned.iter().sum();
+
+        while total_assigned < primary {
+            let mut grew = false;
+            for (index, item) in self.items.iter().enumerate() {
+                if total_assigned >= primary {
+                    break;
+                }
+                let max_allowed = item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
+                if assigned[index] < max_allowed {
+                    assigned[index] = assigned[index].saturating_add(1);
+                    total_assigned = total_assigned.saturating_add(1);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        while total_assigned > primary {
+            let mut shrank = false;
+            for (index, item) in self.items.iter().enumerate().rev() {
+                if total_assigned <= primary {
+                    break;
+                }
+                let min_allowed = item.constraints.min;
+                if assigned[index] > min_allowed {
+                    assigned[index] = assigned[index].saturating_sub(1);
+                    total_assigned = total_assigned.saturating_sub(1);
+                    shrank = true;
+                }
+            }
+            if !shrank {
+                break;
+            }
+        }
+
+        assigned
+    }
 }
 
 impl Layout for BoxLayout {
@@ -136,21 +229,12 @@ impl Layout for BoxLayout {
         }
         .saturating_sub(self.margin * 2)
         .saturating_sub(gaps * self.spacing);
-
-        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
+        let majors = self.allocate_major_lengths(primary);
         let mut cursor_x = rect.x + self.margin as i32;
         let mut cursor_y = rect.y + self.margin as i32;
 
-        for item in &self.items {
-            let mut major = primary.saturating_mul(item.stretch) / total_stretch;
-            major = major.max(item.constraints.min);
-            if let Some(max) = item.constraints.max {
-                major = major.min(max);
-            }
-
-            if item.policy == SizePolicy::Fixed {
-                major = item.constraints.max.unwrap_or(item.constraints.min).max(item.constraints.min);
-            }
+        for (index, item) in self.items.iter().enumerate() {
+            let major = majors.get(index).copied().unwrap_or(0);
 
             let child_rect = match self.orientation {
                 Orientation::Horizontal => {
@@ -168,6 +252,126 @@ impl Layout for BoxLayout {
                 Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
             }
         }
+    }
+}
+
+/// Horizontal box layout with explicit naming parity.
+pub struct HBoxLayout {
+    inner: BoxLayout,
+}
+
+impl HBoxLayout {
+    /// Creates a horizontal box layout.
+    pub fn new(spacing: u32, margin: u32) -> Self {
+        Self {
+            inner: BoxLayout::new(Orientation::Horizontal, spacing, margin),
+        }
+    }
+
+    pub fn add_spacer(&mut self, stretch: u32) {
+        self.inner.add_spacer(stretch);
+    }
+
+    pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
+        self.inner.set_constraints(widget_id, constraints);
+    }
+
+    pub fn set_size_policy(&mut self, widget_id: ObjectId, policy: SizePolicy) {
+        self.inner.set_size_policy(widget_id, policy);
+    }
+
+    pub fn spacing(&self) -> u32 {
+        self.inner.spacing()
+    }
+
+    pub fn set_spacing(&mut self, spacing: u32) {
+        self.inner.set_spacing(spacing);
+    }
+
+    pub fn margin(&self) -> u32 {
+        self.inner.margin()
+    }
+
+    pub fn set_margin(&mut self, margin: u32) {
+        self.inner.set_margin(margin);
+    }
+
+    pub fn item_count(&self) -> usize {
+        self.inner.item_count()
+    }
+}
+
+impl Layout for HBoxLayout {
+    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.inner.add_widget(widget_id, stretch);
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.inner.remove_widget(widget_id);
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        self.inner.update(rect, widgets);
+    }
+}
+
+/// Vertical box layout with explicit naming parity.
+pub struct VBoxLayout {
+    inner: BoxLayout,
+}
+
+impl VBoxLayout {
+    /// Creates a vertical box layout.
+    pub fn new(spacing: u32, margin: u32) -> Self {
+        Self {
+            inner: BoxLayout::new(Orientation::Vertical, spacing, margin),
+        }
+    }
+
+    pub fn add_spacer(&mut self, stretch: u32) {
+        self.inner.add_spacer(stretch);
+    }
+
+    pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
+        self.inner.set_constraints(widget_id, constraints);
+    }
+
+    pub fn set_size_policy(&mut self, widget_id: ObjectId, policy: SizePolicy) {
+        self.inner.set_size_policy(widget_id, policy);
+    }
+
+    pub fn spacing(&self) -> u32 {
+        self.inner.spacing()
+    }
+
+    pub fn set_spacing(&mut self, spacing: u32) {
+        self.inner.set_spacing(spacing);
+    }
+
+    pub fn margin(&self) -> u32 {
+        self.inner.margin()
+    }
+
+    pub fn set_margin(&mut self, margin: u32) {
+        self.inner.set_margin(margin);
+    }
+
+    pub fn item_count(&self) -> usize {
+        self.inner.item_count()
+    }
+}
+
+impl Layout for VBoxLayout {
+    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.inner.add_widget(widget_id, stretch);
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.inner.remove_widget(widget_id);
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        self.inner.update(rect, widgets);
     }
 }
 
@@ -472,5 +676,74 @@ mod tests {
         );
 
         assert_eq!(out, Some(Rect::new(9, 11, 30, 12)));
+    }
+
+    #[test]
+    fn hbox_and_vbox_named_types_delegate_to_box_layout_contract() {
+        let mut hbox = HBoxLayout::new(3, 2);
+        hbox.add_widget(1, 1);
+        hbox.add_spacer(1);
+        hbox.add_widget(2, 2);
+        assert_eq!(hbox.spacing(), 3);
+        assert_eq!(hbox.margin(), 2);
+        assert_eq!(hbox.item_count(), 3);
+
+        let mut rects = std::collections::HashMap::new();
+        hbox.update(Rect::new(0, 0, 120, 20), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.len(), 2);
+
+        let mut vbox = VBoxLayout::new(1, 0);
+        vbox.add_widget(10, 1);
+        vbox.add_widget(11, 1);
+        let mut out = std::collections::HashMap::new();
+        vbox.update(Rect::new(0, 0, 20, 40), &mut |id, rect| {
+            out.insert(id, rect);
+        });
+        assert_eq!(out.len(), 2);
+        assert!(out.get(&11).map(|r| r.y).unwrap_or_default() > out.get(&10).map(|r| r.y).unwrap_or_default());
+    }
+
+    #[test]
+    fn box_layout_distribution_consumes_available_major_axis() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.add_widget(3, 1);
+
+        let mut widths = std::collections::HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 10), &mut |id, rect| {
+            widths.insert(id, rect.width);
+        });
+
+        let total: u32 = widths.values().copied().sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn grid_and_stack_layouts_have_deterministic_placement() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 1, 2);
+        let mut grid_rects = std::collections::HashMap::new();
+        grid.update(Rect::new(0, 0, 40, 20), &mut |id, rect| {
+            grid_rects.insert(id, rect);
+        });
+
+        assert_eq!(grid_rects.get(&1), Some(&Rect::new(0, 0, 20, 10)));
+        assert_eq!(grid_rects.get(&2), Some(&Rect::new(20, 10, 20, 10)));
+
+        let mut stack = StackLayout::new();
+        stack.add_widget(7, 0);
+        stack.add_widget(8, 0);
+        stack.set_current_index(1);
+
+        let mut shown = None;
+        stack.update(Rect::new(1, 2, 30, 40), &mut |id, rect| {
+            shown = Some((id, rect));
+        });
+
+        assert_eq!(shown, Some((8, Rect::new(1, 2, 30, 40))));
     }
 }

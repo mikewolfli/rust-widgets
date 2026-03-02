@@ -9,22 +9,99 @@ This file mirrors staged execution status.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
 
-## Current Requirements (v11)
+## Current Requirements (v14)
 
 ## Stage Progress
 
+- [x] P0a Add action host parity: shared binding routes for menu/button/toolbar + shortcut
+- [x] P0b Add deterministic action trigger contract with enabled gating and trigger result semantics
+- [x] P1a Add checkable action contract (`checkable`, `checked`, toggle-on-trigger behavior)
+- [x] P1b Add action state signals (`triggered`, `toggled`, `enabled_changed`) for signal-first routes
+- [x] P2a Add focused regression tests for action manager routing and state transitions
+- [x] P2b Update docs/changelog notes for v14 action-system contract
+
+## Architecture Upgrades
+
+- [x] Action routing architecture baseline: shared action registry across menu/button/toolbar/shortcut
+- [x] Action state architecture baseline: deterministic enabled/checkable/checked contract with signals
+- [x] Action regression baseline: trigger/toggle/binding behavior covered by focused tests
+
+## Notes
+
+- `v14` is generated from `plan.md` item6 (Action System).
+- `v14` focuses on completing shared action routing + checkable state contract.
+- Focused verification: `cargo test --lib action::tests:: && cargo test --lib widget::tests:: && cargo test --lib layout::tests::` (all pass).
+- `v13` is completed and preserved below as history.
+
+## Requirement History (v13)
+
+## Stage Progress
+
+- [x] P0a Add explicit `HBoxLayout` / `VBoxLayout` named types over directional box layout
+- [x] P0b Add deterministic box-layout major-axis distribution (remainder-aware, constraint-safe)
+- [x] P1a Add layout API surface for spacing/margin tuning and item introspection helpers
+- [x] P1b Verify Grid/Stack baseline deterministic placement behavior with focused regression tests
+- [x] P2a Add focused regression suite for layout auto position/size + stretch/spacing/margin contracts
+- [x] P2b Update docs/changelog notes for v13 layout-system contract
+- [x] P3c Close Basic Widgets carry-over gap: add `ComboBox` dropdown open/close state contract and signals
+- [x] P3d Close Basic Widgets carry-over gap: add `SpinBox` baseline with deterministic `value_changed` contract
+
+## Architecture Upgrades
+
+- [x] Layout API architecture baseline: explicit HBox/VBox/Grid/Stack first-class contract surface
+- [x] Layout compute architecture baseline: deterministic stretch distribution with spacing/margin constraints
+- [x] Layout regression baseline: auto geometry allocation behavior covered by focused tests
+
+## Notes
+
+- `v13` is generated from `plan.md` item5 (Layout System).
+- `v13` focuses on finishing explicit layout API surface + deterministic auto-allocation behavior.
+- Focused verification: `cargo test --lib layout::tests::` (all pass).
+- Carry-over gap note resolved: `ComboBox` dropdown + `SpinBox` are implemented and verified in widget tests.
+- `v12` is completed and preserved below as history.
+
+## Requirement History (v12)
+
+## Stage Progress
+
+- [x] P0a Button state baseline: press/release/disable state signals and explicit state getters
+- [x] P0b Label baseline: text + alignment contract with deterministic defaults
+- [x] P1a LineEdit baseline: return-pressed signal and password mode contract (signal-first)
+- [x] P1b CheckBox baseline: tri-state semantics with toggled/state-changed signal coverage
+- [x] P2a RadioButton baseline: group-selection routing and selected signal contract
+- [x] P2b ComboBox/Slider/ProgressBar baseline: deterministic value/index changed signal behavior
+- [x] P3a Add focused regression tests for basic widget state/signal contracts
+- [x] P3b Update docs/changelog notes for basic widget contract and migration guidance
+
+## Architecture Upgrades
+
+- [x] Basic widget state contract baseline: deterministic public state model for button/label/input controls
+- [x] Basic widget signal contract baseline: signal-first interaction/value surfaces across core controls
+- [x] Basic widget regression baseline: state/signal behavior covered by focused tests
+
+## Notes
+
+- `v12` is generated from `plan.md` item4 (Basic Widgets).
+- `v12` focuses on completing deterministic state + signal contracts for baseline controls.
+- `v11` is completed and preserved below as history.
+
+## Requirement History (v11)
+
+## Stage Progress
+
+- [x] P2c Close widget base rect API naming parity gap: add `rect/set_rect` aliases over `geometry/set_geometry`
 - [x] P0a Expose widget base geometry helpers (`position/size/rect` getters + setters)
 - [x] P0b Add widget base min/max size constraints with deterministic geometry clamping
 - [x] P1a Add widget base style shorthands for background/foreground/border/font common paths
-- [ ] P1b Add widget base mouse/keyboard/focus signal surface (`hover`, `mouse_down/up`, `key_down/up`, `focus_gained/lost`)
-- [ ] P2a Add widget base redraw/layout request signal surface
-- [ ] P2b Ensure widget interaction/input routes are signal-first for base-class covered paths
+- [x] P1b Add widget base mouse/keyboard/focus signal surface (`hover`, `mouse_down/up`, `key_down/up`, `focus_gained/lost`)
+- [x] P2a Add widget base redraw/layout request signal surface
+- [x] P2b Ensure widget interaction/input routes are signal-first for base-class covered paths
 
 ## Architecture Upgrades
 
 - [x] Widget geometry contract baseline: direct position/size/rect APIs + size-constraint clamping
 - [x] Widget style contract baseline: base-class shorthand style operations over canonical style primitives
-- [ ] Widget input contract baseline: base-class signal-first input/lifecycle surface
+- [x] Widget input contract baseline: base-class signal-first input/lifecycle surface
 
 ## Notes
 

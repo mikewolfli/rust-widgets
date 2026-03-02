@@ -19,6 +19,25 @@ All notable changes to this project are documented in this file.
   - `Font` weight baseline (`100..=900`), shared defaults, and normalization helpers
   - `Padding`/`Margin` per-side types with `all/symmetric/normalized` constructors
   - axis-specific alignment enums and mapping helpers (`HorizontalAlignment`/`VerticalAlignment`)
+- Basic widget full-class baseline for `v12`:
+  - `Label`: deterministic text/alignment/image/word-wrap state with change signals
+  - `LineEdit`: return-pressed signal, password-mode masking, selection/copy/cut/paste contract
+  - `CheckBox`/`RadioButton`: tri-state + group-selection routing with explicit state/selected signals
+  - `ComboBox`/`Slider`/`ProgressBar`: deterministic index/value range-clamped change signaling
+- CI signal-first guard:
+  - `tools/check_event_model_signal_first.sh` blocks wxWidgets-style event table patterns
+  - validation gate wired in `.github/workflows/ci.yml`
+- Layout system baseline for `v13`:
+  - explicit `HBoxLayout` / `VBoxLayout` named layout types with `Layout` parity
+  - deterministic `BoxLayout` major-axis allocation (remainder-aware, constraint-safe)
+  - spacing/margin/item-count tuning APIs for directional layout control
+  - focused layout regressions for box/grid/stack placement and auto geometry conversion
+- Action system baseline for `v14`:
+  - shared action routing parity across menu/button/toolbar hosts plus shortcut triggers
+  - deterministic trigger contract with enabled gating and trigger result semantics
+  - checkable action semantics (`checkable`, `checked`, toggle-on-trigger)
+  - action state signals for signal-first routes (`triggered`, `toggled`, `enabled_changed`)
+  - focused regressions for action binding/trigger/toggle behavior
 
 ### Changed
 
