@@ -38,6 +38,28 @@ All notable changes to this project are documented in this file.
   - checkable action semantics (`checkable`, `checked`, toggle-on-trigger)
   - action state signals for signal-first routes (`triggered`, `toggled`, `enabled_changed`)
   - focused regressions for action binding/trigger/toggle behavior
+- Intermediate widgets slice for `v15`:
+  - `ScrollBar` full-state contract (`min/max/value/page_step/single_step`) with deterministic `value_changed`
+  - `ScrollArea` baseline contract (`content_size`/`viewport_size`/`scroll_offset`) with signal-first change events
+  - focused widget regressions for bounded scroll behavior and offset normalization
+  - `GroupBox` title/checkable/checked deterministic contract with state change signals
+  - `TabWidget` deterministic selected-index routing (`add/remove/select`) with `current_index_changed`
+  - `Splitter` pane-ratio/size distribution contract with orientation/layout change signals
+  - `MenuBar`/`Menu`/`ToolBar`/`StatusBar` intermediate host contracts for action routing and status/message state signals
+  - dialog-family baseline contracts: `Dialog`, `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`
+    with deterministic result/state signals for accept/reject/select flows
+- Model/view architecture baseline for `v16`:
+  - observable model signal surface via `data_changed_signal` on `ListModel`/`TreeModel`/`TableModel`
+  - in-memory observable model contracts: `VecListModel`, `VecTreeModel`, `VecTableModel`
+  - auto-refresh wiring in `TreeView::set_model` and `TableWidget::set_model` (model changes trigger redraw/layout requests)
+  - focused regressions for model signal propagation and tree/table view refresh behavior
+- Advanced widgets kickoff for `v17`:
+  - `ListView` baseline contract with `ListModel` projection, deterministic selection, and model-driven auto-refresh wiring
+  - dedicated `TableView` contract wrapper with `TableWidget` parity for model/delegate/selection APIs
+  - expanded tree/table/list advanced view state contracts with focused row/node state and projection-safe normalization on model rebind
+  - `RichEdit` baseline contract with text/selection/read-only state and deterministic edit/cursor signals
+  - container baselines: `DockPanel` pane-placement contract and `MdiArea` document/active-document state contract
+  - focused regressions for `ListView`/`TableView` baseline behavior and full widget-suite compatibility
 
 ### Changed
 
@@ -49,6 +71,11 @@ All notable changes to this project are documented in this file.
   - widget trait helpers: `position/size`, `set_position/set_size`, `padding/margin`, `set_padding/set_margin`
   - layout trait helper: `update_from_position_size(position, size, ...)`
 - XML style parsing now reuses shared color parser (`Color::parse_hex`) and supports short/alpha hex forms.
+- Advanced widget runtime kinds are now disambiguated for `RichEdit`, `ListView`, `DockPanel`, and `MdiArea`
+  (no longer aliased to baseline kinds like `TextEdit`/`ListBox`/`Panel`/`StackWidget`).
+- Historical roadmap audit coverage for `v1~v9` is now explicitly recorded and re-validated against code/tests/scripts.
+- Embedded profile behavior-matrix validation now stays green by gating `serde_json`-dependent core deserialization test behind `desktop-runtime` feature.
+- Validation sweep for this audit slice is green: `check_profiles`, `check_event_model_signal_first`, `cargo test --lib`, `check_behavior_matrix`, `check_visual_regression`, and `check_abi`.
 
 ### Migration Notes
 
@@ -57,6 +84,16 @@ All notable changes to this project are documented in this file.
 - Existing uniform spacing behavior is preserved (`Padding::all`, `Margin::all`), while per-side values are
   now available for forward-compatible style contracts.
 - Geometry callers can incrementally adopt primitive helpers without breaking existing `Rect` call sites.
+
+## [0.5.0] - 2026-03-02
+
+### Added
+
+- Basic widgets milestone is complete and stabilized (Button/Label/LineEdit/CheckBox/RadioButton/ComboBox/SpinBox/Slider/ProgressBar).
+
+### Changed
+
+- Project crate version is now `0.5.0`.
 
 ## [0.1.0] - 2026-03-01
 

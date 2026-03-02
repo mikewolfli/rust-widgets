@@ -15,6 +15,10 @@ pub enum WidgetKind {
     /// Top-level window.
     Window,
     Dialog,
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
     PopupWindow,
     Button,
     CheckBox,
@@ -22,17 +26,23 @@ pub enum WidgetKind {
     Label,
     LineEdit,
     TextEdit,
+    RichEdit,
     ComboBox,
     SpinBox,
     ListBox,
+    ListView,
     TreeView,
     ProgressBar,
     Slider,
     ScrollBar,
+    ScrollArea,
     Panel,
+    DockPanel,
     GroupBox,
     TabWidget,
+    Splitter,
     StackWidget,
+    MdiArea,
     MenuBar,
     Menu,
     ToolBar,
@@ -486,12 +496,211 @@ impl EventHandler for Window {
 }
 
 /// Dialog widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogResult {
+    Accepted,
+    Rejected,
+    Canceled,
+}
+
 pub struct Dialog {
     base: BaseWidget,
+    modal: bool,
+    result: Option<DialogResult>,
+    pub accepted: GenericSignal,
+    pub rejected: GenericSignal,
+    pub finished: Signal1<DialogResult>,
 }
-/// Creates a dialog with geometry.
-impl Dialog { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::Dialog, geometry, "Dialog") } } }
+
+impl Dialog {
+    /// Creates a dialog with geometry.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Dialog, geometry, "Dialog"),
+            modal: false,
+            result: None,
+            accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
+            finished: Signal1::new(),
+        }
+    }
+
+    /// Returns whether this dialog is modal.
+    pub fn is_modal(&self) -> bool { self.modal }
+
+    /// Sets modal flag.
+    pub fn set_modal(&mut self, modal: bool) { self.modal = modal; }
+
+    /// Returns last result.
+    pub fn result(&self) -> Option<DialogResult> { self.result }
+
+    /// Completes dialog with provided result and emits signals.
+    pub fn finish(&mut self, result: DialogResult) {
+        self.result = Some(result);
+        match result {
+            DialogResult::Accepted => self.accepted.emit(),
+            DialogResult::Rejected | DialogResult::Canceled => self.rejected.emit(),
+        }
+        self.finished.emit(result);
+    }
+
+    /// Accepts dialog.
+    pub fn accept(&mut self) { self.finish(DialogResult::Accepted); }
+
+    /// Rejects dialog.
+    pub fn reject(&mut self) { self.finish(DialogResult::Rejected); }
+
+    /// Cancels dialog.
+    pub fn cancel(&mut self) { self.finish(DialogResult::Canceled); }
+}
 impl_widget_delegate!(Dialog, base);
+
+/// Message box icon kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageBoxIcon {
+    Info,
+    Warning,
+    Error,
+    Question,
+}
+
+/// Message box baseline dialog contract.
+pub struct MessageBox {
+    base: BaseWidget,
+    title: String,
+    text: String,
+    icon: MessageBoxIcon,
+    result: Option<DialogResult>,
+    pub result_changed: Signal1<DialogResult>,
+}
+
+impl MessageBox {
+    /// Creates a message box.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::MessageBox, geometry, "MessageBox"),
+            title: String::new(),
+            text: String::new(),
+            icon: MessageBoxIcon::Info,
+            result: None,
+            result_changed: Signal1::new(),
+        }
+    }
+
+    pub fn title(&self) -> &str { &self.title }
+    pub fn text(&self) -> &str { &self.text }
+    pub fn icon(&self) -> MessageBoxIcon { self.icon }
+    pub fn result(&self) -> Option<DialogResult> { self.result }
+
+    pub fn set_title(&mut self, title: String) { self.title = title; }
+    pub fn set_text(&mut self, text: String) { self.text = text; }
+    pub fn set_icon(&mut self, icon: MessageBoxIcon) { self.icon = icon; }
+
+    pub fn set_result(&mut self, result: DialogResult) {
+        self.result = Some(result);
+        self.result_changed.emit(result);
+    }
+}
+impl_widget_delegate!(MessageBox, base);
+
+/// File dialog baseline contract.
+pub struct FileDialog {
+    base: BaseWidget,
+    current_dir: String,
+    selected_file: Option<String>,
+    pub file_selected: Signal1<Option<String>>,
+    pub accepted: GenericSignal,
+    pub rejected: GenericSignal,
+}
+
+impl FileDialog {
+    /// Creates a file dialog.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
+            current_dir: String::new(),
+            selected_file: None,
+            file_selected: Signal1::new(),
+            accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
+        }
+    }
+
+    pub fn current_dir(&self) -> &str { &self.current_dir }
+    pub fn selected_file(&self) -> Option<&str> { self.selected_file.as_deref() }
+
+    pub fn set_current_dir(&mut self, dir: String) { self.current_dir = dir; }
+
+    pub fn set_selected_file(&mut self, file: Option<String>) {
+        if self.selected_file == file {
+            return;
+        }
+        self.selected_file = file.clone();
+        self.file_selected.emit(file);
+    }
+
+    pub fn accept(&self) { self.accepted.emit(); }
+    pub fn reject(&self) { self.rejected.emit(); }
+}
+impl_widget_delegate!(FileDialog, base);
+
+/// Color dialog baseline contract.
+pub struct ColorDialog {
+    base: BaseWidget,
+    color: Color,
+    pub color_selected: Signal1<Color>,
+}
+
+impl ColorDialog {
+    /// Creates a color dialog with opaque black default.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
+            color: Color::rgba(0, 0, 0, 255),
+            color_selected: Signal1::new(),
+        }
+    }
+
+    pub fn color(&self) -> Color { self.color }
+
+    pub fn set_color(&mut self, color: Color) {
+        if self.color == color {
+            return;
+        }
+        self.color = color;
+        self.color_selected.emit(color);
+    }
+}
+impl_widget_delegate!(ColorDialog, base);
+
+/// Font dialog baseline contract.
+pub struct FontDialog {
+    base: BaseWidget,
+    font: Font,
+    pub font_selected: Signal1<Font>,
+}
+
+impl FontDialog {
+    /// Creates a font dialog with default UI font.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::FontDialog, geometry, "FontDialog"),
+            font: Font::default_ui(),
+            font_selected: Signal1::new(),
+        }
+    }
+
+    pub fn font(&self) -> &Font { &self.font }
+
+    pub fn set_font(&mut self, font: Font) {
+        if self.font == font {
+            return;
+        }
+        self.font = font.clone();
+        self.font_selected.emit(font);
+    }
+}
+impl_widget_delegate!(FontDialog, base);
 
 /// Popup window widget.
 pub struct PopupWindow { base: BaseWidget }
@@ -1059,6 +1268,144 @@ pub struct TextEdit { base: BaseWidget, text: String }
 impl TextEdit { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TextEdit"), text: String::new() } } pub fn set_text(&mut self, text: String) { self.text = text; } }
 impl_widget_delegate!(TextEdit, base);
 
+/// Rich text/code editor baseline widget contract.
+pub struct RichEdit {
+    base: BaseWidget,
+    text: String,
+    selection: Option<(usize, usize)>,
+    read_only: bool,
+    pub text_changed: Signal1<String>,
+    pub selection_changed: Signal1<Option<(usize, usize)>>,
+    pub read_only_changed: Signal1<bool>,
+    pub cursor_position_changed: Signal1<usize>,
+}
+
+impl RichEdit {
+    /// Creates an empty rich editor.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::RichEdit, geometry, "RichEdit"),
+            text: String::new(),
+            selection: None,
+            read_only: false,
+            text_changed: Signal1::new(),
+            selection_changed: Signal1::new(),
+            read_only_changed: Signal1::new(),
+            cursor_position_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current editor text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Replaces editor text and resets selection/cursor to end.
+    pub fn set_text(&mut self, text: String) {
+        if self.read_only || self.text == text {
+            return;
+        }
+        self.text = text.clone();
+        self.text_changed.emit(text);
+        self.selection = None;
+        self.selection_changed.emit(None);
+        self.cursor_position_changed.emit(self.text.len());
+    }
+
+    /// Returns whether editor is read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Sets read-only mode.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only == read_only {
+            return;
+        }
+        self.read_only = read_only;
+        self.read_only_changed.emit(read_only);
+    }
+
+    /// Returns current selected byte range.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selection
+    }
+
+    /// Sets current selected byte range (clamped to text length).
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        let text_len = self.text.len();
+        let normalized = {
+            let start = start.min(text_len);
+            let end = end.min(text_len);
+            if start == end {
+                None
+            } else {
+                Some((start.min(end), start.max(end)))
+            }
+        };
+        if self.selection == normalized {
+            return;
+        }
+        self.selection = normalized;
+        self.selection_changed.emit(self.selection);
+        self.cursor_position_changed.emit(self.cursor_position());
+    }
+
+    /// Clears selected range.
+    pub fn clear_selection(&mut self) {
+        self.set_selection(0, 0);
+    }
+
+    /// Returns current cursor byte offset.
+    pub fn cursor_position(&self) -> usize {
+        self.selection.map(|(_, end)| end).unwrap_or(self.text.len())
+    }
+
+    /// Inserts text at selection/cursor and updates cursor.
+    pub fn insert_text(&mut self, text: &str) {
+        if self.read_only || text.is_empty() {
+            return;
+        }
+
+        if let Some((start, end)) = self.selection {
+            if self.text.get(start..end).is_some() {
+                self.text.replace_range(start..end, text);
+                self.text_changed.emit(self.text.clone());
+                self.selection = None;
+                self.selection_changed.emit(None);
+                self.cursor_position_changed.emit(start + text.len());
+                return;
+            }
+        }
+
+        self.text.push_str(text);
+        self.text_changed.emit(self.text.clone());
+        self.cursor_position_changed.emit(self.text.len());
+    }
+
+    /// Appends text at end.
+    pub fn append_text(&mut self, text: &str) {
+        self.insert_text(text);
+    }
+
+    /// Deletes selected range, returning removed text.
+    pub fn delete_selection(&mut self) -> Option<String> {
+        if self.read_only {
+            return None;
+        }
+        let (start, end) = self.selection?;
+        let removed = self.text.get(start..end)?.to_string();
+        self.text.replace_range(start..end, "");
+        self.text_changed.emit(self.text.clone());
+        self.selection = None;
+        self.selection_changed.emit(None);
+        self.cursor_position_changed.emit(start);
+        Some(removed)
+    }
+}
+
+impl_widget_delegate!(RichEdit, base);
+
 /// Combo-box widget with simple string item storage.
 pub struct ComboBox {
     base: BaseWidget,
@@ -1240,34 +1587,260 @@ pub struct ListBox { base: BaseWidget, items: Vec<String> }
 impl ListBox { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"), items: Vec::new() } } pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); } }
 impl_widget_delegate!(ListBox, base);
 
+/// List view widget with optional external model binding and row selection.
+pub struct ListView {
+    base: BaseWidget,
+    /// Optional bound list model.
+    model: Option<Arc<dyn ListModel>>,
+    /// Scoped model-to-view signal subscriptions.
+    model_connection_scope: ConnectionScope,
+    /// View-side selection state.
+    selection: SelectionModel,
+    /// View-side focused row.
+    focused_row: Option<usize>,
+    /// Emitted when selected row changes.
+    pub selection_changed: Signal1<usize>,
+    /// Emitted when focused row changes.
+    pub focused_row_changed: Signal1<Option<usize>>,
+}
+
+impl ListView {
+    /// Creates an empty list view.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ListView, geometry, "ListView"),
+            model: None,
+            model_connection_scope: ConnectionScope::new(),
+            selection: SelectionModel::new(),
+            focused_row: None,
+            selection_changed: Signal1::new(),
+            focused_row_changed: Signal1::new(),
+        }
+    }
+
+    /// Binds an external list model.
+    pub fn set_model(&mut self, model: Arc<dyn ListModel>) {
+        self.model_connection_scope = ConnectionScope::new();
+        if let Some(data_changed) = model.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            data_changed.connect_scoped(&self.model_connection_scope, move || {
+                redraw.emit();
+                layout.emit();
+            });
+        }
+        self.model = Some(model);
+        self.normalize_projection_state();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns visible row count.
+    pub fn row_count(&self) -> usize {
+        self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
+    }
+
+    /// Returns item text by row index.
+    pub fn item(&self, row: usize) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.data(row))
+    }
+
+    /// Select one row in the current view projection.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        if row < self.row_count() {
+            self.selection.select_row(row);
+            self.selection_changed.emit(row);
+            self.set_focused_row(row);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear current row selection.
+    pub fn clear_selection(&mut self) {
+        self.selection.clear();
+    }
+
+    /// Sets focused row in current projection.
+    pub fn set_focused_row(&mut self, row: usize) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        if self.focused_row == Some(row) {
+            return true;
+        }
+        self.focused_row = Some(row);
+        self.focused_row_changed.emit(self.focused_row);
+        true
+    }
+
+    /// Clears focused row.
+    pub fn clear_focused_row(&mut self) {
+        if self.focused_row.is_none() {
+            return;
+        }
+        self.focused_row = None;
+        self.focused_row_changed.emit(None);
+    }
+
+    /// Returns focused row when still visible in projection.
+    pub fn focused_row(&self) -> Option<usize> {
+        self.focused_row.filter(|row| *row < self.row_count())
+    }
+
+    /// Current selected row index.
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selection.current_row().filter(|row| *row < self.row_count())
+    }
+
+    /// All selected rows in stable order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selection
+            .rows()
+            .into_iter()
+            .filter(|row| *row < self.row_count())
+            .collect()
+    }
+
+    /// Sets row selection mode.
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        self.selection.set_mode(mode);
+    }
+
+    /// Returns current selection mode.
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.selection.mode()
+    }
+
+    fn normalize_projection_state(&mut self) {
+        let row_count = self.row_count();
+        self.selection.selected_rows.retain(|row| *row < row_count);
+        self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
+        self.focused_row = self.focused_row.filter(|row| *row < row_count);
+    }
+}
+
+impl_widget_delegate!(ListView, base);
+
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
     /// Number of rows exposed by model.
     fn row_count(&self) -> usize;
     /// Data for row index, if present.
     fn data(&self, row: usize) -> Option<String>;
+
+    /// Optional signal emitted when model data projection changes.
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+}
+
+/// In-memory list model backed by a vector of strings.
+pub struct VecListModel {
+    items: Vec<String>,
+    data_changed: GenericSignal,
+}
+
+impl VecListModel {
+    /// Creates a list model from item values.
+    pub fn new(items: Vec<String>) -> Self {
+        Self {
+            items,
+            data_changed: GenericSignal::new(),
+        }
+    }
+
+    /// Appends one list item and notifies observers.
+    pub fn add_item(&mut self, item: impl Into<String>) {
+        self.items.push(item.into());
+        self.data_changed.emit();
+    }
+
+    /// Replaces one list item value, returning false for out-of-range index.
+    pub fn set_item(&mut self, row: usize, value: impl Into<String>) -> bool {
+        let Some(item) = self.items.get_mut(row) else {
+            return false;
+        };
+        let next = value.into();
+        if *item == next {
+            return true;
+        }
+        *item = next;
+        self.data_changed.emit();
+        true
+    }
+
+    /// Removes one list item by index and notifies observers when removed.
+    pub fn remove_item(&mut self, row: usize) -> bool {
+        if row >= self.items.len() {
+            return false;
+        }
+        self.items.remove(row);
+        self.data_changed.emit();
+        true
+    }
+
+    /// Emits a data-changed notification for external batch updates.
+    pub fn notify_data_changed(&self) {
+        self.data_changed.emit();
+    }
+
+    /// Returns model data-change signal.
+    pub fn data_changed(&self) -> &GenericSignal {
+        &self.data_changed
+    }
+}
+
+impl ListModel for VecListModel {
+    fn row_count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn data(&self, row: usize) -> Option<String> {
+        self.items.get(row).cloned()
+    }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        Some(&self.data_changed)
+    }
 }
 
 /// Tree model abstraction for node/path-style views.
 pub trait TreeModel: Send + Sync {
     fn node_count(&self) -> usize;
     fn node_path(&self, index: usize) -> Option<String>;
+
+    /// Optional signal emitted when model data projection changes.
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
 }
 
 /// In-memory tree model backed by a vector of paths.
 pub struct VecTreeModel {
     paths: Vec<String>,
+    data_changed: GenericSignal,
 }
 
 impl VecTreeModel {
     /// Creates a tree model from path list.
     pub fn new(paths: Vec<String>) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            data_changed: GenericSignal::new(),
+        }
     }
 
     /// Appends one node path.
     pub fn add_node(&mut self, path: impl Into<String>) {
         self.paths.push(path.into());
+        self.data_changed.emit();
+    }
+
+    /// Emits a data-changed notification for external batch updates.
+    pub fn notify_data_changed(&self) {
+        self.data_changed.emit();
     }
 }
 
@@ -1278,6 +1851,10 @@ impl TreeModel for VecTreeModel {
 
     fn node_path(&self, index: usize) -> Option<String> {
         self.paths.get(index).cloned()
+    }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        Some(&self.data_changed)
     }
 }
 
@@ -1354,6 +1931,10 @@ impl TreeModel for SortFilterTreeModel {
             .get(index)
             .and_then(|source_index| self.source.node_path(*source_index))
     }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        self.source.data_changed_signal()
+    }
 }
 
 /// Table model abstraction for tabular views.
@@ -1379,6 +1960,11 @@ pub trait TableModel: Send + Sync {
     /// Whether a cell is editable by default model contract.
     fn is_editable(&self, _row: usize, _col: usize) -> bool {
         false
+    }
+
+    /// Optional signal emitted when model data projection changes.
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        None
     }
 }
 
@@ -1411,12 +1997,17 @@ pub enum SortOrder {
 pub struct VecTableModel {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
+    data_changed: GenericSignal,
 }
 
 impl VecTableModel {
     /// Creates a table model from headers and row data.
     pub fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
-        Self { headers, rows }
+        Self {
+            headers,
+            rows,
+            data_changed: GenericSignal::new(),
+        }
     }
 
     /// Updates one cell value, returning false for out-of-range indices.
@@ -1427,7 +2018,38 @@ impl VecTableModel {
         let Some(cell) = row_data.get_mut(col) else {
             return false;
         };
-        *cell = value.into();
+        let next = value.into();
+        if *cell == next {
+            return true;
+        }
+        *cell = next;
+        self.data_changed.emit();
+        true
+    }
+
+    /// Emits a data-changed notification for external batch updates.
+    pub fn notify_data_changed(&self) {
+        self.data_changed.emit();
+    }
+
+    /// Returns model data-change signal.
+    pub fn data_changed(&self) -> &GenericSignal {
+        &self.data_changed
+    }
+
+    /// Appends one row and notifies observers.
+    pub fn push_row(&mut self, row: Vec<String>) {
+        self.rows.push(row);
+        self.data_changed.emit();
+    }
+
+    /// Removes one row by index and notifies observers when removed.
+    pub fn remove_row(&mut self, index: usize) -> bool {
+        if index >= self.rows.len() {
+            return false;
+        }
+        self.rows.remove(index);
+        self.data_changed.emit();
         true
     }
 }
@@ -1451,6 +2073,10 @@ impl TableModel for VecTableModel {
 
     fn is_editable(&self, row: usize, col: usize) -> bool {
         row < self.rows.len() && col < self.headers.len()
+    }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        Some(&self.data_changed)
     }
 }
 
@@ -1667,6 +2293,10 @@ impl TableModel for SortFilterTableModel {
     fn header(&self, col: usize) -> Option<String> {
         self.source.header(col)
     }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        self.source.data_changed_signal()
+    }
 }
 
 /// Progress bar widget.
@@ -1768,10 +2398,176 @@ impl Slider {
 impl_widget_delegate!(Slider, base);
 
 /// Scroll bar widget.
-pub struct ScrollBar { base: BaseWidget, value: i32 }
-/// Creates a scroll bar and updates current value.
-impl ScrollBar { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ScrollBar, geometry, "ScrollBar"), value: 0 } } pub fn set_value(&mut self, value: i32) { self.value = value; } }
+pub struct ScrollBar {
+    base: BaseWidget,
+    min: i32,
+    max: i32,
+    value: i32,
+    page_step: i32,
+    single_step: i32,
+    pub value_changed: Signal1<i32>,
+}
+
+impl ScrollBar {
+    /// Creates a scroll bar with default range/value and step contract.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ScrollBar, geometry, "ScrollBar"),
+            min: 0,
+            max: 100,
+            value: 0,
+            page_step: 10,
+            single_step: 1,
+            value_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns minimum value.
+    pub fn min(&self) -> i32 { self.min }
+
+    /// Returns maximum value.
+    pub fn max(&self) -> i32 { self.max }
+
+    /// Returns current value.
+    pub fn value(&self) -> i32 { self.value }
+
+    /// Returns page step.
+    pub fn page_step(&self) -> i32 { self.page_step }
+
+    /// Returns single step.
+    pub fn single_step(&self) -> i32 { self.single_step }
+
+    /// Sets range and clamps current value.
+    pub fn set_range(&mut self, min: i32, max: i32) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    /// Sets page step for page-wise scrolling.
+    pub fn set_page_step(&mut self, step: i32) {
+        self.page_step = step.max(1);
+    }
+
+    /// Sets single step for line-wise scrolling.
+    pub fn set_single_step(&mut self, step: i32) {
+        self.single_step = step.max(1);
+    }
+
+    /// Sets value with deterministic clamping and change signal behavior.
+    pub fn set_value(&mut self, value: i32) {
+        let clamped = value.clamp(self.min, self.max);
+        if self.value == clamped {
+            return;
+        }
+        self.value = clamped;
+        self.value_changed.emit(clamped);
+    }
+
+    /// Moves by one single-step toward minimum.
+    pub fn line_decrement(&mut self) {
+        self.set_value(self.value.saturating_sub(self.single_step));
+    }
+
+    /// Moves by one single-step toward maximum.
+    pub fn line_increment(&mut self) {
+        self.set_value(self.value.saturating_add(self.single_step));
+    }
+
+    /// Moves by one page-step toward minimum.
+    pub fn page_decrement(&mut self) {
+        self.set_value(self.value.saturating_sub(self.page_step));
+    }
+
+    /// Moves by one page-step toward maximum.
+    pub fn page_increment(&mut self) {
+        self.set_value(self.value.saturating_add(self.page_step));
+    }
+}
 impl_widget_delegate!(ScrollBar, base);
+
+/// Scroll area widget with deterministic viewport/content/offset contracts.
+pub struct ScrollArea {
+    base: BaseWidget,
+    content_size: Size,
+    viewport_size: Size,
+    scroll_offset: Point,
+    pub content_size_changed: Signal1<Size>,
+    pub viewport_size_changed: Signal1<Size>,
+    pub scroll_offset_changed: Signal1<Point>,
+}
+
+impl ScrollArea {
+    /// Creates a scroll area with default content/viewport matching geometry size.
+    pub fn new(geometry: Rect) -> Self {
+        let initial_size = Size::new(geometry.width, geometry.height);
+        Self {
+            base: BaseWidget::new(WidgetKind::ScrollArea, geometry, "ScrollArea"),
+            content_size: initial_size,
+            viewport_size: initial_size,
+            scroll_offset: Point::new(0, 0),
+            content_size_changed: Signal1::new(),
+            viewport_size_changed: Signal1::new(),
+            scroll_offset_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns content size.
+    pub fn content_size(&self) -> Size { self.content_size }
+
+    /// Returns viewport size.
+    pub fn viewport_size(&self) -> Size { self.viewport_size }
+
+    /// Returns current scroll offset.
+    pub fn scroll_offset(&self) -> Point { self.scroll_offset }
+
+    /// Sets content size and normalizes scroll offset.
+    pub fn set_content_size(&mut self, size: Size) {
+        if self.content_size == size {
+            return;
+        }
+        self.content_size = size;
+        self.content_size_changed.emit(size);
+        self.normalize_offset();
+    }
+
+    /// Sets viewport size and normalizes scroll offset.
+    pub fn set_viewport_size(&mut self, size: Size) {
+        if self.viewport_size == size {
+            return;
+        }
+        self.viewport_size = size;
+        self.viewport_size_changed.emit(size);
+        self.normalize_offset();
+    }
+
+    /// Sets scroll offset with deterministic clamp to valid range.
+    pub fn set_scroll_offset(&mut self, offset: Point) {
+        let clamped = self.clamp_offset(offset);
+        if self.scroll_offset == clamped {
+            return;
+        }
+        self.scroll_offset = clamped;
+        self.scroll_offset_changed.emit(clamped);
+    }
+
+    fn normalize_offset(&mut self) {
+        self.set_scroll_offset(self.scroll_offset);
+    }
+
+    fn clamp_offset(&self, offset: Point) -> Point {
+        let max_x = self
+            .content_size
+            .width
+            .saturating_sub(self.viewport_size.width) as i32;
+        let max_y = self
+            .content_size
+            .height
+            .saturating_sub(self.viewport_size.height) as i32;
+        Point::new(offset.x.clamp(0, max_x), offset.y.clamp(0, max_y))
+    }
+}
+impl_widget_delegate!(ScrollArea, base);
 
 macro_rules! simple_control {
     ($name:ident, $kind:expr) => {
@@ -1783,13 +2579,679 @@ macro_rules! simple_control {
 }
 
 simple_control!(Panel, WidgetKind::Panel);
-simple_control!(GroupBox, WidgetKind::GroupBox);
-simple_control!(TabWidget, WidgetKind::TabWidget);
+
+/// Group box widget with optional checkable state.
+pub struct GroupBox {
+    base: BaseWidget,
+    title: String,
+    checkable: bool,
+    checked: bool,
+    pub title_changed: Signal1<String>,
+    pub checkable_changed: Signal1<bool>,
+    pub checked_changed: Signal1<bool>,
+}
+
+impl GroupBox {
+    /// Creates a group box with empty title.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::GroupBox, geometry, "GroupBox"),
+            title: String::new(),
+            checkable: false,
+            checked: false,
+            title_changed: Signal1::new(),
+            checkable_changed: Signal1::new(),
+            checked_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current title.
+    pub fn title(&self) -> &str { &self.title }
+
+    /// Sets title and emits when changed.
+    pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
+        self.title = title.clone();
+        self.title_changed.emit(title);
+    }
+
+    /// Returns whether group box is checkable.
+    pub fn is_checkable(&self) -> bool { self.checkable }
+
+    /// Enables/disables checkable behavior.
+    pub fn set_checkable(&mut self, checkable: bool) {
+        if self.checkable == checkable {
+            return;
+        }
+        self.checkable = checkable;
+        self.checkable_changed.emit(checkable);
+        if !checkable {
+            self.set_checked(false);
+        }
+    }
+
+    /// Returns checked state.
+    pub fn is_checked(&self) -> bool { self.checked }
+
+    /// Sets checked state (only effective when checkable).
+    pub fn set_checked(&mut self, checked: bool) {
+        let normalized = if self.checkable { checked } else { false };
+        if self.checked == normalized {
+            return;
+        }
+        self.checked = normalized;
+        self.checked_changed.emit(normalized);
+    }
+
+    /// Toggles checked state when checkable.
+    pub fn toggle_checked(&mut self) {
+        if self.checkable {
+            self.set_checked(!self.checked);
+        }
+    }
+}
+impl_widget_delegate!(GroupBox, base);
+
+/// Tab widget with deterministic selected-index contract.
+pub struct TabWidget {
+    base: BaseWidget,
+    tabs: Vec<ObjectId>,
+    current_index: Option<usize>,
+    pub current_index_changed: Signal1<usize>,
+}
+
+impl TabWidget {
+    /// Creates an empty tab widget.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::TabWidget, geometry, "TabWidget"),
+            tabs: Vec::new(),
+            current_index: None,
+            current_index_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns number of tabs.
+    pub fn tab_count(&self) -> usize { self.tabs.len() }
+
+    /// Returns current selected tab index.
+    pub fn current_index(&self) -> Option<usize> { self.current_index }
+
+    /// Returns current selected tab object id.
+    pub fn current_tab(&self) -> Option<ObjectId> {
+        self.current_index.and_then(|index| self.tabs.get(index).copied())
+    }
+
+    /// Adds a tab by page object id and returns assigned index.
+    pub fn add_tab(&mut self, page_id: ObjectId) -> usize {
+        self.tabs.push(page_id);
+        let index = self.tabs.len() - 1;
+        if self.current_index.is_none() {
+            self.current_index = Some(0);
+            self.current_index_changed.emit(0);
+        }
+        index
+    }
+
+    /// Removes a tab by page object id.
+    pub fn remove_tab(&mut self, page_id: ObjectId) -> bool {
+        let Some(removed_index) = self.tabs.iter().position(|id| *id == page_id) else {
+            return false;
+        };
+        self.tabs.remove(removed_index);
+
+        let next_index = match self.current_index {
+            None => None,
+            Some(_) if self.tabs.is_empty() => None,
+            Some(current) if current == removed_index => {
+                Some(removed_index.min(self.tabs.len().saturating_sub(1)))
+            }
+            Some(current) if current > removed_index => Some(current - 1),
+            Some(current) => Some(current),
+        };
+
+        if self.current_index != next_index {
+            self.current_index = next_index;
+            if let Some(index) = self.current_index {
+                self.current_index_changed.emit(index);
+            }
+        }
+
+        true
+    }
+
+    /// Selects current tab index and emits changed signal when state transitions.
+    pub fn set_current_index(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+        if self.current_index == Some(index) {
+            return true;
+        }
+        self.current_index = Some(index);
+        self.current_index_changed.emit(index);
+        true
+    }
+}
+impl_widget_delegate!(TabWidget, base);
+
+/// Splitter orientation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitterOrientation {
+    Horizontal,
+    Vertical,
+}
+
+/// Splitter widget with deterministic pane-ratio distribution contract.
+pub struct Splitter {
+    base: BaseWidget,
+    orientation: SplitterOrientation,
+    panes: Vec<ObjectId>,
+    ratios: Vec<f32>,
+    pub pane_layout_changed: Signal1<Vec<f32>>,
+    pub orientation_changed: Signal1<SplitterOrientation>,
+}
+
+impl Splitter {
+    /// Creates an empty splitter with horizontal orientation.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Splitter, geometry, "Splitter"),
+            orientation: SplitterOrientation::Horizontal,
+            panes: Vec::new(),
+            ratios: Vec::new(),
+            pane_layout_changed: Signal1::new(),
+            orientation_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns splitter orientation.
+    pub fn orientation(&self) -> SplitterOrientation { self.orientation }
+
+    /// Sets splitter orientation and emits change signal on transition.
+    pub fn set_orientation(&mut self, orientation: SplitterOrientation) {
+        if self.orientation == orientation {
+            return;
+        }
+        self.orientation = orientation;
+        self.orientation_changed.emit(orientation);
+    }
+
+    /// Returns pane count.
+    pub fn pane_count(&self) -> usize { self.panes.len() }
+
+    /// Returns pane ids in stable order.
+    pub fn pane_ids(&self) -> &[ObjectId] { &self.panes }
+
+    /// Returns ratio for pane index.
+    pub fn ratio(&self, index: usize) -> Option<f32> { self.ratios.get(index).copied() }
+
+    /// Adds one pane and returns assigned index.
+    pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
+        self.panes.push(pane_id);
+        self.ratios.push((stretch.max(1)) as f32);
+        self.pane_layout_changed.emit(self.ratios.clone());
+        self.panes.len() - 1
+    }
+
+    /// Removes one pane by object id.
+    pub fn remove_pane(&mut self, pane_id: ObjectId) -> bool {
+        let Some(index) = self.panes.iter().position(|id| *id == pane_id) else {
+            return false;
+        };
+        self.panes.remove(index);
+        self.ratios.remove(index);
+        self.pane_layout_changed.emit(self.ratios.clone());
+        true
+    }
+
+    /// Sets pane ratio and emits layout change signal.
+    pub fn set_ratio(&mut self, index: usize, ratio: f32) -> bool {
+        let Some(slot) = self.ratios.get_mut(index) else {
+            return false;
+        };
+        let normalized = ratio.max(0.01);
+        if (*slot - normalized).abs() <= f32::EPSILON {
+            return true;
+        }
+        *slot = normalized;
+        self.pane_layout_changed.emit(self.ratios.clone());
+        true
+    }
+
+    /// Returns deterministic pane sizes for a primary axis length and splitter spacing.
+    pub fn distribute_sizes(&self, primary_extent: u32, spacing: u32) -> Vec<u32> {
+        if self.panes.is_empty() {
+            return Vec::new();
+        }
+        let gaps = (self.panes.len().saturating_sub(1)) as u32;
+        let available = primary_extent.saturating_sub(gaps.saturating_mul(spacing));
+        let total_ratio = self.ratios.iter().copied().sum::<f32>().max(0.01);
+
+        let mut sizes = self
+            .ratios
+            .iter()
+            .map(|ratio| (((available as f32) * (*ratio / total_ratio)).max(1.0)) as u32)
+            .collect::<Vec<_>>();
+
+        let mut assigned: u32 = sizes.iter().sum();
+        while assigned < available {
+            for size in &mut sizes {
+                if assigned >= available {
+                    break;
+                }
+                *size = size.saturating_add(1);
+                assigned = assigned.saturating_add(1);
+            }
+        }
+        while assigned > available {
+            for size in sizes.iter_mut().rev() {
+                if assigned <= available {
+                    break;
+                }
+                if *size > 1 {
+                    *size = size.saturating_sub(1);
+                    assigned = assigned.saturating_sub(1);
+                }
+            }
+            if sizes.iter().all(|size| *size <= 1) {
+                break;
+            }
+        }
+
+        sizes
+    }
+}
+impl_widget_delegate!(Splitter, base);
+
 simple_control!(StackWidget, WidgetKind::StackWidget);
-simple_control!(MenuBar, WidgetKind::MenuBar);
-simple_control!(Menu, WidgetKind::Menu);
-simple_control!(ToolBar, WidgetKind::ToolBar);
-simple_control!(StatusBar, WidgetKind::StatusBar);
+
+/// Docking area used by `DockPanel` pane placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockArea {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+/// Dock panel container with deterministic pane placement contract.
+pub struct DockPanel {
+    base: BaseWidget,
+    panes: Vec<(ObjectId, DockArea)>,
+    pub pane_added: Signal1<ObjectId>,
+    pub pane_removed: Signal1<ObjectId>,
+    pub layout_changed: Signal1<Vec<(ObjectId, DockArea)>>,
+}
+
+impl DockPanel {
+    /// Creates an empty dock panel.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DockPanel, geometry, "DockPanel"),
+            panes: Vec::new(),
+            pane_added: Signal1::new(),
+            pane_removed: Signal1::new(),
+            layout_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns ordered pane list.
+    pub fn panes(&self) -> &[(ObjectId, DockArea)] {
+        &self.panes
+    }
+
+    /// Adds pane to one dock area.
+    pub fn add_pane(&mut self, pane_id: ObjectId, area: DockArea) -> bool {
+        if self.panes.iter().any(|(id, _)| *id == pane_id) {
+            return false;
+        }
+        self.panes.push((pane_id, area));
+        self.pane_added.emit(pane_id);
+        self.layout_changed.emit(self.panes.clone());
+        true
+    }
+
+    /// Removes pane from layout.
+    pub fn remove_pane(&mut self, pane_id: ObjectId) -> bool {
+        let Some(index) = self.panes.iter().position(|(id, _)| *id == pane_id) else {
+            return false;
+        };
+        self.panes.remove(index);
+        self.pane_removed.emit(pane_id);
+        self.layout_changed.emit(self.panes.clone());
+        true
+    }
+
+    /// Returns pane area when present.
+    pub fn pane_area(&self, pane_id: ObjectId) -> Option<DockArea> {
+        self.panes
+            .iter()
+            .find(|(id, _)| *id == pane_id)
+            .map(|(_, area)| *area)
+    }
+
+    /// Moves one pane to target area.
+    pub fn move_pane(&mut self, pane_id: ObjectId, area: DockArea) -> bool {
+        let Some((_, current_area)) = self.panes.iter_mut().find(|(id, _)| *id == pane_id) else {
+            return false;
+        };
+        if *current_area == area {
+            return true;
+        }
+        *current_area = area;
+        self.layout_changed.emit(self.panes.clone());
+        true
+    }
+}
+
+impl_widget_delegate!(DockPanel, base);
+
+/// Multiple-document area with deterministic active-document contract.
+pub struct MdiArea {
+    base: BaseWidget,
+    documents: Vec<ObjectId>,
+    active_document: Option<ObjectId>,
+    pub document_added: Signal1<ObjectId>,
+    pub document_removed: Signal1<ObjectId>,
+    pub active_document_changed: Signal1<Option<ObjectId>>,
+}
+
+impl MdiArea {
+    /// Creates an empty MDI area.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::MdiArea, geometry, "MdiArea"),
+            documents: Vec::new(),
+            active_document: None,
+            document_added: Signal1::new(),
+            document_removed: Signal1::new(),
+            active_document_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns ordered document ids.
+    pub fn documents(&self) -> &[ObjectId] {
+        &self.documents
+    }
+
+    /// Returns active document id when present.
+    pub fn active_document(&self) -> Option<ObjectId> {
+        self.active_document
+    }
+
+    /// Adds one document to MDI area.
+    pub fn add_document(&mut self, document_id: ObjectId) -> bool {
+        if self.documents.contains(&document_id) {
+            return false;
+        }
+        self.documents.push(document_id);
+        self.document_added.emit(document_id);
+        if self.active_document.is_none() {
+            self.active_document = Some(document_id);
+            self.active_document_changed.emit(self.active_document);
+        }
+        true
+    }
+
+    /// Removes one document from MDI area.
+    pub fn remove_document(&mut self, document_id: ObjectId) -> bool {
+        let Some(index) = self.documents.iter().position(|id| *id == document_id) else {
+            return false;
+        };
+        self.documents.remove(index);
+        self.document_removed.emit(document_id);
+
+        if self.active_document == Some(document_id) {
+            self.active_document = self.documents.first().copied();
+            self.active_document_changed.emit(self.active_document);
+        }
+        true
+    }
+
+    /// Activates one existing document.
+    pub fn set_active_document(&mut self, document_id: ObjectId) -> bool {
+        if !self.documents.contains(&document_id) {
+            return false;
+        }
+        if self.active_document == Some(document_id) {
+            return true;
+        }
+        self.active_document = Some(document_id);
+        self.active_document_changed.emit(self.active_document);
+        true
+    }
+}
+
+impl_widget_delegate!(MdiArea, base);
+
+/// Menu bar widget managing menu host ordering.
+pub struct MenuBar {
+    base: BaseWidget,
+    menus: Vec<ObjectId>,
+    current_menu: Option<ObjectId>,
+    pub menu_added: Signal1<ObjectId>,
+    pub menu_removed: Signal1<ObjectId>,
+    pub current_menu_changed: Signal1<Option<ObjectId>>,
+}
+
+impl MenuBar {
+    /// Creates an empty menu bar.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::MenuBar, geometry, "MenuBar"),
+            menus: Vec::new(),
+            current_menu: None,
+            menu_added: Signal1::new(),
+            menu_removed: Signal1::new(),
+            current_menu_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns ordered menu ids.
+    pub fn menus(&self) -> &[ObjectId] { &self.menus }
+
+    /// Returns current menu id when selected.
+    pub fn current_menu(&self) -> Option<ObjectId> { self.current_menu }
+
+    /// Adds one menu id, returns false when already present.
+    pub fn add_menu(&mut self, menu_id: ObjectId) -> bool {
+        if self.menus.contains(&menu_id) {
+            return false;
+        }
+        self.menus.push(menu_id);
+        self.menu_added.emit(menu_id);
+        if self.current_menu.is_none() {
+            self.current_menu = Some(menu_id);
+            self.current_menu_changed.emit(self.current_menu);
+        }
+        true
+    }
+
+    /// Removes one menu id.
+    pub fn remove_menu(&mut self, menu_id: ObjectId) -> bool {
+        let Some(index) = self.menus.iter().position(|id| *id == menu_id) else {
+            return false;
+        };
+        self.menus.remove(index);
+        self.menu_removed.emit(menu_id);
+
+        if self.current_menu == Some(menu_id) {
+            self.current_menu = self.menus.first().copied();
+            self.current_menu_changed.emit(self.current_menu);
+        }
+        true
+    }
+
+    /// Selects current menu by id.
+    pub fn set_current_menu(&mut self, menu_id: ObjectId) -> bool {
+        if !self.menus.contains(&menu_id) {
+            return false;
+        }
+        if self.current_menu == Some(menu_id) {
+            return true;
+        }
+        self.current_menu = Some(menu_id);
+        self.current_menu_changed.emit(self.current_menu);
+        true
+    }
+}
+impl_widget_delegate!(MenuBar, base);
+
+/// Menu widget with action-host contract.
+pub struct Menu {
+    base: BaseWidget,
+    title: String,
+    action_ids: Vec<String>,
+    pub action_added: Signal1<String>,
+    pub action_removed: Signal1<String>,
+    pub action_triggered: Signal1<String>,
+}
+
+impl Menu {
+    /// Creates an empty menu host.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
+            title: String::new(),
+            action_ids: Vec::new(),
+            action_added: Signal1::new(),
+            action_removed: Signal1::new(),
+            action_triggered: Signal1::new(),
+        }
+    }
+
+    /// Returns title.
+    pub fn title(&self) -> &str { &self.title }
+
+    /// Sets title.
+    pub fn set_title(&mut self, title: String) { self.title = title; }
+
+    /// Returns action ids bound to menu.
+    pub fn actions(&self) -> &[String] { &self.action_ids }
+
+    /// Adds one action id.
+    pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
+        let action_id = action_id.into();
+        if self.action_ids.iter().any(|id| id == &action_id) {
+            return false;
+        }
+        self.action_ids.push(action_id.clone());
+        self.action_added.emit(action_id);
+        true
+    }
+
+    /// Removes one action id.
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        let Some(index) = self.action_ids.iter().position(|id| id == action_id) else {
+            return false;
+        };
+        let removed = self.action_ids.remove(index);
+        self.action_removed.emit(removed);
+        true
+    }
+
+    /// Emits action-triggered route when action id exists.
+    pub fn trigger_action(&self, action_id: &str) -> bool {
+        if !self.action_ids.iter().any(|id| id == action_id) {
+            return false;
+        }
+        self.action_triggered.emit(action_id.to_string());
+        true
+    }
+}
+impl_widget_delegate!(Menu, base);
+
+/// Toolbar widget with action-host contract.
+pub struct ToolBar {
+    base: BaseWidget,
+    action_ids: Vec<String>,
+    pub action_added: Signal1<String>,
+    pub action_removed: Signal1<String>,
+    pub action_triggered: Signal1<String>,
+}
+
+impl ToolBar {
+    /// Creates an empty toolbar host.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ToolBar, geometry, "ToolBar"),
+            action_ids: Vec::new(),
+            action_added: Signal1::new(),
+            action_removed: Signal1::new(),
+            action_triggered: Signal1::new(),
+        }
+    }
+
+    /// Returns action ids bound to toolbar.
+    pub fn actions(&self) -> &[String] { &self.action_ids }
+
+    /// Adds one action id.
+    pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
+        let action_id = action_id.into();
+        if self.action_ids.iter().any(|id| id == &action_id) {
+            return false;
+        }
+        self.action_ids.push(action_id.clone());
+        self.action_added.emit(action_id);
+        true
+    }
+
+    /// Removes one action id.
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        let Some(index) = self.action_ids.iter().position(|id| id == action_id) else {
+            return false;
+        };
+        let removed = self.action_ids.remove(index);
+        self.action_removed.emit(removed);
+        true
+    }
+
+    /// Emits action-triggered route when action id exists.
+    pub fn trigger_action(&self, action_id: &str) -> bool {
+        if !self.action_ids.iter().any(|id| id == action_id) {
+            return false;
+        }
+        self.action_triggered.emit(action_id.to_string());
+        true
+    }
+}
+impl_widget_delegate!(ToolBar, base);
+
+/// Status bar widget with deterministic message contract.
+pub struct StatusBar {
+    base: BaseWidget,
+    message: String,
+    pub message_changed: Signal1<String>,
+}
+
+impl StatusBar {
+    /// Creates an empty status bar.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::StatusBar, geometry, "StatusBar"),
+            message: String::new(),
+            message_changed: Signal1::new(),
+        }
+    }
+
+    /// Returns current status message.
+    pub fn message(&self) -> &str { &self.message }
+
+    /// Sets status message and emits on change.
+    pub fn set_message(&mut self, message: String) {
+        if self.message == message {
+            return;
+        }
+        self.message = message.clone();
+        self.message_changed.emit(message);
+    }
+}
+impl_widget_delegate!(StatusBar, base);
+
 simple_control!(Canvas, WidgetKind::Canvas);
 
 /// Tree view widget with optional external model binding.
@@ -1797,12 +3259,18 @@ pub struct TreeView {
     base: BaseWidget,
     /// Optional bound tree model.
     model: Option<Arc<dyn TreeModel>>,
+    /// Scoped model-to-view signal subscriptions.
+    model_connection_scope: ConnectionScope,
     /// Fallback path storage used when no external model is bound.
     fallback_nodes: Vec<String>,
     /// View-side selected node index.
     selected_node: Option<usize>,
+    /// View-side focused node index.
+    focused_node: Option<usize>,
     /// Emitted when selected node changes.
     pub selection_changed: Signal1<usize>,
+    /// Emitted when focused node changes.
+    pub focused_node_changed: Signal1<Option<usize>>,
 }
 
 impl TreeView {
@@ -1811,15 +3279,30 @@ impl TreeView {
         Self {
             base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
             model: None,
+            model_connection_scope: ConnectionScope::new(),
             fallback_nodes: Vec::new(),
             selected_node: None,
+            focused_node: None,
             selection_changed: Signal1::new(),
+            focused_node_changed: Signal1::new(),
         }
     }
 
     /// Binds an external tree model.
     pub fn set_model(&mut self, model: Arc<dyn TreeModel>) {
+        self.model_connection_scope = ConnectionScope::new();
+        if let Some(data_changed) = model.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            data_changed.connect_scoped(&self.model_connection_scope, move || {
+                redraw.emit();
+                layout.emit();
+            });
+        }
         self.model = Some(model);
+        self.normalize_projection_state();
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     /// Backward-compatible imperative insertion when no external model is used.
@@ -1848,6 +3331,7 @@ impl TreeView {
         if index < self.node_count() {
             self.selected_node = Some(index);
             self.selection_changed.emit(index);
+            self.set_focused_node(index);
             true
         } else {
             false
@@ -1859,9 +3343,42 @@ impl TreeView {
         self.selected_node = None;
     }
 
+    /// Sets focused node by visible index.
+    pub fn set_focused_node(&mut self, index: usize) -> bool {
+        if index >= self.node_count() {
+            return false;
+        }
+        if self.focused_node == Some(index) {
+            return true;
+        }
+        self.focused_node = Some(index);
+        self.focused_node_changed.emit(self.focused_node);
+        true
+    }
+
+    /// Clears node focus.
+    pub fn clear_focused_node(&mut self) {
+        if self.focused_node.is_none() {
+            return;
+        }
+        self.focused_node = None;
+        self.focused_node_changed.emit(None);
+    }
+
+    /// Returns focused node index when present.
+    pub fn focused_node(&self) -> Option<usize> {
+        self.focused_node.filter(|index| *index < self.node_count())
+    }
+
     /// Returns selected node index if present.
     pub fn selected_node(&self) -> Option<usize> {
-        self.selected_node
+        self.selected_node.filter(|index| *index < self.node_count())
+    }
+
+    fn normalize_projection_state(&mut self) {
+        let node_count = self.node_count();
+        self.selected_node = self.selected_node.filter(|index| *index < node_count);
+        self.focused_node = self.focused_node.filter(|index| *index < node_count);
     }
 }
 
@@ -1872,8 +3389,12 @@ pub struct TableWidget {
     base: BaseWidget,
     /// Optional bound data model.
     model: Option<Arc<dyn TableModel>>,
+    /// Scoped model-to-view signal subscriptions.
+    model_connection_scope: ConnectionScope,
     /// View-side selection state.
     selection: SelectionModel,
+    /// View-side focused row.
+    focused_row: Option<usize>,
     /// Explicit column width overrides in logical pixels.
     column_widths: HashMap<usize, u32>,
     /// Explicit row height overrides in logical pixels.
@@ -1882,6 +3403,8 @@ pub struct TableWidget {
     delegate: Option<Arc<dyn ItemDelegate>>,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<usize>,
+    /// Emitted when focused row changes.
+    pub focused_row_changed: Signal1<Option<usize>>,
 }
 
 impl TableWidget {
@@ -1890,17 +3413,32 @@ impl TableWidget {
         Self {
             base: BaseWidget::new(WidgetKind::Table, geometry, "TableWidget"),
             model: None,
+            model_connection_scope: ConnectionScope::new(),
             selection: SelectionModel::new(),
+            focused_row: None,
             column_widths: HashMap::new(),
             row_heights: HashMap::new(),
             delegate: None,
             selection_changed: Signal1::new(),
+            focused_row_changed: Signal1::new(),
         }
     }
 
     /// Binds an external table model.
     pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
+        self.model_connection_scope = ConnectionScope::new();
+        if let Some(data_changed) = model.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            data_changed.connect_scoped(&self.model_connection_scope, move || {
+                redraw.emit();
+                layout.emit();
+            });
+        }
         self.model = Some(model);
+        self.normalize_projection_state();
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     /// Returns visible row count.
@@ -1953,6 +3491,7 @@ impl TableWidget {
         if row < self.row_count() {
             self.selection.select_row(row);
             self.selection_changed.emit(row);
+            self.set_focused_row(row);
             true
         } else {
             false
@@ -1964,14 +3503,45 @@ impl TableWidget {
         self.selection.clear();
     }
 
+    /// Sets focused row in current projection.
+    pub fn set_focused_row(&mut self, row: usize) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        if self.focused_row == Some(row) {
+            return true;
+        }
+        self.focused_row = Some(row);
+        self.focused_row_changed.emit(self.focused_row);
+        true
+    }
+
+    /// Clears focused row.
+    pub fn clear_focused_row(&mut self) {
+        if self.focused_row.is_none() {
+            return;
+        }
+        self.focused_row = None;
+        self.focused_row_changed.emit(None);
+    }
+
+    /// Returns focused row when still visible in projection.
+    pub fn focused_row(&self) -> Option<usize> {
+        self.focused_row.filter(|row| *row < self.row_count())
+    }
+
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selection.current_row()
+        self.selection.current_row().filter(|row| *row < self.row_count())
     }
 
     /// All selected rows in stable order.
     pub fn selected_rows(&self) -> Vec<usize> {
-        self.selection.rows()
+        self.selection
+            .rows()
+            .into_iter()
+            .filter(|row| *row < self.row_count())
+            .collect()
     }
 
     /// Sets row selection mode.
@@ -2003,9 +3573,127 @@ impl TableWidget {
     pub fn row_height(&self, row: usize) -> Option<u32> {
         self.row_heights.get(&row).copied()
     }
+
+    fn normalize_projection_state(&mut self) {
+        let row_count = self.row_count();
+        self.selection.selected_rows.retain(|row| *row < row_count);
+        self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
+        self.focused_row = self.focused_row.filter(|row| *row < row_count);
+    }
 }
 
 impl_widget_delegate!(TableWidget, base);
+
+/// Dedicated table-view widget contract with table model projection parity.
+pub struct TableView {
+    table: TableWidget,
+}
+
+impl TableView {
+    /// Creates an empty table view.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            table: TableWidget::new(geometry),
+        }
+    }
+
+    /// Binds external table model.
+    pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
+        self.table.set_model(model);
+    }
+
+    /// Returns visible row count.
+    pub fn row_count(&self) -> usize {
+        self.table.row_count()
+    }
+
+    /// Returns visible column count.
+    pub fn column_count(&self) -> usize {
+        self.table.column_count()
+    }
+
+    /// Read table header text by view column.
+    pub fn header(&self, col: usize) -> Option<String> {
+        self.table.header(col)
+    }
+
+    /// Read table cell value by view row/column.
+    pub fn cell(&self, row: usize, col: usize) -> Option<String> {
+        self.table.cell(row, col)
+    }
+
+    /// Read formatted display cell (delegate-aware).
+    pub fn display_cell(&self, row: usize, col: usize) -> Option<String> {
+        self.table.display_cell(row, col)
+    }
+
+    /// Sets item delegate for display/editor conversion.
+    pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
+        self.table.set_delegate(delegate);
+    }
+
+    /// Clears custom item delegate.
+    pub fn clear_delegate(&mut self) {
+        self.table.clear_delegate();
+    }
+
+    /// Select one row in the current view projection.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        self.table.select_row(row)
+    }
+
+    /// Clear current row selection.
+    pub fn clear_selection(&mut self) {
+        self.table.clear_selection();
+    }
+
+    /// Current selected row index.
+    pub fn selected_row(&self) -> Option<usize> {
+        self.table.selected_row()
+    }
+
+    /// All selected rows in stable order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.table.selected_rows()
+    }
+
+    /// Sets row selection mode.
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        self.table.set_selection_mode(mode);
+    }
+
+    /// Returns current selection mode.
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.table.selection_mode()
+    }
+
+    /// Sets focused row in current projection.
+    pub fn set_focused_row(&mut self, row: usize) -> bool {
+        self.table.set_focused_row(row)
+    }
+
+    /// Clears focused row.
+    pub fn clear_focused_row(&mut self) {
+        self.table.clear_focused_row();
+    }
+
+    /// Returns focused row when still visible in projection.
+    pub fn focused_row(&self) -> Option<usize> {
+        self.table.focused_row()
+    }
+
+    /// Returns selection-changed signal.
+    pub fn selection_changed_signal(&self) -> &Signal1<usize> {
+        &self.table.selection_changed
+    }
+
+    /// Returns focused-row-changed signal.
+    pub fn focused_row_changed_signal(&self) -> &Signal1<Option<usize>> {
+        &self.table.focused_row_changed
+    }
+}
+
+impl_widget_delegate!(TableView, table);
 
 simple_control!(GridWidget, WidgetKind::Grid);
 simple_control!(ChartWidget, WidgetKind::Chart);
@@ -2014,7 +3702,132 @@ simple_control!(ChartWidget, WidgetKind::Chart);
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    struct TestObservableTreeModel {
+        nodes: Mutex<Vec<String>>,
+        changed: GenericSignal,
+    }
+
+    struct TestObservableListModel {
+        rows: Mutex<Vec<String>>,
+        changed: GenericSignal,
+    }
+
+    impl TestObservableListModel {
+        fn new(rows: Vec<String>) -> Self {
+            Self {
+                rows: Mutex::new(rows),
+                changed: GenericSignal::new(),
+            }
+        }
+
+        fn push_row(&self, value: impl Into<String>) {
+            self.rows
+                .lock()
+                .expect("list model lock poisoned")
+                .push(value.into());
+            self.changed.emit();
+        }
+    }
+
+    impl ListModel for TestObservableListModel {
+        fn row_count(&self) -> usize {
+            self.rows.lock().expect("list model lock poisoned").len()
+        }
+
+        fn data(&self, row: usize) -> Option<String> {
+            self.rows
+                .lock()
+                .expect("list model lock poisoned")
+                .get(row)
+                .cloned()
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.changed)
+        }
+    }
+
+    impl TestObservableTreeModel {
+        fn new(nodes: Vec<String>) -> Self {
+            Self {
+                nodes: Mutex::new(nodes),
+                changed: GenericSignal::new(),
+            }
+        }
+
+        fn push_node(&self, node: impl Into<String>) {
+            self.nodes.lock().expect("tree model lock poisoned").push(node.into());
+            self.changed.emit();
+        }
+    }
+
+    impl TreeModel for TestObservableTreeModel {
+        fn node_count(&self) -> usize {
+            self.nodes.lock().expect("tree model lock poisoned").len()
+        }
+
+        fn node_path(&self, index: usize) -> Option<String> {
+            self.nodes
+                .lock()
+                .expect("tree model lock poisoned")
+                .get(index)
+                .cloned()
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.changed)
+        }
+    }
+
+    struct TestObservableTableModel {
+        headers: Vec<String>,
+        rows: Mutex<Vec<Vec<String>>>,
+        changed: GenericSignal,
+    }
+
+    impl TestObservableTableModel {
+        fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+            Self {
+                headers,
+                rows: Mutex::new(rows),
+                changed: GenericSignal::new(),
+            }
+        }
+
+        fn push_row(&self, row: Vec<String>) {
+            self.rows.lock().expect("table model lock poisoned").push(row);
+            self.changed.emit();
+        }
+    }
+
+    impl TableModel for TestObservableTableModel {
+        fn row_count(&self) -> usize {
+            self.rows.lock().expect("table model lock poisoned").len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.headers.len()
+        }
+
+        fn data(&self, row: usize, col: usize) -> Option<String> {
+            self.rows
+                .lock()
+                .expect("table model lock poisoned")
+                .get(row)
+                .and_then(|row_data| row_data.get(col))
+                .cloned()
+        }
+
+        fn header(&self, col: usize) -> Option<String> {
+            self.headers.get(col).cloned()
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.changed)
+        }
+    }
 
     #[test]
     fn vec_table_model_edit_contract() {
@@ -2025,6 +3838,48 @@ mod tests {
         assert!(model.is_editable(0, 1));
         assert!(EditableTableModel::set_data(&mut model, 0, 1, "2".to_string()));
         assert_eq!(model.data(0, 1).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn vec_list_model_emits_data_changed_on_mutation() {
+        let mut model = VecListModel::new(vec!["a".to_string()]);
+        let hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits_ref = Arc::clone(&hits);
+            model.data_changed().connect(move || {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        model.add_item("b");
+        assert!(model.set_item(0, "x"));
+        assert!(model.remove_item(1));
+
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.data(0).as_deref(), Some("x"));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn vec_table_model_emits_data_changed_on_mutation() {
+        let mut model = VecTableModel::new(
+            vec!["name".to_string(), "value".to_string()],
+            vec![vec!["a".to_string(), "1".to_string()]],
+        );
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits_ref = Arc::clone(&hits);
+            model.data_changed().connect(move || {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(model.set_cell(0, 1, "2"));
+        model.push_row(vec!["b".to_string(), "3".to_string()]);
+        assert!(model.remove_row(0));
+
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 
     #[test]
@@ -2111,6 +3966,200 @@ mod tests {
         assert!(table.select_row(0));
 
         assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn tree_view_auto_refreshes_on_observable_model_change() {
+        let model = Arc::new(TestObservableTreeModel::new(vec!["root".to_string()]));
+        let mut tree = TreeView::new(Rect::new(0, 0, 120, 80));
+
+        let redraw_hits = Arc::new(AtomicUsize::new(0));
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&redraw_hits);
+            tree.redraw_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&layout_hits);
+            tree.layout_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        tree.set_model(model.clone());
+        model.push_node("root/child");
+
+        assert_eq!(tree.node_count(), 2);
+        assert!(redraw_hits.load(Ordering::SeqCst) >= 2);
+        assert!(layout_hits.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn table_widget_auto_refreshes_on_observable_model_change() {
+        let model = Arc::new(TestObservableTableModel::new(
+            vec!["name".to_string()],
+            vec![vec!["a".to_string()]],
+        ));
+        let mut table = TableWidget::new(Rect::new(0, 0, 120, 80));
+
+        let redraw_hits = Arc::new(AtomicUsize::new(0));
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&redraw_hits);
+            table.redraw_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&layout_hits);
+            table.layout_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        table.set_model(model.clone());
+        model.push_row(vec!["b".to_string()]);
+
+        assert_eq!(table.row_count(), 2);
+        assert!(redraw_hits.load(Ordering::SeqCst) >= 2);
+        assert!(layout_hits.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn list_view_auto_refreshes_on_observable_model_change() {
+        let model = Arc::new(TestObservableListModel::new(vec!["a".to_string()]));
+        let mut list = ListView::new(Rect::new(0, 0, 120, 80));
+
+        let redraw_hits = Arc::new(AtomicUsize::new(0));
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&redraw_hits);
+            list.redraw_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&layout_hits);
+            list.layout_requested_signal().connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        list.set_model(model.clone());
+        model.push_row("b");
+
+        assert_eq!(list.row_count(), 2);
+        assert_eq!(list.item(1).as_deref(), Some("b"));
+        assert!(redraw_hits.load(Ordering::SeqCst) >= 2);
+        assert!(layout_hits.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn table_view_forwards_table_contract_and_selection_signal() {
+        let model = Arc::new(VecTableModel::new(
+            vec!["name".to_string()],
+            vec![vec!["a".to_string()]],
+        ));
+        let mut table = TableView::new(Rect::new(0, 0, 120, 80));
+        table.set_model(model);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits_ref = Arc::clone(&hits);
+            table.selection_changed_signal().connect(move |_| {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert_eq!(table.column_count(), 1);
+        assert_eq!(table.header(0).as_deref(), Some("name"));
+        assert_eq!(table.cell(0, 0).as_deref(), Some("a"));
+        assert!(table.select_row(0));
+        assert_eq!(table.selected_row(), Some(0));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn list_view_selection_focus_projection_sync_contract() {
+        let model_a = Arc::new(VecListModel::new(vec!["a".to_string(), "b".to_string()]));
+        let model_b = Arc::new(VecListModel::new(vec!["a".to_string()]));
+        let mut list = ListView::new(Rect::new(0, 0, 120, 80));
+
+        let focus_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&focus_hits);
+            list.focused_row_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        list.set_model(model_a);
+        assert!(list.select_row(1));
+        assert_eq!(list.selected_row(), Some(1));
+        assert_eq!(list.focused_row(), Some(1));
+
+        list.set_model(model_b);
+        assert_eq!(list.selected_row(), None);
+        assert_eq!(list.focused_row(), None);
+        assert!(focus_hits.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn tree_view_selection_focus_projection_sync_contract() {
+        let model_a = Arc::new(VecTreeModel::new(vec!["root".to_string(), "root/child".to_string()]));
+        let model_b = Arc::new(VecTreeModel::new(vec!["root".to_string()]));
+        let mut tree = TreeView::new(Rect::new(0, 0, 120, 80));
+
+        let focus_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&focus_hits);
+            tree.focused_node_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        tree.set_model(model_a);
+        assert!(tree.select_node(1));
+        assert_eq!(tree.selected_node(), Some(1));
+        assert_eq!(tree.focused_node(), Some(1));
+
+        tree.set_model(model_b);
+        assert_eq!(tree.selected_node(), None);
+        assert_eq!(tree.focused_node(), None);
+        assert!(focus_hits.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn table_widget_selection_focus_projection_sync_contract() {
+        let model_a = Arc::new(VecTableModel::new(
+            vec!["name".to_string()],
+            vec![vec!["a".to_string()], vec!["b".to_string()]],
+        ));
+        let model_b = Arc::new(VecTableModel::new(
+            vec!["name".to_string()],
+            vec![vec!["a".to_string()]],
+        ));
+        let mut table = TableWidget::new(Rect::new(0, 0, 120, 80));
+
+        let focus_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&focus_hits);
+            table.focused_row_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        table.set_model(model_a);
+        assert!(table.select_row(1));
+        assert_eq!(table.selected_row(), Some(1));
+        assert_eq!(table.focused_row(), Some(1));
+
+        table.set_model(model_b);
+        assert_eq!(table.selected_row(), None);
+        assert_eq!(table.focused_row(), None);
+        assert!(focus_hits.load(Ordering::SeqCst) >= 1);
     }
 
     #[test]
@@ -2481,6 +4530,54 @@ mod tests {
     }
 
     #[test]
+    fn rich_edit_baseline_contract_covers_text_selection_read_only_and_signals() {
+        let mut editor = RichEdit::new(Rect::new(0, 0, 200, 120));
+
+        let text_hits = Arc::new(AtomicUsize::new(0));
+        let selection_hits = Arc::new(AtomicUsize::new(0));
+        let read_only_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&text_hits);
+            editor.text_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&selection_hits);
+            editor.selection_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&read_only_hits);
+            editor.read_only_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        editor.append_text("abc");
+        assert_eq!(editor.text(), "abc");
+
+        editor.set_selection(1, 3);
+        assert_eq!(editor.selection(), Some((1, 3)));
+        assert_eq!(editor.delete_selection().as_deref(), Some("bc"));
+        assert_eq!(editor.text(), "a");
+
+        editor.set_read_only(true);
+        editor.append_text("x");
+        assert_eq!(editor.text(), "a");
+        assert_eq!(editor.delete_selection(), None);
+
+        editor.set_read_only(false);
+        editor.insert_text("z");
+        assert_eq!(editor.text(), "az");
+
+        assert_eq!(text_hits.load(Ordering::SeqCst), 3);
+        assert_eq!(selection_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(read_only_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn checkbox_and_radio_full_contracts_cover_tristate_and_group_selection() {
         let mut checkbox = CheckBox::new(Rect::new(0, 0, 20, 20));
         checkbox.toggle();
@@ -2549,5 +4646,331 @@ mod tests {
         progress.set_range(20, 60);
         progress.set_value(5);
         assert_eq!(progress.value(), 20);
+    }
+
+    #[test]
+    fn scrollbar_and_scrollarea_contracts_are_deterministic() {
+        let mut scrollbar = ScrollBar::new(Rect::new(0, 0, 16, 100));
+        let scrollbar_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&scrollbar_hits);
+            scrollbar.value_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        scrollbar.set_range(0, 50);
+        scrollbar.set_page_step(7);
+        scrollbar.set_single_step(3);
+        scrollbar.set_value(45);
+        scrollbar.page_increment();
+        scrollbar.line_increment();
+        scrollbar.page_decrement();
+
+        assert_eq!(scrollbar.value(), 43);
+        assert_eq!(scrollbar_hits.load(Ordering::SeqCst), 3);
+
+        let mut area = ScrollArea::new(Rect::new(0, 0, 40, 30));
+        let offset_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&offset_hits);
+            area.scroll_offset_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        area.set_content_size(Size::new(200, 120));
+        area.set_viewport_size(Size::new(40, 30));
+        area.set_scroll_offset(Point::new(500, 500));
+        assert_eq!(area.scroll_offset(), Point::new(160, 90));
+
+        area.set_viewport_size(Size::new(190, 100));
+        assert_eq!(area.scroll_offset(), Point::new(10, 20));
+        assert_eq!(offset_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn groupbox_and_tabwidget_contracts_are_deterministic() {
+        let mut group = GroupBox::new(Rect::new(0, 0, 120, 60));
+        let title_hits = Arc::new(AtomicUsize::new(0));
+        let check_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&title_hits);
+            group.title_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&check_hits);
+            group.checked_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        group.set_title("Options".to_string());
+        group.set_title("Options".to_string());
+        group.set_checkable(true);
+        group.toggle_checked();
+        group.toggle_checked();
+
+        assert_eq!(group.title(), "Options");
+        assert!(group.is_checkable());
+        assert!(!group.is_checked());
+        assert_eq!(title_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(check_hits.load(Ordering::SeqCst), 2);
+
+        let mut tab = TabWidget::new(Rect::new(0, 0, 200, 120));
+        let index_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&index_hits);
+            tab.current_index_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        let first = tab.add_tab(10);
+        let second = tab.add_tab(11);
+        assert_eq!(first, 0);
+        assert_eq!(second, 1);
+        assert_eq!(tab.current_index(), Some(0));
+        assert_eq!(tab.current_tab(), Some(10));
+
+        assert!(tab.set_current_index(1));
+        assert_eq!(tab.current_tab(), Some(11));
+        assert!(tab.remove_tab(11));
+        assert_eq!(tab.current_index(), Some(0));
+        assert_eq!(tab.current_tab(), Some(10));
+
+        assert_eq!(index_hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn splitter_contract_distributes_sizes_and_emits_signals() {
+        let mut splitter = Splitter::new(Rect::new(0, 0, 200, 100));
+
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+        let orientation_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&layout_hits);
+            splitter.pane_layout_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&orientation_hits);
+            splitter.orientation_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 3);
+        let sizes = splitter.distribute_sizes(400, 0);
+        assert_eq!(sizes.len(), 2);
+        assert_eq!(sizes.iter().sum::<u32>(), 400);
+        assert!(sizes[1] > sizes[0]);
+
+        assert!(splitter.set_ratio(0, 2.0));
+        let sizes_after = splitter.distribute_sizes(400, 0);
+        assert_eq!(sizes_after.iter().sum::<u32>(), 400);
+        assert!(sizes_after[0] > sizes[0]);
+
+        splitter.set_orientation(SplitterOrientation::Vertical);
+        assert_eq!(splitter.orientation(), SplitterOrientation::Vertical);
+        assert!(splitter.remove_pane(2));
+        assert_eq!(splitter.pane_count(), 1);
+
+        assert_eq!(layout_hits.load(Ordering::SeqCst), 4);
+        assert_eq!(orientation_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dock_panel_and_mdi_area_contracts_are_deterministic() {
+        let mut dock = DockPanel::new(Rect::new(0, 0, 300, 200));
+        let dock_layout_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&dock_layout_hits);
+            dock.layout_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(dock.add_pane(10, DockArea::Left));
+        assert!(dock.add_pane(11, DockArea::Center));
+        assert_eq!(dock.pane_area(10), Some(DockArea::Left));
+        assert!(dock.move_pane(10, DockArea::Right));
+        assert_eq!(dock.pane_area(10), Some(DockArea::Right));
+        assert!(dock.remove_pane(11));
+        assert_eq!(dock.panes(), &[(10, DockArea::Right)]);
+        assert_eq!(dock_layout_hits.load(Ordering::SeqCst), 4);
+
+        let mut mdi = MdiArea::new(Rect::new(0, 0, 400, 240));
+        let active_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&active_hits);
+            mdi.active_document_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(mdi.add_document(100));
+        assert!(mdi.add_document(101));
+        assert_eq!(mdi.active_document(), Some(100));
+        assert!(mdi.set_active_document(101));
+        assert_eq!(mdi.active_document(), Some(101));
+        assert!(mdi.remove_document(101));
+        assert_eq!(mdi.active_document(), Some(100));
+        assert_eq!(mdi.documents(), &[100]);
+        assert_eq!(active_hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn advanced_widgets_use_distinct_widget_kinds() {
+        let rich = RichEdit::new(Rect::new(0, 0, 100, 80));
+        let list_view = ListView::new(Rect::new(0, 0, 100, 80));
+        let dock = DockPanel::new(Rect::new(0, 0, 100, 80));
+        let mdi = MdiArea::new(Rect::new(0, 0, 100, 80));
+
+        assert_eq!(rich.kind(), WidgetKind::RichEdit);
+        assert_eq!(list_view.kind(), WidgetKind::ListView);
+        assert_eq!(dock.kind(), WidgetKind::DockPanel);
+        assert_eq!(mdi.kind(), WidgetKind::MdiArea);
+    }
+
+    #[test]
+    fn menu_toolbar_statusbar_contracts_are_deterministic() {
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 200, 24));
+        let mut menu = Menu::new(Rect::new(0, 0, 100, 24));
+        let mut toolbar = ToolBar::new(Rect::new(0, 0, 200, 24));
+        let mut status = StatusBar::new(Rect::new(0, 0, 200, 20));
+
+        let menu_change_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&menu_change_hits);
+            menu_bar.current_menu_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(menu_bar.add_menu(10));
+        assert!(menu_bar.add_menu(11));
+        assert!(menu_bar.set_current_menu(11));
+        assert!(menu_bar.remove_menu(11));
+        assert_eq!(menu_bar.current_menu(), Some(10));
+        assert_eq!(menu_change_hits.load(Ordering::SeqCst), 3);
+
+        let menu_trigger_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&menu_trigger_hits);
+            menu.action_triggered.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(menu.add_action("open"));
+        assert!(!menu.add_action("open"));
+        assert!(menu.trigger_action("open"));
+        assert!(!menu.trigger_action("save"));
+        assert_eq!(menu_trigger_hits.load(Ordering::SeqCst), 1);
+
+        let toolbar_trigger_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&toolbar_trigger_hits);
+            toolbar.action_triggered.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(toolbar.add_action("build"));
+        assert!(toolbar.trigger_action("build"));
+        assert!(toolbar.remove_action("build"));
+        assert_eq!(toolbar_trigger_hits.load(Ordering::SeqCst), 1);
+
+        let status_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&status_hits);
+            status.message_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        status.set_message("ready".to_string());
+        status.set_message("ready".to_string());
+        status.set_message("running".to_string());
+        assert_eq!(status.message(), "running");
+        assert_eq!(status_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn dialog_family_contracts_emit_deterministic_result_signals() {
+        let mut dialog = Dialog::new(Rect::new(0, 0, 200, 120));
+        let dialog_finished = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&dialog_finished);
+            dialog.finished.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        dialog.set_modal(true);
+        dialog.accept();
+        assert!(dialog.is_modal());
+        assert_eq!(dialog.result(), Some(DialogResult::Accepted));
+        assert_eq!(dialog_finished.load(Ordering::SeqCst), 1);
+
+        let mut msg = MessageBox::new(Rect::new(0, 0, 180, 100));
+        let msg_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&msg_hits);
+            msg.result_changed.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        msg.set_title("Warn".to_string());
+        msg.set_text("Disk low".to_string());
+        msg.set_icon(MessageBoxIcon::Warning);
+        msg.set_result(DialogResult::Rejected);
+        assert_eq!(msg.title(), "Warn");
+        assert_eq!(msg.text(), "Disk low");
+        assert_eq!(msg.icon(), MessageBoxIcon::Warning);
+        assert_eq!(msg.result(), Some(DialogResult::Rejected));
+        assert_eq!(msg_hits.load(Ordering::SeqCst), 1);
+
+        let mut file = FileDialog::new(Rect::new(0, 0, 220, 140));
+        let file_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&file_hits);
+            file.file_selected.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        file.set_current_dir("/tmp".to_string());
+        file.set_selected_file(Some("a.txt".to_string()));
+        assert_eq!(file.current_dir(), "/tmp");
+        assert_eq!(file.selected_file(), Some("a.txt"));
+        assert_eq!(file_hits.load(Ordering::SeqCst), 1);
+
+        let mut color_dialog = ColorDialog::new(Rect::new(0, 0, 140, 120));
+        let color_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&color_hits);
+            color_dialog.color_selected.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        color_dialog.set_color(Color::rgba(12, 34, 56, 255));
+        assert_eq!(color_dialog.color(), Color::rgba(12, 34, 56, 255));
+        assert_eq!(color_hits.load(Ordering::SeqCst), 1);
+
+        let mut font_dialog = FontDialog::new(Rect::new(0, 0, 140, 120));
+        let font_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let hits = Arc::clone(&font_hits);
+            font_dialog.font_selected.connect(move |_| {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        font_dialog.set_font(Font::with_weight("Sans", 12.0, 700, false));
+        assert_eq!(font_dialog.font().family, "Sans");
+        assert_eq!(font_dialog.font().weight, 700);
+        assert_eq!(font_hits.load(Ordering::SeqCst), 1);
     }
 }

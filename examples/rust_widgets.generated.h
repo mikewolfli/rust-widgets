@@ -1,4 +1,3 @@
-// Auto-generated C header for the rust_widgets stable ABI surface.
 #ifndef RUST_WIDGETS_GENERATED_H
 #define RUST_WIDGETS_GENERATED_H
 
@@ -78,13 +77,13 @@ void rust_widgets_quit(void);
 void rust_widgets_run(void);
 unsigned int rust_widgets_set_embedded_target_fps(unsigned int fps);
 unsigned int rust_widgets_set_render_aa_samples_per_axis(unsigned int samples);
-uint64_t rust_widgets_submit_embedded_noop_task(const char* label);
 bool rust_widgets_set_widget_accessibility_name(uint64_t widget_id, const char* name);
 void rust_widgets_set_widget_enabled(uint64_t widget_id, bool enabled);
 bool rust_widgets_set_widget_ime_enabled(uint64_t widget_id, bool enabled);
 void rust_widgets_set_widget_text(uint64_t widget_id, const char* text);
 void rust_widgets_set_widget_visible(uint64_t widget_id, bool visible);
 void rust_widgets_show_widget(uint64_t widget_id);
+uint64_t rust_widgets_submit_embedded_noop_task(const char* label);
 
 #ifdef __cplusplus
 }

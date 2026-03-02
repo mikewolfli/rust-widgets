@@ -9,7 +9,99 @@ This file mirrors staged execution status.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
 
-## Current Requirements (v14)
+## Current Requirements (v17)
+
+## Stage Progress
+
+- [x] P0a Add dedicated `ListView` contract using `ListModel` projection with deterministic selection signals
+- [x] P0b Add dedicated `TableView` contract over `TableModel` (delegate/sort/selection parity baseline)
+- [x] P1a Expand tree/table/list advanced view state contracts (selection, focus, projection sync)
+- [x] P1b Add `RichEdit` baseline (document text model + selection + edit signals)
+- [x] P2a Add `DockPanel`/`MdiArea` baseline containers with deterministic pane/document state contracts
+- [x] P2b Add focused regression tests + docs/changelog notes for v17 advanced-widget model/view contracts
+
+## Architecture Upgrades
+
+- [x] Advanced view architecture baseline: explicit list/table/tree projection contracts with deterministic state routing
+- [x] Editor/container architecture baseline: `RichEdit` + `DockPanel` + `MdiArea` state/signal surfaces
+- [x] Advanced widget regression baseline: focused tests for projection sync and container/editor state transitions
+
+## Notes
+
+- `v17` is generated from `plan.md` item9 (Advanced Widgets).
+- `v17` focuses on dedicated advanced-view contracts (`ListView`/`TableView`) and editor/container baselines (`RichEdit`/`DockPanel`/`MdiArea`).
+- Existing `TreeView`/`TableWidget` and observable model baselines from `v16` are treated as prerequisites and must be preserved.
+- Added in this slice: `ListView` model-projection baseline with deterministic row selection and model-driven auto-refresh wiring.
+- Added in this slice: dedicated `TableView` contract wrapper with `TableWidget` parity for model/delegate/selection flows.
+- Added in this slice: tree/table/list focus-state contracts (`focused_*`) with deterministic change signals and projection-safe normalization on model rebinding.
+- Added in this slice: selection/focus/projection sync regressions for `ListView`/`TreeView`/`TableWidget`.
+- Added in this slice: `RichEdit` baseline contract with text/selection/read-only state and deterministic edit/cursor signal routing.
+- Added in this slice: container baselines `DockPanel`/`MdiArea` with deterministic pane/document state contracts and change signals.
+- Focused verification: `cargo test --lib list_view_auto_refreshes_on_observable_model_change && cargo test --lib table_view_forwards_table_contract_and_selection_signal && cargo test --lib widget::tests::` (all pass).
+- Focused verification update: `cargo test --lib list_view_selection_focus_projection_sync_contract && cargo test --lib tree_view_selection_focus_projection_sync_contract && cargo test --lib table_widget_selection_focus_projection_sync_contract && cargo test --lib widget::tests::` (all pass).
+- Focused verification update: `cargo test --lib rich_edit_baseline_contract_covers_text_selection_read_only_and_signals && cargo test --lib widget::tests::` (all pass).
+- Focused verification update: `cargo test --lib dock_panel_and_mdi_area_contracts_are_deterministic && cargo test --lib widget::tests::` (all pass).
+- Historical audit update (`v1~v9`): implementation and test/script evidence checked across signal/core/widget/layout/action/platform/pdf/print/render paths; no new contract-level gaps found.
+- Historical audit fix (`v1~v9` validation path): embedded behavior-matrix compile issue resolved by gating `serde_json`-dependent core test behind `desktop-runtime` feature (`src/core/mod.rs`).
+- Historical verification update: `bash tools/check_profiles.sh && bash tools/check_event_model_signal_first.sh && cargo test --lib && bash tools/check_behavior_matrix.sh && bash tools/check_visual_regression.sh && bash tools/check_abi.sh` (all pass).
+- `v16` is completed and preserved below as history.
+
+## Requirement History (v16)
+
+## Stage Progress
+
+- [x] P0a Add observable model baselines (`ListModel`/`TreeModel`/`TableModel`) with data-changed signals
+- [x] P0b Add observable in-memory model implementations for list/tree/table paths
+- [x] P1a Wire `TreeView` auto-refresh on model data-changed signals
+- [x] P1b Wire `TableWidget` auto-refresh on model data-changed signals
+- [x] P2a Add focused regression tests for model data-change signaling and auto-refresh behavior
+- [x] P2b Update docs/changelog notes for v16 model-view contract
+
+## Architecture Upgrades
+
+- [x] Model signal architecture baseline: deterministic data-change signal surface on model layers
+- [x] View sync architecture baseline: signal-first auto-refresh wiring for tree/table views
+- [x] Model-view regression baseline: focused tests for data-change propagation and refresh contracts
+
+## Notes
+
+- `v16` is generated from `plan.md` item8 (Model/View Architecture).
+- `v16` focuses on data-change signals and auto-refresh baseline for existing model/view paths.
+- Added in this slice: observable model signal baselines for `ListModel`/`TreeModel`/`TableModel` and in-memory `VecListModel`/`VecTreeModel`/`VecTableModel` notifier contracts.
+- Added in this slice: `TreeView`/`TableWidget` model signal wiring that auto-emits view redraw/layout requests on data changes.
+- Focused verification: `cargo test --lib vec_list_model_emits_data_changed_on_mutation && cargo test --lib vec_table_model_emits_data_changed_on_mutation && cargo test --lib tree_view_auto_refreshes_on_observable_model_change && cargo test --lib table_widget_auto_refreshes_on_observable_model_change` (all pass).
+- `v15` is completed and preserved below as history.
+
+## Requirement History (v15)
+
+## Stage Progress
+
+- [x] P0a Add `ScrollBar` full-state contract (range/value/page-step/single-step + deterministic `value_changed`)
+- [x] P0b Add `ScrollArea` baseline (content size + viewport size + scroll offset + signal-first change events)
+- [x] P1a Add `GroupBox` baseline title/checkable contract and deterministic state signals
+- [x] P1b Add `TabWidget` baseline tab-index routing contract and selected-index signal behavior
+- [x] P1c Add `Splitter` baseline deterministic pane-size/ratio contract and change signals
+- [x] P2a Add `MenuBar/Menu/ToolBar/StatusBar` intermediate baseline contracts (action-host integration/state signals)
+- [x] P2b Add `MessageBox/FileDialog/ColorDialog/FontDialog` baseline state/result signal contracts
+- [x] P3a Add focused regression tests for intermediate widget state/signal contracts
+- [x] P3b Update docs/changelog notes for v15 intermediate-widget contract
+
+## Architecture Upgrades
+
+- [x] Intermediate widget state architecture baseline: deterministic container/navigation/dialog state models
+- [x] Intermediate widget signal architecture baseline: signal-first scroll/tab/check/dialog interactions
+- [x] Intermediate widget regression baseline: focused tests for intermediate widget state/signal contracts
+
+## Notes
+
+- `v15` is generated from `plan.md` item7 (Intermediate Widgets).
+- `v15` starts with `ScrollArea/ScrollBar` as the first deliverable slice.
+- Focused verification: `cargo test --lib widget::tests::` (all pass, including scroll contracts).
+- Added in this slice: `GroupBox` title/checkable contract + `TabWidget` index-routing contract with deterministic signals.
+- Added in this slice: dialog-family baseline contracts (`Dialog/MessageBox/FileDialog/ColorDialog/FontDialog`) with deterministic result/state signals.
+- `v14` is completed and preserved below as history.
+
+## Requirement History (v14)
 
 ## Stage Progress
 

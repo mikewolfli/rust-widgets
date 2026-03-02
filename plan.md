@@ -63,7 +63,7 @@
 	- triggered signal
 	- Checkable, enable/disable
 
-- [ ] Intermediate Widgets
+- [x] Intermediate Widgets — Completed 2026-03-02
 	- ScrollArea/ScrollBar
 	- GroupBox
 	- TabWidget
@@ -72,12 +72,12 @@
 	- StatusBar
 	- Dialog/MessageBox/FileDialog/ColorDialog/FontDialog
 
-- [ ] Model/View Architecture
+- [x] Model/View Architecture — Completed 2026-03-02
 	- ListModel/TableModel/TreeModel
 	- Data change signals
 	- Auto view refresh
 
-- [ ] Advanced Widgets
+- [x] Advanced Widgets — Completed 2026-03-02
 	- TreeView/TableView/ListView
 	- RichEdit (code editor)
 	- DockPanel
@@ -86,7 +86,7 @@
 
 - [ ] Style & Theme System
 	- Dark/light mode
-	- QSS-like stylesheet
+	- QSS-like stylesheet. -WSS
 	- Widget skinning
 
 - [ ] Animation System
