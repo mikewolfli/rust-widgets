@@ -10,7 +10,9 @@ use crate::core::ObjectId;
 use super::{DropEvent, WidgetTriggerEvent};
 
 /// Generic widget state record owned by backend state model.
-#[derive(Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
     pub kind: K,
@@ -35,6 +37,7 @@ pub struct WidgetRecord<K> {
 }
 
 /// Thread-safe state model split from native handle adapters.
+#[derive(Serialize, Deserialize)]
 pub struct BackendState<K> {
     next_id: AtomicU64,
     widgets: Mutex<HashMap<ObjectId, WidgetRecord<K>>>,

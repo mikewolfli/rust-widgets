@@ -1,43 +1,48 @@
 //! Native macOS backend using Cocoa.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
 
-use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
-    NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
-};
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel};
-use objc::{class, msg_send, sel, sel_impl};
+    use cocoa::appkit::{
+        NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
+        NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication,
+        NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    };
+    use cocoa::base::{id, nil, NO, YES};
+    use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel};
+    use objc::{class, msg_send, sel, sel_impl};
 
-use crate::core::{ObjectId, PlatformFamily};
+    use crate::core::{ObjectId, PlatformFamily};
 
-use super::state::BackendState;
-use super::Platform;
+    use super::state::BackendState;
+    use super::Platform;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum HandleKind {
-    /// Top-level NSWindow.
-    Window,
-    Button,
-    CheckBox,
-    LineEdit,
-    MenuBar,
-    Menu,
-    /// NSMenuItem instance that represents a selectable action.
-    MenuItem,
-    ToolBar,
-    StatusBar,
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum HandleKind {
+        /// Top-level NSWindow.
+        Window,
+        Button,
+        CheckBox,
+        LineEdit,
+        MenuBar,
+        Menu,
+        /// NSMenuItem instance that represents a selectable action.
+        MenuItem,
+        ToolBar,
+        StatusBar,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CocoaHandle {
+        /// Opaque native pointer cast to usize.
+        ptr: usize,
+    }
+    // ...existing code...
 }
-
-#[derive(Clone, Copy)]
-struct CocoaHandle {
-    /// Opaque native pointer cast to usize.
-    ptr: usize,
     /// Runtime handle kind used for dispatch.
     kind: HandleKind,
 }
