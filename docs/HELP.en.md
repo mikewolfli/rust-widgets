@@ -89,6 +89,7 @@ cargo publish --dry-run
 C ABI is implemented in `src/bindings/mod.rs` with reserved API entry points for Python/C++/Java bindings.
 It also exposes polling APIs for native triggers: `rust_widgets_poll_menu_triggered` and `rust_widgets_poll_widget_triggered`.
 For typed widget triggers use `rust_widgets_poll_widget_trigger_event(widget_id_out)`, which returns kind code (`0` none, `1` clicked, `2` value-changed).
+Current typed trigger codes are: `0` none, `1` clicked, `2` value-changed, `3` selection-changed, `4` closed.
 Render quality is configurable via C ABI with `rust_widgets_set_render_aa_samples_per_axis` / `rust_widgets_get_render_aa_samples_per_axis` (clamped `1..=8`).
 Ready-to-use C sample assets are available at `examples/rust_widgets.h` and `examples/c_abi_poll_demo.c`.
 For complete build/run commands, see `docs/C_ABI_QUICKSTART.md`.

@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
 
 /// Typed widget trigger kinds surfaced by platform backends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WidgetTriggerKind {
     /// No concrete trigger semantic is known.
     Unknown = 0,
@@ -26,6 +26,10 @@ pub enum WidgetTriggerKind {
     Clicked = 1,
     /// Stateful value changed (line edit text, slider value, etc.).
     ValueChanged = 2,
+    /// Selection changed (combo/list/tree/table current selection updates).
+    SelectionChanged = 3,
+    /// Widget/window closed lifecycle trigger.
+    Closed = 4,
 }
 
 /// Typed widget trigger event with source widget id.
@@ -853,19 +857,17 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(windows::WindowsPlatform::new())
 }
 
-// --- macOS backend selection logic ---
-// By default, always use the objc2 backend for macOS. This enables migration and modernization.
-// The legacy Cocoa backend is now fallback only, and must be enabled explicitly via the "cocoa-fallback" feature.
-#[cfg(target_os = "macos")]
+/// Select objc2 preview backend when migration feature is enabled on macOS.
+#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(macos_objc2::MacOSObjc2Platform::new())
 }
 
-#[cfg(all(target_os = "macos", feature = "cocoa-fallback"))]
-fn create_cocoa_fallback_platform() -> Box<dyn Platform> {
+/// Select legacy Cocoa backend when objc2 migration feature is disabled.
+#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
+fn create_native_platform() -> Box<dyn Platform> {
     Box::new(macos::MacOSPlatform::new())
 }
-// --- end macOS backend selection logic ---
 
 #[cfg(target_os = "linux")]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -983,6 +985,18 @@ mod tests {
                 kind: WidgetTriggerKind::Clicked,
             })
         );
+    }
+
+    #[test]
+    fn consistency_compat_poll_widget_triggered_is_single_delivery_shim() {
+        let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+        let window = platform.create_window("w", 0, 0, 100, 100);
+        let button = platform.create_button(window, "btn", 0, 0, 80, 30);
+
+        assert!(platform.inject_widget_trigger_event(button, WidgetTriggerKind::Clicked));
+        assert_eq!(platform.poll_widget_triggered(), Some(button));
+        assert_eq!(platform.poll_widget_triggered(), None);
+        assert_eq!(platform.poll_widget_trigger_event(), None);
     }
 
     #[test]

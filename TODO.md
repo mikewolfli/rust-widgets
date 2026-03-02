@@ -9,7 +9,63 @@ This file mirrors staged execution status.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
 
-## Current Requirements (v8)
+## Current Requirements (v10)
+
+## Stage Progress
+
+- [ ] P0a Introduce `Point`/`Size`/`Rect` constructors and validation helpers with consistent semantics
+- [ ] P0b Add geometry conversion helpers (position/size to rect and rect decomposition) used by widget/layout code
+- [ ] P1a Implement `Color` utility API (`rgba`/hex parse/serialize-safe normalization) with deterministic behavior
+- [ ] P1b Add `Font` descriptor baseline (`family`, `size`, `weight`) and shared defaults
+- [ ] P2a Add `Margin`/`Padding` per-side types and normalization helpers
+- [ ] P2b Add horizontal/vertical alignment enums and mapping utilities for widgets/layout
+- [ ] P3a Wire new geometry/style primitives through representative widget/layout entry points
+- [ ] P3b Add focused regression tests for geometry/style primitives and edge-case normalization
+- [ ] P3c Update docs/changelog notes for geometry/style type contract and migration guidance
+
+## Architecture Upgrades
+
+- [ ] Geometry architecture baseline: canonical shared primitives for coordinate/size/rect contracts
+- [ ] Style architecture baseline: canonical color/font/spacing/alignment primitives shared across modules
+- [ ] API consistency baseline: normalized construction/validation behavior for geometry and style inputs
+
+## Notes
+
+- `v10` is generated from `plan.md` item2 (Basic Geometry & Style Types) and scopes delivery to foundational geometry/style primitives.
+- Completion criteria for `v10`: shared geometry/style types are canonicalized, wired into key entry points, and covered by deterministic tests.
+- `v9` remains completed and is preserved below as history.
+
+## Requirement History (v9)
+
+## Stage Progress
+
+- [x] P4a Route covered widget input interactions through unified signal dispatch path (remove direct parallel click/value event handling for covered routes)
+- [x] P4b Eliminate alternative event-system paths for covered widget interactions while retaining compatibility shims only for non-covered/system events
+- [x] P4c Add regression tests proving covered routes are signal-first only (no duplicate/parallel dispatch)
+- [x] P4d Update migration notes with explicit boundary: what remains EventLoop/system-level vs widget interaction signal routes
+
+- [x] P0a Add generic `Signal<T>` core type with compile-time-safe payloads
+- [x] P0b Implement `connect(callback)` / `emit(args)` with multi-slot dispatch semantics
+- [x] P1a Add `once` connection mode (auto-disconnect after first trigger)
+- [x] P1b Implement auto-disconnect on widget drop (no dangling callback/no panic)
+- [x] P2a Wire widget-facing trigger surface to signal-based routes (`clicked`, `value-changed`, `selection-changed`, `closed`)
+- [x] P2b Remove remaining alternative event paths for covered widget interactions (signal-only contract)
+- [x] P3a Add focused regression tests for signal lifecycle/disconnect ordering/once semantics
+- [x] P3b Add docs/changelog notes for signal-first event model contract and migration guidance
+
+## Architecture Upgrades
+
+- [x] Signal/Slot architecture baseline: generic, type-safe, no raw-pointer handle management
+- [x] Widget interaction architecture baseline: signal-only event API for covered control routes
+- [x] Lifecycle safety baseline: deterministic disconnect behavior on drop and once-trigger completion
+
+## Notes
+
+- `v9` is generated from `plan.md` item1 (Signal/Slot System) and scopes delivery to signal-core + widget event route convergence.
+- Completion criteria for `v9`: all covered widget interactions route through signal contracts with lifecycle-safe disconnect semantics.
+- `v8` remains completed and is preserved below as history.
+
+## Requirement History (v8)
 
 ## Stage Progress
 

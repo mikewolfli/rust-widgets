@@ -69,6 +69,8 @@ Trigger kind mapping:
 
 - `1`: clicked
 - `2`: value-changed
+- `3`: selection-changed
+- `4`: closed
 - others: unknown
 
 Generic fallback APIs:

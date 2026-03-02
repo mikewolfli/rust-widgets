@@ -21,8 +21,8 @@ fn main() {
     let menu_bar = platform.create_menu_bar(window, 0, 0, 860, 28);
     let _ = platform.attach_menu_bar_to_window(window, menu_bar);
     let file_menu = platform.create_menu(menu_bar, "File", 0, 0, 0, 0);
-    let quit_item = platform.menu_add_item(file_menu, "Quit", Some("cmd+q"));
-    let backend = platform.backend_name();
+    let _quit_item = platform.menu_add_item(file_menu, "Quit", Some("cmd+q"));
+    let _backend = platform.backend_name();
 
     platform.show_widget(window);
 
@@ -30,31 +30,33 @@ fn main() {
     thread::spawn(move || {
         let mut ticks: u32 = 0;
         loop {
-            if (backend == "gtk" || backend == "harmony-desktop") && ticks == 60 {
+            if (_backend == "gtk" || _backend == "harmony-desktop") && ticks == 60 {
                 // Inject synthetic events for backends that need deterministic demo input.
                 let _ = get_platform().inject_widget_trigger_event(_button, WidgetTriggerKind::Clicked);
                 let _ = get_platform().inject_widget_trigger_event(_line, WidgetTriggerKind::ValueChanged);
-                let _ = get_platform().inject_menu_trigger(quit_item);
+                let _ = get_platform().inject_menu_trigger(_quit_item);
             }
 
-        if let Some(menu_item_id) = get_platform().poll_menu_triggered() {
-            println!("menu triggered: {menu_item_id}");
-            if menu_item_id == quit_item {
-                get_platform().quit();
-                break;
+            if let Some(menu_item_id) = get_platform().poll_menu_triggered() {
+                println!("menu triggered: {menu_item_id}");
+                if menu_item_id == _quit_item {
+                    get_platform().quit();
+                    break;
+                }
             }
-        }
 
-        if let Some(event) = get_platform().poll_widget_trigger_event() {
-            let kind = match event.kind {
-                WidgetTriggerKind::Clicked => "clicked",
-                WidgetTriggerKind::ValueChanged => "value-changed",
-                WidgetTriggerKind::Unknown => "unknown",
-            };
-            println!("widget triggered: id={}, kind={kind}", event.widget_id);
-        }
+            if let Some(event) = get_platform().poll_widget_trigger_event() {
+                let kind = match event.kind {
+                    WidgetTriggerKind::Clicked => "clicked",
+                    WidgetTriggerKind::ValueChanged => "value-changed",
+                    WidgetTriggerKind::SelectionChanged => "selection-changed",
+                    WidgetTriggerKind::Closed => "closed",
+                    WidgetTriggerKind::Unknown => "unknown",
+                };
+                println!("widget triggered: id={}, kind={kind}", event.widget_id);
+            }
 
-        thread::sleep(Duration::from_millis(16));
+            thread::sleep(Duration::from_millis(16));
             ticks = ticks.saturating_add(1);
         }
     });

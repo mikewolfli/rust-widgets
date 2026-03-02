@@ -9,7 +9,7 @@
 
 ## ITEM List
 
-- [ ] Signal/Slot System (library core)
+- [x] Signal/Slot System (library core) — Completed 2026-03-02
 	- Generic Signal<T> supporting any number/type of parameters
 	- connect(callback): bind closures
 	- emit(args): trigger signal

@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Signal-first event model migration notes for `v9`:
+  - generic `Signal<T>` core with typed payload dispatch
+  - `connect_once` one-shot slot semantics
+  - scoped auto-disconnect via owner lifetime drop
+- Expanded typed widget trigger kinds in platform/C ABI routing:
+  - `3`: `selection-changed`
+  - `4`: `closed`
+
+### Changed
+
+- Native signal bridge routing now normalizes covered widget interactions through typed trigger routes
+  (`clicked`, `value-changed`, `selection-changed`, `closed`) instead of per-kind ad-hoc paths.
+- Widget interaction baseline now emits explicit selection/closed signals for covered controls
+  (window, combo box, tree view, table widget).
+
 ## [0.1.0] - 2026-03-01
 
 ### Added

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::core::{Alignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 
 /// Discrete widget categories supported by the widget model layer.
@@ -67,6 +67,8 @@ pub trait Widget: EventHandler {
     fn tooltip(&self) -> &str;
     fn style(&self) -> &WidgetStyle;
     fn set_style(&mut self, style: WidgetStyle);
+    /// Returns connection scope used to auto-disconnect slots when widget drops.
+    fn connection_scope(&self) -> &ConnectionScope;
 }
 
 /// Shared widget state and signals used by concrete controls.
@@ -80,6 +82,7 @@ pub struct BaseWidget {
     enabled: bool,
     tooltip: String,
     style: WidgetStyle,
+    connection_scope: ConnectionScope,
     /// Emitted when a click-like interaction is received.
     pub clicked: GenericSignal,
     /// Emitted when widget internal value/state changes.
@@ -99,6 +102,7 @@ impl BaseWidget {
             enabled: true,
             tooltip: String::new(),
             style: WidgetStyle::default(),
+            connection_scope: ConnectionScope::new(),
             clicked: GenericSignal::new(),
             changed: GenericSignal::new(),
         }
@@ -124,6 +128,7 @@ impl Widget for BaseWidget {
     fn tooltip(&self) -> &str { &self.tooltip }
     fn style(&self) -> &WidgetStyle { &self.style }
     fn set_style(&mut self, style: WidgetStyle) { self.style = style; }
+    fn connection_scope(&self) -> &ConnectionScope { &self.connection_scope }
 }
 
 impl EventHandler for BaseWidget {
@@ -131,9 +136,7 @@ impl EventHandler for BaseWidget {
         if !self.enabled || !self.visible {
             return;
         }
-        if let Event::MousePress { .. } = event {
-            self.clicked.emit();
-        }
+        let _ = event;
     }
 }
 
@@ -158,6 +161,7 @@ macro_rules! impl_widget_delegate {
             fn tooltip(&self) -> &str { self.$field.tooltip() }
             fn style(&self) -> &WidgetStyle { self.$field.style() }
             fn set_style(&mut self, style: WidgetStyle) { self.$field.set_style(style); }
+            fn connection_scope(&self) -> &ConnectionScope { self.$field.connection_scope() }
         }
         impl EventHandler for $ty {
             fn handle_event(&mut self, event: &Event) { self.$field.handle_event(event); }
@@ -186,8 +190,43 @@ impl Window {
     pub fn title(&self) -> &str { &self.title }
     /// Updates window title.
     pub fn set_title(&mut self, title: String) { self.title = title; }
+
+    /// Emits the window closed signal.
+    pub fn close(&mut self) {
+        self.closed.emit();
+    }
 }
-impl_widget_delegate!(Window, base);
+
+impl Widget for Window {
+    fn id(&self) -> ObjectId { self.base.id() }
+    fn kind(&self) -> WidgetKind { self.base.kind() }
+    fn geometry(&self) -> Rect { self.base.geometry() }
+    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
+    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
+    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
+    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
+    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
+    fn children(&self) -> &[ObjectId] { self.base.children() }
+    fn show(&mut self) { self.base.show(); }
+    fn hide(&mut self) { self.base.hide(); }
+    fn is_visible(&self) -> bool { self.base.is_visible() }
+    fn set_enabled(&mut self, enabled: bool) { self.base.set_enabled(enabled); }
+    fn is_enabled(&self) -> bool { self.base.is_enabled() }
+    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
+    fn tooltip(&self) -> &str { self.base.tooltip() }
+    fn style(&self) -> &WidgetStyle { self.base.style() }
+    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
+    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
+}
+
+impl EventHandler for Window {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if matches!(event, Event::Quit) {
+            self.closed.emit();
+        }
+    }
+}
 
 /// Dialog widget.
 pub struct Dialog {
@@ -262,14 +301,32 @@ impl TextEdit { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::ne
 impl_widget_delegate!(TextEdit, base);
 
 /// Combo-box widget with simple string item storage.
-pub struct ComboBox { base: BaseWidget, items: Vec<String>, current: usize }
+pub struct ComboBox {
+    base: BaseWidget,
+    items: Vec<String>,
+    current: usize,
+    /// Emitted when selected index changes.
+    pub selection_changed: Signal1<usize>,
+}
 impl ComboBox {
     /// Creates an empty combo-box.
-    pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ComboBox, geometry, "ComboBox"), items: Vec::new(), current: 0 } }
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ComboBox, geometry, "ComboBox"),
+            items: Vec::new(),
+            current: 0,
+            selection_changed: Signal1::new(),
+        }
+    }
     /// Appends one item.
     pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); }
     /// Updates current item index when in range.
-    pub fn set_current_index(&mut self, index: usize) { if index < self.items.len() { self.current = index; } }
+    pub fn set_current_index(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.current = index;
+            self.selection_changed.emit(index);
+        }
+    }
 }
 impl_widget_delegate!(ComboBox, base);
 
@@ -754,6 +811,8 @@ pub struct TreeView {
     fallback_nodes: Vec<String>,
     /// View-side selected node index.
     selected_node: Option<usize>,
+    /// Emitted when selected node changes.
+    pub selection_changed: Signal1<usize>,
 }
 
 impl TreeView {
@@ -764,6 +823,7 @@ impl TreeView {
             model: None,
             fallback_nodes: Vec::new(),
             selected_node: None,
+            selection_changed: Signal1::new(),
         }
     }
 
@@ -797,6 +857,7 @@ impl TreeView {
     pub fn select_node(&mut self, index: usize) -> bool {
         if index < self.node_count() {
             self.selected_node = Some(index);
+            self.selection_changed.emit(index);
             true
         } else {
             false
@@ -829,6 +890,8 @@ pub struct TableWidget {
     row_heights: HashMap<usize, u32>,
     /// Optional display/editor delegate.
     delegate: Option<Arc<dyn ItemDelegate>>,
+    /// Emitted when selected row changes.
+    pub selection_changed: Signal1<usize>,
 }
 
 impl TableWidget {
@@ -841,6 +904,7 @@ impl TableWidget {
             column_widths: HashMap::new(),
             row_heights: HashMap::new(),
             delegate: None,
+            selection_changed: Signal1::new(),
         }
     }
 
@@ -898,6 +962,7 @@ impl TableWidget {
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
             self.selection.select_row(row);
+            self.selection_changed.emit(row);
             true
         } else {
             false
@@ -958,6 +1023,8 @@ simple_control!(ChartWidget, WidgetKind::Chart);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn vec_table_model_edit_contract() {
@@ -978,5 +1045,107 @@ mod tests {
         sel.select_row(5);
         assert_eq!(sel.current_row(), Some(5));
         assert_eq!(sel.rows(), vec![2, 5]);
+    }
+
+    #[test]
+    fn window_closed_signal_emits_on_quit_event() {
+        let mut window = Window::new(
+            "Main".to_string(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 80,
+            },
+        );
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_ref = Arc::clone(&hits);
+        window.closed.connect(move || {
+            hits_ref.fetch_add(1, Ordering::SeqCst);
+        });
+
+        window.handle_event(&Event::Quit);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn selection_changed_signals_emit_for_combo_tree_table() {
+        let hits = Arc::new(AtomicUsize::new(0));
+
+        let mut combo = ComboBox::new(Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        });
+        combo.add_item("A");
+        combo.add_item("B");
+        {
+            let hits_ref = Arc::clone(&hits);
+            combo.selection_changed.connect(move |_| {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        combo.set_current_index(1);
+
+        let mut tree = TreeView::new(Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 80,
+        });
+        tree.add_node("root");
+        {
+            let hits_ref = Arc::clone(&hits);
+            tree.selection_changed.connect(move |_| {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        assert!(tree.select_node(0));
+
+        let rows = vec![vec!["a".to_string()]];
+        let model = Arc::new(VecTableModel::new(vec!["c".to_string()], rows));
+        let mut table = TableWidget::new(Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 80,
+        });
+        table.set_model(model);
+        {
+            let hits_ref = Arc::clone(&hits);
+            table.selection_changed.connect(move |_| {
+                hits_ref.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        assert!(table.select_row(0));
+
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn base_widget_mouse_press_does_not_emit_clicked_directly() {
+        let mut base = BaseWidget::new(
+            WidgetKind::Button,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 24,
+            },
+            "Button",
+        );
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_ref = Arc::clone(&hits);
+        base.clicked.connect(move || {
+            hits_ref.fetch_add(1, Ordering::SeqCst);
+        });
+
+        base.handle_event(&Event::MousePress {
+            pos: crate::core::Point { x: 1, y: 1 },
+            button: 1,
+        });
+
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 }

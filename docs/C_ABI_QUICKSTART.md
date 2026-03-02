@@ -72,6 +72,8 @@ set PATH=target\debug;%PATH%
 - `0`: none
 - `1`: clicked
 - `2`: value-changed
+- `3`: selection-changed
+- `4`: closed
 
 ## Core control constructors (P2 coverage)
 
@@ -101,6 +103,8 @@ To feed external/native events into the same polling pipeline:
 
 - `1`: clicked
 - `2`: value-changed
+- `3`: selection-changed
+- `4`: closed
 
 Harmony direct callback aliases (for ArkUI/NAPI handlers):
 

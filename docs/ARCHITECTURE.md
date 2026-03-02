@@ -14,7 +14,7 @@
 - `core`: geometry, color, font, object id, profile and platform family enums.
 - `object`: base object identity and lifecycle metadata.
 - `event`: thread-safe queue and dispatch loop.
-- `signal`: signal-slot abstraction with connection handles.
+- `signal`: signal-slot abstraction with typed payloads, `once` slots, and scoped auto-disconnect.
 - `widget`: control model set and shared widget trait.
 - `layout`: `BoxLayout`, `GridLayout`, `FormLayout`, `StackLayout`.
 - `xml`: XML/JSON layout loading with id lookup.
@@ -46,9 +46,13 @@ Desktop backends covered by architecture:
 ## 4. Event and signal flow
 
 1. Platform backend receives native event.
-2. Event is converted into `event::Event` and posted by `EventSender`.
-3. `EventLoop` drains and dispatches by `ObjectId`.
-4. Widget `handle_event` maps actions to signal emissions.
+2. Covered widget interactions normalize into typed widget-trigger routes.
+3. `NativeSignalBridge` maps typed trigger routes to signal emissions.
+4. `event::EventLoop` remains for system/non-covered scheduling (`timer`, `idle`, `custom`, modal dispatch).
+
+Boundary note:
+- Covered interaction routes (`clicked`, `value-changed`, `selection-changed`, `closed`) are signal-first.
+- `EventLoop` is retained as a compatibility/system scheduler, not the primary covered-interaction trigger source.
 5. Connected slots run in user code.
 
 ## 5. C ABI strategy
@@ -57,8 +61,8 @@ Stable C ABI exports include:
 - runtime control (`rust_widgets_init/run/quit`)
 - widget lifecycle (`create_window`, `create_button`, property setters/getters)
 - menu actions (`rust_widgets_attach_menu_bar_to_window`, `rust_widgets_menu_add_item`, `rust_widgets_poll_menu_triggered`)
-- widget trigger polling (`rust_widgets_poll_widget_triggered`)
-- typed widget trigger polling (`rust_widgets_poll_widget_trigger_event`, kind: 0=none, 1=clicked, 2=value-changed)
+- widget trigger polling (`rust_widgets_poll_widget_triggered`, compatibility path)
+- typed widget trigger polling (`rust_widgets_poll_widget_trigger_event`, kind: 0=none, 1=clicked, 2=value-changed, 3=selection-changed, 4=closed)
 - memory-safe string free (`rust_widgets_free_string`)
 - version and reserved language bridges:
   - `rust_widgets_bindings_api_version`

@@ -19,7 +19,7 @@ Applies to all Rust source files and C ABI headers/samples in this project.
 - Write concise, factual comments.
 - Prefer present tense: "Returns...", "Maps...", "Queues...".
 - Explain intent/behavior, not obvious syntax.
-- Use consistent trigger terms: `clicked`, `value-changed`, `unknown`.
+- Use consistent trigger terms: `clicked`, `value-changed`, `selection-changed`, `closed`, `unknown`.
 - For cross-platform code, explicitly state normalization behavior.
 
 ## Good examples

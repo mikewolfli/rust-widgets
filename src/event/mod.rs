@@ -149,8 +149,7 @@ pub struct EventLoop {
 /// This allows desktop-native widget ids to participate in a lightweight
 /// signal pipeline without requiring a separate widget object registry.
 pub struct NativeSignalBridge {
-    clicked_signals: Mutex<HashMap<ObjectId, GenericSignal>>,
-    value_changed_signals: Mutex<HashMap<ObjectId, GenericSignal>>,
+    widget_trigger_signals: Mutex<HashMap<(ObjectId, WidgetTriggerKind), GenericSignal>>,
     menu_trigger_signals: Mutex<HashMap<ObjectId, GenericSignal>>,
 }
 
@@ -158,10 +157,29 @@ impl NativeSignalBridge {
     /// Create an empty bridge.
     pub fn new() -> Self {
         Self {
-            clicked_signals: Mutex::new(HashMap::new()),
-            value_changed_signals: Mutex::new(HashMap::new()),
+            widget_trigger_signals: Mutex::new(HashMap::new()),
             menu_trigger_signals: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Connect slot to one typed widget trigger route.
+    pub fn connect_widget_trigger<F>(
+        &self,
+        widget_id: ObjectId,
+        kind: WidgetTriggerKind,
+        slot: F,
+    ) -> ConnectionHandle
+    where
+        F: FnMut() + Send + 'static,
+    {
+        let signal = {
+            let mut map = self
+                .widget_trigger_signals
+                .lock()
+                .expect("native bridge widget trigger lock poisoned");
+            map.entry((widget_id, kind)).or_default().clone()
+        };
+        signal.connect(slot)
     }
 
     /// Connect slot to widget clicked trigger.
@@ -169,14 +187,7 @@ impl NativeSignalBridge {
     where
         F: FnMut() + Send + 'static,
     {
-        let signal = {
-            let mut map = self
-                .clicked_signals
-                .lock()
-                .expect("native bridge clicked lock poisoned");
-            map.entry(widget_id).or_default().clone()
-        };
-        signal.connect(slot)
+        self.connect_widget_trigger(widget_id, WidgetTriggerKind::Clicked, slot)
     }
 
     /// Connect slot to widget value-changed trigger.
@@ -184,14 +195,23 @@ impl NativeSignalBridge {
     where
         F: FnMut() + Send + 'static,
     {
-        let signal = {
-            let mut map = self
-                .value_changed_signals
-                .lock()
-                .expect("native bridge value-changed lock poisoned");
-            map.entry(widget_id).or_default().clone()
-        };
-        signal.connect(slot)
+        self.connect_widget_trigger(widget_id, WidgetTriggerKind::ValueChanged, slot)
+    }
+
+    /// Connect slot to widget selection-changed trigger.
+    pub fn connect_selection_changed<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
+    where
+        F: FnMut() + Send + 'static,
+    {
+        self.connect_widget_trigger(widget_id, WidgetTriggerKind::SelectionChanged, slot)
+    }
+
+    /// Connect slot to widget/window closed trigger.
+    pub fn connect_closed<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
+    where
+        F: FnMut() + Send + 'static,
+    {
+        self.connect_widget_trigger(widget_id, WidgetTriggerKind::Closed, slot)
     }
 
     /// Connect slot to menu-item trigger.
@@ -225,20 +245,14 @@ impl NativeSignalBridge {
         }
 
         if let Some(event) = get_platform().poll_widget_trigger_event() {
-            let signal = match event.kind {
-                WidgetTriggerKind::Clicked => self
-                    .clicked_signals
+            let signal: Option<GenericSignal> = if event.kind == WidgetTriggerKind::Unknown {
+                None
+            } else {
+                self.widget_trigger_signals
                     .lock()
-                    .expect("native bridge clicked lock poisoned")
-                    .get(&event.widget_id)
-                    .cloned(),
-                WidgetTriggerKind::ValueChanged => self
-                    .value_changed_signals
-                    .lock()
-                    .expect("native bridge value-changed lock poisoned")
-                    .get(&event.widget_id)
-                    .cloned(),
-                WidgetTriggerKind::Unknown => None,
+                    .expect("native bridge widget trigger lock poisoned")
+                    .get(&(event.widget_id, event.kind))
+                    .cloned()
             };
 
             if let Some(signal) = signal {
@@ -542,4 +556,5 @@ mod tests {
         assert_eq!(exit_count.load(Ordering::SeqCst), 1);
         loop_.running.store(false, Ordering::SeqCst);
     }
+
 }

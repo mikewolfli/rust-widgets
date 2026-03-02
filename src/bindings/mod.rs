@@ -29,6 +29,8 @@ fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
     match code {
         1 => crate::platform::WidgetTriggerKind::Clicked,
         2 => crate::platform::WidgetTriggerKind::ValueChanged,
+        3 => crate::platform::WidgetTriggerKind::SelectionChanged,
+        4 => crate::platform::WidgetTriggerKind::Closed,
         _ => crate::platform::WidgetTriggerKind::Unknown,
     }
 }
