@@ -26,8 +26,14 @@ enum HandleKind {
         Window,
         Button,
         CheckBox,
+    RadioButton,
     Label,
         LineEdit,
+    Slider,
+    ProgressBar,
+    ComboBox,
+    ListBox,
+    Panel,
         MenuBar,
         Menu,
         /// NSMenuItem instance that represents a selectable action.
@@ -50,6 +56,14 @@ pub struct MacOSPlatform {
     state: BackendState<HandleKind>,
     /// Logical id -> native handle mapping.
     handles: Mutex<HashMap<ObjectId, CocoaHandle>>,
+    /// Combo-box item storage per logical widget id.
+    combo_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    /// Combo-box selected index per logical widget id.
+    combo_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
+    /// List-box item storage per logical widget id.
+    list_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    /// List-box selected index per logical widget id.
+    list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
 }
 
 static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
@@ -144,6 +158,10 @@ impl MacOSPlatform {
         Self {
             state: BackendState::new(),
             handles: Mutex::new(HashMap::new()),
+            combo_box_items: Mutex::new(HashMap::new()),
+            combo_box_selection: Mutex::new(HashMap::new()),
+            list_box_items: Mutex::new(HashMap::new()),
+            list_box_selection: Mutex::new(HashMap::new()),
         }
     }
 
@@ -190,6 +208,60 @@ impl MacOSPlatform {
     fn as_id(handle: CocoaHandle) -> id {
         handle.ptr as id
     }
+
+    fn add_to_parent_window(&self, parent: ObjectId, view: id) {
+        if let Some(parent_handle) = self.get_handle(parent) {
+            if let HandleKind::Window = parent_handle.kind {
+                unsafe {
+                    let content_view = NSWindow::contentView(Self::as_id(parent_handle));
+                    content_view.addSubview_(view);
+                }
+            }
+        }
+    }
+
+    fn sync_list_box_native(&self, list_box: ObjectId) {
+        let Some(handle) = self.get_handle(list_box) else {
+            return;
+        };
+        if !matches!(handle.kind, HandleKind::ListBox) {
+            return;
+        }
+
+        let items = self
+            .list_box_items
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&list_box).cloned())
+            .unwrap_or_default();
+        let selected = self
+            .list_box_selection
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&list_box).copied().flatten());
+
+        let text = if items.is_empty() {
+            String::new()
+        } else {
+            items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    if Some(idx) == selected {
+                        format!("> {item}")
+                    } else {
+                        item.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        unsafe {
+            let ns_text = NSString::alloc(nil).init_str(&text);
+            let _: () = msg_send![Self::as_id(handle), setStringValue: ns_text];
+        }
+    }
 }
 
 impl Platform for MacOSPlatform {
@@ -204,8 +276,9 @@ impl Platform for MacOSPlatform {
     fn init(&self) {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let app = NSApp();
+            let app = NSApplication::sharedApplication(nil);
             app.setActivationPolicy_(NSApplicationActivationPolicyRegular);
+            let _: () = msg_send![app, finishLaunching];
             let current_app = NSRunningApplication::currentApplication(nil);
             current_app.activateWithOptions_(
                 NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps,
@@ -236,9 +309,15 @@ impl Platform for MacOSPlatform {
                 NSBackingStoreBuffered,
                 NO,
             );
+            let content_view = NSView::initWithFrame_(
+                NSView::alloc(nil),
+                Self::make_rect(0, 0, width, height),
+            );
+            let _: () = msg_send![window, setContentView: content_view];
             window.cascadeTopLeftFromPoint_(NSPoint::new(20.0, 20.0));
             NSWindow::setTitle_(window, NSString::alloc(nil).init_str(title));
             window.makeKeyAndOrderFront_(nil);
+            let _: () = msg_send![window, display];
 
             let id = self.register_handle(HandleKind::Window, title, x, y, width, height, window as usize);
 
@@ -291,6 +370,42 @@ impl Platform for MacOSPlatform {
         }
     }
 
+    fn create_radio_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let button = NSButton::initWithFrame_(
+                NSButton::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
+            NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
+            let _: () = msg_send![button, setButtonType: 4usize];
+
+            self.add_to_parent_window(parent, button);
+
+            let id = self.register_handle(
+                HandleKind::RadioButton,
+                text,
+                x,
+                y,
+                width,
+                height,
+                button as usize,
+            );
+
+            pool.drain();
+            id
+        }
+    }
+
     fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
@@ -306,6 +421,66 @@ impl Platform for MacOSPlatform {
             }
 
             let id = self.register_handle(HandleKind::LineEdit, text, x, y, width, height, field as usize);
+
+            pool.drain();
+            id
+        }
+    }
+
+    fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let slider: id = msg_send![class!(NSSlider), alloc];
+            let slider: id = msg_send![slider, initWithFrame: Self::make_rect(x, y, width, height)];
+
+            self.add_to_parent_window(parent, slider);
+
+            let id = self.register_handle(
+                HandleKind::Slider,
+                "Slider",
+                x,
+                y,
+                width,
+                height,
+                slider as usize,
+            );
+
+            pool.drain();
+            id
+        }
+    }
+
+    fn create_progress_bar(
+        &self,
+        parent: u64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let progress: id = msg_send![class!(NSProgressIndicator), alloc];
+            let progress: id =
+                msg_send![progress, initWithFrame: Self::make_rect(x, y, width, height)];
+            let _: () = msg_send![progress, setIndeterminate: NO];
+            let _: () = msg_send![progress, setMinValue: 0.0f64];
+            let _: () = msg_send![progress, setMaxValue: 100.0f64];
+            let _: () = msg_send![progress, setDoubleValue: 0.0f64];
+
+            self.add_to_parent_window(parent, progress);
+
+            let id = self.register_handle(
+                HandleKind::ProgressBar,
+                "ProgressBar",
+                x,
+                y,
+                width,
+                height,
+                progress as usize,
+            );
 
             pool.drain();
             id
@@ -343,6 +518,22 @@ impl Platform for MacOSPlatform {
 
             let menu_bar: id = msg_send![class!(NSMenu), alloc];
             let menu_bar: id = msg_send![menu_bar, initWithTitle: NSString::alloc(nil).init_str("MainMenu")];
+            let _: () = msg_send![menu_bar, setAutoenablesItems: NO];
+
+            let app_menu_item: id = msg_send![class!(NSMenuItem), alloc];
+            let app_menu_item: id = msg_send![
+                app_menu_item,
+                initWithTitle: NSString::alloc(nil).init_str("")
+                action: nil
+                keyEquivalent: NSString::alloc(nil).init_str("")
+            ];
+            let _: () = msg_send![menu_bar, addItem: app_menu_item];
+
+            let app_menu: id = msg_send![class!(NSMenu), alloc];
+            let app_menu: id = msg_send![app_menu, initWithTitle: NSString::alloc(nil).init_str("Application")];
+            let _: () = msg_send![app_menu, setAutoenablesItems: NO];
+            let _: () = msg_send![menu_bar, setSubmenu: app_menu forItem: app_menu_item];
+
             let app = NSApp();
             let _: () = msg_send![app, setMainMenu: menu_bar];
 
@@ -374,6 +565,7 @@ impl Platform for MacOSPlatform {
             ];
             let submenu: id = msg_send![class!(NSMenu), alloc];
             let submenu: id = msg_send![submenu, initWithTitle: NSString::alloc(nil).init_str(text)];
+            let _: () = msg_send![submenu, setAutoenablesItems: NO];
             let _: () = msg_send![menu_item, setSubmenu: submenu];
 
             if let Some(parent_handle) = self.get_handle(parent) {
@@ -381,11 +573,13 @@ impl Platform for MacOSPlatform {
                 match parent_handle.kind {
                     HandleKind::MenuBar => {
                         let _: () = msg_send![native_parent, addItem: menu_item];
+                        let _: () = msg_send![native_parent, setSubmenu: submenu forItem: menu_item];
                     }
                     HandleKind::Menu => {
                         let parent_submenu: id = msg_send![native_parent, submenu];
                         if parent_submenu != nil {
                             let _: () = msg_send![parent_submenu, addItem: menu_item];
+                            let _: () = msg_send![parent_submenu, setSubmenu: submenu forItem: menu_item];
                         }
                     }
                     HandleKind::Window => {}
@@ -444,6 +638,315 @@ impl Platform for MacOSPlatform {
         }
     }
 
+    fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let combo: id = msg_send![class!(NSPopUpButton), alloc];
+            let combo: id = msg_send![combo, initWithFrame: Self::make_rect(x, y, width, height) pullsDown: NO];
+
+            if let Some(parent_handle) = self.get_handle(parent) {
+                if let HandleKind::Window = parent_handle.kind {
+                    let content_view = NSWindow::contentView(Self::as_id(parent_handle));
+                    content_view.addSubview_(combo);
+                }
+            }
+
+            let id = self.register_handle(
+                HandleKind::ComboBox,
+                "ComboBox",
+                x,
+                y,
+                width,
+                height,
+                combo as usize,
+            );
+
+            self.combo_box_items
+                .lock()
+                .expect("macos combo item lock poisoned")
+                .insert(id, Vec::new());
+            self.combo_box_selection
+                .lock()
+                .expect("macos combo selection lock poisoned")
+                .insert(id, None);
+
+            pool.drain();
+            id
+        }
+    }
+
+    fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let field = NSTextField::initWithFrame_(
+                NSTextField::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
+            NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(""));
+            let _: () = msg_send![field, setEditable: NO];
+            let _: () = msg_send![field, setSelectable: NO];
+            let _: () = msg_send![field, setBordered: YES];
+            let _: () = msg_send![field, setBezeled: YES];
+
+            self.add_to_parent_window(parent, field);
+
+            let id = self.register_handle(
+                HandleKind::ListBox,
+                "ListBox",
+                x,
+                y,
+                width,
+                height,
+                field as usize,
+            );
+
+            self.list_box_items
+                .lock()
+                .expect("macos list item lock poisoned")
+                .insert(id, Vec::new());
+            self.list_box_selection
+                .lock()
+                .expect("macos list selection lock poisoned")
+                .insert(id, None);
+
+            pool.drain();
+            id
+        }
+    }
+
+    fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
+        let Some(handle) = self.get_handle(list_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ListBox) {
+            return false;
+        }
+
+        if let Ok(mut items) = self.list_box_items.lock() {
+            items.entry(list_box).or_default().push(text.to_string());
+        } else {
+            return false;
+        }
+        self.sync_list_box_native(list_box);
+        true
+    }
+
+    fn list_box_remove_item(&self, list_box: u64, index: usize) -> bool {
+        let Some(handle) = self.get_handle(list_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ListBox) {
+            return false;
+        }
+
+        if let Ok(mut items) = self.list_box_items.lock() {
+            let Some(list) = items.get_mut(&list_box) else {
+                return false;
+            };
+            if index >= list.len() {
+                return false;
+            }
+            list.remove(index);
+            if let Ok(mut selection) = self.list_box_selection.lock() {
+                match selection.get(&list_box).copied().flatten() {
+                    Some(sel) if sel == index => {
+                        selection.insert(list_box, None);
+                    }
+                    Some(sel) if sel > index => {
+                        selection.insert(list_box, Some(sel - 1));
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            return false;
+        }
+
+        self.sync_list_box_native(list_box);
+        true
+    }
+
+    fn list_box_clear_items(&self, list_box: u64) -> bool {
+        let Some(handle) = self.get_handle(list_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ListBox) {
+            return false;
+        }
+
+        if let Ok(mut items) = self.list_box_items.lock() {
+            items.insert(list_box, Vec::new());
+        } else {
+            return false;
+        }
+        if let Ok(mut selection) = self.list_box_selection.lock() {
+            selection.insert(list_box, None);
+        }
+        self.sync_list_box_native(list_box);
+        true
+    }
+
+    fn list_box_set_current_index(&self, list_box: u64, index: usize) -> bool {
+        let Some(handle) = self.get_handle(list_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ListBox) {
+            return false;
+        }
+
+        let count = self.list_box_item_count(list_box);
+        if index >= count {
+            return false;
+        }
+
+        if let Ok(mut selection) = self.list_box_selection.lock() {
+            selection.insert(list_box, Some(index));
+        } else {
+            return false;
+        }
+        self.sync_list_box_native(list_box);
+        true
+    }
+
+    fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
+        self.list_box_selection
+            .lock()
+            .ok()
+            .and_then(|selection| selection.get(&list_box).copied().flatten())
+    }
+
+    fn list_box_item_count(&self, list_box: u64) -> usize {
+        self.list_box_items
+            .lock()
+            .ok()
+            .and_then(|items| items.get(&list_box).map(|v| v.len()))
+            .unwrap_or(0)
+    }
+
+    fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
+        self.list_box_items
+            .lock()
+            .ok()
+            .and_then(|items| items.get(&list_box).and_then(|v| v.get(index).cloned()))
+    }
+
+    fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+
+            let view = NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
+            self.add_to_parent_window(parent, view);
+
+            let id = self.register_handle(
+                HandleKind::Panel,
+                "Panel",
+                x,
+                y,
+                width,
+                height,
+                view as usize,
+            );
+
+            pool.drain();
+            id
+        }
+    }
+
+    fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
+        let Some(handle) = self.get_handle(combo_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ComboBox) {
+            return false;
+        }
+
+        unsafe {
+            let title = NSString::alloc(nil).init_str(text);
+            let _: () = msg_send![Self::as_id(handle), addItemWithTitle: title];
+        }
+
+        if let Ok(mut items) = self.combo_box_items.lock() {
+            items.entry(combo_box).or_default().push(text.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn combo_box_clear_items(&self, combo_box: u64) -> bool {
+        let Some(handle) = self.get_handle(combo_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ComboBox) {
+            return false;
+        }
+
+        unsafe {
+            let _: () = msg_send![Self::as_id(handle), removeAllItems];
+        }
+
+        if let Ok(mut items) = self.combo_box_items.lock() {
+            items.insert(combo_box, Vec::new());
+        } else {
+            return false;
+        }
+        if let Ok(mut selection) = self.combo_box_selection.lock() {
+            selection.insert(combo_box, None);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn combo_box_set_current_index(&self, combo_box: u64, index: usize) -> bool {
+        let Some(handle) = self.get_handle(combo_box) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ComboBox) {
+            return false;
+        }
+
+        let count = self.combo_box_item_count(combo_box);
+        if index >= count {
+            return false;
+        }
+
+        unsafe {
+            let _: () = msg_send![Self::as_id(handle), selectItemAtIndex: index as isize];
+        }
+
+        if let Ok(mut selection) = self.combo_box_selection.lock() {
+            selection.insert(combo_box, Some(index));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
+        self.combo_box_selection
+            .lock()
+            .ok()
+            .and_then(|selection| selection.get(&combo_box).copied().flatten())
+    }
+
+    fn combo_box_item_count(&self, combo_box: u64) -> usize {
+        self.combo_box_items
+            .lock()
+            .ok()
+            .and_then(|items| items.get(&combo_box).map(|v| v.len()))
+            .unwrap_or(0)
+    }
+
+    fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
+        self.combo_box_items
+            .lock()
+            .ok()
+            .and_then(|items| items.get(&combo_box).and_then(|v| v.get(index).cloned()))
+    }
+
     fn attach_menu_bar_to_window(&self, _window: u64, menu_bar: u64) -> bool {
         unsafe {
             let Some(handle) = self.get_handle(menu_bar) else {
@@ -471,10 +974,13 @@ impl Platform for MacOSPlatform {
                     if submenu == nil {
                         return 0;
                     }
+                    let _: () = msg_send![submenu, setAutoenablesItems: NO];
                     submenu
                 }
                 _ => return 0,
             };
+
+            let _: () = msg_send![container, setAutoenablesItems: NO];
 
             let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
             let (key, modifier_mask) = parse_shortcut(shortcut);
@@ -574,7 +1080,17 @@ impl Platform for MacOSPlatform {
                 match handle.kind {
                     HandleKind::Window => NSWindow::setTitle_(native, ns_text),
                     HandleKind::LineEdit | HandleKind::Label | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
+                    HandleKind::ComboBox => {}
+                    HandleKind::ListBox => {
+                        let _: () = msg_send![native, setStringValue: ns_text];
+                    }
+                    HandleKind::Slider | HandleKind::ProgressBar => {
+                        if let Ok(value) = text.parse::<f64>() {
+                            let _: () = msg_send![native, setDoubleValue: value];
+                        }
+                    }
                     HandleKind::MenuBar | HandleKind::ToolBar => {}
+                    HandleKind::Panel => {}
                     HandleKind::Menu | HandleKind::MenuItem => {
                         let _: () = msg_send![native, setTitle: ns_text];
                     }
@@ -595,8 +1111,13 @@ impl Platform for MacOSPlatform {
                 match handle.kind {
                     HandleKind::Button
                     | HandleKind::CheckBox
+                    | HandleKind::RadioButton
                     | HandleKind::Label
                     | HandleKind::LineEdit
+                    | HandleKind::Slider
+                    | HandleKind::ProgressBar
+                    | HandleKind::ComboBox
+                    | HandleKind::ListBox
                     | HandleKind::StatusBar => {
                         NSControl::setEnabled_(Self::as_id(handle), if enabled { YES } else { NO });
                     }

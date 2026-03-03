@@ -113,6 +113,7 @@ where
     }
 
     /// Return `true` when widget exists and kind matches.
+    #[allow(dead_code)]
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
         self.kind_of(widget_id).map(|k| k == kind).unwrap_or(false)
     }
@@ -249,6 +250,7 @@ where
     }
 
     /// Push menu trigger event.
+    #[allow(dead_code)]
     pub fn push_menu_event(&self, item_id: ObjectId) {
         self.menu_events
             .lock()
@@ -257,6 +259,7 @@ where
     }
 
     /// Pop menu trigger event.
+    #[allow(dead_code)]
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
         self.menu_events
             .lock()
@@ -265,6 +268,7 @@ where
     }
 
     /// Push typed widget trigger event.
+    #[allow(dead_code)]
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
         self.widget_events
             .lock()
@@ -273,6 +277,7 @@ where
     }
 
     /// Pop typed widget trigger event.
+    #[allow(dead_code)]
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
         self.widget_events
             .lock()

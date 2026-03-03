@@ -9,6 +9,7 @@ pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
 mod state;
+#[cfg(target_os = "windows")]
 pub mod windows;
 
 use std::collections::{HashMap, VecDeque};
