@@ -129,17 +129,6 @@
 	- Gap: complete modal window behavior parity across native and custom control routes
 	- Gap: implement frameless window interaction contract (drag/resize/hit regions) with backend diagnostics
 
-- [ ] IDE Capabilities (final goal) — 22%
-	- Multi-window
-	- Dock panels
-	- Code editor
-	- Menu/toolbar/statusbar
-	- Plugin system
-	- AI Assist integration
-	- Gap: define plugin API boundary (lifecycle, command surface, sandbox/ABI strategy)
-	- Gap: deliver multi-window + docking orchestration atop stable MainWindow contracts
-	- Gap: integrate code-editor workflow primitives (project tree, diagnostics, command palette baseline)
-
 - [ ] Dual Control Backend & Event Routing (Native + Custom Paint) — 56%
 	- Current status snapshot (2026-03-03)
 		- Done: unified `ControlBackend` scaffold is landed (`native` + `custom` kinds)
@@ -172,4 +161,16 @@
 		- keyboard/IME/accessibility event surface parity
 		- create/state/event/data-path parity for supported controls
 		- explicit unsupported diagnostics for uncovered controls
+
+- [ ] IDE Capabilities (final goal) — 22%
+	- Multi-window
+	- Dock panels
+	- Code editor
+	- Menu/toolbar/statusbar
+	- Plugin system
+	- AI Assist integration
+	- Gap: define plugin API boundary (lifecycle, command surface, sandbox/ABI strategy)
+	- Gap: deliver multi-window + docking orchestration atop stable MainWindow contracts
+	- Gap: integrate code-editor workflow primitives (project tree, diagnostics, command palette baseline)
+
 
