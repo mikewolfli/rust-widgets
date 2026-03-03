@@ -12,7 +12,134 @@ This file mirrors staged execution status.
 - Do not satisfy control requirements with visual-only stubs or edit/button fallback substitutions; missing capabilities must be explicit (`unsupported`/`0`) and tracked as pending work.
 - Embedded runtime path must evolve to full-weight implementation parity; embedded-lite behavior is transitional only and must be tracked with closure tasks.
 
-## Current Requirements (v19)
+## Current Requirements (v21)
+
+## Stage Progress
+
+- [ ] P0 Dual control backend full-weight closure (custom-default route)
+    - [x] P0-Feature Introduce and enforce compile-time policy presets: `control-policy-native-strict`, `control-policy-hybrid`, `control-policy-custom-full`.
+    - [x] P0-Feature Keep `full` default on `control-policy-hybrid` until custom-full parity gates are green.
+    - [x] P0-Feature Land v1 widget-kind route matrix (`NativePreferred` + `CustomRequired`) and publish policy matrix doc (`docs/CONTROL_POLICY_MATRIX.md`).
+    - [ ] P0a Complete custom-backend create/state/event/data-path parity for supported controls (no placeholder behavior).
+    - [ ] P0b Close deterministic focus-owner routing, hit-test, and pointer-capture handoff in unified event bridge.
+    - [ ] P0c Finalize IME/accessibility routing contract (platform bridge retention + explicit capability diagnostics).
+    - [ ] P0d Add parity gates for unsupported controls with explicit diagnostics matrix and CI checks.
+
+- [ ] P1 Runtime-visible behavior and window/layout contract alignment
+    - [ ] P1a Unify widget show/hide semantics with runtime-visible behavior across native/custom routes.
+    - [ ] P1b Bind layout recompute results to runtime geometry updates and deterministic parent-resize relayout.
+    - [ ] P1c Complete modal/main-window/frameless lifecycle contract and backend parity diagnostics.
+    - [ ] P1d Finish Layout→Advanced demo intent matrix reconciliation (`R1`/`R2`/`R3`) with startup diagnostics standard.
+
+- [ ] P2 Control/model/view/theme advanced closure
+    - [ ] P2a Complete basic/intermediate control high-frequency interaction parity (Combo/List/Spin/Dialog/Menu host family).
+    - [ ] P2b Finalize model/view incremental update contract (insert/remove/update ranges + selection sync parity tests).
+    - [ ] P2c Complete advanced widget interactive parity (`TreeView`/`TableView`/`ListView`/`DockPanel`/`MdiArea`/`RichEdit` baseline+).
+    - [ ] P2d Land theme runtime switching closure and RWSS parser/selector pipeline with documented grammar.
+
+- [ ] P3 Forward path (animation + IDE capability foundation)
+    - [ ] P3a Implement animation timeline scheduler, easing primitives, and deterministic frame-step test harness.
+    - [ ] P3b Define plugin API boundary and deliver IDE baseline integration path (multi-window + docking + code-editor workflow primitives).
+
+### v21 Mapping Note
+
+- This version is synchronized from `plan.md` gap lines added on 2026-03-03 and is prioritized by delivery criticality (`P0` → `P3`).
+- Completion policy: a stage can be checked only when all child acceptance behaviors are verified by runnable demos/tests and diagnostics are explicit for unsupported paths.
+
+## Requirement History (v20)
+
+## Stage Progress
+
+- [x] Phase A (native + GPU operational baseline) — Completed 2026-03-03
+    - [x] A0 Interface/event-source baseline landed (`ControlBackend` + source-routed trigger pump).
+    - [x] A1 Complete facade cutover in C ABI/widget create-state/event polling paths.
+        - [x] A1a First cutover batch landed: window/button create + trigger polling/injection + text/enabled/visible + backend-name routes now use `get_control_backend()`.
+        - [x] A1b Second cutover batch landed: extended control create paths, menu host APIs, and show/hide are routed via `get_control_backend()`.
+        - [x] A1c Keep direct platform bridges for system host capabilities (IME/accessibility) by design (方案 1).
+    - [x] A2 Validate `controls-native,gpu-wgpu` profile keeps native control behavior unchanged.
+    - [x] A3 Restrict GPU acceleration to render-heavy/custom paint surfaces and keep deterministic CPU render-backend fallback checks green.
+        - [x] A3a Deterministic render-backend fallback check is green under `controls-native,gpu-wgpu`.
+        - [x] A3b Confirm and enforce GPU acceleration scope boundaries (render-heavy/custom paint surfaces only).
+    - [x] A4 Add profile checks/demos coverage for native+GPU combo.
+
+### Layout → Advanced Demo Visibility Reconciliation (v20)
+
+- [ ] R1 Clarify demo intent matrix for `Layout System` to `Advanced Widgets`:
+    - [ ] R1a Mark computation-only demos explicitly (e.g. `demo_layout`) as non-window demos in docs.
+    - [ ] R1b Mark native-window demos explicitly and require `create_window/show_widget/run` path (or equivalent native path).
+- [ ] R2 Retrofit representative model/widget demos to visible native-window path where expected:
+    - [ ] R2a `demo_table` native-visible path verification and alignment.
+    - [ ] R2b `demo_treeview` native-visible path verification and alignment.
+    - [ ] R2c `demo_grid`/`demo_stack_widget` native-visible path verification and alignment.
+- [ ] R3 Add startup diagnostics standard for these demos:
+    - [ ] R3a Print runtime GUI mode (`NativeInteractive` vs `PreviewOrStub`) at startup.
+    - [ ] R3b Print backend name and whether visible native window is expected on current platform mode.
+- [ ] R4 Add verification checklist and evidence capture:
+    - [x] R4a Run and record `cargo run --example demo_layout` (expected console-only).
+    - [x] R4b Run and record representative visible-window demos under current platform backend.
+    - [x] R4c Update `docs/QA_HARNESS.md` with visibility expectations for Layout→Advanced demo set.
+
+### Visibility Gap Note (v20)
+
+- Current `plan.md` items for `Layout System`/`Model/View`/`Advanced Widgets` are function-contract complete, but demo window visibility parity is tracked separately here and must be validated per backend mode.
+
+### Completed Baseline (v20 already landed)
+
+- [x] Land unified `ControlBackend` scaffold (`native` + `custom` kinds) and compile-time selection features (`controls-native` / `controls-custom`).
+- [x] Land event-source routing scaffold (`TriggerEventSource`, `PlatformTriggerEventSource`, `ControlBackendTriggerEventSource`) and source-based bridge pump entrypoints.
+- [x] Keep current runtime behavior unchanged by default (superseded in v21 by `control-policy-hybrid` default route).
+
+### V20 Item: Dual Control Backend & Event Routing (Merged from latest plan item)
+
+- Goal: establish stable interfaces for both native controls and future custom-painted controls, with one upper-layer event/signal routing model and compile-time backend selection.
+- Phase scope (aligned with latest `plan.md`):
+    - Phase A: hybrid + GPU operational baseline (`control-policy-hybrid,gpu-wgpu`) — preferred execution path
+    - Final target: custom-full + GPU full path (`control-policy-custom-full,gpu-wgpu`)
+    - Closure criteria: deterministic hit-test/pointer/focus routing, keyboard/IME/accessibility parity, create/state/event/data-path parity for supported controls, and explicit unsupported diagnostics
+
+### A Implementation Status Check (2026-03-03)
+
+- Done: `src/control_backend/mod.rs` has native/custom backend interface scaffold and compile-time selection.
+- Done: `src/event/mod.rs` has source-based event shunting (`PlatformTriggerEventSource` / `ControlBackendTriggerEventSource`).
+- Remaining: `src/bindings/mod.rs` keeps only intentional direct platform bridges for IME/accessibility (方案 1).
+
+### Native + Custom Interface Integration Plan (with event shunting)
+
+- Integration Step 1 (API routing): move C ABI create/state/event polling entry points from direct platform calls to `get_control_backend()` facade.
+- Integration Step 2 (event shunting): route trigger polling/injection through backend source entrypoints first, keep platform source as compatibility route where needed (not control downgrade fallback).
+- Integration Step 3 (backend ownership): keep system-only capabilities (window loop, clipboard/IME/accessibility host bridges) in platform layer; keep control create/state/trigger in control-backend layer.
+- Integration Step 4 (validation): verify native profile parity under `controls-native,gpu-wgpu`, then enable custom backend incremental checks with explicit unsupported diagnostics.
+
+### Acceptance Criteria (v20)
+
+- Current default build keeps native behavior unchanged.
+- New backend interfaces compile cleanly and can be selected at compile time.
+- Event pump supports backend-agnostic source routing without changing upper signal connection APIs.
+- Current milestone Phase A is complete; next milestone prepares final custom+GPU track.
+- Custom-painted backend is only marked complete after full-weight closure criteria are met.
+
+### Verification Notes (v20)
+
+- Interface scaffold update (2026-03-03): added `src/control_backend/mod.rs` with `ControlBackend`, `NativeControlBackend`, and `CustomPaintControlBackend` skeleton.
+- Event routing scaffold update (2026-03-03): extended `src/event/mod.rs` with `TriggerEventSource` and source-based bridge pump methods.
+- Feature-gate update (2026-03-03): added `controls-native` and `controls-custom` feature switches in `Cargo.toml` (`full` now includes `controls-native`).
+- Baseline compile verification (2026-03-03): `cargo check` passes after v20 scaffold integration.
+- A-check audit update (2026-03-03): interface + event-source scaffolds are landed, but C ABI facade cutover remains incomplete (`src/bindings/mod.rs` still direct-platform heavy).
+- A1 progress update (2026-03-03): facade cutover batch landed for core create/event/state routes in `src/bindings/mod.rs`; remaining direct platform calls reduced to extended control creation and platform-host APIs.
+- A1 progress update (2026-03-03, second batch): `src/bindings/mod.rs` now routes most create/state/event/menu/show-hide paths through `get_control_backend()`; remaining direct platform calls are limited to IME/accessibility bridges.
+- A1 closure decision (2026-03-03): adopt 方案 1, keep IME/accessibility bindings on platform layer as intentional system-host bridges; treat facade cutover scope as complete for v20 A1.
+- A2 verification update (2026-03-03): `cargo check --features controls-native,gpu-wgpu`, `cargo check --features controls-native,gpu-wgpu --example demo_main`, and `cargo check --features controls-native,gpu-wgpu --example demo_wgpu_clear` all pass.
+- A2 behavior validation update (2026-03-03): `cargo test --lib --features controls-native,gpu-wgpu render::tests::auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend` passes.
+- A3 fallback validation update (2026-03-03): added `render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected` and verified `cargo test --lib --features controls-native,gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected` passes.
+- A3 scope-boundary audit update (2026-03-03): GPU auto-compose entrypoints (`compose_to_config_auto` / `compose_scene_to_surface_wgpu`) are confined to `src/render/mod.rs`; bindings/control-backend/event/platform paths route control/event flow without direct GPU entry coupling.
+- A4 profile/demo coverage update (2026-03-03): `cargo check --features controls-native,gpu-wgpu --examples`, `cargo check --features controls-native,gpu-wgpu --example demo_wgpu_primitives`, and `cargo check --features controls-native,gpu-wgpu --example demo_wgpu_control_parity` all pass.
+- Layout→Advanced visibility audit seed (2026-03-03): identified mixed demo patterns (some console/model-only, some native-window path), with reconciliation tasks tracked under v20 R1-R4.
+- Layout→Advanced visibility run evidence (2026-03-03): `cargo run --example demo_layout` prints layout rects and exits (console-only, no native window expected).
+- Layout→Advanced visibility run evidence (2026-03-03): `cargo run --example demo_table`, `demo_treeview`, `demo_grid`, `demo_stack_widget`, and `demo_chart` all execute and exit without a persistent native-window loop in current demo paths (chart exports SVG).
+- Window-path baseline evidence (2026-03-03): `cargo run --example demo_main` reports backend `cocoa` with `native-interactive` mode; `cargo run --example demo_window` runs successfully (no extra startup diagnostics emitted currently).
+- Default backend route update (2026-03-03): changed `Cargo.toml` `full` profile default from `controls-native` to `controls-custom`; default `cargo check` remains green.
+
+## Requirement History (v19)
 
 ## Stage Progress
 

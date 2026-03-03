@@ -13,6 +13,11 @@ This file tracks items that are currently not feasible to complete in the presen
 
 ## ITEM List
 
+- [ ] ITEM 0: Hybrid policy true per-control compile-time routing closure
+  - Constraint: current hybrid route is native-first for shared/basic control APIs; advanced-control routing matrix is not yet fully generated per control kind.
+  - Blocker: requires stable per-control capability table generation + compile-time route validation across all target profiles.
+  - Target completion signal: `control-policy-hybrid` can prove deterministic native/basic + custom/advanced routing with parity gates.
+
 - [ ] ITEM 1: Linux full native parity without `gtk-native` feature
   - Constraint: current non-`gtk-native` path is a preview/state loop and does not provide guaranteed visible native widgets.
   - Blocker: requires stable non-GTK native backend strategy (or mandatory GTK runtime dependency policy).

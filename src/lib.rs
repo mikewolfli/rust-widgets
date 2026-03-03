@@ -7,6 +7,8 @@ pub mod action;
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;
+/// Control backend abstraction for native/custom control implementations.
+pub mod control_backend;
 /// Core types and shared contracts.
 pub mod core;
 /// Event types and dispatch helpers.

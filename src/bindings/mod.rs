@@ -5,6 +5,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_float, c_int, c_uint};
 use std::sync::{Mutex, OnceLock};
 
+use crate::control_backend::get_control_backend;
+
 type CBool = bool;
 
 /// Global node-handle registry used by Harmony native bridge callbacks.
@@ -104,7 +106,7 @@ pub extern "C" fn rust_widgets_create_window(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_window(&c_str_or_default(title), x, y, width, height)
+    get_control_backend().create_window(&c_str_or_default(title), x, y, width, height)
 }
 
 #[no_mangle]
@@ -116,7 +118,7 @@ pub extern "C" fn rust_widgets_create_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_button(
+    get_control_backend().create_button(
         parent,
         &c_str_or_default(text),
         x,
@@ -135,7 +137,7 @@ pub extern "C" fn rust_widgets_create_checkbox(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_checkbox(
+    get_control_backend().create_checkbox(
         parent,
         &c_str_or_default(text),
         x,
@@ -154,7 +156,7 @@ pub extern "C" fn rust_widgets_create_line_edit(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_line_edit(
+    get_control_backend().create_line_edit(
         parent,
         &c_str_or_default(text),
         x,
@@ -173,7 +175,7 @@ pub extern "C" fn rust_widgets_create_label(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_label(
+    get_control_backend().create_label(
         parent,
         &c_str_or_default(text),
         x,
@@ -192,7 +194,7 @@ pub extern "C" fn rust_widgets_create_radio_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_radio_button(
+    get_control_backend().create_radio_button(
         parent,
         &c_str_or_default(text),
         x,
@@ -210,7 +212,7 @@ pub extern "C" fn rust_widgets_create_slider(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_slider(parent, x, y, width, height)
+    get_control_backend().create_slider(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -221,7 +223,7 @@ pub extern "C" fn rust_widgets_create_progress_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_progress_bar(parent, x, y, width, height)
+    get_control_backend().create_progress_bar(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -232,7 +234,7 @@ pub extern "C" fn rust_widgets_create_combo_box(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_combo_box(parent, x, y, width, height)
+    get_control_backend().create_combo_box(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -243,7 +245,7 @@ pub extern "C" fn rust_widgets_create_list_box(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_list_box(parent, x, y, width, height)
+    get_control_backend().create_list_box(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -254,7 +256,7 @@ pub extern "C" fn rust_widgets_create_panel(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_panel(parent, x, y, width, height)
+    get_control_backend().create_panel(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -265,7 +267,7 @@ pub extern "C" fn rust_widgets_create_menu_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_menu_bar(parent, x, y, width, height)
+    get_control_backend().create_menu_bar(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -277,7 +279,7 @@ pub extern "C" fn rust_widgets_create_menu(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_menu(
+    get_control_backend().create_menu(
         parent,
         &c_str_or_default(text),
         x,
@@ -289,7 +291,7 @@ pub extern "C" fn rust_widgets_create_menu(
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_attach_menu_bar_to_window(window: u64, menu_bar: u64) -> CBool {
-    crate::platform::get_platform().attach_menu_bar_to_window(window, menu_bar)
+    get_control_backend().attach_menu_bar_to_window(window, menu_bar)
 }
 
 #[no_mangle]
@@ -303,7 +305,7 @@ pub extern "C" fn rust_widgets_menu_add_item(
     } else {
         Some(c_str_or_default(shortcut))
     };
-    crate::platform::get_platform().menu_add_item(
+    get_control_backend().menu_add_item(
         parent_menu,
         &c_str_or_default(text),
         shortcut_text.as_deref(),
@@ -312,21 +314,17 @@ pub extern "C" fn rust_widgets_menu_add_item(
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_poll_menu_triggered() -> u64 {
-    crate::platform::get_platform()
-        .poll_menu_triggered()
-        .unwrap_or(0)
+    get_control_backend().poll_menu_triggered().unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_poll_widget_triggered() -> u64 {
-    crate::platform::get_platform()
-        .poll_widget_triggered()
-        .unwrap_or(0)
+    get_control_backend().poll_widget_triggered().unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64) -> c_uint {
-    let Some(event) = crate::platform::get_platform().poll_widget_trigger_event() else {
+    let Some(event) = get_control_backend().poll_widget_trigger_event() else {
         return 0;
     };
     if !widget_id_out.is_null() {
@@ -340,7 +338,7 @@ pub extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64
 /// Generic menu trigger injection entrypoint for native hosts.
 #[no_mangle]
 pub extern "C" fn rust_widgets_inject_menu_trigger(menu_item_id: u64) -> CBool {
-    crate::platform::get_platform().inject_menu_trigger(menu_item_id)
+    get_control_backend().inject_menu_trigger(menu_item_id)
 }
 
 /// Generic typed widget trigger injection entrypoint for native hosts.
@@ -349,35 +347,31 @@ pub extern "C" fn rust_widgets_inject_widget_trigger_event(
     widget_id: u64,
     kind_code: c_uint,
 ) -> CBool {
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+    get_control_backend().inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 /// Harmony callback alias: direct menu item trigger by widget id.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_menu_item(menu_item_id: u64) -> CBool {
-    crate::platform::get_platform().inject_menu_trigger(menu_item_id)
+    get_control_backend().inject_menu_trigger(menu_item_id)
 }
 
 /// Harmony callback alias: direct click trigger by widget id.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_click(widget_id: u64) -> CBool {
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
 }
 
 /// Harmony callback alias: direct value-changed trigger by widget id.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool {
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
 }
 
 /// Harmony callback alias: direct typed trigger by widget id and kind code.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+    get_control_backend().inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 /// Register a Harmony node handle to logical widget id mapping.
@@ -427,7 +421,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_menu_item(node_handle: u64) -> CB
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    crate::platform::get_platform().inject_menu_trigger(widget_id)
+    get_control_backend().inject_menu_trigger(widget_id)
 }
 
 /// Harmony callback alias: click trigger by node handle.
@@ -436,8 +430,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_click(node_handle: u64) -> CBool 
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
 }
 
 /// Harmony callback alias: value-changed trigger by node handle.
@@ -446,8 +439,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
 }
 
 /// Harmony callback alias: typed trigger by node handle and kind code.
@@ -459,8 +451,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_widget_event(
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    crate::platform::get_platform()
-        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+    get_control_backend().inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 #[no_mangle]
@@ -471,7 +462,7 @@ pub extern "C" fn rust_widgets_create_tool_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_tool_bar(parent, x, y, width, height)
+    get_control_backend().create_tool_bar(parent, x, y, width, height)
 }
 
 #[no_mangle]
@@ -483,7 +474,7 @@ pub extern "C" fn rust_widgets_create_status_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_status_bar(
+    get_control_backend().create_status_bar(
         parent,
         &c_str_or_default(text),
         x,
@@ -495,22 +486,22 @@ pub extern "C" fn rust_widgets_create_status_bar(
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_show_widget(widget_id: u64) {
-    crate::platform::get_platform().show_widget(widget_id);
+    get_control_backend().show_widget(widget_id);
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_hide_widget(widget_id: u64) {
-    crate::platform::get_platform().hide_widget(widget_id);
+    get_control_backend().hide_widget(widget_id);
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_set_widget_text(widget_id: u64, text: *const c_char) {
-    crate::platform::get_platform().set_widget_text(widget_id, &c_str_or_default(text));
+    get_control_backend().set_widget_text(widget_id, &c_str_or_default(text));
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_get_widget_text(widget_id: u64) -> *const c_char {
-    let text = crate::platform::get_platform().get_widget_text(widget_id);
+    let text = get_control_backend().get_widget_text(widget_id);
     match CString::new(text) {
         Ok(s) => s.into_raw(),
         Err(_) => CString::new("").expect("static string is valid").into_raw(),
@@ -519,22 +510,22 @@ pub extern "C" fn rust_widgets_get_widget_text(widget_id: u64) -> *const c_char 
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_set_widget_enabled(widget_id: u64, enabled: CBool) {
-    crate::platform::get_platform().set_widget_enabled(widget_id, enabled);
+    get_control_backend().set_widget_enabled(widget_id, enabled);
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_is_widget_enabled(widget_id: u64) -> CBool {
-    crate::platform::get_platform().is_widget_enabled(widget_id)
+    get_control_backend().is_widget_enabled(widget_id)
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_set_widget_visible(widget_id: u64, visible: CBool) {
-    crate::platform::get_platform().set_widget_visible(widget_id, visible);
+    get_control_backend().set_widget_visible(widget_id, visible);
 }
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_is_widget_visible(widget_id: u64) -> CBool {
-    crate::platform::get_platform().is_widget_visible(widget_id)
+    get_control_backend().is_widget_visible(widget_id)
 }
 
 #[no_mangle]
@@ -567,7 +558,7 @@ pub extern "C" fn rust_widgets_get_widget_accessibility_name(widget_id: u64) -> 
 
 #[no_mangle]
 pub extern "C" fn rust_widgets_backend_name() -> *const c_char {
-    CString::new(crate::platform::get_platform().backend_name())
+    CString::new(get_control_backend().backend_name())
         .expect("backend string is valid")
         .into_raw()
 }

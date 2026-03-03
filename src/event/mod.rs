@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 
 use crate::core::{ObjectId, Point, Size};
-use crate::platform::{WidgetTriggerKind, get_platform};
+use crate::control_backend::get_control_backend;
+use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind, get_platform};
 use crate::signal::{ConnectionHandle, GenericSignal};
 
 /// Event payload variants routed through the event loop.
@@ -153,6 +154,40 @@ pub struct NativeSignalBridge {
     menu_trigger_signals: Mutex<HashMap<ObjectId, GenericSignal>>,
 }
 
+/// Trigger event source abstraction for native/custom control routing.
+pub trait TriggerEventSource: Send + Sync {
+    /// Poll next menu trigger from source.
+    fn poll_menu_triggered(&self) -> Option<ObjectId>;
+    /// Poll next typed widget trigger event from source.
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent>;
+}
+
+/// Event source backed by active platform backend.
+pub struct PlatformTriggerEventSource;
+
+impl TriggerEventSource for PlatformTriggerEventSource {
+    fn poll_menu_triggered(&self) -> Option<ObjectId> {
+        get_platform().poll_menu_triggered()
+    }
+
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        get_platform().poll_widget_trigger_event()
+    }
+}
+
+/// Event source backed by active control backend.
+pub struct ControlBackendTriggerEventSource;
+
+impl TriggerEventSource for ControlBackendTriggerEventSource {
+    fn poll_menu_triggered(&self) -> Option<ObjectId> {
+        get_control_backend().poll_menu_triggered()
+    }
+
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        get_control_backend().poll_widget_trigger_event()
+    }
+}
+
 impl NativeSignalBridge {
     /// Create an empty bridge.
     pub fn new() -> Self {
@@ -231,7 +266,17 @@ impl NativeSignalBridge {
 
     /// Poll platform once and emit mapped signals.
     pub fn pump_once(&self) -> bool {
-        if let Some(menu_item_id) = get_platform().poll_menu_triggered() {
+        self.pump_once_with_source(&PlatformTriggerEventSource)
+    }
+
+    /// Poll active control backend once and emit mapped signals.
+    pub fn pump_once_from_control_backend(&self) -> bool {
+        self.pump_once_with_source(&ControlBackendTriggerEventSource)
+    }
+
+    /// Poll one source once and emit mapped signals.
+    pub fn pump_once_with_source(&self, source: &dyn TriggerEventSource) -> bool {
+        if let Some(menu_item_id) = source.poll_menu_triggered() {
             let signal = self
                 .menu_trigger_signals
                 .lock()
@@ -244,7 +289,7 @@ impl NativeSignalBridge {
             }
         }
 
-        if let Some(event) = get_platform().poll_widget_trigger_event() {
+        if let Some(event) = source.poll_widget_trigger_event() {
             let signal: Option<GenericSignal> = if event.kind == WidgetTriggerKind::Unknown {
                 None
             } else {
@@ -262,6 +307,15 @@ impl NativeSignalBridge {
         }
 
         false
+    }
+
+    /// Poll active control backend repeatedly until no pending signal is emitted.
+    pub fn pump_all_from_control_backend(&self) -> usize {
+        let mut count = 0;
+        while self.pump_once_from_control_backend() {
+            count += 1;
+        }
+        count
     }
 
     /// Poll platform repeatedly until no pending signal is emitted.

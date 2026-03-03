@@ -135,6 +135,24 @@ Notes:
 - Matrix should be updated after each platform smoke run.
 - Unsupported widget `create_*` calls should return `0` (invalid object id) explicitly and emit backend diagnostics where applicable.
 
+## V20 Layout → Advanced Demo Visibility Audit
+
+Scope: `Layout System` to `Advanced Widgets` representative demos.
+
+| Demo | Current intent | Expected native window | Evidence (2026-03-03) | Status |
+|---|---|---|---|---|
+| `demo_layout` | Layout computation/rect output | No | `cargo run --example demo_layout` prints rect list and exits | Verified |
+| `demo_table` | Model/view contract smoke | No (current path) | `cargo run --example demo_table` prints column/selection/shape and exits | Verified |
+| `demo_treeview` | Model/view contract smoke | No (current path) | `cargo run --example demo_treeview` prints visible nodes/selection and exits | Verified |
+| `demo_grid` | Layout/container smoke | No (current path) | `cargo run --example demo_grid` exits without persistent window loop | Verified |
+| `demo_stack_widget` | Layout/container smoke | No (current path) | `cargo run --example demo_stack_widget` exits without persistent window loop | Verified |
+| `demo_chart` | Rendering/export smoke | No | `cargo run --example demo_chart` prints draw count + SVG export and exits | Verified |
+| `demo_main` | Runtime window-loop baseline | Yes | startup log reports `backend 'cocoa'` + `native-interactive` | Verified |
+
+Notes:
+- This matrix tracks runtime visibility behavior separately from feature-contract completion in `plan.md`.
+- Demos marked `No (current path)` are candidates for reconciliation under TODO v20 R2/R3 when native-visible behavior is desired.
+
 ### Manual Verification Checklist (per backend)
 
 1. Run `cargo run --example demo_main` on the target backend.

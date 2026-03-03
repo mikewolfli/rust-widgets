@@ -3631,6 +3631,34 @@ mod tests {
     }
 
     #[test]
+    fn auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected() {
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            color: Color::rgba(9, 8, 7, 255),
+        });
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 0,
+                height: 0,
+            },
+            1.0,
+        );
+
+        let selected = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        assert_eq!(selected, AutoRenderBackend::CpuSoftware);
+        assert_eq!(last_auto_render_backend(), AutoRenderBackend::CpuSoftware);
+    }
+
+    #[test]
     fn base_control_visual_builders_emit_expected_command_types() {
         use crate::widget::{
             Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget, Window,

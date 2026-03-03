@@ -1,12 +1,27 @@
 //! StackWidget demo.
 
 use rust_widgets::core::Rect;
+use rust_widgets::platform::{get_platform, runtime_gui_mode, RuntimeGuiMode};
 use rust_widgets::widget::{StackWidget, Widget, Window};
 use rust_widgets::{init, run};
 
 fn main() {
     // Initialize the runtime before creating widgets.
     init();
+
+    let platform = get_platform();
+    let runtime_mode = runtime_gui_mode();
+    let runtime_mode_text = match runtime_mode {
+        RuntimeGuiMode::NativeInteractive => "NativeInteractive",
+        RuntimeGuiMode::PreviewOrStub => "PreviewOrStub",
+    };
+    let native_window_expected = false;
+    eprintln!(
+        "[demo_stack_widget] backend='{}' runtime_mode='{}' native_window_expected={} (container path)",
+        platform.backend_name(),
+        runtime_mode_text,
+        native_window_expected
+    );
 
     let mut window = Window::new(
         "StackWidget Demo".to_string(),
