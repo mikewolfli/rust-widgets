@@ -1,41 +1,44 @@
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 
-/// Core types and shared contracts.
-pub mod core;
 /// Action/command system.
 pub mod action;
-/// Object tree and object utilities.
-pub mod object;
-/// Event types and dispatch helpers.
-pub mod event;
-/// Signal-slot utilities.
-pub mod signal;
-/// Widget definitions and widget helpers.
-pub mod widget;
-/// Layout managers.
-pub mod layout;
-/// Rendering traits and primitives.
-pub mod render;
-/// Runtime render-engine abstraction.
-pub mod render_engine;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
-/// XML utilities for desktop runtime.
-pub mod xml;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
-/// Internationalization module for desktop runtime.
-pub mod i18n;
-/// Platform abstraction and backend adapters.
-pub mod platform;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
-/// Theme management for desktop runtime.
-pub mod theme;
-/// Style system primitives.
-pub mod style;
 #[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
 /// C ABI bindings for desktop runtime.
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;
+/// Core types and shared contracts.
+pub mod core;
+/// Event types and dispatch helpers.
+pub mod event;
+#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// Internationalization module for desktop runtime.
+pub mod i18n;
+/// Layout managers.
+pub mod layout;
+/// Object tree and object utilities.
+pub mod object;
+/// Platform abstraction and backend adapters.
+pub mod platform;
+/// Rendering traits and primitives.
+pub mod render;
+/// Runtime render-engine abstraction.
+pub mod render_engine;
+/// Signal-slot utilities.
+pub mod signal;
+/// Style system primitives.
+pub mod style;
+#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// Theme management for desktop runtime.
+pub mod theme;
+#[cfg(feature = "gpu-wgpu")]
+/// Optional WGPU GPU acceleration backend.
+pub mod wgpu_backend;
+/// Widget definitions and widget helpers.
+pub mod widget;
+#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+/// XML utilities for desktop runtime.
+pub mod xml;
 
 #[cfg(feature = "print")]
 /// Print and preview support.

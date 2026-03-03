@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "gpu-wgpu")]
+pub use crate::wgpu_backend::WgpuRenderer;
+
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
 const MIN_EMBEDDED_TARGET_FPS: u32 = 1;
 const MAX_EMBEDDED_TARGET_FPS: u32 = 240;
@@ -69,6 +72,7 @@ impl EmbeddedRuntimeState {
 }
 
 struct EmbeddedEngineShared {
+    next_widget_id: AtomicU64,
     next_task_id: AtomicU64,
     frame_count: AtomicU64,
     state: Mutex<EmbeddedRuntimeState>,
@@ -78,6 +82,7 @@ struct EmbeddedEngineShared {
 impl EmbeddedEngineShared {
     fn new() -> Self {
         Self {
+            next_widget_id: AtomicU64::new(1),
             next_task_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
             state: Mutex::new(EmbeddedRuntimeState::new()),
@@ -108,8 +113,6 @@ impl EmbeddedEngineShared {
             return;
         }
         state.initialized = true;
-        drop(state);
-        get_platform().init();
     }
 
     fn run_loop(&self) {
@@ -159,25 +162,18 @@ impl EmbeddedEngineShared {
 
     fn quit(&self) {
         let mut state = self.lock_state();
-        let should_quit_platform = state.initialized;
         state.running = false;
         state.pending_tasks.clear();
         drop(state);
         self.wake_signal.notify_all();
-        if should_quit_platform {
-            get_platform().quit();
-        }
     }
 
-    fn register_window(
-        &self,
-        window_id: u64,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) {
+    fn alloc_widget_id(&self) -> u64 {
+        self.next_widget_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn register_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let window_id = self.alloc_widget_id();
         let mut state = self.lock_state();
         state.windows.insert(
             window_id,
@@ -190,18 +186,19 @@ impl EmbeddedEngineShared {
                 height,
             },
         );
+        window_id
     }
 
     fn register_button(
         &self,
-        button_id: u64,
         parent: u64,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
-    ) {
+    ) -> u64 {
+        let button_id = self.alloc_widget_id();
         let mut state = self.lock_state();
         state.buttons.insert(
             button_id,
@@ -215,6 +212,7 @@ impl EmbeddedEngineShared {
                 height,
             },
         );
+        button_id
     }
 
     fn submit_task<F>(&self, label: String, action: F) -> u64
@@ -322,7 +320,15 @@ pub trait RenderEngine: Send + Sync {
     /// Create a top-level window.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64;
     /// Create a button control.
-    fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64;
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64;
 }
 
 /// Native desktop engine backed by platform adapters.
@@ -366,12 +372,20 @@ impl RenderEngine for NativeRenderEngine {
         get_platform().create_window(title, x, y, width, height)
     }
 
-    fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         get_platform().create_button(parent, text, x, y, width, height)
     }
 }
 
-/// Embedded engine that currently reuses platform stubs and keeps a separate profile identity.
+/// Embedded engine with independent lifecycle and resource registry.
 #[derive(Clone)]
 pub struct EmbeddedRenderEngine;
 
@@ -410,15 +424,19 @@ impl RenderEngine for EmbeddedRenderEngine {
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let window_id = get_platform().create_window(title, x, y, width, height);
-        embedded_engine_shared().register_window(window_id, title, x, y, width, height);
-        window_id
+        embedded_engine_shared().register_window(title, x, y, width, height)
     }
 
-    fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let button_id = get_platform().create_button(parent, text, x, y, width, height);
-        embedded_engine_shared().register_button(button_id, parent, text, x, y, width, height);
-        button_id
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        embedded_engine_shared().register_button(parent, text, x, y, width, height)
     }
 }
 
@@ -505,13 +523,58 @@ mod tests {
     }
 
     #[test]
+    fn embedded_task_queue_order_is_deterministic() {
+        let _guard = test_guard();
+        let engine = EmbeddedRenderEngine::new();
+        set_embedded_target_fps(120);
+
+        let (tx, rx) = mpsc::channel();
+        submit_embedded_task("task-1", {
+            let tx = tx.clone();
+            move |_| {
+                let _ = tx.send(1u32);
+            }
+        });
+        submit_embedded_task("task-2", {
+            let tx = tx.clone();
+            move |_| {
+                let _ = tx.send(2u32);
+            }
+        });
+        submit_embedded_task("task-3", move |_| {
+            let _ = tx.send(3u32);
+        });
+
+        let runner = engine.clone();
+        let handle = thread::spawn(move || {
+            runner.run();
+        });
+
+        let first = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first embedded task should execute within timeout");
+        let second = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second embedded task should execute within timeout");
+        let third = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("third embedded task should execute within timeout");
+        assert_eq!([first, second, third], [1, 2, 3]);
+
+        engine.quit();
+        handle
+            .join()
+            .expect("embedded render loop thread should join");
+    }
+
+    #[test]
     fn embedded_resource_registry_tracks_window_and_button() {
         let _guard = test_guard();
         let before = embedded_engine_stats();
 
         let shared = embedded_engine_shared();
-        shared.register_window(9001, "stats", 1, 2, 300, 200);
-        shared.register_button(9002, 9001, "ok", 10, 10, 80, 24);
+        let window_id = shared.register_window("stats", 1, 2, 300, 200);
+        let _button_id = shared.register_button(window_id, "ok", 10, 10, 80, 24);
 
         let after = embedded_engine_stats();
 

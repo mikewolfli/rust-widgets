@@ -1,8 +1,8 @@
 //! Stable C ABI for foreign language bindings.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_float, c_int, c_uint};
-use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 type CBool = bool;
@@ -116,7 +116,14 @@ pub extern "C" fn rust_widgets_create_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_button(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_button(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -128,7 +135,14 @@ pub extern "C" fn rust_widgets_create_checkbox(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_checkbox(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_checkbox(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -140,7 +154,14 @@ pub extern "C" fn rust_widgets_create_line_edit(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_line_edit(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_line_edit(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -152,7 +173,14 @@ pub extern "C" fn rust_widgets_create_label(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_label(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_label(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -164,7 +192,14 @@ pub extern "C" fn rust_widgets_create_radio_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_radio_button(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_radio_button(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -242,7 +277,14 @@ pub extern "C" fn rust_widgets_create_menu(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_menu(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_menu(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -303,11 +345,12 @@ pub extern "C" fn rust_widgets_inject_menu_trigger(menu_item_id: u64) -> CBool {
 
 /// Generic typed widget trigger injection entrypoint for native hosts.
 #[no_mangle]
-pub extern "C" fn rust_widgets_inject_widget_trigger_event(widget_id: u64, kind_code: c_uint) -> CBool {
-    crate::platform::get_platform().inject_widget_trigger_event(
-        widget_id,
-        trigger_kind_from_code(kind_code),
-    )
+pub extern "C" fn rust_widgets_inject_widget_trigger_event(
+    widget_id: u64,
+    kind_code: c_uint,
+) -> CBool {
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 /// Harmony callback alias: direct menu item trigger by widget id.
@@ -333,10 +376,8 @@ pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool
 /// Harmony callback alias: direct typed trigger by widget id and kind code.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
-    crate::platform::get_platform().inject_widget_trigger_event(
-        widget_id,
-        trigger_kind_from_code(kind_code),
-    )
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 /// Register a Harmony node handle to logical widget id mapping.
@@ -411,14 +452,15 @@ pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -
 
 /// Harmony callback alias: typed trigger by node handle and kind code.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_node_widget_event(node_handle: u64, kind_code: c_uint) -> CBool {
+pub extern "C" fn rust_widgets_harmony_on_node_widget_event(
+    node_handle: u64,
+    kind_code: c_uint,
+) -> CBool {
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    crate::platform::get_platform().inject_widget_trigger_event(
-        widget_id,
-        trigger_kind_from_code(kind_code),
-    )
+    crate::platform::get_platform()
+        .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
 }
 
 #[no_mangle]
@@ -441,7 +483,14 @@ pub extern "C" fn rust_widgets_create_status_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    crate::platform::get_platform().create_status_bar(parent, &c_str_or_default(text), x, y, width, height)
+    crate::platform::get_platform().create_status_bar(
+        parent,
+        &c_str_or_default(text),
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 #[no_mangle]
@@ -499,8 +548,12 @@ pub extern "C" fn rust_widgets_is_widget_ime_enabled(widget_id: u64) -> CBool {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_accessibility_name(widget_id: u64, name: *const c_char) -> CBool {
-    crate::platform::get_platform().set_widget_accessibility_name(widget_id, &c_str_or_default(name))
+pub extern "C" fn rust_widgets_set_widget_accessibility_name(
+    widget_id: u64,
+    name: *const c_char,
+) -> CBool {
+    crate::platform::get_platform()
+        .set_widget_accessibility_name(widget_id, &c_str_or_default(name))
 }
 
 #[no_mangle]
@@ -729,7 +782,10 @@ mod tests {
         assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 8);
 
         rust_widgets_set_render_aa_samples_per_axis(original);
-        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), original.clamp(1, 8));
+        assert_eq!(
+            rust_widgets_get_render_aa_samples_per_axis(),
+            original.clamp(1, 8)
+        );
     }
 
     #[test]
@@ -745,6 +801,9 @@ mod tests {
         assert_eq!(rust_widgets_get_embedded_target_fps(), 240);
 
         rust_widgets_set_embedded_target_fps(original);
-        assert_eq!(rust_widgets_get_embedded_target_fps(), original.clamp(1, 240));
+        assert_eq!(
+            rust_widgets_get_embedded_target_fps(),
+            original.clamp(1, 240)
+        );
     }
 }

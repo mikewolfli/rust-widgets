@@ -1,8 +1,16 @@
 //! Rendering primitives and software surface baseline.
 
 use crate::core::{Color, Font, Point, Rect, Size};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
+use crate::widget::{
+    Button, ButtonState, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar,
+    Panel, ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget, ToolBar,
+    Widget, Window,
+};
+use font8x8::{UnicodeFonts, BASIC_FONTS};
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(feature = "gpu-wgpu")]
+use crate::wgpu_backend::WgpuRenderer;
 
 /// Text measurement result for width, height, and baseline metrics.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -228,11 +236,9 @@ impl PaintBackend for SoftwarePaintBackend {
         match command {
             RenderCommand::FillRect { rect, color } => self.surface.fill_rect(*rect, *color),
             RenderCommand::DrawRect { rect, color } => self.surface.draw_rect(*rect, *color),
-            RenderCommand::DrawRectStroke {
-                rect,
-                color,
-                width,
-            } => self.surface.draw_rect_with_width(*rect, *color, *width),
+            RenderCommand::DrawRectStroke { rect, color, width } => {
+                self.surface.draw_rect_with_width(*rect, *color, *width)
+            }
             RenderCommand::FillRoundedRect {
                 rect,
                 radius,
@@ -259,7 +265,9 @@ impl PaintBackend for SoftwarePaintBackend {
             } => self
                 .surface
                 .draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width),
-            RenderCommand::DrawLine { from, to, color } => self.surface.draw_line(*from, *to, *color),
+            RenderCommand::DrawLine { from, to, color } => {
+                self.surface.draw_line(*from, *to, *color)
+            }
             RenderCommand::DrawLineAA { from, to, color } => {
                 self.surface.draw_line_aa(*from, *to, *color)
             }
@@ -276,7 +284,9 @@ impl PaintBackend for SoftwarePaintBackend {
                 to,
                 color,
                 width,
-            } => self.surface.draw_line_with_width(*from, *to, *color, *width),
+            } => self
+                .surface
+                .draw_line_with_width(*from, *to, *color, *width),
             RenderCommand::FillCircle {
                 center,
                 radius,
@@ -349,9 +359,19 @@ impl PaintBackend for SoftwarePaintBackend {
 /// Draw command recorded by a render layer.
 #[derive(Debug, Clone)]
 pub enum RenderCommand {
-    FillRect { rect: Rect, color: Color },
-    DrawRect { rect: Rect, color: Color },
-    DrawRectStroke { rect: Rect, color: Color, width: u32 },
+    FillRect {
+        rect: Rect,
+        color: Color,
+    },
+    DrawRect {
+        rect: Rect,
+        color: Color,
+    },
+    DrawRectStroke {
+        rect: Rect,
+        color: Color,
+        width: u32,
+    },
     FillRoundedRect {
         rect: Rect,
         radius: u32,
@@ -374,8 +394,16 @@ pub enum RenderCommand {
         color: Color,
         width: u32,
     },
-    DrawLine { from: Point, to: Point, color: Color },
-    DrawLineAA { from: Point, to: Point, color: Color },
+    DrawLine {
+        from: Point,
+        to: Point,
+        color: Color,
+    },
+    DrawLineAA {
+        from: Point,
+        to: Point,
+        color: Color,
+    },
     DrawLineStrokeAA {
         from: Point,
         to: Point,
@@ -388,9 +416,21 @@ pub enum RenderCommand {
         color: Color,
         width: u32,
     },
-    FillCircle { center: Point, radius: u32, color: Color },
-    FillCircleAA { center: Point, radius: u32, color: Color },
-    DrawCircle { center: Point, radius: u32, color: Color },
+    FillCircle {
+        center: Point,
+        radius: u32,
+        color: Color,
+    },
+    FillCircleAA {
+        center: Point,
+        radius: u32,
+        color: Color,
+    },
+    DrawCircle {
+        center: Point,
+        radius: u32,
+        color: Color,
+    },
     DrawCircleStroke {
         center: Point,
         radius: u32,
@@ -403,6 +443,33 @@ pub enum RenderCommand {
         font: Font,
         color: Color,
     },
+}
+
+/// Backend selected by automatic compose path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRenderBackend {
+    /// GPU path using feature-gated `wgpu` backend.
+    GpuWgpu,
+    /// CPU software raster path.
+    CpuSoftware,
+}
+
+fn global_last_auto_render_backend() -> &'static Mutex<AutoRenderBackend> {
+    static LAST_BACKEND: OnceLock<Mutex<AutoRenderBackend>> = OnceLock::new();
+    LAST_BACKEND.get_or_init(|| Mutex::new(AutoRenderBackend::CpuSoftware))
+}
+
+fn set_last_auto_render_backend(backend: AutoRenderBackend) {
+    *global_last_auto_render_backend()
+        .lock()
+        .expect("auto render backend lock poisoned") = backend;
+}
+
+/// Returns last backend selected by `RenderScene::compose_to_config_auto`.
+pub fn last_auto_render_backend() -> AutoRenderBackend {
+    *global_last_auto_render_backend()
+        .lock()
+        .expect("auto render backend lock poisoned")
 }
 
 /// One scene layer that stores ordered draw commands.
@@ -511,12 +578,851 @@ impl RenderScene {
         clear: Color,
         config: Option<SoftwareRenderConfig>,
     ) {
-        let mut backend = SoftwarePaintBackend::new(surface.size(), surface.dpi_scale());
-        backend.set_size(surface.size());
-        backend.apply_render_config(surface.render_config());
-        self.compose_with_backend_config(&mut backend, clear, config);
-        surface.buffer = backend.surface.buffer;
+        let _ = self.compose_to_config_auto(surface, clear, config);
     }
+
+    /// Compose scene layers to target surface using automatic backend strategy.
+    ///
+    /// Strategy is unified across desktop and embedded builds:
+    /// - when `gpu-wgpu` is enabled and runtime GPU initialization succeeds,
+    ///   use GPU for supported command sets;
+    /// - otherwise fall back to CPU software rendering.
+    pub fn compose_to_config_auto(
+        &self,
+        surface: &mut SoftwareSurface,
+        clear: Color,
+        config: Option<SoftwareRenderConfig>,
+    ) -> AutoRenderBackend {
+        #[cfg(feature = "gpu-wgpu")]
+        {
+            if compose_scene_to_surface_wgpu(self, surface, clear, config).is_ok() {
+                set_last_auto_render_backend(AutoRenderBackend::GpuWgpu);
+                return AutoRenderBackend::GpuWgpu;
+            }
+        }
+
+        compose_scene_to_surface_software(self, surface, clear, config);
+        set_last_auto_render_backend(AutoRenderBackend::CpuSoftware);
+        AutoRenderBackend::CpuSoftware
+    }
+}
+
+fn compose_scene_to_surface_software(
+    scene: &RenderScene,
+    surface: &mut SoftwareSurface,
+    clear: Color,
+    config: Option<SoftwareRenderConfig>,
+) {
+    let mut backend = SoftwarePaintBackend::new(surface.size(), surface.dpi_scale());
+    backend.set_size(surface.size());
+    backend.apply_render_config(surface.render_config());
+    scene.compose_with_backend_config(&mut backend, clear, config);
+    surface.buffer = backend.surface.buffer;
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn compose_scene_to_surface_wgpu(
+    scene: &RenderScene,
+    surface: &mut SoftwareSurface,
+    clear: Color,
+    config: Option<SoftwareRenderConfig>,
+) -> Result<(), String> {
+    let size = surface.size();
+    if size.width == 0 || size.height == 0 {
+        return Err("surface size must be > 0 for gpu compose".to_string());
+    }
+
+    let renderer = cached_wgpu_renderer().ok_or_else(|| "wgpu renderer unavailable".to_string())?;
+
+    let mut backend = SoftwarePaintBackend::new(size, surface.dpi_scale());
+    backend.set_size(size);
+    backend.apply_render_config(surface.render_config());
+    scene.compose_with_backend_config(&mut backend, clear, config);
+
+    let pixels =
+        renderer.upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())?;
+
+    surface.buffer.back = pixels;
+    surface.buffer.present();
+    Ok(())
+}
+
+#[cfg(feature = "gpu-wgpu")]
+fn cached_wgpu_renderer() -> Option<&'static WgpuRenderer> {
+    static RENDERER: OnceLock<Option<WgpuRenderer>> = OnceLock::new();
+    RENDERER.get_or_init(|| WgpuRenderer::new().ok()).as_ref()
+}
+
+fn push_widget_fill_and_border<W: Widget>(
+    layer: &mut SceneLayer,
+    widget: &W,
+    fallback_background: Option<Color>,
+    fallback_border: Option<(Color, u32)>,
+) {
+    let rect = widget.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    if let Some(background) = widget.background_color().or(fallback_background) {
+        if widget.border_radius() > 0 {
+            layer.push(RenderCommand::FillRoundedRect {
+                rect,
+                radius: widget.border_radius(),
+                color: background,
+            });
+        } else {
+            layer.push(RenderCommand::FillRect {
+                rect,
+                color: background,
+            });
+        }
+    }
+
+    let border_color = widget
+        .border_color()
+        .or_else(|| fallback_border.map(|value| value.0));
+    let border_width = if widget.border_width() > 0 {
+        widget.border_width()
+    } else {
+        fallback_border.map(|value| value.1).unwrap_or(0)
+    };
+
+    if let Some(color) = border_color {
+        if border_width > 0 {
+            if widget.border_radius() > 0 {
+                layer.push(RenderCommand::DrawRoundedRectStroke {
+                    rect,
+                    radius: widget.border_radius(),
+                    color,
+                    width: border_width,
+                });
+            } else {
+                layer.push(RenderCommand::DrawRectStroke {
+                    rect,
+                    color,
+                    width: border_width,
+                });
+            }
+        }
+    }
+}
+
+fn centered_text_origin(rect: Rect) -> Point {
+    Point {
+        x: rect.x + 6,
+        y: rect.y + (rect.height as i32 / 2) - 4,
+    }
+}
+
+fn normalized_progress_u32(value: u32, min: u32, max: u32) -> f32 {
+    if max <= min {
+        return 0.0;
+    }
+    ((value.saturating_sub(min)) as f32 / (max - min) as f32).clamp(0.0, 1.0)
+}
+
+fn normalized_progress_i32(value: i32, min: i32, max: i32) -> f32 {
+    if max <= min {
+        return 0.0;
+    }
+    ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
+}
+
+/// Append visual commands for a `Window` baseline representation.
+pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
+    push_widget_fill_and_border(
+        layer,
+        window,
+        Some(Color::rgba(245, 246, 248, 255)),
+        Some((Color::rgba(120, 124, 132, 255), 1)),
+    );
+
+    let rect = window.geometry();
+    if rect.width > 16 && rect.height > 12 {
+        layer.push(RenderCommand::DrawText {
+            origin: Point {
+                x: rect.x + 8,
+                y: rect.y + 4,
+            },
+            text: window.title().to_string(),
+            font: window.font().cloned().unwrap_or_default(),
+            color: window
+                .foreground_color()
+                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `Panel` baseline representation.
+pub fn append_panel_visual_commands(layer: &mut SceneLayer, panel: &Panel) {
+    push_widget_fill_and_border(
+        layer,
+        panel,
+        Some(Color::rgba(232, 235, 240, 255)),
+        Some((Color::rgba(146, 152, 165, 255), 1)),
+    );
+}
+
+/// Append visual commands for a `Label` baseline representation.
+pub fn append_label_visual_commands(layer: &mut SceneLayer, label: &Label) {
+    push_widget_fill_and_border(layer, label, None, None);
+
+    if !label.text().is_empty() {
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(label.geometry()),
+            text: label.text().to_string(),
+            font: label.font().cloned().unwrap_or_default(),
+            color: label
+                .foreground_color()
+                .unwrap_or(Color::rgba(30, 30, 30, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `Button` baseline representation.
+pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
+    let fallback_bg = match button.state() {
+        ButtonState::Pressed => Color::rgba(66, 133, 244, 255),
+        ButtonState::Disabled => Color::rgba(199, 203, 210, 255),
+        ButtonState::Normal => Color::rgba(84, 154, 255, 255),
+    };
+    let fallback_fg = if matches!(button.state(), ButtonState::Disabled) {
+        Color::rgba(110, 116, 126, 255)
+    } else {
+        Color::rgba(255, 255, 255, 255)
+    };
+
+    push_widget_fill_and_border(
+        layer,
+        button,
+        Some(fallback_bg),
+        Some((Color::rgba(52, 84, 135, 255), 1)),
+    );
+
+    if !button.text().is_empty() {
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(button.geometry()),
+            text: button.text().to_string(),
+            font: button.font().cloned().unwrap_or_default(),
+            color: button.foreground_color().unwrap_or(fallback_fg),
+        });
+    }
+}
+
+/// Append visual commands for a `CheckBox` baseline representation.
+pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckBox) {
+    let rect = checkbox.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let box_side = rect.width.min(rect.height).min(16).max(8);
+    let indicator = Rect {
+        x: rect.x + 2,
+        y: rect.y + ((rect.height as i32 - box_side as i32) / 2),
+        width: box_side,
+        height: box_side,
+    };
+
+    layer.push(RenderCommand::FillRect {
+        rect: indicator,
+        color: checkbox
+            .background_color()
+            .unwrap_or(Color::rgba(250, 250, 250, 255)),
+    });
+    layer.push(RenderCommand::DrawRectStroke {
+        rect: indicator,
+        color: checkbox
+            .border_color()
+            .unwrap_or(Color::rgba(90, 98, 108, 255)),
+        width: checkbox.border_width().max(1),
+    });
+
+    match checkbox.state() {
+        CheckState::Checked => {
+            layer.push(RenderCommand::FillRect {
+                rect: Rect {
+                    x: indicator.x + 3,
+                    y: indicator.y + 3,
+                    width: indicator.width.saturating_sub(6),
+                    height: indicator.height.saturating_sub(6),
+                },
+                color: checkbox
+                    .foreground_color()
+                    .unwrap_or(Color::rgba(40, 120, 230, 255)),
+            });
+        }
+        CheckState::PartiallyChecked => {
+            layer.push(RenderCommand::FillRect {
+                rect: Rect {
+                    x: indicator.x + 2,
+                    y: indicator.y + (indicator.height as i32 / 2) - 1,
+                    width: indicator.width.saturating_sub(4),
+                    height: 2,
+                },
+                color: checkbox
+                    .foreground_color()
+                    .unwrap_or(Color::rgba(40, 120, 230, 255)),
+            });
+        }
+        CheckState::Unchecked => {}
+    }
+}
+
+/// Append visual commands for a `RadioButton` baseline representation.
+pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioButton) {
+    let rect = radio.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let radius = (rect.width.min(rect.height).min(16) / 2).max(4);
+    let center = Point {
+        x: rect.x + 2 + radius as i32,
+        y: rect.y + (rect.height as i32 / 2),
+    };
+
+    layer.push(RenderCommand::DrawCircleStroke {
+        center,
+        radius,
+        color: radio
+            .border_color()
+            .unwrap_or(Color::rgba(92, 98, 108, 255)),
+        width: radio.border_width().max(1),
+    });
+
+    if radio.is_checked() {
+        layer.push(RenderCommand::FillCircle {
+            center,
+            radius: radius.saturating_sub(3).max(1),
+            color: radio
+                .foreground_color()
+                .unwrap_or(Color::rgba(45, 122, 235, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `LineEdit` baseline representation.
+pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &LineEdit) {
+    push_widget_fill_and_border(
+        layer,
+        line_edit,
+        Some(Color::rgba(255, 255, 255, 255)),
+        Some((Color::rgba(122, 128, 138, 255), 1)),
+    );
+
+    let text = line_edit.display_text();
+    if !text.is_empty() {
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(line_edit.geometry()),
+            text,
+            font: line_edit.font().cloned().unwrap_or_default(),
+            color: line_edit
+                .foreground_color()
+                .unwrap_or(Color::rgba(26, 26, 26, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `ComboBox` baseline representation.
+pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &ComboBox) {
+    push_widget_fill_and_border(
+        layer,
+        combo_box,
+        Some(Color::rgba(255, 255, 255, 255)),
+        Some((Color::rgba(122, 128, 138, 255), 1)),
+    );
+
+    let rect = combo_box.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let arrow_width = 14u32.min(rect.width);
+    let arrow_rect = Rect {
+        x: rect.x + rect.width as i32 - arrow_width as i32,
+        y: rect.y,
+        width: arrow_width,
+        height: rect.height,
+    };
+    layer.push(RenderCommand::FillRect {
+        rect: arrow_rect,
+        color: Color::rgba(235, 238, 243, 255),
+    });
+    layer.push(RenderCommand::DrawRectStroke {
+        rect: arrow_rect,
+        color: Color::rgba(122, 128, 138, 255),
+        width: 1,
+    });
+
+    if let Some(text) = combo_box.current_text() {
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(rect),
+            text: text.to_string(),
+            font: combo_box.font().cloned().unwrap_or_default(),
+            color: combo_box
+                .foreground_color()
+                .unwrap_or(Color::rgba(28, 30, 34, 255)),
+        });
+    }
+
+    if combo_box.is_dropdown_open() && combo_box.item_count() > 0 {
+        let popup_rows = combo_box.item_count().min(4) as u32;
+        let row_height = rect.height.max(16);
+        let popup_rect = Rect {
+            x: rect.x,
+            y: rect.y + rect.height as i32,
+            width: rect.width,
+            height: row_height.saturating_mul(popup_rows),
+        };
+        layer.push(RenderCommand::FillRect {
+            rect: popup_rect,
+            color: Color::rgba(250, 250, 252, 255),
+        });
+        layer.push(RenderCommand::DrawRectStroke {
+            rect: popup_rect,
+            color: Color::rgba(122, 128, 138, 255),
+            width: 1,
+        });
+
+        for row in 0..popup_rows as usize {
+            let item_rect = Rect {
+                x: popup_rect.x + 2,
+                y: popup_rect.y + row as i32 * row_height as i32,
+                width: popup_rect.width.saturating_sub(4),
+                height: row_height,
+            };
+            if combo_box.current_index() == Some(row) {
+                layer.push(RenderCommand::FillRect {
+                    rect: item_rect,
+                    color: Color::rgba(206, 226, 255, 255),
+                });
+            }
+            if let Some(item) = combo_box.item_text(row) {
+                layer.push(RenderCommand::DrawText {
+                    origin: centered_text_origin(item_rect),
+                    text: item.to_string(),
+                    font: combo_box.font().cloned().unwrap_or_default(),
+                    color: Color::rgba(28, 30, 34, 255),
+                });
+            }
+        }
+    }
+}
+
+/// Append visual commands for a `ListBox` baseline representation.
+pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBox) {
+    push_widget_fill_and_border(
+        layer,
+        list_box,
+        Some(Color::rgba(252, 252, 253, 255)),
+        Some((Color::rgba(122, 128, 138, 255), 1)),
+    );
+
+    let rect = list_box.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let row_height = 16u32;
+    let max_rows = (rect.height / row_height).max(1).min(4) as usize;
+    for row in 0..list_box.item_count().min(max_rows) {
+        let item_rect = Rect {
+            x: rect.x + 2,
+            y: rect.y + 2 + row as i32 * row_height as i32,
+            width: rect.width.saturating_sub(4),
+            height: row_height,
+        };
+        if let Some(item) = list_box.item_text(row) {
+            layer.push(RenderCommand::DrawText {
+                origin: centered_text_origin(item_rect),
+                text: item.to_string(),
+                font: list_box.font().cloned().unwrap_or_default(),
+                color: list_box
+                    .foreground_color()
+                    .unwrap_or(Color::rgba(30, 32, 36, 255)),
+            });
+        }
+    }
+}
+
+/// Append visual commands for a `ProgressBar` value representation.
+pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar: &ProgressBar) {
+    push_widget_fill_and_border(
+        layer,
+        progress_bar,
+        Some(Color::rgba(232, 236, 243, 255)),
+        Some((Color::rgba(122, 128, 138, 255), 1)),
+    );
+
+    let rect = progress_bar.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let ratio =
+        normalized_progress_u32(progress_bar.value(), progress_bar.min(), progress_bar.max());
+    let filled_width = ((rect.width as f32) * ratio).round() as u32;
+    if filled_width > 0 {
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: rect.x,
+                y: rect.y,
+                width: filled_width.min(rect.width),
+                height: rect.height,
+            },
+            color: progress_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(72, 142, 246, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `Slider` value representation.
+pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
+    let rect = slider.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    layer.push(RenderCommand::FillRect {
+        rect,
+        color: slider
+            .background_color()
+            .unwrap_or(Color::rgba(238, 241, 246, 255)),
+    });
+
+    let ratio = normalized_progress_i32(slider.value(), slider.min(), slider.max());
+    if rect.width >= rect.height {
+        let track_y = rect.y + rect.height as i32 / 2;
+        layer.push(RenderCommand::DrawLineStroke {
+            from: Point {
+                x: rect.x + 4,
+                y: track_y,
+            },
+            to: Point {
+                x: rect.x + rect.width as i32 - 4,
+                y: track_y,
+            },
+            color: slider
+                .border_color()
+                .unwrap_or(Color::rgba(126, 132, 142, 255)),
+            width: 2,
+        });
+        let thumb_x = rect.x + ((rect.width.saturating_sub(1) as f32) * ratio).round() as i32;
+        layer.push(RenderCommand::FillCircle {
+            center: Point {
+                x: thumb_x,
+                y: track_y,
+            },
+            radius: (rect.height / 3).max(3),
+            color: slider
+                .foreground_color()
+                .unwrap_or(Color::rgba(70, 140, 248, 255)),
+        });
+    } else {
+        let track_x = rect.x + rect.width as i32 / 2;
+        layer.push(RenderCommand::DrawLineStroke {
+            from: Point {
+                x: track_x,
+                y: rect.y + 4,
+            },
+            to: Point {
+                x: track_x,
+                y: rect.y + rect.height as i32 - 4,
+            },
+            color: slider
+                .border_color()
+                .unwrap_or(Color::rgba(126, 132, 142, 255)),
+            width: 2,
+        });
+        let thumb_y = rect.y + ((rect.height.saturating_sub(1) as f32) * ratio).round() as i32;
+        layer.push(RenderCommand::FillCircle {
+            center: Point {
+                x: track_x,
+                y: thumb_y,
+            },
+            radius: (rect.width / 3).max(3),
+            color: slider
+                .foreground_color()
+                .unwrap_or(Color::rgba(70, 140, 248, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `ScrollBar` value representation.
+pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &ScrollBar) {
+    let rect = scroll_bar.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    layer.push(RenderCommand::FillRect {
+        rect,
+        color: scroll_bar
+            .background_color()
+            .unwrap_or(Color::rgba(229, 233, 239, 255)),
+    });
+
+    let ratio = normalized_progress_i32(scroll_bar.value(), scroll_bar.min(), scroll_bar.max());
+    let denom = (scroll_bar.max() - scroll_bar.min()).max(1) as f32;
+    let page_ratio = (scroll_bar.page_step().max(1) as f32
+        / (denom + scroll_bar.page_step().max(1) as f32))
+        .clamp(0.1, 1.0);
+
+    if rect.width >= rect.height {
+        let thumb_width = ((rect.width as f32) * page_ratio).round() as u32;
+        let travel = rect.width.saturating_sub(thumb_width);
+        let thumb_x = rect.x + ((travel as f32) * ratio).round() as i32;
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: thumb_x,
+                y: rect.y,
+                width: thumb_width.max(6).min(rect.width),
+                height: rect.height,
+            },
+            color: scroll_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(144, 151, 164, 255)),
+        });
+    } else {
+        let thumb_height = ((rect.height as f32) * page_ratio).round() as u32;
+        let travel = rect.height.saturating_sub(thumb_height);
+        let thumb_y = rect.y + ((travel as f32) * ratio).round() as i32;
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: rect.x,
+                y: thumb_y,
+                width: rect.width,
+                height: thumb_height.max(6).min(rect.height),
+            },
+            color: scroll_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(144, 151, 164, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `MenuBar` host representation.
+pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBar) {
+    push_widget_fill_and_border(
+        layer,
+        menu_bar,
+        Some(Color::rgba(238, 242, 248, 255)),
+        Some((Color::rgba(128, 134, 144, 255), 1)),
+    );
+
+    let rect = menu_bar.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let menu_count = menu_bar.menus().len().max(1);
+    let slot_width = (rect.width / menu_count as u32).max(20);
+    for index in 0..menu_count {
+        let slot_rect = Rect {
+            x: rect.x + (index as u32 * slot_width) as i32,
+            y: rect.y,
+            width: slot_width.min(rect.width),
+            height: rect.height,
+        };
+        if menu_bar.current_menu().is_some() && index == 0 {
+            layer.push(RenderCommand::FillRect {
+                rect: slot_rect,
+                color: Color::rgba(208, 224, 249, 255),
+            });
+        }
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(slot_rect),
+            text: format!("Menu{}", index + 1),
+            font: menu_bar.font().cloned().unwrap_or_default(),
+            color: menu_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(32, 34, 38, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `Menu` host representation.
+pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
+    push_widget_fill_and_border(
+        layer,
+        menu,
+        Some(Color::rgba(250, 250, 251, 255)),
+        Some((Color::rgba(124, 130, 140, 255), 1)),
+    );
+
+    let rect = menu.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    if !menu.title().is_empty() {
+        layer.push(RenderCommand::DrawText {
+            origin: Point {
+                x: rect.x + 8,
+                y: rect.y + 4,
+            },
+            text: menu.title().to_string(),
+            font: menu.font().cloned().unwrap_or_default(),
+            color: menu
+                .foreground_color()
+                .unwrap_or(Color::rgba(22, 24, 30, 255)),
+        });
+    }
+
+    let row_height = 18u32;
+    for (index, action) in menu.actions().iter().take(5).enumerate() {
+        let row_rect = Rect {
+            x: rect.x + 4,
+            y: rect.y + 6 + (index as u32 * row_height) as i32,
+            width: rect.width.saturating_sub(8),
+            height: row_height,
+        };
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(row_rect),
+            text: action.clone(),
+            font: menu.font().cloned().unwrap_or_default(),
+            color: menu
+                .foreground_color()
+                .unwrap_or(Color::rgba(32, 34, 38, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `ToolBar` host representation.
+pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBar) {
+    push_widget_fill_and_border(
+        layer,
+        tool_bar,
+        Some(Color::rgba(236, 240, 246, 255)),
+        Some((Color::rgba(126, 132, 142, 255), 1)),
+    );
+
+    let rect = tool_bar.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let mut cursor_x = rect.x + 4;
+    let button_width = 26u32;
+    for action in tool_bar.actions().iter().take(6) {
+        let action_rect = Rect {
+            x: cursor_x,
+            y: rect.y + 2,
+            width: button_width,
+            height: rect.height.saturating_sub(4),
+        };
+        layer.push(RenderCommand::FillRoundedRect {
+            rect: action_rect,
+            radius: 3,
+            color: Color::rgba(216, 225, 238, 255),
+        });
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(action_rect),
+            text: action.chars().take(3).collect::<String>(),
+            font: tool_bar.font().cloned().unwrap_or_default(),
+            color: tool_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(30, 32, 36, 255)),
+        });
+        cursor_x += button_width as i32 + 4;
+        if cursor_x >= rect.x + rect.width as i32 {
+            break;
+        }
+    }
+}
+
+/// Append visual commands for a `StatusBar` host representation.
+pub fn append_status_bar_visual_commands(layer: &mut SceneLayer, status_bar: &StatusBar) {
+    push_widget_fill_and_border(
+        layer,
+        status_bar,
+        Some(Color::rgba(232, 236, 243, 255)),
+        Some((Color::rgba(124, 130, 140, 255), 1)),
+    );
+
+    if !status_bar.message().is_empty() {
+        let rect = status_bar.geometry();
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(rect),
+            text: status_bar.message().to_string(),
+            font: status_bar.font().cloned().unwrap_or_default(),
+            color: status_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(34, 36, 40, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `TabWidget` navigation representation.
+pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &TabWidget) {
+    push_widget_fill_and_border(
+        layer,
+        tab_widget,
+        Some(Color::rgba(245, 247, 252, 255)),
+        Some((Color::rgba(126, 132, 142, 255), 1)),
+    );
+
+    let rect = tab_widget.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let count = tab_widget.tab_count().max(1);
+    let tab_height = rect.height.min(26);
+    let tab_width = (rect.width / count as u32).max(24);
+    for index in 0..count {
+        let tab_rect = Rect {
+            x: rect.x + (index as u32 * tab_width) as i32,
+            y: rect.y,
+            width: tab_width.min(rect.width),
+            height: tab_height,
+        };
+
+        let is_current = tab_widget.current_index() == Some(index);
+        layer.push(RenderCommand::FillRect {
+            rect: tab_rect,
+            color: if is_current {
+                Color::rgba(210, 224, 248, 255)
+            } else {
+                Color::rgba(229, 234, 242, 255)
+            },
+        });
+        layer.push(RenderCommand::DrawText {
+            origin: centered_text_origin(tab_rect),
+            text: format!("Tab{}", index + 1),
+            font: tab_widget.font().cloned().unwrap_or_default(),
+            color: tab_widget
+                .foreground_color()
+                .unwrap_or(Color::rgba(30, 32, 36, 255)),
+        });
+    }
+}
+
+/// Append visual commands for a `StackWidget` navigation representation.
+pub fn append_stack_widget_visual_commands(layer: &mut SceneLayer, stack_widget: &StackWidget) {
+    push_widget_fill_and_border(
+        layer,
+        stack_widget,
+        Some(Color::rgba(244, 246, 250, 255)),
+        Some((Color::rgba(126, 132, 142, 255), 1)),
+    );
+
+    let rect = stack_widget.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    layer.push(RenderCommand::DrawText {
+        origin: centered_text_origin(rect),
+        text: "Stack".to_string(),
+        font: stack_widget.font().cloned().unwrap_or_default(),
+        color: stack_widget
+            .foreground_color()
+            .unwrap_or(Color::rgba(30, 32, 36, 255)),
+    });
 }
 
 impl SoftwareSurface {
@@ -753,7 +1659,8 @@ impl SoftwareSurface {
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         for py in y0..=y1 {
             for px in x0..=x1 {
-                let coverage = rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
+                let coverage =
+                    rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
                 if coverage > 0.0 {
                     blend_pixel(frame, size.width, px as u32, py as u32, color, coverage);
                 }
@@ -802,7 +1709,14 @@ impl SoftwareSurface {
 
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel(
+                        frame,
+                        size.width,
+                        px as u32,
+                        py as u32,
+                        color,
+                        stroke_coverage,
+                    );
                 }
             }
         }
@@ -837,7 +1751,8 @@ impl SoftwareSurface {
 
         for py in y0..=y1 {
             for px in x0..=x1 {
-                let outer_coverage = rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
+                let outer_coverage =
+                    rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
                 if outer_coverage <= 0.0 {
                     continue;
                 }
@@ -850,7 +1765,14 @@ impl SoftwareSurface {
 
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel(
+                        frame,
+                        size.width,
+                        px as u32,
+                        py as u32,
+                        color,
+                        stroke_coverage,
+                    );
                 }
             }
         }
@@ -862,7 +1784,13 @@ impl SoftwareSurface {
     }
 
     /// Draws a line segment with explicit stroke width.
-    pub fn draw_line_with_width(&mut self, from: Point, to: Point, color: Color, stroke_width: u32) {
+    pub fn draw_line_with_width(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: Color,
+        stroke_width: u32,
+    ) {
         if stroke_width == 0 {
             return;
         }
@@ -915,7 +1843,13 @@ impl SoftwareSurface {
     }
 
     /// Draw anti-aliased line with configurable stroke width.
-    pub fn draw_line_aa_with_width(&mut self, from: Point, to: Point, color: Color, stroke_width: u32) {
+    pub fn draw_line_aa_with_width(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: Color,
+        stroke_width: u32,
+    ) {
         if stroke_width == 0 {
             return;
         }
@@ -1014,7 +1948,13 @@ impl SoftwareSurface {
     }
 
     /// Draws a circle stroke with explicit width.
-    pub fn draw_circle_with_width(&mut self, center: Point, radius: u32, color: Color, stroke_width: u32) {
+    pub fn draw_circle_with_width(
+        &mut self,
+        center: Point,
+        radius: u32,
+        color: Color,
+        stroke_width: u32,
+    ) {
         if radius == 0 {
             return;
         }
@@ -1037,10 +1977,23 @@ impl SoftwareSurface {
 
         for py in y0..=y1 {
             for px in x0..=x1 {
-                let stroke_coverage =
-                    circle_stroke_coverage_grid(px, py, center, ring_radius, ring_half_width, sample_grid);
+                let stroke_coverage = circle_stroke_coverage_grid(
+                    px,
+                    py,
+                    center,
+                    ring_radius,
+                    ring_half_width,
+                    sample_grid,
+                );
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel(
+                        frame,
+                        size.width,
+                        px as u32,
+                        py as u32,
+                        color,
+                        stroke_coverage,
+                    );
                 }
             }
         }
@@ -1139,21 +2092,13 @@ fn glyph_bitmap(ch: char) -> [u8; 8] {
         return bitmap;
     }
     [
-        0b11111111,
-        0b10000001,
-        0b10111101,
-        0b10100101,
-        0b10111101,
-        0b10000001,
-        0b11111111,
+        0b11111111, 0b10000001, 0b10111101, 0b10100101, 0b10111101, 0b10000001, 0b11111111,
         0b00000000,
     ]
 }
 
 fn pixel_bytes_len(size: Size) -> usize {
-    size.width
-        .saturating_mul(size.height)
-        .saturating_mul(4) as usize
+    size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }
 
 fn fill_pixels(pixels: &mut [u8], color: Color) {
@@ -1320,7 +2265,12 @@ fn line_stroke_coverage_grid(
 }
 
 fn cluster_ends_with_zwj(cluster: &TextCluster) -> bool {
-    cluster.text.chars().last().map(|ch| ch == '\u{200D}').unwrap_or(false)
+    cluster
+        .text
+        .chars()
+        .last()
+        .map(|ch| ch == '\u{200D}')
+        .unwrap_or(false)
 }
 
 fn is_combining_mark(ch: char) -> bool {
@@ -1373,7 +2323,12 @@ fn inset_rect(rect: Rect, inset: i32) -> Rect {
     let y = rect.y + inset;
     let width = (rect.width as i32 - inset * 2).max(0) as u32;
     let height = (rect.height as i32 - inset * 2).max(0) as u32;
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn point_in_rounded_rect_f32(px: f32, py: f32, rect: Rect, radius: u32) -> bool {
@@ -1456,7 +2411,13 @@ mod tests {
 
     #[test]
     fn text_metrics_scale_with_dpi() {
-        let mut surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 100,
+                height: 40,
+            },
+            1.0,
+        );
         let m1 = surface.measure_text("hello", &font());
         surface.set_dpi_scale(2.0);
         let m2 = surface.measure_text("hello", &font());
@@ -1466,7 +2427,13 @@ mod tests {
 
     #[test]
     fn double_buffer_present_swaps_frame() {
-        let mut surface = SoftwareSurface::new(Size { width: 4, height: 4 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 4,
+                height: 4,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(255, 0, 0, 255));
         surface.end_frame();
         assert_eq!(&surface.frame_rgba()[0..4], &[255, 0, 0, 255]);
@@ -1478,7 +2445,13 @@ mod tests {
 
     #[test]
     fn fill_rect_writes_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 255));
         surface.fill_rect(
             Rect {
@@ -1496,21 +2469,39 @@ mod tests {
 
     #[test]
     fn shaping_merges_combining_marks_into_one_cluster() {
-        let surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
+        let surface = SoftwareSurface::new(
+            Size {
+                width: 100,
+                height: 40,
+            },
+            1.0,
+        );
         let shaped = surface.shape_text("e\u{0301}", &font());
         assert_eq!(shaped.cluster_count(), 1);
     }
 
     #[test]
     fn shaping_merges_zwj_sequence_into_one_cluster() {
-        let surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
+        let surface = SoftwareSurface::new(
+            Size {
+                width: 100,
+                height: 40,
+            },
+            1.0,
+        );
         let shaped = surface.shape_text("👨\u{200D}👩\u{200D}👧\u{200D}👦", &font());
         assert_eq!(shaped.cluster_count(), 1);
     }
 
     #[test]
     fn scene_composition_respects_layer_order() {
-        let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
 
         let mut back = SceneLayer::new(0);
         back.push(RenderCommand::FillRect {
@@ -1567,7 +2558,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
         let idx = ((1 * 8 + 1) * 4) as usize;
@@ -1576,16 +2573,33 @@ mod tests {
 
     #[test]
     fn software_backend_delegates_text_shaping() {
-        let backend = SoftwarePaintBackend::new(Size { width: 100, height: 40 }, 1.0);
+        let backend = SoftwarePaintBackend::new(
+            Size {
+                width: 100,
+                height: 40,
+            },
+            1.0,
+        );
         let shaped = backend.shape_text("e\u{0301}", &font());
         assert_eq!(shaped.cluster_count(), 1);
     }
 
     #[test]
     fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
-        let mut surface = SoftwareSurface::new(Size { width: 80, height: 30 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 80,
+                height: 30,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
-        surface.draw_text(Point { x: 4, y: 4 }, "A", &font(), Color::rgba(255, 255, 255, 255));
+        surface.draw_text(
+            Point { x: 4, y: 4 },
+            "A",
+            &font(),
+            Color::rgba(255, 255, 255, 255),
+        );
         surface.end_frame();
 
         let metrics = surface.measure_text("A", &font());
@@ -1606,7 +2620,13 @@ mod tests {
 
     #[test]
     fn fill_circle_writes_center_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 255));
         surface.fill_circle(Point { x: 6, y: 6 }, 3, Color::rgba(9, 10, 11, 255));
         surface.end_frame();
@@ -1631,7 +2651,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
         let stroke_idx = ((5 * 12 + 7) * 4) as usize;
@@ -1649,14 +2675,15 @@ mod tests {
 
     #[test]
     fn draw_circle_with_width_expands_stroke_band() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
-        surface.draw_circle_with_width(
-            Point { x: 8, y: 8 },
-            4,
-            Color::rgba(170, 171, 172, 255),
-            2,
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
         );
+        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.draw_circle_with_width(Point { x: 8, y: 8 }, 4, Color::rgba(170, 171, 172, 255), 2);
         surface.end_frame();
 
         let outer_idx = ((8 * 16 + 12) * 4) as usize;
@@ -1671,13 +2698,22 @@ mod tests {
 
     #[test]
     fn fill_circle_aa_applies_partial_alpha_on_edge_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(190, 191, 192, 255));
         surface.end_frame();
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[190, 191, 192, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[center_idx..center_idx + 4],
+            &[190, 191, 192, 255]
+        );
 
         let edge_idx = ((8 * 16 + 12) * 4) as usize;
         let edge_alpha = surface.frame_rgba()[edge_idx + 3];
@@ -1696,7 +2732,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let band_idx = ((8 * 16 + 10) * 4) as usize;
@@ -1718,7 +2760,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
@@ -1734,7 +2782,13 @@ mod tests {
 
     #[test]
     fn draw_line_with_width_marks_neighbor_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 255));
         surface.draw_line_with_width(
             Point { x: 2, y: 6 },
@@ -1745,13 +2799,22 @@ mod tests {
         surface.end_frame();
 
         let center_idx = ((6 * 12 + 5) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[21, 22, 23, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[center_idx..center_idx + 4],
+            &[21, 22, 23, 255]
+        );
 
         let upper_idx = ((5 * 12 + 5) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[upper_idx..upper_idx + 4], &[21, 22, 23, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[upper_idx..upper_idx + 4],
+            &[21, 22, 23, 255]
+        );
 
         let lower_idx = ((7 * 12 + 5) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[lower_idx..lower_idx + 4], &[21, 22, 23, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[lower_idx..lower_idx + 4],
+            &[21, 22, 23, 255]
+        );
     }
 
     #[test]
@@ -1766,7 +2829,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
         let idx = ((5 * 12 + 5) * 4) as usize;
@@ -1775,7 +2844,13 @@ mod tests {
 
     #[test]
     fn draw_rect_with_width_marks_neighbor_border_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 255));
         surface.draw_rect_with_width(
             Rect {
@@ -1790,7 +2865,10 @@ mod tests {
         surface.end_frame();
 
         let border_idx = ((4 * 14 + 6) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[border_idx..border_idx + 4], &[41, 42, 43, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[border_idx..border_idx + 4],
+            &[41, 42, 43, 255]
+        );
 
         let neighbor_idx = ((5 * 14 + 6) * 4) as usize;
         assert_eq!(
@@ -1815,7 +2893,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 14, height: 14 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
         let idx = ((5 * 14 + 6) * 4) as usize;
@@ -1824,7 +2908,13 @@ mod tests {
 
     #[test]
     fn fill_rounded_rect_writes_center_and_preserves_corner() {
-        let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 255));
         surface.fill_rounded_rect(
             Rect {
@@ -1839,10 +2929,16 @@ mod tests {
         surface.end_frame();
 
         let center_idx = ((7 * 14 + 7) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[61, 62, 63, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[center_idx..center_idx + 4],
+            &[61, 62, 63, 255]
+        );
 
         let corner_idx = ((3 * 14 + 3) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[corner_idx..corner_idx + 4], &[0, 0, 0, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[corner_idx..corner_idx + 4],
+            &[0, 0, 0, 255]
+        );
     }
 
     #[test]
@@ -1872,19 +2968,37 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 14, height: 14 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
         let stroke_idx = ((3 * 14 + 7) * 4) as usize;
-        assert_eq!(&backend.frame_rgba()[stroke_idx..stroke_idx + 4], &[81, 82, 83, 255]);
+        assert_eq!(
+            &backend.frame_rgba()[stroke_idx..stroke_idx + 4],
+            &[81, 82, 83, 255]
+        );
 
         let fill_idx = ((7 * 14 + 7) * 4) as usize;
-        assert_eq!(&backend.frame_rgba()[fill_idx..fill_idx + 4], &[71, 72, 73, 255]);
+        assert_eq!(
+            &backend.frame_rgba()[fill_idx..fill_idx + 4],
+            &[71, 72, 73, 255]
+        );
     }
 
     #[test]
     fn draw_rounded_rect_aa_with_width_produces_soft_edge() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.draw_rounded_rect_aa_with_width(
             Rect {
@@ -1900,7 +3014,10 @@ mod tests {
         surface.end_frame();
 
         let core_idx = ((3 * 16 + 8) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[core_idx..core_idx + 4], &[230, 231, 232, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[core_idx..core_idx + 4],
+            &[230, 231, 232, 255]
+        );
 
         let edge_idx = ((4 * 16 + 3) * 4) as usize;
         let edge_alpha = surface.frame_rgba()[edge_idx + 3];
@@ -1909,7 +3026,13 @@ mod tests {
 
     #[test]
     fn fill_rounded_rect_aa_produces_soft_corner_edge() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.fill_rounded_rect_aa(
             Rect {
@@ -1924,7 +3047,10 @@ mod tests {
         surface.end_frame();
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[250, 210, 170, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[center_idx..center_idx + 4],
+            &[250, 210, 170, 255]
+        );
 
         let edge_idx = ((4 * 16 + 3) * 4) as usize;
         let edge_alpha = surface.frame_rgba()[edge_idx + 3];
@@ -1933,7 +3059,13 @@ mod tests {
 
     #[test]
     fn aa_sample_level_changes_rounded_rect_edge_coverage() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
 
         surface.set_aa_samples_per_axis(1);
         assert_eq!(surface.aa_samples_per_axis(), 1);
@@ -1973,7 +3105,13 @@ mod tests {
 
     #[test]
     fn render_config_applies_and_clamps_aa_samples() {
-        let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
         assert_eq!(surface.render_config().aa_samples_per_axis, 4);
 
         surface.apply_render_config(SoftwareRenderConfig {
@@ -1989,7 +3127,13 @@ mod tests {
 
     #[test]
     fn backend_render_config_passthrough_clamps_values() {
-        let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
         assert_eq!(backend.render_config().aa_samples_per_axis, 4);
 
         backend.apply_render_config(SoftwareRenderConfig {
@@ -2005,7 +3149,13 @@ mod tests {
 
     #[test]
     fn paint_backend_trait_render_config_updates_software_backend() {
-        let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
         PaintBackend::apply_render_config(
             &mut backend,
             SoftwareRenderConfig {
@@ -2031,7 +3181,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         backend.apply_render_config(SoftwareRenderConfig {
             aa_samples_per_axis: 4,
         });
@@ -2063,7 +3219,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend_default = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend_default = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         backend_default.apply_render_config(SoftwareRenderConfig {
             aa_samples_per_axis: 4,
         });
@@ -2071,7 +3233,13 @@ mod tests {
         let edge_idx = ((4 * 16 + 3) * 4) as usize;
         let alpha_default = backend_default.frame_rgba()[edge_idx + 3];
 
-        let mut backend_temp = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend_temp = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         backend_temp.apply_render_config(SoftwareRenderConfig {
             aa_samples_per_axis: 4,
         });
@@ -2089,7 +3257,13 @@ mod tests {
 
     #[test]
     fn aa_sample_level_changes_circle_edge_coverage() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
 
         surface.set_aa_samples_per_axis(1);
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
@@ -2109,7 +3283,13 @@ mod tests {
 
     #[test]
     fn aa_sample_level_changes_line_edge_coverage() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
 
         surface.set_aa_samples_per_axis(1);
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
@@ -2139,7 +3319,13 @@ mod tests {
 
     #[test]
     fn circle_stroke_applies_partial_alpha_on_edge_pixels() {
-        let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.draw_circle(Point { x: 7, y: 7 }, 3, Color::rgba(100, 120, 140, 255));
         surface.end_frame();
@@ -2151,7 +3337,13 @@ mod tests {
 
     #[test]
     fn rounded_rect_fill_applies_partial_alpha_at_corner_edge() {
-        let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 14,
+                height: 14,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.fill_rounded_rect(
             Rect {
@@ -2172,7 +3364,13 @@ mod tests {
 
     #[test]
     fn draw_line_aa_produces_partial_alpha_on_neighbor_pixel() {
-        let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.draw_line_aa(
             Point { x: 1, y: 1 },
@@ -2197,7 +3395,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 12,
+                height: 12,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let idx = ((3 * 12 + 4) * 4) as usize;
@@ -2210,7 +3414,13 @@ mod tests {
 
     #[test]
     fn draw_line_aa_with_width_expands_band_and_keeps_soft_edge() {
-        let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         surface.begin_frame(Color::rgba(0, 0, 0, 0));
         surface.draw_line_aa_with_width(
             Point { x: 2, y: 8 },
@@ -2221,7 +3431,10 @@ mod tests {
         surface.end_frame();
 
         let core_idx = ((8 * 16 + 8) * 4) as usize;
-        assert_eq!(&surface.frame_rgba()[core_idx..core_idx + 4], &[210, 211, 212, 255]);
+        assert_eq!(
+            &surface.frame_rgba()[core_idx..core_idx + 4],
+            &[210, 211, 212, 255]
+        );
 
         let edge_idx = ((9 * 16 + 8) * 4) as usize;
         let edge_alpha = surface.frame_rgba()[edge_idx + 3];
@@ -2240,7 +3453,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let core_idx = ((8 * 16 + 8) * 4) as usize;
@@ -2271,7 +3490,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let core_idx = ((3 * 16 + 8) * 4) as usize;
@@ -2301,7 +3526,13 @@ mod tests {
         });
         scene.add_layer(layer);
 
-        let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+        let mut backend = SoftwarePaintBackend::new(
+            Size {
+                width: 16,
+                height: 16,
+            },
+            1.0,
+        );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
@@ -2313,5 +3544,703 @@ mod tests {
         let edge_idx = ((4 * 16 + 3) * 4) as usize;
         let edge_alpha = backend.frame_rgba()[edge_idx + 3];
         assert!(edge_alpha > 0 && edge_alpha < 255);
+    }
+
+    #[test]
+    fn auto_compose_handles_draw_text_scene_with_gpu_or_cpu_backend() {
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        layer.push(RenderCommand::DrawText {
+            origin: Point { x: 1, y: 10 },
+            text: "fallback".to_string(),
+            font: Font::default(),
+            color: Color::rgba(250, 120, 40, 255),
+        });
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 48,
+                height: 24,
+            },
+            1.0,
+        );
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+    }
+
+    #[test]
+    fn auto_compose_produces_expected_pixels_for_simple_rect_scene() {
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: 2,
+                y: 2,
+                width: 6,
+                height: 4,
+            },
+            color: Color::rgba(11, 22, 33, 255),
+        });
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 16,
+                height: 12,
+            },
+            1.0,
+        );
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+
+        let idx = ((3 * 16 + 3) * 4) as usize;
+        assert_eq!(&surface.frame_rgba()[idx..idx + 4], &[11, 22, 33, 255]);
+    }
+
+    #[test]
+    fn auto_compose_updates_last_backend_diagnostics() {
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        layer.push(RenderCommand::FillRect {
+            rect: Rect {
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 3,
+            },
+            color: Color::rgba(1, 2, 3, 255),
+        });
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 8,
+                height: 8,
+            },
+            1.0,
+        );
+        let selected = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        assert_eq!(selected, last_auto_render_backend());
+    }
+
+    #[test]
+    fn base_control_visual_builders_emit_expected_command_types() {
+        use crate::widget::{
+            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget, Window,
+        };
+
+        let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
+        window.set_background_color(Some(Color::rgba(10, 20, 30, 255)));
+
+        let mut panel = Panel::new(Rect::new(4, 20, 112, 52));
+        panel.set_background_color(Some(Color::rgba(40, 50, 60, 255)));
+
+        let mut button = Button::new("OK".to_string(), Rect::new(10, 26, 50, 20));
+        button.set_pressed(true);
+
+        let mut checkbox = CheckBox::new(Rect::new(70, 28, 20, 20));
+        checkbox.set_state(CheckState::Checked);
+
+        let mut radio = RadioButton::new(Rect::new(70, 52, 20, 20));
+        radio.set_checked(true);
+
+        let mut label = Label::new("Label".to_string(), Rect::new(10, 50, 60, 16));
+        label.set_background_color(Some(Color::rgba(80, 90, 100, 255)));
+
+        let mut line_edit = LineEdit::new(Rect::new(10, 54, 52, 16));
+        line_edit.set_text("abc".to_string());
+
+        let mut layer = SceneLayer::new(0);
+        append_window_visual_commands(&mut layer, &window);
+        append_panel_visual_commands(&mut layer, &panel);
+        append_button_visual_commands(&mut layer, &button);
+        append_checkbox_visual_commands(&mut layer, &checkbox);
+        append_radiobutton_visual_commands(&mut layer, &radio);
+        append_label_visual_commands(&mut layer, &label);
+        append_line_edit_visual_commands(&mut layer, &line_edit);
+
+        let mut saw_fill_rect = false;
+        let mut saw_draw_text = false;
+        let mut saw_fill_circle = false;
+
+        for command in layer.commands() {
+            match command {
+                RenderCommand::FillRect { .. } => saw_fill_rect = true,
+                RenderCommand::DrawText { .. } => saw_draw_text = true,
+                RenderCommand::FillCircle { .. } => saw_fill_circle = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_fill_rect);
+        assert!(saw_draw_text);
+        assert!(saw_fill_circle);
+    }
+
+    #[test]
+    fn auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend() {
+        use crate::widget::{
+            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget, Window,
+        };
+
+        let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
+        window.set_background_color(Some(Color::rgba(10, 20, 30, 255)));
+
+        let mut panel = Panel::new(Rect::new(4, 20, 112, 52));
+        panel.set_background_color(Some(Color::rgba(40, 50, 60, 255)));
+
+        let mut button = Button::new("Apply".to_string(), Rect::new(10, 26, 50, 20));
+        button.set_pressed(true);
+
+        let mut checkbox = CheckBox::new(Rect::new(70, 28, 20, 20));
+        checkbox.set_state(CheckState::Checked);
+
+        let mut radio = RadioButton::new(Rect::new(70, 52, 20, 20));
+        radio.set_checked(true);
+
+        let mut label = Label::new("Label".to_string(), Rect::new(10, 50, 60, 16));
+        label.set_background_color(Some(Color::rgba(80, 90, 100, 255)));
+
+        let mut line_edit = LineEdit::new(Rect::new(10, 54, 52, 16));
+        line_edit.set_text("abc".to_string());
+
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        append_window_visual_commands(&mut layer, &window);
+        append_panel_visual_commands(&mut layer, &panel);
+        append_button_visual_commands(&mut layer, &button);
+        append_checkbox_visual_commands(&mut layer, &checkbox);
+        append_radiobutton_visual_commands(&mut layer, &radio);
+        append_label_visual_commands(&mut layer, &label);
+        append_line_edit_visual_commands(&mut layer, &line_edit);
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 128,
+                height: 88,
+            },
+            1.0,
+        );
+
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+
+        let sample = |x: u32, y: u32| -> [u8; 4] {
+            let idx = ((y * surface.size().width + x) * 4) as usize;
+            [
+                surface.frame_rgba()[idx],
+                surface.frame_rgba()[idx + 1],
+                surface.frame_rgba()[idx + 2],
+                surface.frame_rgba()[idx + 3],
+            ]
+        };
+
+        assert_eq!(sample(2, 2), [10, 20, 30, 255]);
+        assert_eq!(sample(6, 22), [40, 50, 60, 255]);
+
+        let button_px = sample(12, 28);
+        assert!(button_px[3] > 0);
+
+        let checkbox_px = sample(76, 34);
+        assert!(checkbox_px[3] > 0);
+
+        let radio_px = sample(80, 62);
+        assert!(radio_px[3] > 0);
+
+        assert_eq!(sample(12, 52), [80, 90, 100, 255]);
+
+        let line_edit_px = sample(12, 56);
+        assert!(line_edit_px[3] > 0);
+    }
+
+    #[test]
+    fn data_range_control_visual_builders_emit_selection_and_value_commands() {
+        use crate::widget::{ComboBox, ListBox, ProgressBar, ScrollBar, Slider};
+
+        let mut combo = ComboBox::new(Rect::new(4, 4, 120, 20));
+        combo.add_item("Alpha");
+        combo.add_item("Beta");
+        combo.set_current_index(1);
+        combo.open_dropdown();
+
+        let mut list = ListBox::new(Rect::new(4, 28, 120, 64));
+        list.add_item("Row-1");
+        list.add_item("Row-2");
+
+        let mut progress = ProgressBar::new(Rect::new(140, 8, 100, 14));
+        progress.set_range(0, 100);
+        progress.set_value(60);
+
+        let mut slider = Slider::new(Rect::new(140, 30, 100, 20));
+        slider.set_range(0, 100);
+        slider.set_value(30);
+
+        let mut scroll = ScrollBar::new(Rect::new(140, 58, 100, 16));
+        scroll.set_range(0, 100);
+        scroll.set_page_step(20);
+        scroll.set_value(40);
+
+        let mut layer = SceneLayer::new(0);
+        append_combo_box_visual_commands(&mut layer, &combo);
+        append_list_box_visual_commands(&mut layer, &list);
+        append_progress_bar_visual_commands(&mut layer, &progress);
+        append_slider_visual_commands(&mut layer, &slider);
+        append_scroll_bar_visual_commands(&mut layer, &scroll);
+
+        let mut draw_text_count = 0usize;
+        let mut fill_circle_count = 0usize;
+        let mut fill_rect_count = 0usize;
+
+        for command in layer.commands() {
+            match command {
+                RenderCommand::DrawText { .. } => draw_text_count += 1,
+                RenderCommand::FillCircle { .. } => fill_circle_count += 1,
+                RenderCommand::FillRect { .. } => fill_rect_count += 1,
+                _ => {}
+            }
+        }
+
+        assert!(draw_text_count >= 3);
+        assert!(fill_circle_count >= 1);
+        assert!(fill_rect_count >= 5);
+    }
+
+    #[test]
+    fn auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend() {
+        use crate::widget::{ComboBox, ListBox, ProgressBar, ScrollBar, Slider};
+
+        let mut combo = ComboBox::new(Rect::new(4, 4, 120, 20));
+        combo.add_item("Alpha");
+        combo.add_item("Beta");
+        combo.set_current_index(1);
+        combo.open_dropdown();
+
+        let mut list = ListBox::new(Rect::new(4, 28, 120, 64));
+        list.add_item("Row-1");
+        list.add_item("Row-2");
+
+        let mut progress = ProgressBar::new(Rect::new(140, 8, 100, 14));
+        progress.set_range(0, 100);
+        progress.set_value(60);
+
+        let mut slider = Slider::new(Rect::new(140, 30, 100, 20));
+        slider.set_range(0, 100);
+        slider.set_value(30);
+
+        let mut scroll = ScrollBar::new(Rect::new(140, 58, 100, 16));
+        scroll.set_range(0, 100);
+        scroll.set_page_step(20);
+        scroll.set_value(40);
+
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        append_combo_box_visual_commands(&mut layer, &combo);
+        append_list_box_visual_commands(&mut layer, &list);
+        append_progress_bar_visual_commands(&mut layer, &progress);
+        append_slider_visual_commands(&mut layer, &slider);
+        append_scroll_bar_visual_commands(&mut layer, &scroll);
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 256,
+                height: 128,
+            },
+            1.0,
+        );
+
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+
+        let sample = |x: u32, y: u32| -> [u8; 4] {
+            let idx = ((y * surface.size().width + x) * 4) as usize;
+            [
+                surface.frame_rgba()[idx],
+                surface.frame_rgba()[idx + 1],
+                surface.frame_rgba()[idx + 2],
+                surface.frame_rgba()[idx + 3],
+            ]
+        };
+
+        let combo_px = sample(8, 8);
+        assert!(combo_px[3] > 0);
+
+        let list_px = sample(8, 34);
+        assert!(list_px[3] > 0);
+
+        let progress_px = sample(180, 12);
+        assert_eq!(progress_px[3], 255);
+
+        let slider_thumb_px = sample(170, 40);
+        assert!(slider_thumb_px[3] > 0);
+
+        let scroll_thumb_px = sample(178, 62);
+        assert!(scroll_thumb_px[3] > 0);
+    }
+
+    #[test]
+    fn host_navigation_visual_builders_emit_expected_commands() {
+        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
+        menu_bar.add_menu(1001);
+        menu_bar.add_menu(1002);
+        menu_bar.set_current_menu(1002);
+
+        let mut menu = Menu::new(Rect::new(0, 24, 160, 100));
+        menu.set_title("File".to_string());
+        menu.add_action("Open");
+        menu.add_action("Save");
+
+        let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
+        tool_bar.add_action("Cut");
+        tool_bar.add_action("Copy");
+        tool_bar.add_action("Paste");
+
+        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
+        status_bar.set_message("Ready".to_string());
+
+        let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
+        tabs.add_tab(2001);
+        tabs.add_tab(2002);
+        tabs.set_current_index(1);
+
+        let mut stack = StackWidget::new(Rect::new(170, 98, 90, 58));
+        stack.set_background_color(Some(Color::rgba(230, 234, 240, 255)));
+
+        let mut layer = SceneLayer::new(0);
+        append_menu_bar_visual_commands(&mut layer, &menu_bar);
+        append_menu_visual_commands(&mut layer, &menu);
+        append_tool_bar_visual_commands(&mut layer, &tool_bar);
+        append_status_bar_visual_commands(&mut layer, &status_bar);
+        append_tab_widget_visual_commands(&mut layer, &tabs);
+        append_stack_widget_visual_commands(&mut layer, &stack);
+
+        let mut draw_text_count = 0usize;
+        let mut fill_rect_count = 0usize;
+        let mut rounded_rect_count = 0usize;
+
+        for command in layer.commands() {
+            match command {
+                RenderCommand::DrawText { .. } => draw_text_count += 1,
+                RenderCommand::FillRect { .. } => fill_rect_count += 1,
+                RenderCommand::FillRoundedRect { .. } => rounded_rect_count += 1,
+                _ => {}
+            }
+        }
+
+        assert!(draw_text_count >= 6);
+        assert!(fill_rect_count >= 5);
+        assert!(rounded_rect_count >= 1);
+    }
+
+    #[test]
+    fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
+        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
+        menu_bar.add_menu(1001);
+        menu_bar.add_menu(1002);
+        menu_bar.set_current_menu(1002);
+
+        let mut menu = Menu::new(Rect::new(0, 24, 160, 100));
+        menu.set_title("File".to_string());
+        menu.add_action("Open");
+        menu.add_action("Save");
+
+        let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
+        tool_bar.add_action("Cut");
+        tool_bar.add_action("Copy");
+        tool_bar.add_action("Paste");
+
+        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
+        status_bar.set_message("Ready".to_string());
+
+        let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
+        tabs.add_tab(2001);
+        tabs.add_tab(2002);
+        tabs.set_current_index(1);
+
+        let mut stack = StackWidget::new(Rect::new(170, 98, 90, 58));
+        stack.set_background_color(Some(Color::rgba(230, 234, 240, 255)));
+
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        append_menu_bar_visual_commands(&mut layer, &menu_bar);
+        append_menu_visual_commands(&mut layer, &menu);
+        append_tool_bar_visual_commands(&mut layer, &tool_bar);
+        append_status_bar_visual_commands(&mut layer, &status_bar);
+        append_tab_widget_visual_commands(&mut layer, &tabs);
+        append_stack_widget_visual_commands(&mut layer, &stack);
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 280,
+                height: 190,
+            },
+            1.0,
+        );
+
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+
+        let sample = |x: u32, y: u32| -> [u8; 4] {
+            let idx = ((y * surface.size().width + x) * 4) as usize;
+            [
+                surface.frame_rgba()[idx],
+                surface.frame_rgba()[idx + 1],
+                surface.frame_rgba()[idx + 2],
+                surface.frame_rgba()[idx + 3],
+            ]
+        };
+
+        let menu_bar_px = sample(6, 6);
+        assert!(menu_bar_px[3] > 0);
+
+        let menu_px = sample(8, 36);
+        assert!(menu_px[3] > 0);
+
+        let toolbar_px = sample(8, 132);
+        assert!(toolbar_px[3] > 0);
+
+        let status_px = sample(8, 166);
+        assert!(status_px[3] > 0);
+
+        let tabs_px = sample(174, 28);
+        assert!(tabs_px[3] > 0);
+
+        let stack_px = sample(174, 104);
+        assert!(stack_px[3] > 0);
+    }
+
+    #[test]
+    fn gpu_parity_covered_controls_emit_non_empty_command_suite() {
+        use crate::widget::{
+            Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
+            ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
+            ToolBar, Widget, Window,
+        };
+
+        let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
+        window.set_background_color(Some(Color::rgba(18, 20, 24, 255)));
+
+        let mut panel = Panel::new(Rect::new(8, 32, 180, 100));
+        panel.set_background_color(Some(Color::rgba(38, 45, 60, 255)));
+
+        let mut button = Button::new("OK".to_string(), Rect::new(16, 42, 70, 24));
+        button.set_pressed(true);
+
+        let mut checkbox = CheckBox::new(Rect::new(16, 74, 22, 22));
+        checkbox.set_state(CheckState::Checked);
+
+        let mut radio = RadioButton::new(Rect::new(46, 74, 22, 22));
+        radio.set_checked(true);
+
+        let mut label = Label::new("Label".to_string(), Rect::new(16, 102, 80, 18));
+        label.set_background_color(Some(Color::rgba(76, 84, 98, 255)));
+
+        let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
+        line_edit.set_text("text".to_string());
+
+        let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
+        combo.add_item("A");
+        combo.add_item("B");
+        combo.set_current_index(1);
+
+        let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
+        list.add_item("One");
+        list.add_item("Two");
+
+        let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
+        progress.set_range(0, 100);
+        progress.set_value(45);
+
+        let mut slider = Slider::new(Rect::new(8, 162, 170, 20));
+        slider.set_range(0, 100);
+        slider.set_value(35);
+
+        let mut scroll = ScrollBar::new(Rect::new(8, 186, 170, 16));
+        scroll.set_range(0, 100);
+        scroll.set_page_step(20);
+        scroll.set_value(30);
+
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
+        menu_bar.add_menu(1001);
+        menu_bar.add_menu(1002);
+
+        let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
+        menu.set_title("File".to_string());
+        menu.add_action("Open");
+        menu.add_action("Save");
+
+        let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
+        tool_bar.add_action("Cut");
+        tool_bar.add_action("Copy");
+
+        let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
+        status_bar.set_message("Ready".to_string());
+
+        let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
+        tabs.add_tab(1);
+        tabs.add_tab(2);
+        tabs.set_current_index(1);
+
+        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
+        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
+
+        let mut layer = SceneLayer::new(0);
+        append_window_visual_commands(&mut layer, &window);
+        append_panel_visual_commands(&mut layer, &panel);
+        append_button_visual_commands(&mut layer, &button);
+        append_checkbox_visual_commands(&mut layer, &checkbox);
+        append_radiobutton_visual_commands(&mut layer, &radio);
+        append_label_visual_commands(&mut layer, &label);
+        append_line_edit_visual_commands(&mut layer, &line_edit);
+        append_combo_box_visual_commands(&mut layer, &combo);
+        append_list_box_visual_commands(&mut layer, &list);
+        append_progress_bar_visual_commands(&mut layer, &progress);
+        append_slider_visual_commands(&mut layer, &slider);
+        append_scroll_bar_visual_commands(&mut layer, &scroll);
+        append_menu_bar_visual_commands(&mut layer, &menu_bar);
+        append_menu_visual_commands(&mut layer, &menu);
+        append_tool_bar_visual_commands(&mut layer, &tool_bar);
+        append_status_bar_visual_commands(&mut layer, &status_bar);
+        append_tab_widget_visual_commands(&mut layer, &tabs);
+        append_stack_widget_visual_commands(&mut layer, &stack);
+
+        assert!(layer.commands().len() >= 30);
+    }
+
+    #[test]
+    fn gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend() {
+        use crate::widget::{
+            Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
+            ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
+            ToolBar, Widget, Window,
+        };
+
+        let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
+        window.set_background_color(Some(Color::rgba(18, 20, 24, 255)));
+
+        let mut panel = Panel::new(Rect::new(8, 32, 180, 100));
+        panel.set_background_color(Some(Color::rgba(38, 45, 60, 255)));
+
+        let mut button = Button::new("OK".to_string(), Rect::new(16, 42, 70, 24));
+        button.set_pressed(true);
+
+        let mut checkbox = CheckBox::new(Rect::new(16, 74, 22, 22));
+        checkbox.set_state(CheckState::Checked);
+
+        let mut radio = RadioButton::new(Rect::new(46, 74, 22, 22));
+        radio.set_checked(true);
+
+        let mut label = Label::new("Label".to_string(), Rect::new(16, 102, 80, 18));
+        label.set_background_color(Some(Color::rgba(76, 84, 98, 255)));
+
+        let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
+        line_edit.set_text("text".to_string());
+
+        let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
+        combo.add_item("A");
+        combo.add_item("B");
+        combo.set_current_index(1);
+
+        let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
+        list.add_item("One");
+        list.add_item("Two");
+
+        let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
+        progress.set_range(0, 100);
+        progress.set_value(45);
+
+        let mut slider = Slider::new(Rect::new(8, 162, 170, 20));
+        slider.set_range(0, 100);
+        slider.set_value(35);
+
+        let mut scroll = ScrollBar::new(Rect::new(8, 186, 170, 16));
+        scroll.set_range(0, 100);
+        scroll.set_page_step(20);
+        scroll.set_value(30);
+
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
+        menu_bar.add_menu(1001);
+        menu_bar.add_menu(1002);
+
+        let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
+        menu.set_title("File".to_string());
+        menu.add_action("Open");
+        menu.add_action("Save");
+
+        let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
+        tool_bar.add_action("Cut");
+        tool_bar.add_action("Copy");
+
+        let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
+        status_bar.set_message("Ready".to_string());
+
+        let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
+        tabs.add_tab(1);
+        tabs.add_tab(2);
+        tabs.set_current_index(1);
+
+        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
+        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
+
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        append_window_visual_commands(&mut layer, &window);
+        append_panel_visual_commands(&mut layer, &panel);
+        append_button_visual_commands(&mut layer, &button);
+        append_checkbox_visual_commands(&mut layer, &checkbox);
+        append_radiobutton_visual_commands(&mut layer, &radio);
+        append_label_visual_commands(&mut layer, &label);
+        append_line_edit_visual_commands(&mut layer, &line_edit);
+        append_combo_box_visual_commands(&mut layer, &combo);
+        append_list_box_visual_commands(&mut layer, &list);
+        append_progress_bar_visual_commands(&mut layer, &progress);
+        append_slider_visual_commands(&mut layer, &slider);
+        append_scroll_bar_visual_commands(&mut layer, &scroll);
+        append_menu_bar_visual_commands(&mut layer, &menu_bar);
+        append_menu_visual_commands(&mut layer, &menu);
+        append_tool_bar_visual_commands(&mut layer, &tool_bar);
+        append_status_bar_visual_commands(&mut layer, &status_bar);
+        append_tab_widget_visual_commands(&mut layer, &tabs);
+        append_stack_widget_visual_commands(&mut layer, &stack);
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(
+            Size {
+                width: 340,
+                height: 260,
+            },
+            1.0,
+        );
+
+        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        assert!(matches!(
+            backend,
+            AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
+        ));
+
+        let idx = ((20 * surface.size().width + 20) * 4) as usize;
+        assert!(surface.frame_rgba()[idx + 3] > 0);
     }
 }

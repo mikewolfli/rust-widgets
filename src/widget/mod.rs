@@ -298,46 +298,111 @@ impl BaseWidget {
 }
 
 impl Widget for BaseWidget {
-    fn id(&self) -> ObjectId { self.object.id() }
-    fn kind(&self) -> WidgetKind { self.kind }
-    fn geometry(&self) -> Rect { self.geometry }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.geometry = Rect::from_position_size(geometry.position(), self.constrained_size(geometry.size()));
+    fn id(&self) -> ObjectId {
+        self.object.id()
     }
-    fn min_size(&self) -> Option<Size> { self.min_size }
-    fn max_size(&self) -> Option<Size> { self.max_size }
+    fn kind(&self) -> WidgetKind {
+        self.kind
+    }
+    fn geometry(&self) -> Rect {
+        self.geometry
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.geometry =
+            Rect::from_position_size(geometry.position(), self.constrained_size(geometry.size()));
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.min_size
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.max_size
+    }
     fn set_min_size(&mut self, min_size: Option<Size>) {
         self.min_size = min_size;
-        self.geometry = Rect::from_position_size(self.geometry.position(), self.constrained_size(self.geometry.size()));
+        self.geometry = Rect::from_position_size(
+            self.geometry.position(),
+            self.constrained_size(self.geometry.size()),
+        );
     }
     fn set_max_size(&mut self, max_size: Option<Size>) {
         self.max_size = max_size;
-        self.geometry = Rect::from_position_size(self.geometry.position(), self.constrained_size(self.geometry.size()));
+        self.geometry = Rect::from_position_size(
+            self.geometry.position(),
+            self.constrained_size(self.geometry.size()),
+        );
     }
-    fn parent(&self) -> Option<ObjectId> { self.parent }
-    fn set_parent(&mut self, parent: Option<ObjectId>) { self.parent = parent; }
-    fn add_child(&mut self, child: ObjectId) { self.children.push(child); }
-    fn remove_child(&mut self, child: ObjectId) { self.children.retain(|id| *id != child); }
-    fn children(&self) -> &[ObjectId] { &self.children }
-    fn show(&mut self) { self.visible = true; }
-    fn hide(&mut self) { self.visible = false; }
-    fn is_visible(&self) -> bool { self.visible }
-    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_tooltip(&mut self, tooltip: String) { self.tooltip = tooltip; }
-    fn tooltip(&self) -> &str { &self.tooltip }
-    fn style(&self) -> &WidgetStyle { &self.style }
-    fn set_style(&mut self, style: WidgetStyle) { self.style = style; }
-    fn connection_scope(&self) -> &ConnectionScope { &self.connection_scope }
-    fn hover_signal(&self) -> &Signal1<Point> { &self.hover }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { &self.mouse_down }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { &self.mouse_up }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { &self.key_down }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { &self.key_up }
-    fn focus_gained_signal(&self) -> &GenericSignal { &self.focus_gained }
-    fn focus_lost_signal(&self) -> &GenericSignal { &self.focus_lost }
-    fn redraw_requested_signal(&self) -> &GenericSignal { &self.redraw_requested }
-    fn layout_requested_signal(&self) -> &GenericSignal { &self.layout_requested }
+    fn parent(&self) -> Option<ObjectId> {
+        self.parent
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.parent = parent;
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.children.push(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.children.retain(|id| *id != child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        &self.children
+    }
+    fn show(&mut self) {
+        self.visible = true;
+    }
+    fn hide(&mut self) {
+        self.visible = false;
+    }
+    fn is_visible(&self) -> bool {
+        self.visible
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.tooltip = tooltip;
+    }
+    fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+    fn style(&self) -> &WidgetStyle {
+        &self.style
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.style = style;
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        &self.connection_scope
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        &self.hover
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        &self.mouse_down
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        &self.mouse_up
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        &self.key_down
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        &self.key_up
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        &self.focus_gained
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        &self.focus_lost
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        &self.redraw_requested
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        &self.layout_requested
+    }
 }
 
 impl EventHandler for BaseWidget {
@@ -371,8 +436,14 @@ impl BaseWidget {
             height = height.max(min.height);
         }
         if let Some(max) = self.max_size {
-            let effective_max_width = self.min_size.map(|min| max.width.max(min.width)).unwrap_or(max.width);
-            let effective_max_height = self.min_size.map(|min| max.height.max(min.height)).unwrap_or(max.height);
+            let effective_max_width = self
+                .min_size
+                .map(|min| max.width.max(min.width))
+                .unwrap_or(max.width);
+            let effective_max_height = self
+                .min_size
+                .map(|min| max.height.max(min.height))
+                .unwrap_or(max.height);
             width = width.min(effective_max_width);
             height = height.min(effective_max_height);
         }
@@ -384,41 +455,107 @@ impl BaseWidget {
 macro_rules! impl_widget_delegate {
     ($ty:ty, $field:ident) => {
         impl Widget for $ty {
-            fn id(&self) -> ObjectId { self.$field.id() }
-            fn kind(&self) -> WidgetKind { self.$field.kind() }
-            fn geometry(&self) -> Rect { self.$field.geometry() }
-            fn set_geometry(&mut self, geometry: Rect) { self.$field.set_geometry(geometry); }
-            fn min_size(&self) -> Option<Size> { self.$field.min_size() }
-            fn max_size(&self) -> Option<Size> { self.$field.max_size() }
-            fn set_min_size(&mut self, min_size: Option<Size>) { self.$field.set_min_size(min_size); }
-            fn set_max_size(&mut self, max_size: Option<Size>) { self.$field.set_max_size(max_size); }
-            fn parent(&self) -> Option<ObjectId> { self.$field.parent() }
-            fn set_parent(&mut self, parent: Option<ObjectId>) { self.$field.set_parent(parent); }
-            fn add_child(&mut self, child: ObjectId) { self.$field.add_child(child); }
-            fn remove_child(&mut self, child: ObjectId) { self.$field.remove_child(child); }
-            fn children(&self) -> &[ObjectId] { self.$field.children() }
-            fn show(&mut self) { self.$field.show(); }
-            fn hide(&mut self) { self.$field.hide(); }
-            fn is_visible(&self) -> bool { self.$field.is_visible() }
-            fn set_enabled(&mut self, enabled: bool) { self.$field.set_enabled(enabled); }
-            fn is_enabled(&self) -> bool { self.$field.is_enabled() }
-            fn set_tooltip(&mut self, tooltip: String) { self.$field.set_tooltip(tooltip); }
-            fn tooltip(&self) -> &str { self.$field.tooltip() }
-            fn style(&self) -> &WidgetStyle { self.$field.style() }
-            fn set_style(&mut self, style: WidgetStyle) { self.$field.set_style(style); }
-            fn connection_scope(&self) -> &ConnectionScope { self.$field.connection_scope() }
-            fn hover_signal(&self) -> &Signal1<Point> { self.$field.hover_signal() }
-            fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.$field.mouse_down_signal() }
-            fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.$field.mouse_up_signal() }
-            fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.$field.key_down_signal() }
-            fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.$field.key_up_signal() }
-            fn focus_gained_signal(&self) -> &GenericSignal { self.$field.focus_gained_signal() }
-            fn focus_lost_signal(&self) -> &GenericSignal { self.$field.focus_lost_signal() }
-            fn redraw_requested_signal(&self) -> &GenericSignal { self.$field.redraw_requested_signal() }
-            fn layout_requested_signal(&self) -> &GenericSignal { self.$field.layout_requested_signal() }
+            fn id(&self) -> ObjectId {
+                self.$field.id()
+            }
+            fn kind(&self) -> WidgetKind {
+                self.$field.kind()
+            }
+            fn geometry(&self) -> Rect {
+                self.$field.geometry()
+            }
+            fn set_geometry(&mut self, geometry: Rect) {
+                self.$field.set_geometry(geometry);
+            }
+            fn min_size(&self) -> Option<Size> {
+                self.$field.min_size()
+            }
+            fn max_size(&self) -> Option<Size> {
+                self.$field.max_size()
+            }
+            fn set_min_size(&mut self, min_size: Option<Size>) {
+                self.$field.set_min_size(min_size);
+            }
+            fn set_max_size(&mut self, max_size: Option<Size>) {
+                self.$field.set_max_size(max_size);
+            }
+            fn parent(&self) -> Option<ObjectId> {
+                self.$field.parent()
+            }
+            fn set_parent(&mut self, parent: Option<ObjectId>) {
+                self.$field.set_parent(parent);
+            }
+            fn add_child(&mut self, child: ObjectId) {
+                self.$field.add_child(child);
+            }
+            fn remove_child(&mut self, child: ObjectId) {
+                self.$field.remove_child(child);
+            }
+            fn children(&self) -> &[ObjectId] {
+                self.$field.children()
+            }
+            fn show(&mut self) {
+                self.$field.show();
+            }
+            fn hide(&mut self) {
+                self.$field.hide();
+            }
+            fn is_visible(&self) -> bool {
+                self.$field.is_visible()
+            }
+            fn set_enabled(&mut self, enabled: bool) {
+                self.$field.set_enabled(enabled);
+            }
+            fn is_enabled(&self) -> bool {
+                self.$field.is_enabled()
+            }
+            fn set_tooltip(&mut self, tooltip: String) {
+                self.$field.set_tooltip(tooltip);
+            }
+            fn tooltip(&self) -> &str {
+                self.$field.tooltip()
+            }
+            fn style(&self) -> &WidgetStyle {
+                self.$field.style()
+            }
+            fn set_style(&mut self, style: WidgetStyle) {
+                self.$field.set_style(style);
+            }
+            fn connection_scope(&self) -> &ConnectionScope {
+                self.$field.connection_scope()
+            }
+            fn hover_signal(&self) -> &Signal1<Point> {
+                self.$field.hover_signal()
+            }
+            fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+                self.$field.mouse_down_signal()
+            }
+            fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+                self.$field.mouse_up_signal()
+            }
+            fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+                self.$field.key_down_signal()
+            }
+            fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+                self.$field.key_up_signal()
+            }
+            fn focus_gained_signal(&self) -> &GenericSignal {
+                self.$field.focus_gained_signal()
+            }
+            fn focus_lost_signal(&self) -> &GenericSignal {
+                self.$field.focus_lost_signal()
+            }
+            fn redraw_requested_signal(&self) -> &GenericSignal {
+                self.$field.redraw_requested_signal()
+            }
+            fn layout_requested_signal(&self) -> &GenericSignal {
+                self.$field.layout_requested_signal()
+            }
         }
         impl EventHandler for $ty {
-            fn handle_event(&mut self, event: &Event) { self.$field.handle_event(event); }
+            fn handle_event(&mut self, event: &Event) {
+                self.$field.handle_event(event);
+            }
         }
     };
 }
@@ -441,9 +578,13 @@ impl Window {
         }
     }
     /// Returns window title.
-    pub fn title(&self) -> &str { &self.title }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
     /// Updates window title.
-    pub fn set_title(&mut self, title: String) { self.title = title; }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
 
     /// Emits the window closed signal.
     pub fn close(&mut self) {
@@ -452,38 +593,102 @@ impl Window {
 }
 
 impl Widget for Window {
-    fn id(&self) -> ObjectId { self.base.id() }
-    fn kind(&self) -> WidgetKind { self.base.kind() }
-    fn geometry(&self) -> Rect { self.base.geometry() }
-    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
-    fn min_size(&self) -> Option<Size> { self.base.min_size() }
-    fn max_size(&self) -> Option<Size> { self.base.max_size() }
-    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
-    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
-    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
-    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
-    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
-    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
-    fn children(&self) -> &[ObjectId] { self.base.children() }
-    fn show(&mut self) { self.base.show(); }
-    fn hide(&mut self) { self.base.hide(); }
-    fn is_visible(&self) -> bool { self.base.is_visible() }
-    fn set_enabled(&mut self, enabled: bool) { self.base.set_enabled(enabled); }
-    fn is_enabled(&self) -> bool { self.base.is_enabled() }
-    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
-    fn tooltip(&self) -> &str { self.base.tooltip() }
-    fn style(&self) -> &WidgetStyle { self.base.style() }
-    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
-    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
-    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
-    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
-    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
-    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
-    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
 }
 
 impl EventHandler for Window {
@@ -526,13 +731,19 @@ impl Dialog {
     }
 
     /// Returns whether this dialog is modal.
-    pub fn is_modal(&self) -> bool { self.modal }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
 
     /// Sets modal flag.
-    pub fn set_modal(&mut self, modal: bool) { self.modal = modal; }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
 
     /// Returns last result.
-    pub fn result(&self) -> Option<DialogResult> { self.result }
+    pub fn result(&self) -> Option<DialogResult> {
+        self.result
+    }
 
     /// Completes dialog with provided result and emits signals.
     pub fn finish(&mut self, result: DialogResult) {
@@ -545,13 +756,19 @@ impl Dialog {
     }
 
     /// Accepts dialog.
-    pub fn accept(&mut self) { self.finish(DialogResult::Accepted); }
+    pub fn accept(&mut self) {
+        self.finish(DialogResult::Accepted);
+    }
 
     /// Rejects dialog.
-    pub fn reject(&mut self) { self.finish(DialogResult::Rejected); }
+    pub fn reject(&mut self) {
+        self.finish(DialogResult::Rejected);
+    }
 
     /// Cancels dialog.
-    pub fn cancel(&mut self) { self.finish(DialogResult::Canceled); }
+    pub fn cancel(&mut self) {
+        self.finish(DialogResult::Canceled);
+    }
 }
 impl_widget_delegate!(Dialog, base);
 
@@ -587,14 +804,28 @@ impl MessageBox {
         }
     }
 
-    pub fn title(&self) -> &str { &self.title }
-    pub fn text(&self) -> &str { &self.text }
-    pub fn icon(&self) -> MessageBoxIcon { self.icon }
-    pub fn result(&self) -> Option<DialogResult> { self.result }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    pub fn icon(&self) -> MessageBoxIcon {
+        self.icon
+    }
+    pub fn result(&self) -> Option<DialogResult> {
+        self.result
+    }
 
-    pub fn set_title(&mut self, title: String) { self.title = title; }
-    pub fn set_text(&mut self, text: String) { self.text = text; }
-    pub fn set_icon(&mut self, icon: MessageBoxIcon) { self.icon = icon; }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+    }
+    pub fn set_icon(&mut self, icon: MessageBoxIcon) {
+        self.icon = icon;
+    }
 
     pub fn set_result(&mut self, result: DialogResult) {
         self.result = Some(result);
@@ -626,10 +857,16 @@ impl FileDialog {
         }
     }
 
-    pub fn current_dir(&self) -> &str { &self.current_dir }
-    pub fn selected_file(&self) -> Option<&str> { self.selected_file.as_deref() }
+    pub fn current_dir(&self) -> &str {
+        &self.current_dir
+    }
+    pub fn selected_file(&self) -> Option<&str> {
+        self.selected_file.as_deref()
+    }
 
-    pub fn set_current_dir(&mut self, dir: String) { self.current_dir = dir; }
+    pub fn set_current_dir(&mut self, dir: String) {
+        self.current_dir = dir;
+    }
 
     pub fn set_selected_file(&mut self, file: Option<String>) {
         if self.selected_file == file {
@@ -639,8 +876,12 @@ impl FileDialog {
         self.file_selected.emit(file);
     }
 
-    pub fn accept(&self) { self.accepted.emit(); }
-    pub fn reject(&self) { self.rejected.emit(); }
+    pub fn accept(&self) {
+        self.accepted.emit();
+    }
+    pub fn reject(&self) {
+        self.rejected.emit();
+    }
 }
 impl_widget_delegate!(FileDialog, base);
 
@@ -661,7 +902,9 @@ impl ColorDialog {
         }
     }
 
-    pub fn color(&self) -> Color { self.color }
+    pub fn color(&self) -> Color {
+        self.color
+    }
 
     pub fn set_color(&mut self, color: Color) {
         if self.color == color {
@@ -690,7 +933,9 @@ impl FontDialog {
         }
     }
 
-    pub fn font(&self) -> &Font { &self.font }
+    pub fn font(&self) -> &Font {
+        &self.font
+    }
 
     pub fn set_font(&mut self, font: Font) {
         if self.font == font {
@@ -703,9 +948,17 @@ impl FontDialog {
 impl_widget_delegate!(FontDialog, base);
 
 /// Popup window widget.
-pub struct PopupWindow { base: BaseWidget }
+pub struct PopupWindow {
+    base: BaseWidget,
+}
 /// Creates a popup window with geometry.
-impl PopupWindow { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupWindow") } } }
+impl PopupWindow {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupWindow"),
+        }
+    }
+}
 impl_widget_delegate!(PopupWindow, base);
 
 /// Push button widget.
@@ -739,7 +992,9 @@ impl Button {
         }
     }
     /// Returns button text.
-    pub fn text(&self) -> &str { &self.text }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 
     /// Returns current button interaction state.
     pub fn state(&self) -> ButtonState {
@@ -798,38 +1053,102 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn id(&self) -> ObjectId { self.base.id() }
-    fn kind(&self) -> WidgetKind { self.base.kind() }
-    fn geometry(&self) -> Rect { self.base.geometry() }
-    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
-    fn min_size(&self) -> Option<Size> { self.base.min_size() }
-    fn max_size(&self) -> Option<Size> { self.base.max_size() }
-    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
-    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
-    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
-    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
-    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
-    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
-    fn children(&self) -> &[ObjectId] { self.base.children() }
-    fn show(&mut self) { self.base.show(); }
-    fn hide(&mut self) { self.base.hide(); }
-    fn is_visible(&self) -> bool { self.base.is_visible() }
-    fn set_enabled(&mut self, enabled: bool) { self.set_enabled_state(enabled); }
-    fn is_enabled(&self) -> bool { self.base.is_enabled() }
-    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
-    fn tooltip(&self) -> &str { self.base.tooltip() }
-    fn style(&self) -> &WidgetStyle { self.base.style() }
-    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
-    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
-    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
-    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
-    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
-    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
-    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.set_enabled_state(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
 }
 
 impl EventHandler for Button {
@@ -877,10 +1196,14 @@ impl CheckBox {
     }
 
     /// Returns current check state.
-    pub fn state(&self) -> CheckState { self.state }
+    pub fn state(&self) -> CheckState {
+        self.state
+    }
 
     /// Returns true when the checkbox is fully checked.
-    pub fn is_checked(&self) -> bool { self.state == CheckState::Checked }
+    pub fn is_checked(&self) -> bool {
+        self.state == CheckState::Checked
+    }
 
     /// Enables/disables tri-state semantics.
     pub fn set_tristate_enabled(&mut self, enabled: bool) {
@@ -891,7 +1214,9 @@ impl CheckBox {
     }
 
     /// Returns whether tri-state semantics are enabled.
-    pub fn is_tristate_enabled(&self) -> bool { self.tristate_enabled }
+    pub fn is_tristate_enabled(&self) -> bool {
+        self.tristate_enabled
+    }
 
     /// Sets state and emits deterministic state/toggle signals when changed.
     pub fn set_state(&mut self, state: CheckState) {
@@ -915,7 +1240,11 @@ impl CheckBox {
 
     /// Sets checked/unchecked state.
     pub fn set_checked(&mut self, checked: bool) {
-        self.set_state(if checked { CheckState::Checked } else { CheckState::Unchecked });
+        self.set_state(if checked {
+            CheckState::Checked
+        } else {
+            CheckState::Unchecked
+        });
     }
 
     /// Toggles checkbox according to tri-state configuration.
@@ -958,7 +1287,9 @@ impl RadioButton {
     }
 
     /// Returns current checked state.
-    pub fn is_checked(&self) -> bool { self.checked }
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
 
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
@@ -1080,7 +1411,9 @@ impl Label {
     }
 
     /// Returns label text.
-    pub fn text(&self) -> &str { &self.text }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 impl_widget_delegate!(Label, base);
 
@@ -1111,7 +1444,9 @@ impl LineEdit {
     }
 
     /// Returns current editor text.
-    pub fn text(&self) -> &str { &self.text }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 
     /// Sets text and emits `text_changed` when content changes.
     pub fn set_text(&mut self, text: String) {
@@ -1124,7 +1459,9 @@ impl LineEdit {
     }
 
     /// Returns whether password mode is enabled.
-    pub fn password_mode(&self) -> bool { self.password_mode }
+    pub fn password_mode(&self) -> bool {
+        self.password_mode
+    }
 
     /// Enables/disables password mode.
     pub fn set_password_mode(&mut self, password_mode: bool) {
@@ -1145,7 +1482,9 @@ impl LineEdit {
     }
 
     /// Returns current selected byte range.
-    pub fn selection(&self) -> Option<(usize, usize)> { self.selection }
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selection
+    }
 
     /// Updates selected byte range, clamped to text bounds.
     pub fn set_selection(&mut self, start: usize, end: usize) {
@@ -1211,7 +1550,10 @@ impl LineEdit {
                 self.selection = if clamped_start == clamped_end {
                     None
                 } else {
-                    Some((clamped_start.min(clamped_end), clamped_start.max(clamped_end)))
+                    Some((
+                        clamped_start.min(clamped_end),
+                        clamped_start.max(clamped_end),
+                    ))
                 };
                 self.selection_changed.emit(self.selection);
             }
@@ -1219,38 +1561,102 @@ impl LineEdit {
     }
 }
 impl Widget for LineEdit {
-    fn id(&self) -> ObjectId { self.base.id() }
-    fn kind(&self) -> WidgetKind { self.base.kind() }
-    fn geometry(&self) -> Rect { self.base.geometry() }
-    fn set_geometry(&mut self, geometry: Rect) { self.base.set_geometry(geometry); }
-    fn min_size(&self) -> Option<Size> { self.base.min_size() }
-    fn max_size(&self) -> Option<Size> { self.base.max_size() }
-    fn set_min_size(&mut self, min_size: Option<Size>) { self.base.set_min_size(min_size); }
-    fn set_max_size(&mut self, max_size: Option<Size>) { self.base.set_max_size(max_size); }
-    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
-    fn set_parent(&mut self, parent: Option<ObjectId>) { self.base.set_parent(parent); }
-    fn add_child(&mut self, child: ObjectId) { self.base.add_child(child); }
-    fn remove_child(&mut self, child: ObjectId) { self.base.remove_child(child); }
-    fn children(&self) -> &[ObjectId] { self.base.children() }
-    fn show(&mut self) { self.base.show(); }
-    fn hide(&mut self) { self.base.hide(); }
-    fn is_visible(&self) -> bool { self.base.is_visible() }
-    fn set_enabled(&mut self, enabled: bool) { self.base.set_enabled(enabled); }
-    fn is_enabled(&self) -> bool { self.base.is_enabled() }
-    fn set_tooltip(&mut self, tooltip: String) { self.base.set_tooltip(tooltip); }
-    fn tooltip(&self) -> &str { self.base.tooltip() }
-    fn style(&self) -> &WidgetStyle { self.base.style() }
-    fn set_style(&mut self, style: WidgetStyle) { self.base.set_style(style); }
-    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
-    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
-    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
-    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
-    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
-    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
 }
 
 impl EventHandler for LineEdit {
@@ -1263,9 +1669,22 @@ impl EventHandler for LineEdit {
 }
 
 /// Multi-line text editor widget.
-pub struct TextEdit { base: BaseWidget, text: String }
+pub struct TextEdit {
+    base: BaseWidget,
+    text: String,
+}
 /// Creates an empty text editor.
-impl TextEdit { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TextEdit"), text: String::new() } } pub fn set_text(&mut self, text: String) { self.text = text; } }
+impl TextEdit {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TextEdit"),
+            text: String::new(),
+        }
+    }
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+    }
+}
 impl_widget_delegate!(TextEdit, base);
 
 /// Rich text/code editor baseline widget contract.
@@ -1358,7 +1777,9 @@ impl RichEdit {
 
     /// Returns current cursor byte offset.
     pub fn cursor_position(&self) -> usize {
-        self.selection.map(|(_, end)| end).unwrap_or(self.text.len())
+        self.selection
+            .map(|(_, end)| end)
+            .unwrap_or(self.text.len())
     }
 
     /// Inserts text at selection/cursor and updates cursor.
@@ -1442,14 +1863,29 @@ impl ComboBox {
         }
     }
     /// Appends one item.
-    pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); }
+    pub fn add_item(&mut self, item: impl Into<String>) {
+        self.items.push(item.into());
+    }
 
     /// Returns selected index when available.
-    pub fn current_index(&self) -> Option<usize> { self.current }
+    pub fn current_index(&self) -> Option<usize> {
+        self.current
+    }
 
     /// Returns selected text when available.
     pub fn current_text(&self) -> Option<&str> {
-        self.current.and_then(|index| self.items.get(index).map(String::as_str))
+        self.current
+            .and_then(|index| self.items.get(index).map(String::as_str))
+    }
+
+    /// Returns total item count.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns item text by index when available.
+    pub fn item_text(&self, index: usize) -> Option<&str> {
+        self.items.get(index).map(String::as_str)
     }
 
     /// Returns whether dropdown list is currently open.
@@ -1536,16 +1972,24 @@ impl SpinBox {
     }
 
     /// Returns minimum value.
-    pub fn min(&self) -> i32 { self.min }
+    pub fn min(&self) -> i32 {
+        self.min
+    }
 
     /// Returns maximum value.
-    pub fn max(&self) -> i32 { self.max }
+    pub fn max(&self) -> i32 {
+        self.max
+    }
 
     /// Returns current value.
-    pub fn value(&self) -> i32 { self.value }
+    pub fn value(&self) -> i32 {
+        self.value
+    }
 
     /// Returns configured step value.
-    pub fn single_step(&self) -> i32 { self.single_step }
+    pub fn single_step(&self) -> i32 {
+        self.single_step
+    }
 
     /// Sets minimum/maximum range and clamps current value.
     pub fn set_range(&mut self, min: i32, max: i32) {
@@ -1582,9 +2026,32 @@ impl SpinBox {
 impl_widget_delegate!(SpinBox, base);
 
 /// List-box widget with simple string item storage.
-pub struct ListBox { base: BaseWidget, items: Vec<String> }
+pub struct ListBox {
+    base: BaseWidget,
+    items: Vec<String>,
+}
 /// Creates an empty list-box and appends items.
-impl ListBox { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"), items: Vec::new() } } pub fn add_item(&mut self, item: impl Into<String>) { self.items.push(item.into()); } }
+impl ListBox {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"),
+            items: Vec::new(),
+        }
+    }
+    pub fn add_item(&mut self, item: impl Into<String>) {
+        self.items.push(item.into());
+    }
+
+    /// Returns total item count.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns item text by index when available.
+    pub fn item_text(&self, index: usize) -> Option<&str> {
+        self.items.get(index).map(String::as_str)
+    }
+}
 impl_widget_delegate!(ListBox, base);
 
 /// List view widget with optional external model binding and row selection.
@@ -1691,7 +2158,9 @@ impl ListView {
 
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selection.current_row().filter(|row| *row < self.row_count())
+        self.selection
+            .current_row()
+            .filter(|row| *row < self.row_count())
     }
 
     /// All selected rows in stable order.
@@ -1952,7 +2421,10 @@ pub trait TableModel: Send + Sync {
     fn data_with_role(&self, row: usize, col: usize, role: DataRole) -> Option<String> {
         match role {
             DataRole::Display | DataRole::Edit => self.data(row, col),
-            DataRole::Tooltip | DataRole::Decoration | DataRole::Foreground | DataRole::Background => None,
+            DataRole::Tooltip
+            | DataRole::Decoration
+            | DataRole::Foreground
+            | DataRole::Background => None,
             DataRole::User(_) => None,
         }
     }
@@ -2251,14 +2723,8 @@ impl SortFilterTableModel {
 
         if let Some(sort_column) = self.sort_column {
             rows.sort_by(|left, right| {
-                let left_value = self
-                    .source
-                    .data(*left, sort_column)
-                    .unwrap_or_default();
-                let right_value = self
-                    .source
-                    .data(*right, sort_column)
-                    .unwrap_or_default();
+                let left_value = self.source.data(*left, sort_column).unwrap_or_default();
+                let right_value = self.source.data(*right, sort_column).unwrap_or_default();
                 match self.sort_order {
                     SortOrder::Asc => left_value.cmp(&right_value),
                     SortOrder::Desc => right_value.cmp(&left_value),
@@ -2321,13 +2787,19 @@ impl ProgressBar {
     }
 
     /// Returns current minimum.
-    pub fn min(&self) -> u32 { self.min }
+    pub fn min(&self) -> u32 {
+        self.min
+    }
 
     /// Returns current maximum.
-    pub fn max(&self) -> u32 { self.max }
+    pub fn max(&self) -> u32 {
+        self.max
+    }
 
     /// Returns current value.
-    pub fn value(&self) -> u32 { self.value }
+    pub fn value(&self) -> u32 {
+        self.value
+    }
 
     /// Sets range and clamps current value.
     pub fn set_range(&mut self, min: u32, max: u32) {
@@ -2370,13 +2842,19 @@ impl Slider {
     }
 
     /// Returns current minimum.
-    pub fn min(&self) -> i32 { self.min }
+    pub fn min(&self) -> i32 {
+        self.min
+    }
 
     /// Returns current maximum.
-    pub fn max(&self) -> i32 { self.max }
+    pub fn max(&self) -> i32 {
+        self.max
+    }
 
     /// Returns current value.
-    pub fn value(&self) -> i32 { self.value }
+    pub fn value(&self) -> i32 {
+        self.value
+    }
 
     /// Sets slider range and clamps current value.
     pub fn set_range(&mut self, min: i32, max: i32) {
@@ -2423,19 +2901,29 @@ impl ScrollBar {
     }
 
     /// Returns minimum value.
-    pub fn min(&self) -> i32 { self.min }
+    pub fn min(&self) -> i32 {
+        self.min
+    }
 
     /// Returns maximum value.
-    pub fn max(&self) -> i32 { self.max }
+    pub fn max(&self) -> i32 {
+        self.max
+    }
 
     /// Returns current value.
-    pub fn value(&self) -> i32 { self.value }
+    pub fn value(&self) -> i32 {
+        self.value
+    }
 
     /// Returns page step.
-    pub fn page_step(&self) -> i32 { self.page_step }
+    pub fn page_step(&self) -> i32 {
+        self.page_step
+    }
 
     /// Returns single step.
-    pub fn single_step(&self) -> i32 { self.single_step }
+    pub fn single_step(&self) -> i32 {
+        self.single_step
+    }
 
     /// Sets range and clamps current value.
     pub fn set_range(&mut self, min: i32, max: i32) {
@@ -2513,13 +3001,19 @@ impl ScrollArea {
     }
 
     /// Returns content size.
-    pub fn content_size(&self) -> Size { self.content_size }
+    pub fn content_size(&self) -> Size {
+        self.content_size
+    }
 
     /// Returns viewport size.
-    pub fn viewport_size(&self) -> Size { self.viewport_size }
+    pub fn viewport_size(&self) -> Size {
+        self.viewport_size
+    }
 
     /// Returns current scroll offset.
-    pub fn scroll_offset(&self) -> Point { self.scroll_offset }
+    pub fn scroll_offset(&self) -> Point {
+        self.scroll_offset
+    }
 
     /// Sets content size and normalizes scroll offset.
     pub fn set_content_size(&mut self, size: Size) {
@@ -2572,8 +3066,16 @@ impl_widget_delegate!(ScrollArea, base);
 macro_rules! simple_control {
     ($name:ident, $kind:expr) => {
         /// Simple widget control wrapper around `BaseWidget`.
-        pub struct $name { base: BaseWidget }
-        impl $name { pub fn new(geometry: Rect) -> Self { Self { base: BaseWidget::new($kind, geometry, stringify!($name)) } } }
+        pub struct $name {
+            base: BaseWidget,
+        }
+        impl $name {
+            pub fn new(geometry: Rect) -> Self {
+                Self {
+                    base: BaseWidget::new($kind, geometry, stringify!($name)),
+                }
+            }
+        }
         impl_widget_delegate!($name, base);
     };
 }
@@ -2606,7 +3108,9 @@ impl GroupBox {
     }
 
     /// Returns current title.
-    pub fn title(&self) -> &str { &self.title }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
 
     /// Sets title and emits when changed.
     pub fn set_title(&mut self, title: String) {
@@ -2618,7 +3122,9 @@ impl GroupBox {
     }
 
     /// Returns whether group box is checkable.
-    pub fn is_checkable(&self) -> bool { self.checkable }
+    pub fn is_checkable(&self) -> bool {
+        self.checkable
+    }
 
     /// Enables/disables checkable behavior.
     pub fn set_checkable(&mut self, checkable: bool) {
@@ -2633,7 +3139,9 @@ impl GroupBox {
     }
 
     /// Returns checked state.
-    pub fn is_checked(&self) -> bool { self.checked }
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
 
     /// Sets checked state (only effective when checkable).
     pub fn set_checked(&mut self, checked: bool) {
@@ -2674,14 +3182,19 @@ impl TabWidget {
     }
 
     /// Returns number of tabs.
-    pub fn tab_count(&self) -> usize { self.tabs.len() }
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
 
     /// Returns current selected tab index.
-    pub fn current_index(&self) -> Option<usize> { self.current_index }
+    pub fn current_index(&self) -> Option<usize> {
+        self.current_index
+    }
 
     /// Returns current selected tab object id.
     pub fn current_tab(&self) -> Option<ObjectId> {
-        self.current_index.and_then(|index| self.tabs.get(index).copied())
+        self.current_index
+            .and_then(|index| self.tabs.get(index).copied())
     }
 
     /// Adds a tab by page object id and returns assigned index.
@@ -2768,7 +3281,9 @@ impl Splitter {
     }
 
     /// Returns splitter orientation.
-    pub fn orientation(&self) -> SplitterOrientation { self.orientation }
+    pub fn orientation(&self) -> SplitterOrientation {
+        self.orientation
+    }
 
     /// Sets splitter orientation and emits change signal on transition.
     pub fn set_orientation(&mut self, orientation: SplitterOrientation) {
@@ -2780,13 +3295,19 @@ impl Splitter {
     }
 
     /// Returns pane count.
-    pub fn pane_count(&self) -> usize { self.panes.len() }
+    pub fn pane_count(&self) -> usize {
+        self.panes.len()
+    }
 
     /// Returns pane ids in stable order.
-    pub fn pane_ids(&self) -> &[ObjectId] { &self.panes }
+    pub fn pane_ids(&self) -> &[ObjectId] {
+        &self.panes
+    }
 
     /// Returns ratio for pane index.
-    pub fn ratio(&self, index: usize) -> Option<f32> { self.ratios.get(index).copied() }
+    pub fn ratio(&self, index: usize) -> Option<f32> {
+        self.ratios.get(index).copied()
+    }
 
     /// Adds one pane and returns assigned index.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
@@ -3052,10 +3573,14 @@ impl MenuBar {
     }
 
     /// Returns ordered menu ids.
-    pub fn menus(&self) -> &[ObjectId] { &self.menus }
+    pub fn menus(&self) -> &[ObjectId] {
+        &self.menus
+    }
 
     /// Returns current menu id when selected.
-    pub fn current_menu(&self) -> Option<ObjectId> { self.current_menu }
+    pub fn current_menu(&self) -> Option<ObjectId> {
+        self.current_menu
+    }
 
     /// Adds one menu id, returns false when already present.
     pub fn add_menu(&mut self, menu_id: ObjectId) -> bool {
@@ -3125,13 +3650,19 @@ impl Menu {
     }
 
     /// Returns title.
-    pub fn title(&self) -> &str { &self.title }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
 
     /// Sets title.
-    pub fn set_title(&mut self, title: String) { self.title = title; }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
 
     /// Returns action ids bound to menu.
-    pub fn actions(&self) -> &[String] { &self.action_ids }
+    pub fn actions(&self) -> &[String] {
+        &self.action_ids
+    }
 
     /// Adds one action id.
     pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
@@ -3187,7 +3718,9 @@ impl ToolBar {
     }
 
     /// Returns action ids bound to toolbar.
-    pub fn actions(&self) -> &[String] { &self.action_ids }
+    pub fn actions(&self) -> &[String] {
+        &self.action_ids
+    }
 
     /// Adds one action id.
     pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
@@ -3239,7 +3772,9 @@ impl StatusBar {
     }
 
     /// Returns current status message.
-    pub fn message(&self) -> &str { &self.message }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 
     /// Sets status message and emits on change.
     pub fn set_message(&mut self, message: String) {
@@ -3261,8 +3796,7 @@ pub struct TreeView {
     model: Option<Arc<dyn TreeModel>>,
     /// Scoped model-to-view signal subscriptions.
     model_connection_scope: ConnectionScope,
-    /// Fallback path storage used when no external model is bound.
-    fallback_nodes: Vec<String>,
+    // ...existing code...
     /// View-side selected node index.
     selected_node: Option<usize>,
     /// View-side focused node index.
@@ -3280,7 +3814,6 @@ impl TreeView {
             base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
             model: None,
             model_connection_scope: ConnectionScope::new(),
-            fallback_nodes: Vec::new(),
             selected_node: None,
             focused_node: None,
             selection_changed: Signal1::new(),
@@ -3305,9 +3838,10 @@ impl TreeView {
         self.base.request_redraw();
     }
 
-    /// Backward-compatible imperative insertion when no external model is used.
-    pub fn add_node(&mut self, node: impl Into<String>) {
-        self.fallback_nodes.push(node.into());
+    /// Deprecated: add_node is no longer supported. TreeView requires a bound model.
+    #[deprecated(note = "Imperative add_node is removed. Use set_model with a TreeModel.")]
+    pub fn add_node(&mut self, _node: impl Into<String>) {
+        panic!("TreeView::add_node is deprecated. Use set_model with a TreeModel.");
     }
 
     /// Returns current visible node count.
@@ -3315,18 +3849,15 @@ impl TreeView {
         self.model
             .as_ref()
             .map(|model| model.node_count())
-            .unwrap_or(self.fallback_nodes.len())
+            .unwrap_or(0)
     }
 
-            /// Returns node path by visible index.
+    /// Returns node path by visible index.
     pub fn node_path(&self, index: usize) -> Option<String> {
-        self.model
-            .as_ref()
-            .and_then(|model| model.node_path(index))
-            .or_else(|| self.fallback_nodes.get(index).cloned())
+        self.model.as_ref().and_then(|model| model.node_path(index))
     }
 
-            /// Selects a node by visible index.
+    /// Selects a node by visible index.
     pub fn select_node(&mut self, index: usize) -> bool {
         if index < self.node_count() {
             self.selected_node = Some(index);
@@ -3372,7 +3903,8 @@ impl TreeView {
 
     /// Returns selected node index if present.
     pub fn selected_node(&self) -> Option<usize> {
-        self.selected_node.filter(|index| *index < self.node_count())
+        self.selected_node
+            .filter(|index| *index < self.node_count())
     }
 
     fn normalize_projection_state(&mut self) {
@@ -3463,7 +3995,9 @@ impl TableWidget {
 
     /// Read table cell value by role.
     pub fn cell_with_role(&self, row: usize, col: usize, role: DataRole) -> Option<String> {
-        self.model.as_ref().and_then(|m| m.data_with_role(row, col, role))
+        self.model
+            .as_ref()
+            .and_then(|m| m.data_with_role(row, col, role))
     }
 
     /// Read formatted display cell (delegate-aware).
@@ -3532,7 +4066,9 @@ impl TableWidget {
 
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selection.current_row().filter(|row| *row < self.row_count())
+        self.selection
+            .current_row()
+            .filter(|row| *row < self.row_count())
     }
 
     /// All selected rows in stable order.
@@ -3758,7 +4294,10 @@ mod tests {
         }
 
         fn push_node(&self, node: impl Into<String>) {
-            self.nodes.lock().expect("tree model lock poisoned").push(node.into());
+            self.nodes
+                .lock()
+                .expect("tree model lock poisoned")
+                .push(node.into());
             self.changed.emit();
         }
     }
@@ -3797,7 +4336,10 @@ mod tests {
         }
 
         fn push_row(&self, row: Vec<String>) {
-            self.rows.lock().expect("table model lock poisoned").push(row);
+            self.rows
+                .lock()
+                .expect("table model lock poisoned")
+                .push(row);
             self.changed.emit();
         }
     }
@@ -3836,7 +4378,12 @@ mod tests {
             vec![vec!["a".to_string(), "1".to_string()]],
         );
         assert!(model.is_editable(0, 1));
-        assert!(EditableTableModel::set_data(&mut model, 0, 1, "2".to_string()));
+        assert!(EditableTableModel::set_data(
+            &mut model,
+            0,
+            1,
+            "2".to_string()
+        ));
         assert_eq!(model.data(0, 1).as_deref(), Some("2"));
     }
 
@@ -3939,7 +4486,8 @@ mod tests {
             width: 100,
             height: 80,
         });
-        tree.add_node("root");
+        let tree_model = Arc::new(VecTreeModel::new(vec!["root".to_string()]));
+        tree.set_model(tree_model);
         {
             let hits_ref = Arc::clone(&hits);
             tree.selection_changed.connect(move |_| {
@@ -4108,7 +4656,10 @@ mod tests {
 
     #[test]
     fn tree_view_selection_focus_projection_sync_contract() {
-        let model_a = Arc::new(VecTreeModel::new(vec!["root".to_string(), "root/child".to_string()]));
+        let model_a = Arc::new(VecTreeModel::new(vec![
+            "root".to_string(),
+            "root/child".to_string(),
+        ]));
         let model_b = Arc::new(VecTreeModel::new(vec!["root".to_string()]));
         let mut tree = TreeView::new(Rect::new(0, 0, 120, 80));
 
@@ -4316,8 +4867,12 @@ mod tests {
             });
         }
 
-        base.handle_event(&Event::MouseEnter { pos: Point::new(1, 2) });
-        base.handle_event(&Event::MouseMove { pos: Point::new(2, 3) });
+        base.handle_event(&Event::MouseEnter {
+            pos: Point::new(1, 2),
+        });
+        base.handle_event(&Event::MouseMove {
+            pos: Point::new(2, 3),
+        });
         base.handle_event(&Event::MousePress {
             pos: Point::new(4, 5),
             button: 1,
@@ -4338,7 +4893,9 @@ mod tests {
             name: "focus_gained".to_string(),
             payload: Vec::new(),
         });
-        base.handle_event(&Event::MouseLeave { pos: Point::new(9, 9) });
+        base.handle_event(&Event::MouseLeave {
+            pos: Point::new(9, 9),
+        });
 
         assert_eq!(hover_hits.load(Ordering::SeqCst), 2);
         assert_eq!(mouse_down_hits.load(Ordering::SeqCst), 1);

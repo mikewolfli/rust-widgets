@@ -15,7 +15,7 @@
 
 - Pure Rust cross-platform native GUI architecture.
 - Desktop targets: Windows, macOS, Linux, Harmony desktop.
-- Embedded-lite profile for minimal footprint.
+- Embedded full-weight runtime profile with compile-time module trimming for constrained builds.
 - Reserved unified API for mobile targets (Android / iOS / Harmony mobile).
 - Includes event queue, signal-slot, theme/style, layout, XML, i18n, print, PDF, and chart modules.
 
@@ -39,7 +39,7 @@ cargo run --example demo_main
 # Full profile (default)
 cargo check
 
-# Embedded-lite profile
+# Embedded profile
 cargo check --no-default-features --features embedded
 
 # Full profile + mobile API reservation
@@ -83,6 +83,14 @@ cargo publish --dry-run
 - Main and architecture demos: `demo_main`, `demo_layout`, `demo_xml`, `demo_i18n`.
 - Control demos include window/dialog/popup, basic input controls, data-view controls,
   containers, menu/tool/status controls, plus table/grid/chart/canvas controls.
+
+## Runtime GUI Mode (v18)
+
+- `demo_main` now prints backend runtime mode at startup:
+    - `NativeInteractive`: visible native window + interactive event loop expected.
+    - `PreviewOrStub`: preview/state-loop behavior; native visible window may be unavailable.
+- Unsupported widget `create_*` calls return `0` (invalid object id) explicitly; no silent downgrade to unrelated controls.
+- For cross-platform startup verification and evidence capture, use `docs/QA_HARNESS.md` (`V18 Startup Smoke Matrix`).
 
 ## Binding note
 

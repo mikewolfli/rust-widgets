@@ -17,6 +17,13 @@ enum HarmonyHandleKind {
     Button,
     CheckBox,
     LineEdit,
+    Label,
+    RadioButton,
+    Slider,
+    ProgressBar,
+    ComboBox,
+    ListBox,
+    Panel,
     MenuBar,
     Menu,
     MenuItem,
@@ -86,10 +93,17 @@ impl HarmonyPlatform {
 }
 
 impl Platform for HarmonyPlatform {
-    fn backend_name(&self) -> &'static str { "harmony-desktop" }
-    fn family(&self) -> PlatformFamily { PlatformFamily::Desktop }
+    fn backend_name(&self) -> &'static str {
+        "harmony-desktop"
+    }
+    fn family(&self) -> PlatformFamily {
+        PlatformFamily::Desktop
+    }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
+        eprintln!(
+            "[rust_widgets][harmony] preview runtime mode (state loop, native desktop window rendering not wired yet)"
+        );
     }
     fn run(&self) {
         if !self.runtime.initialized.load(Ordering::SeqCst) {
@@ -108,25 +122,190 @@ impl Platform for HarmonyPlatform {
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }
 
-    fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
         self.insert_widget(HarmonyHandleKind::Button, text, x, y, width, height)
     }
 
-    fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_checkbox(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
         self.insert_widget(HarmonyHandleKind::CheckBox, text, x, y, width, height)
     }
 
-    fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_line_edit(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
         self.insert_widget(HarmonyHandleKind::LineEdit, text, x, y, width, height)
+    }
+
+    fn create_label(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::Label, text, x, y, width, height)
+    }
+
+    fn create_radio_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::RadioButton, text, x, y, width, height)
+    }
+
+    fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::Slider, "Slider", x, y, width, height)
+    }
+
+    fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(
+            HarmonyHandleKind::ProgressBar,
+            "ProgressBar",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ComboBox, "ComboBox", x, y, width, height)
+    }
+
+    fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ListBox, "ListBox", x, y, width, height)
+    }
+
+    fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
+        eprintln!("[rust_widgets][harmony] list_box_add_item unsupported in preview backend");
+        false
+    }
+
+    fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
+        eprintln!("[rust_widgets][harmony] list_box_remove_item unsupported in preview backend");
+        false
+    }
+
+    fn list_box_clear_items(&self, _list_box: u64) -> bool {
+        eprintln!("[rust_widgets][harmony] list_box_clear_items unsupported in preview backend");
+        false
+    }
+
+    fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
+        eprintln!(
+            "[rust_widgets][harmony] list_box_set_current_index unsupported in preview backend"
+        );
+        false
+    }
+
+    fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
+        eprintln!("[rust_widgets][harmony] list_box_current_index unsupported in preview backend");
+        None
+    }
+
+    fn list_box_item_count(&self, _list_box: u64) -> usize {
+        eprintln!("[rust_widgets][harmony] list_box_item_count unsupported in preview backend");
+        0
+    }
+
+    fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
+        eprintln!("[rust_widgets][harmony] list_box_item_text unsupported in preview backend");
+        None
+    }
+
+    fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
+        eprintln!("[rust_widgets][harmony] combo_box_add_item unsupported in preview backend");
+        false
+    }
+
+    fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
+        eprintln!("[rust_widgets][harmony] combo_box_clear_items unsupported in preview backend");
+        false
+    }
+
+    fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
+        eprintln!(
+            "[rust_widgets][harmony] combo_box_set_current_index unsupported in preview backend"
+        );
+        false
+    }
+
+    fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
+        eprintln!("[rust_widgets][harmony] combo_box_current_index unsupported in preview backend");
+        None
+    }
+
+    fn combo_box_item_count(&self, _combo_box: u64) -> usize {
+        eprintln!("[rust_widgets][harmony] combo_box_item_count unsupported in preview backend");
+        0
+    }
+
+    fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
+        eprintln!("[rust_widgets][harmony] combo_box_item_text unsupported in preview backend");
+        None
+    }
+
+    fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -137,7 +316,10 @@ impl Platform for HarmonyPlatform {
     }
 
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::MenuBar | HarmonyHandleKind::Menu)) {
+        if !matches!(
+            self.kind_of(parent),
+            Some(HarmonyHandleKind::MenuBar | HarmonyHandleKind::Menu)
+        ) {
             return 0;
         }
         let id = self.insert_widget(HarmonyHandleKind::Menu, text, x, y, width, height);
@@ -158,7 +340,15 @@ impl Platform for HarmonyPlatform {
         self.insert_widget(HarmonyHandleKind::ToolBar, "ToolBar", x, y, width, height)
     }
 
-    fn create_status_bar(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_status_bar(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         if !matches!(self.kind_of(parent), Some(HarmonyHandleKind::Window)) {
             return 0;
         }
@@ -186,7 +376,11 @@ impl Platform for HarmonyPlatform {
         let item_id = self.insert_widget(HarmonyHandleKind::MenuItem, text, 0, 0, 0, 0);
         let _ = shortcut;
         let mut menus = self.menus.lock().expect("harmony menu lock poisoned");
-        menus.menu_children.entry(parent_menu).or_default().push(item_id);
+        menus
+            .menu_children
+            .entry(parent_menu)
+            .or_default()
+            .push(item_id);
         item_id
     }
 
@@ -200,7 +394,10 @@ impl Platform for HarmonyPlatform {
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
         // Only menu items may generate menu trigger events.
-        if !matches!(self.kind_of(menu_item_id), Some(HarmonyHandleKind::MenuItem)) {
+        if !matches!(
+            self.kind_of(menu_item_id),
+            Some(HarmonyHandleKind::MenuItem)
+        ) {
             return false;
         }
         self.menus
@@ -212,7 +409,8 @@ impl Platform for HarmonyPlatform {
     }
 
     fn poll_widget_triggered(&self) -> Option<u64> {
-        self.poll_widget_trigger_event().map(|event| event.widget_id)
+        self.poll_widget_trigger_event()
+            .map(|event| event.widget_id)
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {

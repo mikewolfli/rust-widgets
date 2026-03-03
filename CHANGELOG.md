@@ -60,6 +60,10 @@ All notable changes to this project are documented in this file.
   - `RichEdit` baseline contract with text/selection/read-only state and deterministic edit/cursor signals
   - container baselines: `DockPanel` pane-placement contract and `MdiArea` document/active-document state contract
   - focused regressions for `ListView`/`TableView` baseline behavior and full widget-suite compatibility
+- Runtime GUI mode contract for `v18`:
+  - `RuntimeGuiMode::{NativeInteractive, PreviewOrStub}` and active-backend resolvers
+  - startup mode reporting in `demo_main` for explicit backend behavior visibility
+  - v18 startup smoke matrix and evidence template in `docs/QA_HARNESS.md`
 
 ### Changed
 
@@ -76,6 +80,14 @@ All notable changes to this project are documented in this file.
 - Historical roadmap audit coverage for `v1~v9` is now explicitly recorded and re-validated against code/tests/scripts.
 - Embedded profile behavior-matrix validation now stays green by gating `serde_json`-dependent core deserialization test behind `desktop-runtime` feature.
 - Validation sweep for this audit slice is green: `check_profiles`, `check_event_model_signal_first`, `cargo test --lib`, `check_behavior_matrix`, `check_visual_regression`, and `check_abi`.
+- Windows runtime lifecycle path now uses active message pumping with stable loop-alive behavior for `demo_main`.
+- Non-native preview backends now emit explicit runtime diagnostics:
+  - Linux (non-`gtk-native`)
+  - Harmony desktop preview path
+  - Android mobile preview backend
+  - macOS objc2 preview backend
+- Cross-platform control creation routing now uses explicit backend `create_*` implementations (Linux/Harmony/macOS-objc2/mobile + Windows overrides) with no implicit demo/C-ABI button fallback shims for slider/progress/combo paths.
+- Platform default `create_*` methods now fail explicitly (`0`) when unsupported; Windows backend create failures also return `0` with runtime diagnostics instead of silent button downgrade.
 
 ### Migration Notes
 
@@ -84,6 +96,34 @@ All notable changes to this project are documented in this file.
 - Existing uniform spacing behavior is preserved (`Padding::all`, `Margin::all`), while per-side values are
   now available for forward-compatible style contracts.
 - Geometry callers can incrementally adopt primitive helpers without breaking existing `Rect` call sites.
+
+## [0.5.19] - 2026-03-03
+
+### Added
+
+- v19 GPU visual parity coverage builders and regressions for covered controls:
+  - base controls: `Window`/`Panel`/`Label`/`Button`/`CheckBox`/`RadioButton`/`LineEdit`
+  - data/range controls: `ComboBox`/`ListBox`/`ProgressBar`/`Slider`/`ScrollBar`
+  - host/navigation controls: `MenuBar`/`Menu`/`ToolBar`/`StatusBar`/`TabWidget`/`StackWidget`
+- GPU parity aggregate regression tests:
+  - `render::tests::gpu_parity_covered_controls_emit_non_empty_command_suite`
+  - `render::tests::gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend`
+- New covered-control GPU parity demo:
+  - `demos/demo_wgpu_control_parity.rs` (`cargo run --features gpu-wgpu --example demo_wgpu_control_parity`)
+- QA/profile gate integration for P3g parity checks:
+  - `tools/check_behavior_matrix.sh`
+  - `tools/check_profiles.sh`
+
+### Changed
+
+- Embedded v19 closure stream is now fully documented as complete (`P4a`..`P4d`) with explicit residual embedded host-control unsupported boundaries.
+- Version updated from `0.5.0` to `0.5.19` in `Cargo.toml`.
+
+### Notes
+
+- GPU implementation mode remains the light-weight route by design for this cycle:
+  CPU command rasterization + `wgpu` upload/readback through the unified auto backend selection path.
+- Controls without explicit GPU parity builders remain documented as uncovered in roadmap/docs for follow-up expansion.
 
 ## [0.5.0] - 2026-03-02
 

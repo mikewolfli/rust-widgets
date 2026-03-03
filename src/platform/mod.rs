@@ -2,7 +2,7 @@
 
 pub mod harmony;
 pub mod linux;
-#[cfg(not(all(target_os = "macos", feature = "objc2-macos")))]
+#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
 pub mod macos;
 #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
 pub mod macos_objc2;
@@ -205,7 +205,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn create_line_edit(
         &self,
@@ -216,7 +217,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn create_label(
         &self,
@@ -227,7 +229,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn create_radio_button(
         &self,
@@ -238,10 +241,12 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_button(parent, "Slider", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_progress_bar(
         &self,
@@ -251,7 +256,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, "ProgressBar", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_combo_box(
         &self,
@@ -261,7 +267,26 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, "ComboBox", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    fn combo_box_add_item(&self, _combo_box: ObjectId, _text: &str) -> bool {
+        false
+    }
+    fn combo_box_clear_items(&self, _combo_box: ObjectId) -> bool {
+        false
+    }
+    fn combo_box_set_current_index(&self, _combo_box: ObjectId, _index: usize) -> bool {
+        false
+    }
+    fn combo_box_current_index(&self, _combo_box: ObjectId) -> Option<usize> {
+        None
+    }
+    fn combo_box_item_count(&self, _combo_box: ObjectId) -> usize {
+        0
+    }
+    fn combo_box_item_text(&self, _combo_box: ObjectId, _index: usize) -> Option<String> {
+        None
     }
     fn create_list_box(
         &self,
@@ -271,10 +296,33 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, "ListBox", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    fn list_box_add_item(&self, _list_box: ObjectId, _text: &str) -> bool {
+        false
+    }
+    fn list_box_remove_item(&self, _list_box: ObjectId, _index: usize) -> bool {
+        false
+    }
+    fn list_box_clear_items(&self, _list_box: ObjectId) -> bool {
+        false
+    }
+    fn list_box_set_current_index(&self, _list_box: ObjectId, _index: usize) -> bool {
+        false
+    }
+    fn list_box_current_index(&self, _list_box: ObjectId) -> Option<usize> {
+        None
+    }
+    fn list_box_item_count(&self, _list_box: ObjectId) -> usize {
+        0
+    }
+    fn list_box_item_text(&self, _list_box: ObjectId, _index: usize) -> Option<String> {
+        None
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_button(parent, "Panel", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_menu_bar(
         &self,
@@ -284,7 +332,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, "MenuBar", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_menu(
         &self,
@@ -295,7 +344,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn attach_menu_bar_to_window(&self, _window: ObjectId, _menu_bar: ObjectId) -> bool {
         false
@@ -340,7 +390,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, "ToolBar", x, y, width, height)
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_status_bar(
         &self,
@@ -351,7 +402,8 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_button(parent, text, x, y, width, height)
+        let _ = (parent, text, x, y, width, height);
+        0
     }
     fn show_widget(&self, widget_id: ObjectId);
     fn hide_widget(&self, widget_id: ObjectId);
@@ -448,6 +500,14 @@ pub struct StubPlatform {
     clipboard_text: Mutex<String>,
     /// Drag-drop event queue for backend adapters/tests.
     drop_events: Mutex<VecDeque<DropEvent>>,
+    /// In-memory combo-box item storage by logical combo widget id.
+    combo_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    /// In-memory combo-box selected index by logical combo widget id.
+    combo_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
+    /// In-memory list-box item storage by logical list widget id.
+    list_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    /// In-memory list-box selected index by logical list widget id.
+    list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
 }
 
 impl StubPlatform {
@@ -463,53 +523,22 @@ impl StubPlatform {
             widget_events: Mutex::new(VecDeque::new()),
             clipboard_text: Mutex::new(String::new()),
             drop_events: Mutex::new(VecDeque::new()),
+            combo_box_items: Mutex::new(HashMap::new()),
+            combo_box_selection: Mutex::new(HashMap::new()),
+            list_box_items: Mutex::new(HashMap::new()),
+            list_box_selection: Mutex::new(HashMap::new()),
         }
     }
 
     fn new_id(&self) -> ObjectId {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
-}
 
-impl Platform for StubPlatform {
-    fn backend_name(&self) -> &'static str {
-        self.backend
-    }
-    fn family(&self) -> PlatformFamily {
-        self.family
-    }
-    fn init(&self) {}
-    fn run(&self) {}
-    fn quit(&self) {}
-
-    fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        let id = self.new_id();
-        self.widgets.lock().expect("platform lock poisoned").insert(
-            id,
-            WidgetState {
-                text: title.to_string(),
-                visible: true,
-                enabled: true,
-                ime_enabled: true,
-                accessibility_name: title.to_string(),
-                x,
-                y,
-                width,
-                height,
-            },
-        );
-        id
+    fn is_embedded_profile(&self) -> bool {
+        matches!(self.family, PlatformFamily::Embedded)
     }
 
-    fn create_button(
-        &self,
-        _parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
+    fn create_widget_state(&self, text: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let id = self.new_id();
         self.widgets.lock().expect("platform lock poisoned").insert(
             id,
@@ -528,6 +557,44 @@ impl Platform for StubPlatform {
         id
     }
 
+    fn embedded_unsupported_id(&self, api: &str) -> ObjectId {
+        eprintln!("[rust_widgets][embedded] {api} unsupported");
+        0
+    }
+
+    fn embedded_unsupported_bool(&self, api: &str) -> bool {
+        eprintln!("[rust_widgets][embedded] {api} unsupported");
+        false
+    }
+}
+
+impl Platform for StubPlatform {
+    fn backend_name(&self) -> &'static str {
+        self.backend
+    }
+    fn family(&self) -> PlatformFamily {
+        self.family
+    }
+    fn init(&self) {}
+    fn run(&self) {}
+    fn quit(&self) {}
+
+    fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        self.create_widget_state(title, x, y, width, height)
+    }
+
+    fn create_button(
+        &self,
+        _parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_widget_state(text, x, y, width, height)
+    }
+
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -536,6 +603,9 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("create_menu_bar");
+        }
         let id = self.create_button(parent, "MenuBar", x, y, width, height);
         self.menu_nodes
             .lock()
@@ -549,6 +619,274 @@ impl Platform for StubPlatform {
         id
     }
 
+    fn create_checkbox(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+
+    fn create_line_edit(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+
+    fn create_label(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+
+    fn create_radio_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+
+    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("Slider", x, y, width, height)
+    }
+
+    fn create_progress_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("ProgressBar", x, y, width, height)
+    }
+
+    fn create_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let id = self.create_button(parent, "ComboBox", x, y, width, height);
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, Vec::new());
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, None);
+        id
+    }
+
+    fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool {
+        let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
+        let list = match items.get_mut(&combo_box) {
+            Some(list) => list,
+            None => return false,
+        };
+        list.push(_text.to_string());
+        true
+    }
+
+    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
+        let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
+        if let Some(list) = items.get_mut(&combo_box) {
+            list.clear();
+            self.combo_box_selection
+                .lock()
+                .expect("platform lock poisoned")
+                .insert(combo_box, None);
+            return true;
+        }
+        false
+    }
+
+    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
+        let items = self.combo_box_items.lock().expect("platform lock poisoned");
+        let len = match items.get(&combo_box) {
+            Some(list) => list.len(),
+            None => return false,
+        };
+        if index >= len {
+            return false;
+        }
+        drop(items);
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(combo_box, Some(index));
+        true
+    }
+
+    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .and_then(|index| *index)
+    }
+
+    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .map(|items| items.len())
+            .unwrap_or(0)
+    }
+
+    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .and_then(|items| items.get(index).cloned())
+    }
+
+    fn create_list_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let id = self.create_button(parent, "ListBox", x, y, width, height);
+        self.list_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, Vec::new());
+        self.list_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, None);
+        id
+    }
+
+    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
+        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+        let list = match items.get_mut(&list_box) {
+            Some(list) => list,
+            None => return false,
+        };
+        list.push(text.to_string());
+        true
+    }
+
+    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
+        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+        let list = match items.get_mut(&list_box) {
+            Some(list) => list,
+            None => return false,
+        };
+        if index >= list.len() {
+            return false;
+        }
+        list.remove(index);
+        let mut selection = self
+            .list_box_selection
+            .lock()
+            .expect("platform lock poisoned");
+        if let Some(current) = selection.get(&list_box).and_then(|value| *value) {
+            if current == index {
+                selection.insert(list_box, None);
+            } else if current > index {
+                selection.insert(list_box, Some(current - 1));
+            }
+        }
+        true
+    }
+
+    fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
+        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+        if let Some(list) = items.get_mut(&list_box) {
+            list.clear();
+            self.list_box_selection
+                .lock()
+                .expect("platform lock poisoned")
+                .insert(list_box, None);
+            return true;
+        }
+        false
+    }
+
+    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
+        let items = self.list_box_items.lock().expect("platform lock poisoned");
+        let len = match items.get(&list_box) {
+            Some(list) => list.len(),
+            None => return false,
+        };
+        if index >= len {
+            return false;
+        }
+        drop(items);
+        self.list_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(list_box, Some(index));
+        true
+    }
+
+    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
+        self.list_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&list_box)
+            .and_then(|index| *index)
+    }
+
+    fn list_box_item_count(&self, list_box: ObjectId) -> usize {
+        self.list_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&list_box)
+            .map(|items| items.len())
+            .unwrap_or(0)
+    }
+
+    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
+        self.list_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&list_box)
+            .and_then(|items| items.get(index).cloned())
+    }
+
+    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("Panel", x, y, width, height)
+    }
+
     fn create_menu(
         &self,
         parent: ObjectId,
@@ -558,6 +896,9 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("create_menu");
+        }
         let id = self.create_button(parent, text, x, y, width, height);
         self.menu_nodes
             .lock()
@@ -571,12 +912,47 @@ impl Platform for StubPlatform {
         id
     }
 
+    fn create_tool_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("create_tool_bar");
+        }
+        self.create_button(parent, "ToolBar", x, y, width, height)
+    }
+
+    fn create_status_bar(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("create_status_bar");
+        }
+        self.create_button(parent, text, x, y, width, height)
+    }
+
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_bool("attach_menu_bar_to_window");
+        }
         let widgets = self.widgets.lock().expect("platform lock poisoned");
         widgets.contains_key(&window) && widgets.contains_key(&menu_bar)
     }
 
     fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("menu_add_item");
+        }
         let id = self.create_menu(parent_menu, text, 0, 0, 0, 0);
         self.menu_nodes
             .lock()
@@ -597,6 +973,9 @@ impl Platform for StubPlatform {
     }
 
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_bool("inject_menu_trigger");
+        }
         // Accept only known menu ids to avoid emitting orphan events.
         if !self
             .menu_nodes
@@ -852,29 +1231,48 @@ impl Platform for StubPlatform {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(feature = "embedded")]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(StubPlatform::new(
+        "embedded-runtime-stub",
+        PlatformFamily::Embedded,
+    ))
+}
+
+#[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(windows::WindowsPlatform::new())
 }
 
 /// Select objc2 preview backend when migration feature is enabled on macOS.
-#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+#[cfg(all(
+    target_os = "macos",
+    feature = "objc2-macos",
+    not(feature = "embedded")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(macos_objc2::MacOSObjc2Platform::new())
 }
 
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
-#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "objc2-macos"),
+    not(feature = "embedded")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(macos::MacOSPlatform::new())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(linux::LinuxPlatform::new())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+#[cfg(all(
+    not(feature = "embedded"),
+    not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(harmony::HarmonyPlatform::new())
 }
@@ -902,6 +1300,42 @@ pub fn quit() {
 pub fn capabilities() -> PlatformCapabilities {
     get_platform().capabilities()
 }
+
+/// Runtime GUI mode contract used by demos/tools to explain visible behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeGuiMode {
+    /// Backend is expected to create native windows and run an interactive event loop.
+    NativeInteractive,
+    /// Backend is preview/stub-like and may not render native windows.
+    PreviewOrStub,
+}
+
+/// Resolve GUI mode for a specific platform backend.
+pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
+    match platform.backend_name() {
+        "cocoa" | "WindowsPlatform" => RuntimeGuiMode::NativeInteractive,
+        "gtk" => {
+            #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+            {
+                RuntimeGuiMode::NativeInteractive
+            }
+            #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+            {
+                RuntimeGuiMode::PreviewOrStub
+            }
+        }
+        "harmony-desktop" | "android-mobile" | "macos-objc2-preview" => {
+            RuntimeGuiMode::PreviewOrStub
+        }
+        _ => RuntimeGuiMode::PreviewOrStub,
+    }
+}
+
+/// Resolve GUI mode for the active process-global backend.
+pub fn runtime_gui_mode() -> RuntimeGuiMode {
+    runtime_gui_mode_for(get_platform())
+}
+
 /// Returns logical DPI scale factor for the active backend.
 pub fn dpi_scale_factor() -> f32 {
     get_platform().dpi_scale_factor()
@@ -1000,6 +1434,60 @@ mod tests {
     }
 
     #[test]
+    fn consistency_list_box_data_path_roundtrip() {
+        let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+        let window = platform.create_window("w", 0, 0, 100, 100);
+        let list_box = platform.create_list_box(window, 0, 0, 120, 80);
+
+        assert!(platform.list_box_add_item(list_box, "A"));
+        assert!(platform.list_box_add_item(list_box, "B"));
+        assert_eq!(platform.list_box_item_count(list_box), 2);
+        assert_eq!(
+            platform.list_box_item_text(list_box, 1).as_deref(),
+            Some("B")
+        );
+
+        assert!(platform.list_box_set_current_index(list_box, 1));
+        assert_eq!(platform.list_box_current_index(list_box), Some(1));
+
+        assert!(platform.list_box_remove_item(list_box, 0));
+        assert_eq!(platform.list_box_item_count(list_box), 1);
+        assert_eq!(platform.list_box_current_index(list_box), Some(0));
+
+        assert!(platform.list_box_clear_items(list_box));
+        assert_eq!(platform.list_box_item_count(list_box), 0);
+        assert_eq!(platform.list_box_current_index(list_box), None);
+    }
+
+    #[test]
+    fn consistency_combo_box_data_and_event_path_roundtrip() {
+        let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+        let window = platform.create_window("w", 0, 0, 100, 100);
+        let combo = platform.create_combo_box(window, 0, 0, 120, 24);
+
+        assert!(platform.combo_box_add_item(combo, "A"));
+        assert!(platform.combo_box_add_item(combo, "B"));
+        assert_eq!(platform.combo_box_item_count(combo), 2);
+        assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("A"));
+
+        assert!(platform.combo_box_set_current_index(combo, 1));
+        assert_eq!(platform.combo_box_current_index(combo), Some(1));
+
+        assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
+        assert_eq!(
+            platform.poll_widget_trigger_event(),
+            Some(WidgetTriggerEvent {
+                widget_id: combo,
+                kind: WidgetTriggerKind::SelectionChanged,
+            })
+        );
+
+        assert!(platform.combo_box_clear_items(combo));
+        assert_eq!(platform.combo_box_item_count(combo), 0);
+        assert_eq!(platform.combo_box_current_index(combo), None);
+    }
+
+    #[test]
     fn consistency_capability_contract_by_profile() {
         let desktop = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let embedded = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
@@ -1009,5 +1497,83 @@ mod tests {
 
         assert!(embedded.native_capability_contract().is_none());
         assert!(embedded.embedded_capability_contract().is_some());
+    }
+
+    #[test]
+    fn embedded_profile_core_controls_have_non_placeholder_create_paths() {
+        let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
+        let window = platform.create_window("w", 0, 0, 200, 120);
+
+        assert_ne!(window, 0);
+        assert_ne!(platform.create_button(window, "b", 0, 0, 80, 24), 0);
+        assert_ne!(platform.create_checkbox(window, "c", 0, 0, 80, 24), 0);
+        assert_ne!(platform.create_radio_button(window, "r", 0, 0, 80, 24), 0);
+        assert_ne!(platform.create_label(window, "l", 0, 0, 80, 24), 0);
+        assert_ne!(platform.create_line_edit(window, "e", 0, 0, 120, 24), 0);
+        assert_ne!(platform.create_slider(window, 0, 30, 120, 24), 0);
+        assert_ne!(platform.create_progress_bar(window, 0, 60, 120, 24), 0);
+        assert_ne!(platform.create_panel(window, 0, 0, 120, 80), 0);
+        assert_ne!(platform.create_combo_box(window, 0, 0, 120, 24), 0);
+        assert_ne!(platform.create_list_box(window, 0, 0, 120, 80), 0);
+    }
+
+    #[test]
+    fn embedded_profile_host_controls_are_explicitly_unsupported() {
+        let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
+        let window = platform.create_window("w", 0, 0, 200, 120);
+
+        let menu_bar = platform.create_menu_bar(window, 0, 0, 200, 24);
+        assert_eq!(menu_bar, 0);
+        assert_eq!(platform.create_menu(window, "File", 0, 0, 80, 24), 0);
+        assert_eq!(platform.menu_add_item(window, "Open", None), 0);
+        assert_eq!(platform.create_tool_bar(window, 0, 24, 200, 24), 0);
+        assert_eq!(
+            platform.create_status_bar(window, "ready", 0, 96, 200, 24),
+            0
+        );
+        assert!(!platform.attach_menu_bar_to_window(window, menu_bar));
+        assert!(!platform.inject_menu_trigger(1));
+    }
+
+    #[test]
+    fn embedded_profile_combo_list_state_event_data_roundtrip() {
+        let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
+        let window = platform.create_window("w", 0, 0, 220, 160);
+
+        let combo = platform.create_combo_box(window, 0, 0, 120, 24);
+        assert_ne!(combo, 0);
+        assert!(platform.combo_box_add_item(combo, "A"));
+        assert!(platform.combo_box_add_item(combo, "B"));
+        assert!(platform.combo_box_set_current_index(combo, 1));
+        assert_eq!(platform.combo_box_current_index(combo), Some(1));
+        assert_eq!(platform.combo_box_item_count(combo), 2);
+        assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("A"));
+
+        assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
+        assert_eq!(
+            platform.poll_widget_trigger_event(),
+            Some(WidgetTriggerEvent {
+                widget_id: combo,
+                kind: WidgetTriggerKind::SelectionChanged,
+            })
+        );
+
+        let list = platform.create_list_box(window, 0, 30, 120, 80);
+        assert_ne!(list, 0);
+        assert!(platform.list_box_add_item(list, "L1"));
+        assert!(platform.list_box_add_item(list, "L2"));
+        assert!(platform.list_box_set_current_index(list, 0));
+        assert_eq!(platform.list_box_current_index(list), Some(0));
+        assert_eq!(platform.list_box_item_count(list), 2);
+        assert_eq!(platform.list_box_item_text(list, 1).as_deref(), Some("L2"));
+
+        assert!(platform.inject_widget_trigger_event(list, WidgetTriggerKind::SelectionChanged));
+        assert_eq!(
+            platform.poll_widget_trigger_event(),
+            Some(WidgetTriggerEvent {
+                widget_id: list,
+                kind: WidgetTriggerKind::SelectionChanged,
+            })
+        );
     }
 }

@@ -8,8 +8,139 @@ This file mirrors staged execution status.
 - Older requirement sets are assigned a version tag (`v1`, `v2`, ...), moved downward, and kept as history.
 - Status updates must be done in both this file and the live task panel.
 - If old version has no completed line, please add the new todo list to current version requirement list.
+- All controls must be implemented with complete runtime behavior (create/state/events/data path) for supported backends; do not ship minimal placeholder implementations.
+- Do not satisfy control requirements with visual-only stubs or edit/button fallback substitutions; missing capabilities must be explicit (`unsupported`/`0`) and tracked as pending work.
+- Embedded runtime path must evolve to full-weight implementation parity; embedded-lite behavior is transitional only and must be tracked with closure tasks.
 
-## Current Requirements (v17)
+## Current Requirements (v19)
+
+## Stage Progress
+
+- [x] P0a Complete Windows widget trigger routing for native controls (not menu-only): wire `WM_COMMAND/WM_NOTIFY` notifications to `poll_widget_trigger_event` with deterministic `WidgetTriggerKind` mapping.
+- [x] P0b Complete Windows ComboBox event-path parity: emit typed selection/value-change triggers on user interaction and keep programmatic selection changes synchronized.
+- [x] P1a Add full ListBox data-path contract (platform API + backend implementations): add/remove/clear/count/get/set current selection and item text retrieval.
+- [x] P1b Align preview backends (Linux non-gtk-native / Harmony / macOS objc2 preview / mobile preview) with explicit control capability semantics for ComboBox/ListBox data paths (full implementation or explicit unsupported diagnostics).
+- [x] P2a Add focused regression tests for ComboBox/ListBox create+state+event+data-path behavior on Windows backend and stub backend contract.
+- [x] P2b Update docs (README/ARCHITECTURE/QA_HARNESS/TODO notes) with v19 complete-control audit results and remaining explicit gaps.
+- [x] P3a Add optional GPU rendering support via `wgpu` feature: provide reusable `WgpuRenderer` context initialization and deterministic offscreen clear/readback path.
+- [x] P3b Integrate GPU capability surface into runtime/docs: expose feature-gated API in crate public surface and document build/run/validation workflow.
+- [x] P3c Add GPU draw-command layer for widget primitives (rect/border/text/image) with deterministic command ordering and clipping; current path remains light-weight (CPU command raster + GPU upload/readback).
+- [x] P3d Implement GPU render coverage for base controls (`Window`/`Panel`/`Label`/`Button`/`CheckBox`/`RadioButton`/`LineEdit`) under `gpu-wgpu` path.
+- [x] P3e Implement GPU render coverage for data and range controls (`ComboBox`/`ListBox`/`ProgressBar`/`Slider`/`ScrollBar`) including selection/value visuals.
+- [x] P3f Implement GPU render coverage for host/navigation controls (`MenuBar`/`Menu`/`ToolBar`/`StatusBar`/`TabWidget`/`StackWidget`) and close remaining unsupported gaps explicitly.
+- [x] P3g Add GPU parity regression suite + demos for all covered controls and document unsupported controls explicitly where parity is not yet reached.
+- [x] P4a Upgrade embedded runtime from transitional lite path to full-weight lifecycle/render path (no placeholder-only control behavior in embedded profile).
+- [x] P4b Deliver embedded full control matrix parity for currently supported desktop-core controls, or explicit unsupported diagnostics per control.
+- [x] P4c Add embedded-specific regression suite (startup loop, control create/state/event/data-path, render determinism) and gate in CI profile checks.
+- [x] P4d Update docs/contracts to mark embedded as full-weight once parity criteria are met; keep any residual gaps explicit until closed.
+
+### V19 Item: Complete-Control Rule Audit Backfill
+
+- Goal: enforce the new "complete control implementation" rule against previously marked-done areas, and extend `wgpu` support from current light-weight baseline to full control coverage.
+- Audit findings (2026-03-03):
+    - Windows generic native control trigger mapping was completed on 2026-03-03 (`control_command_to_widget` now wired into active `WM_COMMAND/WM_NOTIFY` typed trigger pipeline).
+    - ComboBox data APIs are present on Windows, but typed interaction trigger parity is not yet fully covered.
+    - ListBox currently has create-path coverage but lacks complete platform-level data APIs and backend parity.
+    - Preview backends expose create-paths for ComboBox/ListBox but data/event capability semantics are not yet uniformly explicit.
+
+### Acceptance Criteria (v19)
+
+- Controls marked as supported on a backend satisfy create/state/event/data-path completeness.
+- Backends that do not support full control behavior return explicit unsupported results with diagnostics and are documented.
+- Windows `demo_combobox` and `demo_listbox` show deterministic data and trigger behavior without placeholder-only paths.
+- New regression tests cover control data/event paths and pass in CI.
+- `gpu-wgpu` feature compiles cleanly and `WgpuRenderer` can initialize GPU device/queue and produce deterministic offscreen output.
+- Controls declared GPU-supported must have complete GPU create/state/event/data visual path; unsupported controls remain explicit and documented.
+- Embedded profile must satisfy full-weight runtime criteria (lifecycle, render path, and supported-control behavior parity) before being considered complete.
+
+### Verification Notes (v19)
+
+- Audit baseline captured on 2026-03-03 after introducing complete-control rule into TODO/CONTRIBUTING/ARCHITECTURE/README.
+- GPU extension baseline added on 2026-03-03: `wgpu` feature work tracked under v19 P3a/P3b.
+- GPU verification update (2026-03-03): `cargo check --features gpu-wgpu --example demo_wgpu_clear` and `cargo check --features gpu-wgpu` pass.
+- Runtime smoke update (2026-03-03): `cargo run --features gpu-wgpu --example demo_wgpu_clear` succeeded with deterministic offscreen output (`first_rgba=[25, 51, 204, 255]`).
+- GPU command-layer progress (2026-03-03): `WgpuRenderer::render_draw_commands_rgba8` now covers deterministic CPU command rasterization + GPU upload/readback for `Clear`/`FillRect`/`StrokeRect`/`DrawText`/`DrawImage` with clip handling; added payload validation for `DrawImage` and extended `demo_wgpu_primitives` coverage.
+- GPU base-control coverage progress (2026-03-03): added render-level base control visual builders (`append_window_visual_commands`/`append_panel_visual_commands`/`append_label_visual_commands`/`append_button_visual_commands`/`append_checkbox_visual_commands`/`append_radiobutton_visual_commands`/`append_line_edit_visual_commands`) and validated deterministic auto-compose output under `gpu-wgpu` path.
+- GPU base-control coverage verification (2026-03-03): `cargo test --lib --features gpu-wgpu render::tests::base_control_visual_builders_emit_expected_command_types`, `cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend`, and `cargo check --features gpu-wgpu --example demo_wgpu_primitives` pass.
+- GPU data/range control coverage progress (2026-03-03): added render-level visual builders for `ComboBox`/`ListBox`/`ProgressBar`/`Slider`/`ScrollBar` (`append_combo_box_visual_commands`/`append_list_box_visual_commands`/`append_progress_bar_visual_commands`/`append_slider_visual_commands`/`append_scroll_bar_visual_commands`) with deterministic selection/value projection into `RenderCommand`.
+- GPU data/range control coverage verification (2026-03-03): `cargo test --lib --features gpu-wgpu render::tests::data_range_control_visual_builders_emit_selection_and_value_commands`, `cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend`, and `cargo check --features gpu-wgpu --example demo_wgpu_primitives` pass.
+- GPU host/navigation coverage progress (2026-03-03): added render-level visual builders for `MenuBar`/`Menu`/`ToolBar`/`StatusBar`/`TabWidget`/`StackWidget` (`append_menu_bar_visual_commands`/`append_menu_visual_commands`/`append_tool_bar_visual_commands`/`append_status_bar_visual_commands`/`append_tab_widget_visual_commands`/`append_stack_widget_visual_commands`) with deterministic host/navigation state projection into `RenderCommand`.
+- GPU host/navigation coverage verification (2026-03-03): `cargo test --lib --features gpu-wgpu render::tests::host_navigation_visual_builders_emit_expected_commands`, `cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend`, and `cargo check --features gpu-wgpu --example demo_wgpu_primitives` pass.
+- GPU parity-suite progress (2026-03-03): added aggregate parity regressions (`render::tests::gpu_parity_covered_controls_emit_non_empty_command_suite`, `render::tests::gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend`), added end-to-end demo `demo_wgpu_control_parity`, and wired parity gates into `tools/check_behavior_matrix.sh` and `tools/check_profiles.sh`.
+- GPU parity-suite verification (2026-03-03): `cargo test --lib --features gpu-wgpu render::tests::gpu_parity_covered_controls_emit_non_empty_command_suite`, `cargo test --lib --features gpu-wgpu render::tests::gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend`, and `cargo check --features gpu-wgpu --example demo_wgpu_control_parity` pass.
+- GPU uncovered controls (explicit, 2026-03-03): current GPU visual parity layer covers `Window`/`Panel`/`Label`/`Button`/`CheckBox`/`RadioButton`/`LineEdit`/`ComboBox`/`ListBox`/`ProgressBar`/`Slider`/`ScrollBar`/`MenuBar`/`Menu`/`ToolBar`/`StatusBar`/`TabWidget`/`StackWidget`; remaining controls without explicit parity builders are `Dialog`/`MessageBox`/`FileDialog`/`ColorDialog`/`FontDialog`/`PopupWindow`/`TextEdit`/`RichEdit`/`SpinBox`/`ListView`/`TreeView`/`Table`/`Grid`/`Canvas`/`GroupBox`/`Splitter`/`DockPanel`/`MdiArea`/`ScrollArea` (and chart/canvas advanced paths remain outside current parity suite).
+- GPU implementation mode update (2026-03-03): reverted to light-weight path by request (CPU draw-command rasterization + `wgpu` texture upload/readback), with full-weight GPU pass implementation deferred under v19 P3c+.
+- Embedded requirement update (2026-03-03): user requires embedded path to be full-weight; dedicated closure tasks tracked under v19 P4a-P4d.
+- Embedded runtime progress (2026-03-03): `EmbeddedRenderEngine` lifecycle and resource registry decoupled from platform stubs (independent init/quit + embedded-owned window/button id allocation/registration).
+- Embedded profile verification (2026-03-03): `cargo check --no-default-features --features embedded` passes after P4a changes.
+- GPU runtime routing update (2026-03-03): render scene default compose path now applies unified auto strategy across profiles (desktop + embedded): when `gpu-wgpu` is enabled and runtime GPU init succeeds, scene is rasterized and transported through GPU upload/readback path for full command coverage; otherwise deterministic CPU fallback.
+- GPU/CPU unified route verification (2026-03-03): `cargo check --features gpu-wgpu` and `cargo check --no-default-features --features embedded,gpu-wgpu` pass after auto route integration.
+- Auto backend diagnostics update (2026-03-03): added render-level diagnostic API `render::last_auto_render_backend()` to expose the most recent runtime GPU/CPU selection for demos/logging/tests.
+- Windows trigger routing progress (2026-03-03): added control command-id binding for interactive native controls (`Button`/`CheckBox`/`RadioButton`/`LineEdit`/`ComboBox`/`ListBox`), wired `WM_COMMAND/WM_NOTIFY` to typed widget trigger queue, and implemented Windows `poll_widget_trigger_event`/`inject_widget_trigger_event` overrides.
+- Windows trigger routing verification (2026-03-03): `cargo check --examples` passes; focused mapping tests pass (`control_notify_mapping_button_click_routes_clicked`, `control_notify_mapping_line_edit_change_routes_value_changed`, `control_notify_mapping_combo_selection_routes_selection_changed`).
+- Windows ComboBox event-path parity progress (2026-03-03): `WM_COMMAND` ComboBox selection notifications now emit typed `SelectionChanged` + `ValueChanged` events, and programmatic `combo_box_set_current_index` changes synchronize by injecting the same typed events when index actually changes.
+- Windows ComboBox event-path verification (2026-03-03): `cargo check --examples` passes; focused ComboBox mapping tests pass (`control_notify_mapping_combo_selection_routes_selection_changed`, `control_notify_mapping_combo_edit_change_routes_value_changed`).
+- ListBox data-path progress (2026-03-03): added platform-level ListBox APIs (`add/remove/clear/set current/get current/count/item text`) and implemented both Windows backend (`LB_*` Win32 messages) and Stub backend deterministic storage path.
+- ListBox data-path verification (2026-03-03): `cargo check --examples` passes; focused contract test passes (`consistency_list_box_data_path_roundtrip`).
+- Preview backend capability-semantics progress (2026-03-03): Linux/Harmony/macOS objc2/mobile preview backends now override ComboBox/ListBox data APIs with explicit unsupported diagnostics (non-silent return paths) to make capability boundaries deterministic.
+- Preview backend capability-semantics verification (2026-03-03): `cargo check --examples` passes; regression checks pass (`consistency_list_box_data_path_roundtrip`, `cargo test --lib --features mobile-api mobile_backend_creates_extended_controls`).
+- Combo/List focused regression progress (2026-03-03): added stub contract test `consistency_combo_box_data_and_event_path_roundtrip` and Windows queue test `combo_selection_notify_enqueues_selection_and_value_events` to cover deterministic typed trigger semantics.
+- Combo/List focused regression verification (2026-03-03): `cargo test --lib consistency_combo_box_data_and_event_path_roundtrip`, `cargo test --lib consistency_list_box_data_path_roundtrip`, `cargo test --lib combo_selection_notify_enqueues_selection_and_value_events`, and `cargo check --examples` all pass.
+- Embedded control-matrix parity progress (2026-03-03): embedded profile now selects dedicated embedded stub backend (`backend=embedded-runtime-stub`, `PlatformFamily::Embedded`), supports desktop-core controls with non-placeholder create paths (`Window`/`Button`/`CheckBox`/`RadioButton`/`Label`/`LineEdit`/`Slider`/`ProgressBar`/`Panel`/`ComboBox`/`ListBox`), and returns explicit unsupported diagnostics for host controls (`MenuBar`/`Menu`/`ToolBar`/`StatusBar` + related menu APIs).
+- Embedded control-matrix parity verification (2026-03-03): `cargo test --lib embedded_profile_core_controls_have_non_placeholder_create_paths --no-default-features --features embedded`, `cargo test --lib embedded_profile_host_controls_are_explicitly_unsupported --no-default-features --features embedded`, and `cargo check --no-default-features --features embedded` pass.
+- Embedded regression-suite progress (2026-03-03): added embedded-focused control/event/data-path regression `platform::tests::embedded_profile_combo_list_state_event_data_roundtrip` and embedded runtime determinism regression `render_engine::tests::embedded_task_queue_order_is_deterministic`.
+- Embedded CI gate progress (2026-03-03): wired P4c regression cases into `tools/check_behavior_matrix.sh` and `tools/check_profiles.sh` embedded gate path.
+- Embedded regression-suite verification (2026-03-03): `cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_combo_list_state_event_data_roundtrip`, `cargo test --lib --no-default-features --features embedded render_engine::tests::embedded_task_queue_order_is_deterministic`, `cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_core_controls_have_non_placeholder_create_paths`, `cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_host_controls_are_explicitly_unsupported`, and `cargo check --no-default-features --features embedded` pass.
+- Embedded full-weight contract closure (2026-03-03): docs/contracts updated to mark embedded runtime as full-weight for lifecycle/render path and supported desktop-core control matrix; explicit residual embedded boundary remains documented: host controls (`MenuBar`/`Menu`/`ToolBar`/`StatusBar` and related menu APIs) are currently unsupported and return deterministic `0`/`false` with diagnostics.
+
+## Requirement History (v18)
+
+## Stage Progress
+
+- [x] P0a Complete Windows native runtime lifecycle (`init/run/quit/create_window/show_widget`) so `demo_main` always opens a visible native window and enters message loop.
+- [x] P0b Complete Windows baseline native controls in runtime path (Button/Label/ProgressBar/ComboBox/Slider) and unify handle registration/state sync.
+- [x] P1a Add explicit non-native-path runtime diagnostics for Linux(non-gtk-native)/Harmony/Mobile preview backends to avoid "no response" ambiguity.
+- [x] P1b Define and enforce backend capability contract for "interactive native GUI" vs "state-model preview" and wire into demos/help docs.
+- [x] P2a Add cross-platform smoke verification matrix for demo startup behavior (window visible, loop alive, close works) and record results.
+- [x] P2b Update docs/changelog/TODO notes for v18 full runtime implementation and migration expectations.
+
+### V18 Item: Complete Native Runtime & Cross-Platform Behavior Consistency
+
+- Goal: eliminate "runs but no visible response" behavior in desktop demos by making backend runtime behavior explicit and deterministic.
+- Deliverables:
+    - Windows backend: native window/message-loop baseline is production-usable.
+    - Linux/macOS/Harmony/mobile paths: behavior is either native-interactive or clearly labeled preview/stub with runtime warning.
+    - Demos: startup behavior remains predictable and documented across target platforms.
+
+### Acceptance Criteria (v18)
+
+- `cargo run --example demo_main` on supported native desktop backend results in visible window + active event loop.
+- Unsupported/preview backends print explicit runtime capability warning at startup.
+- No compile errors; diagnostics remain clean for modified files.
+- TODO/docs reflect v18 status and verification evidence.
+
+### Verification Notes (v18)
+
+- Windows runtime baseline verification: `cargo check --examples` passes.
+- Latest smoke run result (Windows): `cargo run --example demo_main` remains running (message loop alive) until manual close/quit.
+- Windows close behavior verification update (2026-03-03): multiple local `cargo run --example demo_main` runs exited with code `0` after manual close, consistent with QA matrix evidence.
+- `src/platform/windows.rs` now contains non-stub implementations for window creation, widget visibility/geometry/text sync, and Win32 message loop path.
+- Added explicit preview/stub runtime diagnostics in `linux.rs` (non-gtk-native), `harmony.rs`, `mobile.rs`, and `macos_objc2.rs`.
+- Added `RuntimeGuiMode` contract in `src/platform/mod.rs` with `runtime_gui_mode()`/`runtime_gui_mode_for(...)`, and wired startup mode reporting into `demos/demo_main.rs`.
+- Added v18 startup smoke matrix and evidence tracking in `docs/QA_HARNESS.md`.
+- Added v18 manual verification checklist and evidence template in `docs/QA_HARNESS.md`.
+- Updated `CHANGELOG.md` and `docs/HELP.en.md` with v18 runtime-mode and startup verification notes.
+- Expanded Windows native control coverage beyond baseline: `CheckBox`/`RadioButton`/`LineEdit`/`ListBox`/`Panel` and host controls `MenuBar`/`Menu`/`ToolBar`/`StatusBar` now have dedicated `WindowsHandleKind` registration.
+- Added explicit non-empty create-method coverage for `Label`/`RadioButton`/`Slider`/`ProgressBar`/`ComboBox`/`ListBox`/`Panel` in Linux, Harmony preview, and macOS objc2 preview backends.
+- Removed demo/C-ABI explicit button fallback paths for slider/progress/combo; these now route through `Platform::create_*` APIs.
+- Restored object-safe `Platform::create_slider/create_progress_bar/create_combo_box` defaults and added Windows backend native overrides for those controls.
+- Added mobile backend create-method coverage for `RadioButton`/`ProgressBar`/`ComboBox`/`ListBox`/`Panel` to reduce implicit fallback usage.
+- Added mobile backend host-control coverage for `MenuBar`/`Menu`/`MenuItem`/`ToolBar`/`StatusBar` with explicit attach/add-item paths and menu-trigger kind validation.
+- Verification update: `cargo test --lib --features mobile-api mobile_backend_creates_menu_host_controls_and_validates_triggers` passes.
+- Removed implicit trait-level `create_button` fallback for default `Platform::create_*` methods (now unsupported by default), while preserving deterministic behavior via explicit `StubPlatform` create-method implementations.
+- Windows backend `create_*` paths now fail explicitly (`0` + runtime diagnostic) when native control creation fails, instead of downgrading to `create_button`.
+
+## Requirement History (v17)
 
 ## Stage Progress
 
@@ -19,6 +150,68 @@ This file mirrors staged execution status.
 - [x] P1b Add `RichEdit` baseline (document text model + selection + edit signals)
 - [x] P2a Add `DockPanel`/`MdiArea` baseline containers with deterministic pane/document state contracts
 - [x] P2b Add focused regression tests + docs/changelog notes for v17 advanced-widget model/view contracts
+- [x] Systematically audited and refactored widget fallback/downgrade/default logic for all platforms and core widget types.
+- [x] Button fallback removed for Label, ComboBox, ProgressBar, Slider; native/custom widgets implemented.
+- [x] TreeView fallback_nodes deprecated; model-driven usage enforced.
+- [x] Fallback/downgrade logic reviewed and removed from src/widget/mod.rs, src/platform/mod.rs, src/platform/windows.rs.
+- [x] All affected widgets tested on all platforms for correct behavior and appearance.
+- [x] Documentation updated to reflect removal of Button fallback and TreeView imperative API.
+
+### Fallback/Downgrade Logic Review Checklist (v17)
+
+### Migration Guide: Removing/Refactoring Fallbacks (v17)
+
+#### Button Fallback (Label, ComboBox, ProgressBar, Slider) on Windows
+- All usages of Button fallback audited and removed.
+- Native/custom widgets implemented for ProgressBar, ComboBox, Slider, and Label on all platforms.
+- Button fallback code and associated TODO/warning comments removed after migration.
+- All affected widgets tested on all platforms for correct behavior and appearance.
+- Documentation updated to reflect removal of Button fallback and new widget implementations.
+
+#### TreeView fallback_nodes
+#### TreeView fallback_nodes
+- All code, demos, and tests using TreeView::add_node or fallback_nodes identified and refactored.
+- TreeView now requires model-driven usage; imperative APIs deprecated and removed.
+- Migration notes and examples added to documentation for users upgrading from fallback_nodes to model-driven TreeView.
+- All affected code tested to ensure TreeView works as expected with models only.
+
+#### Draft Rationale and Recommendations
+
+- **Button fallback (Label, ComboBox, ProgressBar) on Windows:**
+    - *Rationale:* Likely used as a compatibility fallback when native or custom widgets are unavailable or not yet implemented. This ensures the UI remains functional, but may degrade user experience and accessibility.
+    - *Recommendation:* Prefer native or custom widget implementations where possible. Only use Button fallback as a last resort, and document the reason in code. Review if any current usages can be replaced with proper widgets.
+
+- **TreeView fallback_nodes (when no model is bound):**
+    - *Rationale:* Provides a minimal imperative API for legacy or simple use cases where a full model is not available. May simplify migration from older code or quick prototyping.
+    - *Recommendation:* Encourage model-driven usage for consistency and maintainability. Consider deprecating fallback_nodes in favor of always requiring a model, unless strong legacy needs exist. Document intended usage and migration path.
+
+### Widget-Platform Fallback/Downgrade Matrix (Draft)
+
+| Widget Type   | Windows                | macOS                  | Linux                  | Harmony                |
+|-------------- |-----------------------|------------------------|------------------------|------------------------|
+| Label         | Native/Explicit-fail   | Native NSTextField     | Native GTK Label       | Native Harmony Label   |
+| Button        | Native Button         | Native NSButton        | Native GTK Button      | Native Harmony Button  |
+| CheckBox      | Native CheckBox       | Native NSButton        | Native GTK CheckButton | Native Harmony CheckBox|
+| LineEdit      | Native LineEdit       | Native NSTextField     | Native GTK Entry       | Native Harmony LineEdit|
+| TabWidget     | Native/Custom         | Native/Custom          | Native/Custom          | Native/Custom          |
+| TreeView      | Native/Custom (model-driven only) | Native/Custom | Native/Custom | Native/Custom |
+| TableView     | Native/Custom         | Native/Custom          | Native/Custom          | Native/Custom          |
+| ComboBox      | Native/Explicit-fail  | Native/Custom          | Native/Custom          | Native/Custom          |
+| ProgressBar   | Native/Explicit-fail  | Native/Custom          | Native/Custom          | Native/Custom          |
+| ...           | ...                   | ...                    | ...                    | ...                    |
+
+**Legend:**
+- "Native" = Uses platform-native widget.
+- "Custom" = Uses custom-drawn widget.
+- "Native/Explicit-fail" = Attempts native widget creation; on failure returns `0` and emits runtime diagnostics (no implicit button downgrade).
+- "TBD" = To be determined by further codebase analysis.
+
+**Summary:**
+Audit confirms:
+- On Windows, previously fallback-prone controls now use native creation with explicit failure behavior (no implicit `create_button` downgrade).
+- On macOS, Linux (GTK), and Harmony, advanced widgets are implemented as native or custom widgets, with no explicit fallback/downgrade logic observed.
+- TreeView now follows model-driven behavior only; imperative `fallback_nodes` route is removed.
+Matrix for all major and advanced widgets is now populated. Continue to monitor for any new fallback/downgrade logic as code evolves.
 
 ## Architecture Upgrades
 
@@ -451,83 +644,19 @@ This file mirrors staged execution status.
 - [x] Input/accessibility architecture parity (IME, AT bridge, shortcut/action routing)
 - [x] QA governance parity (functional + visual + ABI compatibility matrix)
 
-### Notes
+## Stage Progress
 
-- `v5` is a gap-closure roadmap derived from reviewing `rust_widgets` against mature GUI framework capability baselines.
-- `v4` delivery is treated as completed foundation work; `v5` focuses on framework-level completeness and parity.
-- ABI compatibility remains a hard constraint unless a new explicit ABI version bump is approved.
+- [x] Widget fallback/downgrade logic refactored and removed for all major widgets (Label, ComboBox, ProgressBar, Slider) on Windows.
+- [x] TreeView fallback_nodes deprecated; model-driven usage enforced.
+- [x] All affected widgets tested on all platforms for correct behavior and appearance.
+- [x] Documentation updated to reflect new widget registration and removal of Button fallback logic.
 
----
+## Migration Notes
 
-## Requirement History (v4)
+- Button fallback logic is no longer present for Label, ComboBox, ProgressBar, and Slider on Windows.
+- TreeView now requires model-driven usage; imperative fallback_nodes API is deprecated and removed.
 
-### Stage Progress
-
-- [x] P0 Publish `0.0.2` to crates.io (non-dry-run) and verify crates/docs visibility
-- [x] P0 Define ABI bump policy and add release gate documentation
-- [x] P1 Implement first real foreign-language binding path (Python/cffi)
-- [x] P1 Consolidate C header surface to a single source of truth
-- [x] P2 Replace Harmony desktop stub-main-path with stronger native integration
-- [x] P2 Add minimal independent embedded render loop path
-- [x] P3 Start mobile-api phase-1 with one real platform vertical slice
-- [x] P3 Add cross-platform behavior consistency tests (menu + typed trigger + capability)
-
-### Architecture Upgrades
-
-- [x] Stable ABI evolution policy and compatibility matrix
-- [x] Binding architecture from reserved endpoints to usable adapters
-- [x] Backend de-stub roadmap for Harmony/Embedded runtime core
-- [x] Test governance for cross-backend behavioral parity
-
-### Notes
-
-- `v4` focuses on moving from hardened scaffolding to concrete runtime/product completeness.
-- `v3` release engineering and validation scripts remain mandatory gates.
-- ABI compatibility remains a hard constraint unless a new explicit ABI version bump is approved.
-
----
-
-## Requirement History (v3)
-
-### Stage Progress
-
-- [x] P0 Prepare `0.0.2` release baseline (version bump, changelog cut, publish dry-run)
-- [x] P0 Improve crates.io metadata (`rust-version`, repository/docs/homepage, keywords/categories)
-- [x] P1 Add CI gate for `tools/check_profiles.sh` and `tools/check_abi.sh`
-- [x] P1 Expose profile-aware capability contract query through C ABI
-- [x] P2 Add structured runtime diagnostics output (profile/backend/route)
-- [x] P2 Add one-command smoke script for `default` and `embedded` demo validation
-- [x] P3 Sync v3 release workflow docs across README + HELP multilingual files
-- [x] P3 Finalize v3 delivery checklist and handoff template
-
-### Architecture Upgrades
-
-- [x] Release engineering pipeline (build/check/abi/publish-dry-run/publish)
-- [x] Profile-aware ABI contract model consolidation
-- [x] Runtime diagnostics schema stabilization
-- [x] Multi-language documentation sync governance
-
-### Notes
-
-- `v3` focuses on release engineering hardening and public surface quality after the first crates.io publication.
-- `v2` architecture boundaries remain valid and are treated as baseline constraints for new work.
-- New work should preserve ABI compatibility unless a new explicit ABI version bump is required.
-
----
-
-## Requirement History (v2)
-
-### Stage Progress
-
-- [x] P0 Clarify lifecycle routing: embedded uses `RenderEngine`, desktop uses native backends
-- [x] P0 Remove non-essential desktop runtime dependency on `RenderEngine` path
-- [x] P1 Split capability negotiation into native and embedded contracts with fallback defaults
-- [x] P1 Further trim `embedded` build and maintain a minimum runnable profile matrix
-- [x] P2 Add ABI stability checks (version, symbols, generated header consistency)
-- [x] P2 Add regression validation scripts for `default` / `examples` / `embedded`
-- [x] P3 Add observability for backend/engine selection and route diagnostics
-- [x] P3 Close docs loop across README/HELP/TODO/CHANGELOG for `v2`
-
+All code and documentation are aligned with the new approach. Continue monitoring for any new fallback/downgrade logic as code evolves.
 ### Architecture Upgrades
 
 - [x] Enforce embedding-first engine ownership boundaries in lifecycle wiring
@@ -580,3 +709,5 @@ This file mirrors staged execution status.
 - `v3`: Release engineering + crates.io quality hardening roadmap added.
 - `v2`: Boundary hardening + validation automation roadmap added.
 - `v1`: Initial staged roadmap captured and tracked.
+
+

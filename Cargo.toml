@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "0.5.0"
+version = "0.5.19"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI architecture"
 license = "MIT"
@@ -24,6 +24,7 @@ full = ["desktop-runtime", "print", "pdf", "chart"]
 desktop-runtime = ["dep:serde_json", "dep:lazy_static", "dep:roxmltree"]
 embedded = []
 mobile-api = []
+gpu-wgpu = ["dep:wgpu", "dep:pollster"]
 objc2-macos = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 print = []
 pdf = []
@@ -39,8 +40,8 @@ crossbeam-channel = "0.5"
 lazy_static = { version = "1.4", optional = true }
 roxmltree = { version = "0.21.1", optional = true }
 font8x8 = "0.3"
-cocoa = "0.26.1"
-objc = "0.2"
+wgpu = { version = "0.17", optional = true }
+pollster = { version = "0.3", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "commctrl"] }
@@ -195,3 +196,18 @@ path = "demos/demo_p0_e2e_native.rs"
 [[example]]
 name = "demo_render_quality"
 path = "demos/demo_render_quality.rs"
+
+[[example]]
+name = "demo_wgpu_clear"
+path = "demos/demo_wgpu_clear.rs"
+required-features = ["gpu-wgpu"]
+
+[[example]]
+name = "demo_wgpu_primitives"
+path = "demos/demo_wgpu_primitives.rs"
+required-features = ["gpu-wgpu"]
+
+[[example]]
+name = "demo_wgpu_control_parity"
+path = "demos/demo_wgpu_control_parity.rs"
+required-features = ["gpu-wgpu"]

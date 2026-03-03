@@ -28,6 +28,20 @@ enum MacObjc2HandleKind {
     CheckBox,
     /// Single-line editable text input.
     LineEdit,
+    /// Static text label.
+    Label,
+    /// Exclusive selection radio button.
+    RadioButton,
+    /// Range slider.
+    Slider,
+    /// Determinate/indeterminate progress indicator.
+    ProgressBar,
+    /// Drop-down selection control.
+    ComboBox,
+    /// List selection control.
+    ListBox,
+    /// Generic container panel.
+    Panel,
     /// Root menu bar container.
     MenuBar,
     /// Hierarchical menu node.
@@ -133,6 +147,9 @@ impl Platform for MacOSObjc2Platform {
         // Marker keeps objc2 dependency wired even before native event-loop bridging lands.
         let _ = self.objc2_runtime_marker();
         self.runtime.initialized.store(true, Ordering::SeqCst);
+        eprintln!(
+            "[rust_widgets][macos-objc2-preview] preview runtime mode enabled (poll loop backend)"
+        );
     }
 
     fn run(&self) {
@@ -204,6 +221,166 @@ impl Platform for MacOSObjc2Platform {
             return 0;
         }
         self.insert_widget(MacObjc2HandleKind::LineEdit, text, x, y, width, height)
+    }
+
+    fn create_label(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Label, text, x, y, width, height)
+    }
+
+    fn create_radio_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::RadioButton, text, x, y, width, height)
+    }
+
+    fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Slider, "Slider", x, y, width, height)
+    }
+
+    fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(
+            MacObjc2HandleKind::ProgressBar,
+            "ProgressBar",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(
+            MacObjc2HandleKind::ComboBox,
+            "ComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::ListBox, "ListBox", x, y, width, height)
+    }
+
+    fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
+        eprintln!("[rust_widgets][macos-objc2] list_box_add_item unsupported in preview backend");
+        false
+    }
+
+    fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
+        eprintln!(
+            "[rust_widgets][macos-objc2] list_box_remove_item unsupported in preview backend"
+        );
+        false
+    }
+
+    fn list_box_clear_items(&self, _list_box: u64) -> bool {
+        eprintln!(
+            "[rust_widgets][macos-objc2] list_box_clear_items unsupported in preview backend"
+        );
+        false
+    }
+
+    fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
+        eprintln!(
+            "[rust_widgets][macos-objc2] list_box_set_current_index unsupported in preview backend"
+        );
+        false
+    }
+
+    fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
+        eprintln!(
+            "[rust_widgets][macos-objc2] list_box_current_index unsupported in preview backend"
+        );
+        None
+    }
+
+    fn list_box_item_count(&self, _list_box: u64) -> usize {
+        eprintln!("[rust_widgets][macos-objc2] list_box_item_count unsupported in preview backend");
+        0
+    }
+
+    fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
+        eprintln!("[rust_widgets][macos-objc2] list_box_item_text unsupported in preview backend");
+        None
+    }
+
+    fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
+        eprintln!("[rust_widgets][macos-objc2] combo_box_add_item unsupported in preview backend");
+        false
+    }
+
+    fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
+        eprintln!(
+            "[rust_widgets][macos-objc2] combo_box_clear_items unsupported in preview backend"
+        );
+        false
+    }
+
+    fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
+        eprintln!(
+            "[rust_widgets][macos-objc2] combo_box_set_current_index unsupported in preview backend"
+        );
+        false
+    }
+
+    fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
+        eprintln!(
+            "[rust_widgets][macos-objc2] combo_box_current_index unsupported in preview backend"
+        );
+        None
+    }
+
+    fn combo_box_item_count(&self, _combo_box: u64) -> usize {
+        eprintln!(
+            "[rust_widgets][macos-objc2] combo_box_item_count unsupported in preview backend"
+        );
+        0
+    }
+
+    fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
+        eprintln!("[rust_widgets][macos-objc2] combo_box_item_text unsupported in preview backend");
+        None
+    }
+
+    fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -490,7 +667,10 @@ mod tests {
         let window = backend.create_window("w", 0, 0, 200, 120);
         let _button = backend.create_button(window, "btn", 10, 10, 80, 24);
         let snapshot = backend.serialize_state().expect("Should serialize state");
-        assert!(snapshot.contains("btn"), "Snapshot should contain button text");
+        assert!(
+            snapshot.contains("btn"),
+            "Snapshot should contain button text"
+        );
     }
 
     #[test]
@@ -502,13 +682,19 @@ mod tests {
         let toolbar = backend.create_tool_bar(window, 0, 0, 200, 24);
         assert!(toolbar > 0, "ToolBar should be created");
         backend.set_widget_visible(toolbar, true);
-        assert!(backend.is_widget_visible(toolbar), "ToolBar should be visible");
+        assert!(
+            backend.is_widget_visible(toolbar),
+            "ToolBar should be visible"
+        );
 
         let statusbar = backend.create_status_bar(window, "Ready", 0, 96, 200, 24);
         assert!(statusbar > 0, "StatusBar should be created");
         assert_eq!(backend.get_widget_text(statusbar), "Ready");
         backend.set_widget_visible(statusbar, true);
-        assert!(backend.is_widget_visible(statusbar), "StatusBar should be visible");
+        assert!(
+            backend.is_widget_visible(statusbar),
+            "StatusBar should be visible"
+        );
     }
 
     #[test]
@@ -529,7 +715,10 @@ mod tests {
         );
 
         // Inject and poll one menu trigger event.
-        assert!(backend.inject_menu_trigger(item), "Should inject menu trigger");
+        assert!(
+            backend.inject_menu_trigger(item),
+            "Should inject menu trigger"
+        );
         let triggered = backend.poll_menu_triggered();
         assert_eq!(triggered, Some(item), "Should poll triggered menu item");
     }
@@ -583,27 +772,45 @@ mod tests {
         assert!(button > 0, "Button should be created");
         assert_eq!(backend.get_widget_text(button), "btn");
         backend.set_widget_enabled(button, false);
-        assert!(!backend.is_widget_enabled(button), "Button should be disabled");
+        assert!(
+            !backend.is_widget_enabled(button),
+            "Button should be disabled"
+        );
         backend.set_widget_visible(button, false);
-        assert!(!backend.is_widget_visible(button), "Button should be hidden");
+        assert!(
+            !backend.is_widget_visible(button),
+            "Button should be hidden"
+        );
 
         // Checkbox parity checks.
         let checkbox = backend.create_checkbox(window, "chk", 20, 40, 80, 24);
         assert!(checkbox > 0, "Checkbox should be created");
         assert_eq!(backend.get_widget_text(checkbox), "chk");
         backend.set_widget_enabled(checkbox, true);
-        assert!(backend.is_widget_enabled(checkbox), "Checkbox should be enabled");
+        assert!(
+            backend.is_widget_enabled(checkbox),
+            "Checkbox should be enabled"
+        );
         backend.set_widget_visible(checkbox, true);
-        assert!(backend.is_widget_visible(checkbox), "Checkbox should be visible");
+        assert!(
+            backend.is_widget_visible(checkbox),
+            "Checkbox should be visible"
+        );
 
         // Line edit parity checks.
         let line_edit = backend.create_line_edit(window, "edit", 30, 70, 100, 24);
         assert!(line_edit > 0, "LineEdit should be created");
         assert_eq!(backend.get_widget_text(line_edit), "edit");
         backend.set_widget_enabled(line_edit, true);
-        assert!(backend.is_widget_enabled(line_edit), "LineEdit should be enabled");
+        assert!(
+            backend.is_widget_enabled(line_edit),
+            "LineEdit should be enabled"
+        );
         backend.set_widget_visible(line_edit, true);
-        assert!(backend.is_widget_visible(line_edit), "LineEdit should be visible");
+        assert!(
+            backend.is_widget_visible(line_edit),
+            "LineEdit should be visible"
+        );
     }
 
     #[test]
@@ -652,9 +859,15 @@ mod tests {
 
         // Verify show/hide visibility transitions.
         backend.show_widget(window);
-        assert!(backend.is_widget_visible(window), "Window should be visible");
+        assert!(
+            backend.is_widget_visible(window),
+            "Window should be visible"
+        );
         backend.hide_widget(window);
-        assert!(!backend.is_widget_visible(window), "Window should be hidden");
+        assert!(
+            !backend.is_widget_visible(window),
+            "Window should be hidden"
+        );
     }
 
     #[test]
@@ -670,7 +883,11 @@ mod tests {
         // Create a child button.
         let button = backend.create_button(window, "ok", 10, 10, 80, 24);
         assert!(button > 0, "Button should be created and have a valid id");
-        assert_eq!(backend.get_widget_text(button), "ok", "Button text should match");
+        assert_eq!(
+            backend.get_widget_text(button),
+            "ok",
+            "Button text should match"
+        );
 
         // Update button text.
         backend.set_widget_text(button, "updated");

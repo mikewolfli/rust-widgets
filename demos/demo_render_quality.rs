@@ -2,10 +2,20 @@
 
 use rust_widgets::core::{Color, Rect, Size};
 use rust_widgets::render::{
-    PaintBackend, RenderCommand, RenderScene, SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig,
+    last_auto_render_backend, AutoRenderBackend, PaintBackend, RenderCommand, RenderScene,
+    SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig,
 };
 
 fn main() {
+    let auto_backend = match last_auto_render_backend() {
+        AutoRenderBackend::GpuWgpu => "GpuWgpu",
+        AutoRenderBackend::CpuSoftware => "CpuSoftware",
+    };
+    eprintln!(
+        "[rust_widgets] auto_render_backend='{}' (last selected)",
+        auto_backend
+    );
+
     // Build one scene that relies on AA fill to expose edge alpha differences.
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
@@ -22,7 +32,13 @@ fn main() {
     scene.add_layer(layer);
 
     // Compose with low AA sampling.
-    let mut low_backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+    let mut low_backend = SoftwarePaintBackend::new(
+        Size {
+            width: 16,
+            height: 16,
+        },
+        1.0,
+    );
     scene.compose_with_backend_config(
         &mut low_backend,
         Color::rgba(0, 0, 0, 0),
@@ -32,7 +48,13 @@ fn main() {
     );
 
     // Compose with high AA sampling.
-    let mut high_backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+    let mut high_backend = SoftwarePaintBackend::new(
+        Size {
+            width: 16,
+            height: 16,
+        },
+        1.0,
+    );
     scene.compose_with_backend_config(
         &mut high_backend,
         Color::rgba(0, 0, 0, 0),
@@ -51,7 +73,9 @@ fn main() {
         alpha_low, alpha_high
     );
     if alpha_low == alpha_high {
-        println!("Result: this pixel is numerically equal; inspect nearby edge pixels for differences.");
+        println!(
+            "Result: this pixel is numerically equal; inspect nearby edge pixels for differences."
+        );
     } else {
         println!("Result: higher AA sampling changed edge coverage as expected.");
     }

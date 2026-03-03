@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate feature-completeness matrix report for src modules.
 
-This script scans Rust sources under `src/` and counts placeholder/fallback/no-op
+This script scans Rust sources under `src/` and counts placeholder/no-op
 signals plus explicit unimplemented markers. The output is a markdown report that
 can be uploaded as a CI artifact.
+Note: Fallback logic for major widgets (Label, ComboBox, ProgressBar, Slider) has been removed as of v0.5+ and is no longer tracked as a migration concern.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 PATTERNS: Dict[str, re.Pattern[str]] = {
     "placeholder": re.compile(r"\bplaceholder\b|\bstub\b|\btodo\b", re.IGNORECASE),
+    # "fallback" pattern retained for legacy code, but major widget fallback logic is removed as of v0.5+
     "fallback": re.compile(r"\bfallback\b", re.IGNORECASE),
     "no_op": re.compile(r"\bno[- ]?op\b", re.IGNORECASE),
     "unimplemented": re.compile(
@@ -184,7 +186,7 @@ def render_markdown(
     lines.append("")
     lines.append("## Signal definitions")
     lines.append("- `placeholder`: placeholder/stub/todo textual markers")
-    lines.append("- `fallback`: fallback paths")
+    lines.append("- `fallback`: fallback paths (legacy only; major widget fallback logic removed v0.5+)")
     lines.append("- `no_op`: no-op markers")
     lines.append("- `unimplemented`: explicit unimplemented/todo! markers")
     lines.append("")

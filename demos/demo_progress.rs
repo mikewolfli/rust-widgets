@@ -10,7 +10,7 @@ fn main() {
     let platform = get_platform();
     let window = platform.create_window("ProgressBar Demo", 120, 120, 700, 300);
 
-    // Create progress-bar placeholder control.
+    // Create progress bar control.
     let _progress = platform.create_progress_bar(window, 24, 24, 320, 28);
 
     // Show the demo window and enter the event loop.

@@ -13,7 +13,7 @@ cargo run --example demo_main
 ## Runtime Profiles
 
 - `default + full`: complete desktop-oriented stack.
-- `embedded`: minimal runtime for embedded targets (excludes `xml`, `i18n`, `theme`, and `bindings` modules at compile time).
+- `embedded`: full-weight embedded runtime path for lifecycle/render/supported-control behavior; module surface is intentionally trimmed at compile time (`xml`, `i18n`, `theme`, and `bindings` excluded).
 - `mobile-api`: reserved unified extension points for mobile targets.
 
 ## Feature Toggle Examples
@@ -22,7 +22,7 @@ cargo run --example demo_main
 # Full profile (default)
 cargo check
 
-# Embedded-lite profile
+# Embedded profile
 cargo check --no-default-features --features embedded
 
 # Full profile + mobile API reservation
@@ -76,8 +76,35 @@ tools/check_visual_regression.sh
 ## Platform Scope
 
 - Desktop: Windows (Win32), macOS (Cocoa), Linux (GTK), Harmony Desktop.
-- Embedded: embedded Linux / embedded Harmony (lite profile path).
+- Embedded: embedded Linux / embedded Harmony (full-weight runtime path under `embedded` feature).
 - Mobile: Android / iOS / Harmony mobile reserved API (architecture-ready, implementation to be expanded later).
+
+## Runtime GUI Mode Contract (v18)
+
+- `NativeInteractive`: backend is expected to create visible native windows and run an interactive event loop.
+- `PreviewOrStub`: backend may run state-model/poll loop behavior without visible native windows.
+- `demo_main` prints the resolved mode at startup so "no response" cases are explicit.
+- Unsupported widget creation paths return `0` (invalid object id) explicitly; platform backends should not silently downgrade to unrelated controls.
+
+## Control Implementation Contract
+
+- For supported backends, each control must be implemented end-to-end: native creation, state synchronization, event path, and data/model path where applicable.
+- Minimal placeholder implementations are not accepted as complete control support.
+- Missing backend capability must be explicit (`unsupported`/`0`) with diagnostics where available and tracked in roadmap docs.
+
+## V19 Status Snapshot (2026-03-03)
+
+- Completed in this cycle:
+    - Windows typed trigger routing for native controls is wired through `WM_COMMAND/WM_NOTIFY` into `poll_widget_trigger_event`.
+    - Windows ComboBox event-path parity is in place (user selection and programmatic index-change sync emit deterministic typed triggers).
+    - ListBox full data-path API contract is implemented at platform level with Windows + stub backend coverage.
+    - Preview backends (Linux non-gtk-native, Harmony, macOS objc2 preview, mobile preview) now expose explicit unsupported diagnostics for ComboBox/ListBox data APIs (no silent fallback semantics).
+    - Focused ComboBox/ListBox regression tests are added and passing.
+    - GPU visual parity builders and regressions are completed for covered controls: `Window`/`Panel`/`Label`/`Button`/`CheckBox`/`RadioButton`/`LineEdit`/`ComboBox`/`ListBox`/`ProgressBar`/`Slider`/`ScrollBar`/`MenuBar`/`Menu`/`ToolBar`/`StatusBar`/`TabWidget`/`StackWidget`.
+    - GPU parity aggregate regression suite and end-to-end covered-control demo (`demo_wgpu_control_parity`) are added.
+- Remaining explicit gaps tracked in roadmap:
+    - GPU visual parity not yet covered for: `Dialog`/`MessageBox`/`FileDialog`/`ColorDialog`/`FontDialog`/`PopupWindow`/`TextEdit`/`RichEdit`/`SpinBox`/`ListView`/`TreeView`/`Table`/`Grid`/`Canvas`/`GroupBox`/`Splitter`/`DockPanel`/`MdiArea`/`ScrollArea`.
+    - Embedded host-control support expansion (`MenuBar`/`Menu`/`ToolBar`/`StatusBar`) remains explicit unsupported in current embedded profile (`0`/`false` + diagnostics).
 
 ## Core Modules
 
@@ -88,6 +115,7 @@ tools/check_visual_regression.sh
 ## Documentation Index
 
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Future constrained work: [FUTURE.md](FUTURE.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - ABI policy: [docs/ABI_POLICY.md](docs/ABI_POLICY.md)
 - QA harness: [docs/QA_HARNESS.md](docs/QA_HARNESS.md)

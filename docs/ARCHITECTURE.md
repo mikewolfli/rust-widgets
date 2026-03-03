@@ -1,5 +1,38 @@
 # rust_widgets Architecture
 
+## Windows Native Widget Registration (v0.5+)
+
+### Native Widget Creation
+Windows platform now registers the following widgets using native Win32 controls:
+- **Label**: Registered as STATIC control (`WindowsHandleKind::Label`)
+- **ProgressBar**: Registered as PROGRESS_CLASS (`WindowsHandleKind::ProgressBar`)
+- **ComboBox**: Registered as WC_COMBOBOX (`WindowsHandleKind::ComboBox`)
+- **Slider**: Registered as TRACKBAR_CLASS (`WindowsHandleKind::Slider`)
+
+Each widget is created with its own handle kind, replacing the previous Button fallback logic. This ensures native look and feel and correct event handling.
+
+#### WindowsHandleKind Enum
+The following handle kinds are now supported:
+
+```rust
+pub enum WindowsHandleKind {
+  Button,
+  Label,
+  ProgressBar,
+  Slider,
+  ComboBox,
+  // Extend as needed
+}
+```
+
+#### Migration Notes
+- Button fallback logic for Label, ProgressBar, ComboBox, and Slider is removed.
+- Widgets are registered and tracked by their specific handle kind.
+- When native control creation fails, Windows backend now returns `0` with runtime diagnostics instead of silently downgrading to `Button`.
+- TreeView and other widgets will follow similar model-driven registration in future updates.
+
+See `src/platform/windows.rs` for implementation details.
+
 ## Related docs
 
 - Demo catalog: [../demos/README.md](../demos/README.md)
@@ -27,7 +60,7 @@
 ## 2. Runtime profiles
 
 - `default + full`: desktop-oriented complete stack, including print/pdf/chart.
-- `embedded`: minimal runtime for embedded targets (window/basic control/layout path).
+- `embedded`: full-weight embedded runtime for lifecycle/render path and supported desktop-core control matrix (with explicit unsupported boundaries documented per control family).
 - `mobile-api`: reserved unified extension points for Android/iOS/Harmony mobile integration.
 
 ## 3. Platform abstraction
@@ -42,6 +75,19 @@ Desktop backends covered by architecture:
 - Android
 - iOS
 - Harmony mobile
+
+Control implementation contract:
+- For supported backends, each control must be implemented with complete runtime behavior (creation, state synchronization, event route, and data/model path when applicable).
+- Placeholder-only implementations are not considered complete.
+- If a backend does not support a control yet, the backend must fail explicitly (`unsupported`/`0`) with diagnostics where available, and the gap must be tracked in roadmap docs.
+
+### V19 Combo/List and Trigger Routing Update (2026-03-03)
+
+- Windows backend now routes generic native control notifications through typed trigger queues (`WM_COMMAND`/`WM_NOTIFY`), not menu-only paths.
+- Windows ComboBox emits deterministic typed semantics for selection/value changes and synchronizes programmatic index changes through the same typed event contract.
+- Platform-level ListBox data contract now includes add/remove/clear/count/current-index/item-text APIs with Windows + stub implementation coverage.
+- Preview backends (Linux non-gtk-native, Harmony, macOS objc2 preview, mobile preview) explicitly surface unsupported diagnostics for ComboBox/ListBox data APIs to preserve deterministic capability boundaries.
+- Remaining explicit architecture gaps: GPU visual parity expansion (`P3c`+) and embedded host-control support expansion (`MenuBar`/`Menu`/`ToolBar`/`StatusBar`, currently explicit unsupported in embedded profile).
 
 ## 4. Event and signal flow
 

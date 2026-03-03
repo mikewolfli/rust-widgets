@@ -70,6 +70,9 @@ cargo check --examples
 
 - `cargo run --example demo_canvas` - custom drawing canvas shell.
 - `cargo run --example demo_render_quality` - configurable AA sample quality comparison.
+- `cargo run --features gpu-wgpu --example demo_wgpu_clear` - WGPU offscreen clear/readback GPU smoke demo.
+- `cargo run --features gpu-wgpu --example demo_wgpu_primitives` - WGPU draw-command order/clip primitives demo (clear/fill/stroke).
+- `cargo run --features gpu-wgpu --example demo_wgpu_control_parity` - WGPU full covered-control parity demo (base + data/range + host/navigation visual builders).
 - `cargo run --example demo_chart` - chart rendering model.
 - `cargo run --example demo_layout` - code-based layout.
 - `cargo run --example demo_xml` - XML layout loading and lookup by ID.
