@@ -517,7 +517,7 @@ impl Platform for WindowsPlatform {
         {
             use std::ptr::null_mut;
             use winapi::um::winuser::{
-                CreateWindowExW, ES_AUTOHSCROLL, ES_LEFT, WS_BORDER, WS_CHILD, WS_TABSTOP,
+                CreateWindowExW, ES_AUTOVSCROLL, ES_LEFT, ES_MULTILINE, WS_BORDER, WS_CHILD, WS_TABSTOP,
                 WS_VISIBLE,
             };
 
@@ -532,7 +532,13 @@ impl Platform for WindowsPlatform {
                     0,
                     class_name.as_ptr(),
                     text_wide.as_ptr(),
-                    WS_TABSTOP | WS_VISIBLE | WS_CHILD | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL,
+                    WS_TABSTOP
+                        | WS_VISIBLE
+                        | WS_CHILD
+                        | WS_BORDER
+                        | ES_LEFT
+                        | ES_MULTILINE
+                        | ES_AUTOVSCROLL,
                     x,
                     y,
                     width as i32,
