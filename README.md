@@ -134,10 +134,10 @@ tools/check_visual_regression.sh
 
 Comprehensive documentation is available in multiple languages:
 
-- **English**: [docs/en/](docs/en/)
-- **简体中文**: [docs/zh-cn/](docs/zh-cn/)
-- **繁體中文**: [docs/zh-tw/](docs/zh-tw/)
-- **Français**: [docs/fr/](docs/fr/)
+- **English**: [docs/book/en/index.html](docs/book/en/index.html)
+- **简体中文**: [docs/book/zh-cn/index.html](docs/book/zh-cn/index.html)
+- **繁體中文**: [docs/book/zh-tw/index.html](docs/book/zh-tw/index.html)
+- **Français**: [docs/book/fr/index.html](docs/book/fr/index.html)
 
 ### Documentation Index
 
