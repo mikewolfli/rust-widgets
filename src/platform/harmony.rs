@@ -518,4 +518,48 @@ impl Platform for HarmonyPlatform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
+
+    fn create_message_box(
+        &self,
+        _parent: u64,
+        _title: &str,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_message_box unsupported in preview backend");
+        0
+    }
+
+    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_file_dialog unsupported in preview backend");
+        0
+    }
+
+    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_color_dialog unsupported in preview backend");
+        0
+    }
+
+    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_font_dialog unsupported in preview backend");
+        0
+    }
+
+    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_spin_box unsupported in preview backend");
+        0
+    }
+
+    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_list_view unsupported in preview backend");
+        0
+    }
+
+    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][harmony] create_scroll_area unsupported in preview backend");
+        0
+    }
 }

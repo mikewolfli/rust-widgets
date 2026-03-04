@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
+use crate::platform::windows::WindowsPlatform;
 
 /// Typed widget trigger kinds surfaced by platform backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -267,28 +268,13 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
-    fn combo_box_add_item(&self, _combo_box: ObjectId, _text: &str) -> bool {
-        false
-    }
-    fn combo_box_clear_items(&self, _combo_box: ObjectId) -> bool {
-        false
-    }
-    fn combo_box_set_current_index(&self, _combo_box: ObjectId, _index: usize) -> bool {
-        false
-    }
-    fn combo_box_current_index(&self, _combo_box: ObjectId) -> Option<usize> {
-        None
-    }
-    fn combo_box_item_count(&self, _combo_box: ObjectId) -> usize {
-        0
-    }
-    fn combo_box_item_text(&self, _combo_box: ObjectId, _index: usize) -> Option<String> {
-        None
-    }
+    ) -> ObjectId;
+    fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool;
+    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool;
+    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool;
+    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize>;
+    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize;
+    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String>;
     fn create_list_box(
         &self,
         parent: ObjectId,
@@ -296,35 +282,15 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
-    fn list_box_add_item(&self, _list_box: ObjectId, _text: &str) -> bool {
-        false
-    }
-    fn list_box_remove_item(&self, _list_box: ObjectId, _index: usize) -> bool {
-        false
-    }
-    fn list_box_clear_items(&self, _list_box: ObjectId) -> bool {
-        false
-    }
-    fn list_box_set_current_index(&self, _list_box: ObjectId, _index: usize) -> bool {
-        false
-    }
-    fn list_box_current_index(&self, _list_box: ObjectId) -> Option<usize> {
-        None
-    }
-    fn list_box_item_count(&self, _list_box: ObjectId) -> usize {
-        0
-    }
-    fn list_box_item_text(&self, _list_box: ObjectId, _index: usize) -> Option<String> {
-        None
-    }
-    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
+    ) -> ObjectId;
+    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool;
+    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool;
+    fn list_box_clear_items(&self, list_box: ObjectId) -> bool;
+    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool;
+    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize>;
+    fn list_box_item_count(&self, list_box: ObjectId) -> usize;
+    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String>;
+    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -332,10 +298,7 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
+    ) -> ObjectId;
     fn create_menu(
         &self,
         parent: ObjectId,
@@ -344,45 +307,14 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, text, x, y, width, height);
-        0
-    }
-    fn attach_menu_bar_to_window(&self, _window: ObjectId, _menu_bar: ObjectId) -> bool {
-        false
-    }
-    fn menu_add_item(
-        &self,
-        parent_menu: ObjectId,
-        text: &str,
-        _shortcut: Option<&str>,
-    ) -> ObjectId {
-        self.create_menu(parent_menu, text, 0, 0, 0, 0)
-    }
-    /// Poll next menu item trigger if available.
-    fn poll_menu_triggered(&self) -> Option<ObjectId> {
-        None
-    }
-    /// Inject a menu trigger from native/external callback source.
-    fn inject_menu_trigger(&self, _menu_item_id: ObjectId) -> bool {
-        false
-    }
-    /// Poll next widget id trigger if available.
-    fn poll_widget_triggered(&self) -> Option<ObjectId> {
-        None
-    }
-    /// Poll a typed widget trigger event.
-    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        self.poll_widget_triggered()
-            .map(|widget_id| WidgetTriggerEvent {
-                widget_id,
-                kind: WidgetTriggerKind::Unknown,
-            })
-    }
-    /// Inject a typed widget trigger from native/external callback source.
-    fn inject_widget_trigger_event(&self, _widget_id: ObjectId, _kind: WidgetTriggerKind) -> bool {
-        false
-    }
+    ) -> ObjectId;
+    fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool;
+    fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId;
+    fn poll_menu_triggered(&self) -> Option<ObjectId>;
+    fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool;
+    fn poll_widget_triggered(&self) -> Option<ObjectId>;
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent>;
+    fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool;
     fn create_tool_bar(
         &self,
         parent: ObjectId,
@@ -390,10 +322,7 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
+    ) -> ObjectId;
     fn create_status_bar(
         &self,
         parent: ObjectId,
@@ -402,10 +331,65 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId {
-        let _ = (parent, text, x, y, width, height);
-        0
-    }
+    ) -> ObjectId;
+    fn create_message_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_file_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_color_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_font_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_list_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+    fn create_scroll_area(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
     fn show_widget(&self, widget_id: ObjectId);
     fn hide_widget(&self, widget_id: ObjectId);
     fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32);
@@ -558,13 +542,12 @@ impl StubPlatform {
         id
     }
 
-    fn embedded_unsupported_id(&self, api: &str) -> ObjectId {
-        eprintln!("[rust_widgets][embedded] {api} unsupported");
+    fn embedded_unsupported_id(&self, _name: &str) -> ObjectId {
+        // Return a dummy id for unsupported features in embedded profile
         0
     }
-
-    fn embedded_unsupported_bool(&self, api: &str) -> bool {
-        eprintln!("[rust_widgets][embedded] {api} unsupported");
+    fn embedded_unsupported_bool(&self, _name: &str) -> bool {
+        // Return false for unsupported features in embedded profile
         false
     }
 }
@@ -942,6 +925,92 @@ impl Platform for StubPlatform {
         self.create_button(parent, text, x, y, width, height)
     }
 
+    fn create_message_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, title, text);
+        self.create_widget_state("MessageBox", x, y, width, height)
+    }
+
+    fn create_file_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("FileDialog", x, y, width, height)
+    }
+
+    fn create_color_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("ColorDialog", x, y, width, height)
+    }
+
+    fn create_font_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("FontDialog", x, y, width, height)
+    }
+
+    fn create_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+
+    fn create_list_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+
+    fn create_scroll_area(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_bool("attach_menu_bar_to_window");
@@ -1234,15 +1303,12 @@ impl Platform for StubPlatform {
 
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new(
-        "embedded-runtime-stub",
-        PlatformFamily::Embedded,
-    ))
+    Box::new(new("embedded-runtime-stub", PlatformFamily::Embedded))
 }
 
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(windows::WindowsPlatform::new())
+    Box::new(WindowsPlatform::new())
 }
 
 /// Select objc2 preview backend when migration feature is enabled on macOS.
@@ -1252,7 +1318,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "embedded")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(macos_objc2::MacOSObjc2Platform::new())
+    Box::new(new())
 }
 
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
@@ -1262,12 +1328,12 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "embedded")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(macos::MacOSPlatform::new())
+    Box::new(new())
 }
 
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(linux::LinuxPlatform::new())
+    Box::new(new())
 }
 
 #[cfg(all(
@@ -1275,7 +1341,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(harmony::HarmonyPlatform::new())
+    Box::new(new())
 }
 
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();

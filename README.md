@@ -10,6 +10,24 @@ cargo check --examples
 cargo run --example demo_main
 ```
 
+### One-click Build Script
+
+Use the provided one-click build script to compile all targets, examples, and documentation:
+
+```bash
+# Linux/macOS
+./tools/build_all.sh
+
+# Windows
+./tools/build_all.bat
+```
+
+This script will:
+- Compile the library and all examples
+- Build the documentation
+- Run tests
+- Check code quality with clippy
+
 ## Runtime Profiles
 
 - `default + full`: complete desktop-oriented stack.
@@ -112,7 +130,16 @@ tools/check_visual_regression.sh
 - `platform`, `theme`, `style`, `bindings`
 - `print`, `pdf`, `chart` (feature-gated)
 
-## Documentation Index
+## Documentation
+
+Comprehensive documentation is available in multiple languages:
+
+- **English**: [docs/en/](docs/en/)
+- **简体中文**: [docs/zh-cn/](docs/zh-cn/)
+- **繁體中文**: [docs/zh-tw/](docs/zh-tw/)
+- **Français**: [docs/fr/](docs/fr/)
+
+### Documentation Index
 
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Future constrained work: [FUTURE.md](FUTURE.md)
@@ -122,11 +149,6 @@ tools/check_visual_regression.sh
 - v3 handoff template: [docs/V3_HANDOFF_TEMPLATE.md](docs/V3_HANDOFF_TEMPLATE.md)
 - Commenting Guidelines: [docs/COMMENTING_GUIDELINES.md](docs/COMMENTING_GUIDELINES.md)
 - Demo catalog: [demos/README.md](demos/README.md)
-- Help (English): [docs/HELP.en.md](docs/HELP.en.md)
-- 帮助（简体中文）: [docs/HELP.zh-CN.md](docs/HELP.zh-CN.md)
-- 幫助（繁體中文）: [docs/HELP.zh-TW.md](docs/HELP.zh-TW.md)
-- Aide (Français): [docs/HELP.fr.md](docs/HELP.fr.md)
-- Справка (Русский): [docs/HELP.ru.md](docs/HELP.ru.md)
 - C ABI Quickstart: [docs/C_ABI_QUICKSTART.md](docs/C_ABI_QUICKSTART.md)
 - Harmony Native Bridge: [docs/HARMONY_NATIVE_BRIDGE.md](docs/HARMONY_NATIVE_BRIDGE.md)
 - 鸿蒙原生桥接（简体中文）: [docs/HARMONY_NATIVE_BRIDGE.zh-CN.md](docs/HARMONY_NATIVE_BRIDGE.zh-CN.md)
@@ -141,6 +163,36 @@ tools/check_visual_regression.sh
   containers, menu/tool/status controls, table/grid/chart/canvas
 
 For the complete categorized list and command set, open [demos/README.md](demos/README.md).
+
+## Demos
+
+All demos have been updated and verified to work with the latest API and platform features. Each demo showcases a core widget or subsystem:
+
+- `demo_basic`: Basic controls and event logging
+- `demo_treeview`: Tree view widget
+- `demo_tabwidget`: Tab widget
+- `demo_tableview`: Table view widget
+- `demo_splitter`: Splitter control
+- `demo_mdiarea`: MDI area (multi-document interface)
+- `demo_listview`: List view widget
+- `demo_dockpanel`: Dock panel widget
+
+Run any demo with:
+
+```bash
+cargo run --example demo_basic
+cargo run --example demo_treeview
+cargo run --example demo_tabwidget
+cargo run --example demo_tableview
+cargo run --example demo_splitter
+cargo run --example demo_mdiarea
+cargo run --example demo_listview
+cargo run --example demo_dockpanel
+```
+
+Refer to `demos/README.md` for a full categorized demo list and details.
+
+All demos are recommended as reference implementations for custom development.
 
 ## C ABI Samples
 

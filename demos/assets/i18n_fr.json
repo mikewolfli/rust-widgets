@@ -1,0 +1,365 @@
+{
+  "language": "fr",
+  "translations": {
+    "app.title": {
+      "context": null,
+      "message": "Démo Rust Widgets"
+    },
+    "menu.file": {
+      "context": null,
+      "message": "Fichier"
+    },
+    "menu.file.exit": {
+      "context": null,
+      "message": "Quitter"
+    },
+    "menu.language": {
+      "context": null,
+      "message": "Langue"
+    },
+    "menu.language.english": {
+      "context": null,
+      "message": "Anglais"
+    },
+    "menu.language.chinese_simplified": {
+      "context": null,
+      "message": "Chinois (Simplifié)"
+    },
+    "menu.language.chinese_traditional": {
+      "context": null,
+      "message": "Chinois (Traditionnel)"
+    },
+    "menu.language.french": {
+      "context": null,
+      "message": "Français"
+    },
+    "menu.help": {
+      "context": null,
+      "message": "Aide"
+    },
+    "menu.help.about": {
+      "context": null,
+      "message": "À propos"
+    },
+    "basic.title": {
+      "context": null,
+      "message": "Démo des widgets de base"
+    },
+    "basic.buttons": {
+      "context": null,
+      "message": "Boutons"
+    },
+    "basic.button": {
+      "context": null,
+      "message": "Bouton"
+    },
+    "basic.checkbox": {
+      "context": null,
+      "message": "Case à cocher"
+    },
+    "basic.radiobutton": {
+      "context": null,
+      "message": "Bouton radio"
+    },
+    "basic.text_inputs": {
+      "context": null,
+      "message": "Entrées de texte"
+    },
+    "basic.label": {
+      "context": null,
+      "message": "Étiquette"
+    },
+    "basic.lineedit": {
+      "context": null,
+      "message": "Ligne de texte"
+    },
+    "basic.textedit": {
+      "context": null,
+      "message": "Éditeur de texte"
+    },
+    "basic.values": {
+      "context": null,
+      "message": "Contrôles de valeur"
+    },
+    "basic.slider": {
+      "context": null,
+      "message": "Curseur"
+    },
+    "basic.spinbox": {
+      "context": null,
+      "message": "Boîte numérique"
+    },
+    "basic.progressbar": {
+      "context": null,
+      "message": "Barre de progression"
+    },
+    "basic.scrollbar": {
+      "context": null,
+      "message": "Barre de défilement"
+    },
+    "basic.selection": {
+      "context": null,
+      "message": "Contrôles de sélection"
+    },
+    "basic.combobox": {
+      "context": null,
+      "message": "Liste déroulante"
+    },
+    "basic.listbox": {
+      "context": null,
+      "message": "Liste"
+    },
+    "basic.log.title": {
+      "context": null,
+      "message": "Journal des événements"
+    },
+    "basic.log.clear": {
+      "context": null,
+      "message": "Effacer le journal"
+    },
+    "event.clicked": {
+      "context": null,
+      "message": "Cliqué"
+    },
+    "event.pressed": {
+      "context": null,
+      "message": "Appuyé"
+    },
+    "event.released": {
+      "context": null,
+      "message": "Relâché"
+    },
+    "event.changed": {
+      "context": null,
+      "message": "Modifié"
+    },
+    "event.text_changed": {
+      "context": null,
+      "message": "Texte modifié"
+    },
+    "event.value_changed": {
+      "context": null,
+      "message": "Valeur modifiée"
+    },
+    "event.selected": {
+      "context": null,
+      "message": "Sélectionné"
+    },
+    "event.check_changed": {
+      "context": null,
+      "message": "État de coche modifié"
+    },
+    "treeview.title": {
+      "context": null,
+      "message": "Démo TreeView"
+    },
+    "treeview.add_node": {
+      "context": null,
+      "message": "Ajouter un nœud"
+    },
+    "treeview.remove_node": {
+      "context": null,
+      "message": "Supprimer le nœud"
+    },
+    "treeview.expand_all": {
+      "context": null,
+      "message": "Tout développer"
+    },
+    "treeview.collapse_all": {
+      "context": null,
+      "message": "Tout réduire"
+    },
+    "treeview.root": {
+      "context": null,
+      "message": "Racine"
+    },
+    "treeview.child": {
+      "context": null,
+      "message": "Enfant"
+    },
+    "treeview.node": {
+      "context": null,
+      "message": "Nœud"
+    },
+    "tableview.title": {
+      "context": null,
+      "message": "Démo TableView"
+    },
+    "tableview.add_row": {
+      "context": null,
+      "message": "Ajouter une ligne"
+    },
+    "tableview.remove_row": {
+      "context": null,
+      "message": "Supprimer la ligne"
+    },
+    "tableview.column.name": {
+      "context": null,
+      "message": "Nom"
+    },
+    "tableview.column.value": {
+      "context": null,
+      "message": "Valeur"
+    },
+    "tableview.column.status": {
+      "context": null,
+      "message": "Statut"
+    },
+    "listview.title": {
+      "context": null,
+      "message": "Démo ListView"
+    },
+    "listview.add_item": {
+      "context": null,
+      "message": "Ajouter un élément"
+    },
+    "listview.remove_item": {
+      "context": null,
+      "message": "Supprimer l'élément"
+    },
+    "listview.clear": {
+      "context": null,
+      "message": "Tout effacer"
+    },
+    "listview.item_input": {
+      "context": null,
+      "message": "Élément :"
+    },
+    "listview.items": {
+      "context": null,
+      "message": "Éléments de la liste :"
+    },
+    "tabwidget.title": {
+      "context": null,
+      "message": "Démo TabWidget"
+    },
+    "tabwidget.add_tab": {
+      "context": null,
+      "message": "Ajouter un onglet"
+    },
+    "tabwidget.remove_tab": {
+      "context": null,
+      "message": "Supprimer l'onglet"
+    },
+    "tabwidget.tab": {
+      "context": null,
+      "message": "Onglet"
+    },
+    "splitter.title": {
+      "context": null,
+      "message": "Démo Splitter"
+    },
+    "splitter.horizontal": {
+      "context": null,
+      "message": "Séparateur horizontal"
+    },
+    "splitter.vertical": {
+      "context": null,
+      "message": "Séparateur vertical"
+    },
+    "splitter.left_panel": {
+      "context": null,
+      "message": "Panneau gauche"
+    },
+    "splitter.right_panel": {
+      "context": null,
+      "message": "Panneau droit"
+    },
+    "splitter.top_panel": {
+      "context": null,
+      "message": "Panneau supérieur"
+    },
+    "splitter.bottom_panel": {
+      "context": null,
+      "message": "Panneau inférieur"
+    },
+    "dockpanel.title": {
+      "context": null,
+      "message": "Démo DockPanel"
+    },
+    "dockpanel.dock_left": {
+      "context": null,
+      "message": "Ancrer à gauche"
+    },
+    "dockpanel.dock_right": {
+      "context": null,
+      "message": "Ancrer à droite"
+    },
+    "dockpanel.dock_top": {
+      "context": null,
+      "message": "Ancrer en haut"
+    },
+    "dockpanel.dock_bottom": {
+      "context": null,
+      "message": "Ancrer en bas"
+    },
+    "dockpanel.float": {
+      "context": null,
+      "message": "Flottant"
+    },
+    "mdiarea.title": {
+      "context": null,
+      "message": "Démo MDI"
+    },
+    "mdiarea.new_window": {
+      "context": null,
+      "message": "Nouvelle fenêtre"
+    },
+    "mdiarea.close_window": {
+      "context": null,
+      "message": "Fermer la fenêtre"
+    },
+    "mdiarea.cascade": {
+      "context": null,
+      "message": "En cascade"
+    },
+    "mdiarea.tile": {
+      "context": null,
+      "message": "En mosaïque"
+    },
+    "mdiarea.window": {
+      "context": null,
+      "message": "Fenêtre"
+    },
+    "scrollarea.title": {
+      "context": null,
+      "message": "Démo ScrollArea"
+    },
+    "scrollarea.content": {
+      "context": null,
+      "message": "Zone de contenu"
+    },
+    "scrollarea.scroll_to_top": {
+      "context": null,
+      "message": "Défiler vers le haut"
+    },
+    "scrollarea.scroll_to_bottom": {
+      "context": null,
+      "message": "Défiler vers le bas"
+    },
+    "about.title": {
+      "context": null,
+      "message": "À propos de Rust Widgets"
+    },
+    "about.description": {
+      "context": null,
+      "message": "Une architecture GUI native multiplateforme en Rust pur."
+    },
+    "about.version": {
+      "context": null,
+      "message": "Version"
+    },
+    "about.close": {
+      "context": null,
+      "message": "Fermer"
+    },
+    "status.ready": {
+      "context": null,
+      "message": "Prêt"
+    },
+    "status.language_changed": {
+      "context": null,
+      "message": "Langue changée en"
+    }
+  }
+}

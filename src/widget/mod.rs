@@ -308,8 +308,21 @@ impl Widget for BaseWidget {
         self.geometry
     }
     fn set_geometry(&mut self, geometry: Rect) {
-        self.geometry =
+        let new_geometry =
             Rect::from_position_size(geometry.position(), self.constrained_size(geometry.size()));
+        if self.geometry != new_geometry {
+            self.geometry = new_geometry;
+            // Notify control backend
+            use crate::control_backend::get_control_backend;
+            let backend = get_control_backend();
+            backend.set_widget_geometry(
+                self.id(),
+                self.geometry.x,
+                self.geometry.y,
+                self.geometry.width,
+                self.geometry.height,
+            );
+        }
     }
     fn min_size(&self) -> Option<Size> {
         self.min_size
@@ -348,9 +361,15 @@ impl Widget for BaseWidget {
     }
     fn show(&mut self) {
         self.visible = true;
+        // Notify control backend
+        use crate::control_backend::get_control_backend;
+        get_control_backend().show_widget(self.id());
     }
     fn hide(&mut self) {
         self.visible = false;
+        // Notify control backend
+        use crate::control_backend::get_control_backend;
+        get_control_backend().hide_widget(self.id());
     }
     fn is_visible(&self) -> bool {
         self.visible
@@ -452,6 +471,10 @@ impl BaseWidget {
     }
 }
 
+/// Macro to delegate Widget and EventHandler implementation to a base field.
+///
+/// This macro generates boilerplate code for widget structs that contain a base widget field,
+/// automatically delegating all Widget trait methods and EventHandler trait method to the base field.
 macro_rules! impl_widget_delegate {
     ($ty:ty, $field:ident) => {
         impl Widget for $ty {
@@ -1684,6 +1707,9 @@ impl TextEdit {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
     }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 impl_widget_delegate!(TextEdit, base);
 
@@ -2050,6 +2076,11 @@ impl ListBox {
     /// Returns item text by index when available.
     pub fn item_text(&self, index: usize) -> Option<&str> {
         self.items.get(index).map(String::as_str)
+    }
+
+    /// Clears all items from the list box.
+    pub fn clear(&mut self) {
+        self.items.clear();
     }
 }
 impl_widget_delegate!(ListBox, base);
@@ -3063,6 +3094,10 @@ impl ScrollArea {
 }
 impl_widget_delegate!(ScrollArea, base);
 
+/// Macro to create simple widget controls that wrap around `BaseWidget`.
+///
+/// This macro generates a basic widget struct with only a base widget field,
+/// along with a constructor and delegated Widget/EventHandler implementations.
 macro_rules! simple_control {
     ($name:ident, $kind:expr) => {
         /// Simple widget control wrapper around `BaseWidget`.
@@ -3070,6 +3105,7 @@ macro_rules! simple_control {
             base: BaseWidget,
         }
         impl $name {
+            /// Creates a new instance of the widget with the given geometry.
             pub fn new(geometry: Rect) -> Self {
                 Self {
                     base: BaseWidget::new($kind, geometry, stringify!($name)),
@@ -4121,109 +4157,112 @@ impl TableWidget {
 impl_widget_delegate!(TableWidget, base);
 
 /// Dedicated table-view widget contract with table model projection parity.
+///
+/// TableView provides a simplified interface to TableWidget, focusing on model-view functionality
+/// with a clean API for common table operations.
 pub struct TableView {
     table: TableWidget,
 }
 
 impl TableView {
-    /// Creates an empty table view.
+    /// Creates an empty table view with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
             table: TableWidget::new(geometry),
         }
     }
 
-    /// Binds external table model.
+    /// Binds an external table model to the view.
     pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
         self.table.set_model(model);
     }
 
-    /// Returns visible row count.
+    /// Returns the number of visible rows in the table.
     pub fn row_count(&self) -> usize {
         self.table.row_count()
     }
 
-    /// Returns visible column count.
+    /// Returns the number of visible columns in the table.
     pub fn column_count(&self) -> usize {
         self.table.column_count()
     }
 
-    /// Read table header text by view column.
+    /// Reads the table header text for the specified column.
     pub fn header(&self, col: usize) -> Option<String> {
         self.table.header(col)
     }
 
-    /// Read table cell value by view row/column.
+    /// Reads the table cell value at the specified row and column.
     pub fn cell(&self, row: usize, col: usize) -> Option<String> {
         self.table.cell(row, col)
     }
 
-    /// Read formatted display cell (delegate-aware).
+    /// Reads the formatted display value for the specified cell, taking into account any item delegate.
     pub fn display_cell(&self, row: usize, col: usize) -> Option<String> {
         self.table.display_cell(row, col)
     }
 
-    /// Sets item delegate for display/editor conversion.
+    /// Sets an item delegate for display and editor conversion.
     pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
         self.table.set_delegate(delegate);
     }
 
-    /// Clears custom item delegate.
+    /// Clears any custom item delegate, reverting to default behavior.
     pub fn clear_delegate(&mut self) {
         self.table.clear_delegate();
     }
 
-    /// Select one row in the current view projection.
+    /// Selects a single row in the current view projection.
     pub fn select_row(&mut self, row: usize) -> bool {
         self.table.select_row(row)
     }
 
-    /// Clear current row selection.
+    /// Clears the current row selection.
     pub fn clear_selection(&mut self) {
         self.table.clear_selection();
     }
 
-    /// Current selected row index.
+    /// Returns the currently selected row index, if any.
     pub fn selected_row(&self) -> Option<usize> {
         self.table.selected_row()
     }
 
-    /// All selected rows in stable order.
+    /// Returns all selected rows in stable (sorted) order.
     pub fn selected_rows(&self) -> Vec<usize> {
         self.table.selected_rows()
     }
 
-    /// Sets row selection mode.
+    /// Sets the row selection mode (single or multi-select).
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
         self.table.set_selection_mode(mode);
     }
 
-    /// Returns current selection mode.
+    /// Returns the current selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
         self.table.selection_mode()
     }
 
-    /// Sets focused row in current projection.
+    /// Sets the focused row in the current projection.
     pub fn set_focused_row(&mut self, row: usize) -> bool {
         self.table.set_focused_row(row)
     }
 
-    /// Clears focused row.
+    /// Clears the focused row.
     pub fn clear_focused_row(&mut self) {
         self.table.clear_focused_row();
     }
 
-    /// Returns focused row when still visible in projection.
+    /// Returns the focused row index, if still visible in the projection.
     pub fn focused_row(&self) -> Option<usize> {
         self.table.focused_row()
     }
 
-    /// Returns selection-changed signal.
+    /// Returns the signal emitted when the selection changes.
     pub fn selection_changed_signal(&self) -> &Signal1<usize> {
         &self.table.selection_changed
     }
 
-    /// Returns focused-row-changed signal.
+    /// Returns the signal emitted when the focused row changes.
     pub fn focused_row_changed_signal(&self) -> &Signal1<Option<usize>> {
         &self.table.focused_row_changed
     }
@@ -4232,6 +4271,7 @@ impl TableView {
 impl_widget_delegate!(TableView, table);
 
 simple_control!(GridWidget, WidgetKind::Grid);
+
 simple_control!(ChartWidget, WidgetKind::Chart);
 
 #[cfg(test)]

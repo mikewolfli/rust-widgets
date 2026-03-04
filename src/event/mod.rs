@@ -1,19 +1,19 @@
 //! Event queue and dispatch.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::atomic::AtomicU32;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
+use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
 
-use crate::core::{ObjectId, Point, Size};
 use crate::control_backend::get_control_backend;
-use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind, get_platform};
+use crate::core::{ObjectId, Point, Size};
+use crate::platform::{get_platform, WidgetTriggerEvent, WidgetTriggerKind};
 use crate::signal::{ConnectionHandle, GenericSignal};
 
 /// Event payload variants routed through the event loop.
@@ -123,7 +123,6 @@ impl EventQueue {
     pub fn sender(&self) -> EventSender {
         self.sender.clone()
     }
-
 }
 
 struct TimerEntry {
@@ -132,6 +131,128 @@ struct TimerEntry {
     next_fire: Instant,
     repeat: bool,
     priority: EventPriority,
+}
+
+/// Focus manager for tracking and managing focus ownership.
+pub struct FocusManager {
+    focused_widget: Mutex<Option<ObjectId>>,
+}
+
+impl FocusManager {
+    /// Create a new focus manager.
+    pub fn new() -> Self {
+        Self {
+            focused_widget: Mutex::new(None),
+        }
+    }
+
+    /// Set the focused widget.
+    pub fn set_focus(&self, widget_id: ObjectId) -> bool {
+        let mut focused = self
+            .focused_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *focused == Some(widget_id) {
+            return false;
+        }
+        *focused = Some(widget_id);
+        true
+    }
+
+    /// Clear the focused widget.
+    pub fn clear_focus(&self) -> bool {
+        let mut focused = self
+            .focused_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if focused.is_none() {
+            return false;
+        }
+        *focused = None;
+        true
+    }
+
+    /// Get the currently focused widget.
+    pub fn get_focused(&self) -> Option<ObjectId> {
+        *self
+            .focused_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Check if a widget has focus.
+    pub fn has_focus(&self, widget_id: ObjectId) -> bool {
+        *self
+            .focused_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == Some(widget_id)
+    }
+}
+
+impl Default for FocusManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Pointer capture manager for tracking pointer capture ownership.
+pub struct PointerCaptureManager {
+    captured_widget: Mutex<Option<ObjectId>>,
+}
+
+impl PointerCaptureManager {
+    /// Create a new pointer capture manager.
+    pub fn new() -> Self {
+        Self {
+            captured_widget: Mutex::new(None),
+        }
+    }
+
+    /// Set pointer capture to a widget.
+    pub fn set_capture(&self, widget_id: ObjectId) -> bool {
+        let mut captured = self
+            .captured_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *captured == Some(widget_id) {
+            return false;
+        }
+        *captured = Some(widget_id);
+        true
+    }
+
+    /// Release pointer capture.
+    pub fn release_capture(&self) -> Option<ObjectId> {
+        let mut captured = self
+            .captured_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        captured.take()
+    }
+
+    /// Get the currently captured widget.
+    pub fn get_captured(&self) -> Option<ObjectId> {
+        *self
+            .captured_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Check if a widget has pointer capture.
+    pub fn has_capture(&self, widget_id: ObjectId) -> bool {
+        *self
+            .captured_widget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == Some(widget_id)
+    }
+}
+
+impl Default for PointerCaptureManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Cooperative event loop with priority queues and timers.
@@ -143,6 +264,8 @@ pub struct EventLoop {
     idle: Mutex<VecDeque<(ObjectId, Event)>>,
     timers: Mutex<HashMap<u32, TimerEntry>>,
     next_timer_id: AtomicU32,
+    focus_manager: FocusManager,
+    pointer_capture_manager: PointerCaptureManager,
 }
 
 /// Bridge that maps native platform triggers into Rust signal-slot callbacks.
@@ -345,7 +468,58 @@ impl EventLoop {
             idle: Mutex::new(VecDeque::new()),
             timers: Mutex::new(HashMap::new()),
             next_timer_id: AtomicU32::new(1),
+            focus_manager: FocusManager::new(),
+            pointer_capture_manager: PointerCaptureManager::new(),
         }
+    }
+
+    /// Get the focus manager.
+    pub fn focus_manager(&self) -> &FocusManager {
+        &self.focus_manager
+    }
+
+    /// Get the pointer capture manager.
+    pub fn pointer_capture_manager(&self) -> &PointerCaptureManager {
+        &self.pointer_capture_manager
+    }
+
+    /// Set focus to a widget.
+    pub fn set_focus(&self, widget_id: ObjectId) -> bool {
+        self.focus_manager.set_focus(widget_id)
+    }
+
+    /// Clear focus.
+    pub fn clear_focus(&self) -> bool {
+        self.focus_manager.clear_focus()
+    }
+
+    /// Get the currently focused widget.
+    pub fn get_focused(&self) -> Option<ObjectId> {
+        self.focus_manager.get_focused()
+    }
+
+    /// Set pointer capture to a widget.
+    pub fn set_pointer_capture(&self, widget_id: ObjectId) -> bool {
+        self.pointer_capture_manager.set_capture(widget_id)
+    }
+
+    /// Release pointer capture.
+    pub fn release_pointer_capture(&self) -> Option<ObjectId> {
+        self.pointer_capture_manager.release_capture()
+    }
+
+    /// Get the currently captured widget.
+    pub fn get_pointer_capture(&self) -> Option<ObjectId> {
+        self.pointer_capture_manager.get_captured()
+    }
+
+    /// Perform hit-test to find the widget at the given point.
+    /// This is a placeholder implementation that will be replaced with
+    /// a real hit-test implementation that traverses the widget hierarchy.
+    pub fn hit_test(&self, _point: Point) -> Option<ObjectId> {
+        // TODO: Implement real hit-test that traverses widget hierarchy
+        // For now, return None as a placeholder
+        None
     }
 
     /// Returns event sender associated with this event loop.
@@ -469,7 +643,18 @@ impl EventLoop {
     pub fn pump_once(&self, handler: &mut dyn FnMut(ObjectId, &Event)) -> bool {
         self.pump_timers();
         self.drain_incoming();
-        if let Some((id, event)) = self.poll_next_dispatch() {
+        if let Some((mut id, event)) = self.poll_next_dispatch() {
+            // Check if there's a pointer capture and the event is a pointer event
+            if let Some(captured) = self.get_pointer_capture() {
+                match event {
+                    Event::MouseMove { .. }
+                    | Event::MousePress { .. }
+                    | Event::MouseRelease { .. } => {
+                        id = captured;
+                    }
+                    _ => {}
+                }
+            }
             handler(id, &event);
             true
         } else {
@@ -545,8 +730,20 @@ mod tests {
     fn priority_dispatch_order() {
         let loop_ = EventLoop::new();
         let sender = loop_.sender();
-        let _ = sender.post(1, Event::Custom { name: "normal".to_string(), payload: vec![] });
-        let _ = sender.post_idle(1, Event::Custom { name: "idle".to_string(), payload: vec![] });
+        let _ = sender.post(
+            1,
+            Event::Custom {
+                name: "normal".to_string(),
+                payload: vec![],
+            },
+        );
+        let _ = sender.post_idle(
+            1,
+            Event::Custom {
+                name: "idle".to_string(),
+                payload: vec![],
+            },
+        );
         let _ = sender.post_with_priority(
             1,
             Event::Custom {
@@ -570,7 +767,8 @@ mod tests {
     #[test]
     fn timer_event_fires() {
         let loop_ = EventLoop::new();
-        let _timer_id = loop_.register_timer(7, Duration::from_millis(1), false, EventPriority::Normal);
+        let _timer_id =
+            loop_.register_timer(7, Duration::from_millis(1), false, EventPriority::Normal);
 
         let mut got = false;
         let start = Instant::now();
@@ -598,7 +796,13 @@ mod tests {
         let exit_count = Arc::new(AtomicUsize::new(0));
         let exit_count_clone = Arc::clone(&exit_count);
 
-        let _ = sender.post(1, Event::Custom { name: "n1".to_string(), payload: vec![] });
+        let _ = sender.post(
+            1,
+            Event::Custom {
+                name: "n1".to_string(),
+                payload: vec![],
+            },
+        );
 
         loop_.run_nested_until(
             move |_, _| {
@@ -610,5 +814,4 @@ mod tests {
         assert_eq!(exit_count.load(Ordering::SeqCst), 1);
         loop_.running.store(false, Ordering::SeqCst);
     }
-
 }

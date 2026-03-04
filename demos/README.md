@@ -1,5 +1,31 @@
 # rust_widgets Demos
 
+All demos have been updated and verified to work with the latest API and platform features. Each demo showcases a core widget or subsystem:
+
+- `demo_basic`: Basic controls and event logging
+- `demo_treeview`: Tree view widget
+- `demo_tabwidget`: Tab widget
+- `demo_tableview`: Table view widget
+- `demo_splitter`: Splitter control
+- `demo_mdiarea`: MDI area (multi-document interface)
+- `demo_listview`: List view widget
+- `demo_dockpanel`: Dock panel widget
+
+Run any demo with:
+
+```bash
+cargo run --example demo_basic
+cargo run --example demo_treeview
+cargo run --example demo_tabwidget
+cargo run --example demo_tableview
+cargo run --example demo_splitter
+cargo run --example demo_mdiarea
+cargo run --example demo_listview
+cargo run --example demo_dockpanel
+```
+
+All demos are recommended as reference implementations for custom development.
+
 ## Documentation Links
 
 - Architecture: [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)

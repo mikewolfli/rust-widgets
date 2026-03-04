@@ -1,12 +1,365 @@
 {
   "language": "en",
   "translations": {
-    "hello": {
+    "app.title": {
       "context": null,
-      "message": "Hello",
-      "plural": {
-        "2": "Hello all"
-      }
+      "message": "Rust Widgets Demo"
+    },
+    "menu.file": {
+      "context": null,
+      "message": "File"
+    },
+    "menu.file.exit": {
+      "context": null,
+      "message": "Exit"
+    },
+    "menu.language": {
+      "context": null,
+      "message": "Language"
+    },
+    "menu.language.english": {
+      "context": null,
+      "message": "English"
+    },
+    "menu.language.chinese_simplified": {
+      "context": null,
+      "message": "Chinese (Simplified)"
+    },
+    "menu.language.chinese_traditional": {
+      "context": null,
+      "message": "Chinese (Traditional)"
+    },
+    "menu.language.french": {
+      "context": null,
+      "message": "French"
+    },
+    "menu.help": {
+      "context": null,
+      "message": "Help"
+    },
+    "menu.help.about": {
+      "context": null,
+      "message": "About"
+    },
+    "basic.title": {
+      "context": null,
+      "message": "Basic Widgets Demo"
+    },
+    "basic.buttons": {
+      "context": null,
+      "message": "Buttons"
+    },
+    "basic.button": {
+      "context": null,
+      "message": "Button"
+    },
+    "basic.checkbox": {
+      "context": null,
+      "message": "CheckBox"
+    },
+    "basic.radiobutton": {
+      "context": null,
+      "message": "RadioButton"
+    },
+    "basic.text_inputs": {
+      "context": null,
+      "message": "Text Inputs"
+    },
+    "basic.label": {
+      "context": null,
+      "message": "Label"
+    },
+    "basic.lineedit": {
+      "context": null,
+      "message": "LineEdit"
+    },
+    "basic.textedit": {
+      "context": null,
+      "message": "TextEdit"
+    },
+    "basic.values": {
+      "context": null,
+      "message": "Value Controls"
+    },
+    "basic.slider": {
+      "context": null,
+      "message": "Slider"
+    },
+    "basic.spinbox": {
+      "context": null,
+      "message": "SpinBox"
+    },
+    "basic.progressbar": {
+      "context": null,
+      "message": "ProgressBar"
+    },
+    "basic.scrollbar": {
+      "context": null,
+      "message": "ScrollBar"
+    },
+    "basic.selection": {
+      "context": null,
+      "message": "Selection Controls"
+    },
+    "basic.combobox": {
+      "context": null,
+      "message": "ComboBox"
+    },
+    "basic.listbox": {
+      "context": null,
+      "message": "ListBox"
+    },
+    "basic.log.title": {
+      "context": null,
+      "message": "Event Log"
+    },
+    "basic.log.clear": {
+      "context": null,
+      "message": "Clear Log"
+    },
+    "event.clicked": {
+      "context": null,
+      "message": "Clicked"
+    },
+    "event.pressed": {
+      "context": null,
+      "message": "Pressed"
+    },
+    "event.released": {
+      "context": null,
+      "message": "Released"
+    },
+    "event.changed": {
+      "context": null,
+      "message": "Changed"
+    },
+    "event.text_changed": {
+      "context": null,
+      "message": "TextChanged"
+    },
+    "event.value_changed": {
+      "context": null,
+      "message": "ValueChanged"
+    },
+    "event.selected": {
+      "context": null,
+      "message": "Selected"
+    },
+    "event.check_changed": {
+      "context": null,
+      "message": "CheckChanged"
+    },
+    "treeview.title": {
+      "context": null,
+      "message": "TreeView Demo"
+    },
+    "treeview.add_node": {
+      "context": null,
+      "message": "Add Node"
+    },
+    "treeview.remove_node": {
+      "context": null,
+      "message": "Remove Node"
+    },
+    "treeview.expand_all": {
+      "context": null,
+      "message": "Expand All"
+    },
+    "treeview.collapse_all": {
+      "context": null,
+      "message": "Collapse All"
+    },
+    "treeview.root": {
+      "context": null,
+      "message": "Root"
+    },
+    "treeview.child": {
+      "context": null,
+      "message": "Child"
+    },
+    "treeview.node": {
+      "context": null,
+      "message": "Node"
+    },
+    "tableview.title": {
+      "context": null,
+      "message": "TableView Demo"
+    },
+    "tableview.add_row": {
+      "context": null,
+      "message": "Add Row"
+    },
+    "tableview.remove_row": {
+      "context": null,
+      "message": "Remove Row"
+    },
+    "tableview.column.name": {
+      "context": null,
+      "message": "Name"
+    },
+    "tableview.column.value": {
+      "context": null,
+      "message": "Value"
+    },
+    "tableview.column.status": {
+      "context": null,
+      "message": "Status"
+    },
+    "listview.title": {
+      "context": null,
+      "message": "ListView Demo"
+    },
+    "listview.add_item": {
+      "context": null,
+      "message": "Add Item"
+    },
+    "listview.remove_item": {
+      "context": null,
+      "message": "Remove Item"
+    },
+    "listview.clear": {
+      "context": null,
+      "message": "Clear All"
+    },
+    "listview.item_input": {
+      "context": null,
+      "message": "Item:"
+    },
+    "listview.items": {
+      "context": null,
+      "message": "List Items:"
+    },
+    "tabwidget.title": {
+      "context": null,
+      "message": "TabWidget Demo"
+    },
+    "tabwidget.add_tab": {
+      "context": null,
+      "message": "Add Tab"
+    },
+    "tabwidget.remove_tab": {
+      "context": null,
+      "message": "Remove Tab"
+    },
+    "tabwidget.tab": {
+      "context": null,
+      "message": "Tab"
+    },
+    "splitter.title": {
+      "context": null,
+      "message": "Splitter Demo"
+    },
+    "splitter.horizontal": {
+      "context": null,
+      "message": "Horizontal Splitter"
+    },
+    "splitter.vertical": {
+      "context": null,
+      "message": "Vertical Splitter"
+    },
+    "splitter.left_panel": {
+      "context": null,
+      "message": "Left Panel"
+    },
+    "splitter.right_panel": {
+      "context": null,
+      "message": "Right Panel"
+    },
+    "splitter.top_panel": {
+      "context": null,
+      "message": "Top Panel"
+    },
+    "splitter.bottom_panel": {
+      "context": null,
+      "message": "Bottom Panel"
+    },
+    "dockpanel.title": {
+      "context": null,
+      "message": "DockPanel Demo"
+    },
+    "dockpanel.dock_left": {
+      "context": null,
+      "message": "Dock Left"
+    },
+    "dockpanel.dock_right": {
+      "context": null,
+      "message": "Dock Right"
+    },
+    "dockpanel.dock_top": {
+      "context": null,
+      "message": "Dock Top"
+    },
+    "dockpanel.dock_bottom": {
+      "context": null,
+      "message": "Dock Bottom"
+    },
+    "dockpanel.float": {
+      "context": null,
+      "message": "Float"
+    },
+    "mdiarea.title": {
+      "context": null,
+      "message": "MDI Area Demo"
+    },
+    "mdiarea.new_window": {
+      "context": null,
+      "message": "New Window"
+    },
+    "mdiarea.close_window": {
+      "context": null,
+      "message": "Close Window"
+    },
+    "mdiarea.cascade": {
+      "context": null,
+      "message": "Cascade"
+    },
+    "mdiarea.tile": {
+      "context": null,
+      "message": "Tile"
+    },
+    "mdiarea.window": {
+      "context": null,
+      "message": "Window"
+    },
+    "scrollarea.title": {
+      "context": null,
+      "message": "ScrollArea Demo"
+    },
+    "scrollarea.content": {
+      "context": null,
+      "message": "Content Area"
+    },
+    "scrollarea.scroll_to_top": {
+      "context": null,
+      "message": "Scroll to Top"
+    },
+    "scrollarea.scroll_to_bottom": {
+      "context": null,
+      "message": "Scroll to Bottom"
+    },
+    "about.title": {
+      "context": null,
+      "message": "About Rust Widgets"
+    },
+    "about.description": {
+      "context": null,
+      "message": "A cross-platform native GUI architecture in pure Rust."
+    },
+    "about.version": {
+      "context": null,
+      "message": "Version"
+    },
+    "about.close": {
+      "context": null,
+      "message": "Close"
+    },
+    "status.ready": {
+      "context": null,
+      "message": "Ready"
+    },
+    "status.language_changed": {
+      "context": null,
+      "message": "Language changed to"
     }
   }
 }

@@ -1,3 +1,5 @@
+use crate::platform::{state::BackendState, DropEvent};
+// use crate::platform::state::BackendState; // Not needed, remove unresolved import
 /// Native Win32 Label (STATIC control) creation
 pub fn try_create_label(
     platform: &dyn super::Platform,
@@ -77,6 +79,7 @@ pub fn try_create_slider(
         None
     }
 }
+
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
@@ -1400,6 +1403,211 @@ impl Platform for WindowsPlatform {
         }
     }
     // ...implement other required methods as stubs...
+
+    fn create_message_box(
+        &self,
+        _parent: ObjectId,
+        _title: &str,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_message_box not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, title, text, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_file_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_file_dialog not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_color_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_color_dialog not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_font_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_font_dialog not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_spin_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_spin_box not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_list_view(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_list_view not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_scroll_area(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] create_scroll_area not implemented");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn set_clipboard_text(&self, _text: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] set_clipboard_text not implemented");
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = text;
+            false
+        }
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] get_clipboard_text not implemented");
+            String::new()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            String::new()
+        }
+    }
+
+    fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] begin_drag not implemented");
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (source_widget_id, mime, payload);
+            false
+        }
+    }
+
+    fn poll_drop_event(&self) -> Option<DropEvent> {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] poll_drop_event not implemented");
+            None
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
+    fn inject_drop_event(&self, _event: DropEvent) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[rust_widgets][windows] inject_drop_event not implemented");
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = event;
+            false
+        }
+    }
 }
 // Core and platform types
 // Stub for WindowsHandleKind enum (should be replaced with actual variants as needed)
@@ -1702,7 +1910,7 @@ impl PlatformDowncast for dyn super::Platform {
         None
     }
 }
-use crate::platform::state::BackendState;
+// Removed unresolved import crate::state::BackendState
 
 // Win32 API types and functions
 #[cfg(target_os = "windows")]

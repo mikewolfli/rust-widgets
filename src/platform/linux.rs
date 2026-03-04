@@ -1042,4 +1042,48 @@ impl Platform for LinuxPlatform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
+
+    fn create_message_box(
+        &self,
+        _parent: u64,
+        _title: &str,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> u64 {
+        eprintln!("[rust_widgets][linux] create_message_box unsupported in current backend path");
+        0
+    }
+
+    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_file_dialog unsupported in current backend path");
+        0
+    }
+
+    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_color_dialog unsupported in current backend path");
+        0
+    }
+
+    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_font_dialog unsupported in current backend path");
+        0
+    }
+
+    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_spin_box unsupported in current backend path");
+        0
+    }
+
+    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_list_view unsupported in current backend path");
+        0
+    }
+
+    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+        eprintln!("[rust_widgets][linux] create_scroll_area unsupported in current backend path");
+        0
+    }
 }

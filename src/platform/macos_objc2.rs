@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn release_diagnostics_parity() {
         // Assert preview backend selection for warning-clean publish path checks.
-        let backend = MacOSObjc2Platform::new();
+        let backend = new();
         backend.init();
         assert_eq!(backend.backend_name(), "macos-objc2-preview");
     }

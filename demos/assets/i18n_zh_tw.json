@@ -1,0 +1,365 @@
+{
+  "language": "zh-TW",
+  "translations": {
+    "app.title": {
+      "context": null,
+      "message": "Rust控制項演示"
+    },
+    "menu.file": {
+      "context": null,
+      "message": "檔案"
+    },
+    "menu.file.exit": {
+      "context": null,
+      "message": "結束"
+    },
+    "menu.language": {
+      "context": null,
+      "message": "語言"
+    },
+    "menu.language.english": {
+      "context": null,
+      "message": "英語"
+    },
+    "menu.language.chinese_simplified": {
+      "context": null,
+      "message": "簡體中文"
+    },
+    "menu.language.chinese_traditional": {
+      "context": null,
+      "message": "繁體中文"
+    },
+    "menu.language.french": {
+      "context": null,
+      "message": "法語"
+    },
+    "menu.help": {
+      "context": null,
+      "message": "說明"
+    },
+    "menu.help.about": {
+      "context": null,
+      "message": "關於"
+    },
+    "basic.title": {
+      "context": null,
+      "message": "基本控制項演示"
+    },
+    "basic.buttons": {
+      "context": null,
+      "message": "按鈕"
+    },
+    "basic.button": {
+      "context": null,
+      "message": "按鈕"
+    },
+    "basic.checkbox": {
+      "context": null,
+      "message": "核取方塊"
+    },
+    "basic.radiobutton": {
+      "context": null,
+      "message": "選項按鈕"
+    },
+    "basic.text_inputs": {
+      "context": null,
+      "message": "文字輸入"
+    },
+    "basic.label": {
+      "context": null,
+      "message": "標籤"
+    },
+    "basic.lineedit": {
+      "context": null,
+      "message": "單行文字方塊"
+    },
+    "basic.textedit": {
+      "context": null,
+      "message": "多行文字方塊"
+    },
+    "basic.values": {
+      "context": null,
+      "message": "數值控制項"
+    },
+    "basic.slider": {
+      "context": null,
+      "message": "滑桿"
+    },
+    "basic.spinbox": {
+      "context": null,
+      "message": "數字輸入方塊"
+    },
+    "basic.progressbar": {
+      "context": null,
+      "message": "進度列"
+    },
+    "basic.scrollbar": {
+      "context": null,
+      "message": "捲軸"
+    },
+    "basic.selection": {
+      "context": null,
+      "message": "選擇控制項"
+    },
+    "basic.combobox": {
+      "context": null,
+      "message": "下拉式方塊"
+    },
+    "basic.listbox": {
+      "context": null,
+      "message": "清單方塊"
+    },
+    "basic.log.title": {
+      "context": null,
+      "message": "事件日誌"
+    },
+    "basic.log.clear": {
+      "context": null,
+      "message": "清除日誌"
+    },
+    "event.clicked": {
+      "context": null,
+      "message": "點擊"
+    },
+    "event.pressed": {
+      "context": null,
+      "message": "按下"
+    },
+    "event.released": {
+      "context": null,
+      "message": "釋放"
+    },
+    "event.changed": {
+      "context": null,
+      "message": "已變更"
+    },
+    "event.text_changed": {
+      "context": null,
+      "message": "文字已變更"
+    },
+    "event.value_changed": {
+      "context": null,
+      "message": "值已變更"
+    },
+    "event.selected": {
+      "context": null,
+      "message": "已選擇"
+    },
+    "event.check_changed": {
+      "context": null,
+      "message": "選取狀態已變更"
+    },
+    "treeview.title": {
+      "context": null,
+      "message": "樹狀檢視演示"
+    },
+    "treeview.add_node": {
+      "context": null,
+      "message": "新增節點"
+    },
+    "treeview.remove_node": {
+      "context": null,
+      "message": "刪除節點"
+    },
+    "treeview.expand_all": {
+      "context": null,
+      "message": "全部展開"
+    },
+    "treeview.collapse_all": {
+      "context": null,
+      "message": "全部摺疊"
+    },
+    "treeview.root": {
+      "context": null,
+      "message": "根節點"
+    },
+    "treeview.child": {
+      "context": null,
+      "message": "子節點"
+    },
+    "treeview.node": {
+      "context": null,
+      "message": "節點"
+    },
+    "tableview.title": {
+      "context": null,
+      "message": "表格檢視演示"
+    },
+    "tableview.add_row": {
+      "context": null,
+      "message": "新增列"
+    },
+    "tableview.remove_row": {
+      "context": null,
+      "message": "刪除列"
+    },
+    "tableview.column.name": {
+      "context": null,
+      "message": "名稱"
+    },
+    "tableview.column.value": {
+      "context": null,
+      "message": "值"
+    },
+    "tableview.column.status": {
+      "context": null,
+      "message": "狀態"
+    },
+    "listview.title": {
+      "context": null,
+      "message": "清單檢視演示"
+    },
+    "listview.add_item": {
+      "context": null,
+      "message": "新增項目"
+    },
+    "listview.remove_item": {
+      "context": null,
+      "message": "刪除項目"
+    },
+    "listview.clear": {
+      "context": null,
+      "message": "清空"
+    },
+    "listview.item_input": {
+      "context": null,
+      "message": "項目："
+    },
+    "listview.items": {
+      "context": null,
+      "message": "列表項目："
+    },
+    "tabwidget.title": {
+      "context": null,
+      "message": "索引標籤演示"
+    },
+    "tabwidget.add_tab": {
+      "context": null,
+      "message": "新增索引標籤"
+    },
+    "tabwidget.remove_tab": {
+      "context": null,
+      "message": "刪除索引標籤"
+    },
+    "tabwidget.tab": {
+      "context": null,
+      "message": "索引標籤"
+    },
+    "splitter.title": {
+      "context": null,
+      "message": "分隔器演示"
+    },
+    "splitter.horizontal": {
+      "context": null,
+      "message": "水平分隔器"
+    },
+    "splitter.vertical": {
+      "context": null,
+      "message": "垂直分隔器"
+    },
+    "splitter.left_panel": {
+      "context": null,
+      "message": "左側面板"
+    },
+    "splitter.right_panel": {
+      "context": null,
+      "message": "右側面板"
+    },
+    "splitter.top_panel": {
+      "context": null,
+      "message": "頂部面板"
+    },
+    "splitter.bottom_panel": {
+      "context": null,
+      "message": "底部面板"
+    },
+    "dockpanel.title": {
+      "context": null,
+      "message": "停駐面板演示"
+    },
+    "dockpanel.dock_left": {
+      "context": null,
+      "message": "停駐左側"
+    },
+    "dockpanel.dock_right": {
+      "context": null,
+      "message": "停駐右側"
+    },
+    "dockpanel.dock_top": {
+      "context": null,
+      "message": "停駐頂部"
+    },
+    "dockpanel.dock_bottom": {
+      "context": null,
+      "message": "停駐底部"
+    },
+    "dockpanel.float": {
+      "context": null,
+      "message": "浮動"
+    },
+    "mdiarea.title": {
+      "context": null,
+      "message": "多文件介面演示"
+    },
+    "mdiarea.new_window": {
+      "context": null,
+      "message": "新增視窗"
+    },
+    "mdiarea.close_window": {
+      "context": null,
+      "message": "關閉視窗"
+    },
+    "mdiarea.cascade": {
+      "context": null,
+      "message": "層疊"
+    },
+    "mdiarea.tile": {
+      "context": null,
+      "message": "並排"
+    },
+    "mdiarea.window": {
+      "context": null,
+      "message": "視窗"
+    },
+    "scrollarea.title": {
+      "context": null,
+      "message": "捲動區域演示"
+    },
+    "scrollarea.content": {
+      "context": null,
+      "message": "內容區域"
+    },
+    "scrollarea.scroll_to_top": {
+      "context": null,
+      "message": "捲動到頂部"
+    },
+    "scrollarea.scroll_to_bottom": {
+      "context": null,
+      "message": "捲動到底部"
+    },
+    "about.title": {
+      "context": null,
+      "message": "關於Rust控制項"
+    },
+    "about.description": {
+      "context": null,
+      "message": "純Rust跨平台原生GUI框架"
+    },
+    "about.version": {
+      "context": null,
+      "message": "版本"
+    },
+    "about.close": {
+      "context": null,
+      "message": "關閉"
+    },
+    "status.ready": {
+      "context": null,
+      "message": "就緒"
+    },
+    "status.language_changed": {
+      "context": null,
+      "message": "語言已切換為"
+    }
+  }
+}

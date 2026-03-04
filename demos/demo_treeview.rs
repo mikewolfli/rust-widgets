@@ -1,59 +1,176 @@
-//! TreeView demo.
+//! TreeView Demo - Tree structure widget demonstration with event logging.
 
-use rust_widgets::core::Rect;
-use rust_widgets::platform::{get_platform, runtime_gui_mode, RuntimeGuiMode};
-use rust_widgets::widget::{SortFilterTreeModel, TreeView, VecTreeModel, Widget, Window};
-use rust_widgets::{init, run};
+use std::cell::RefCell;
 use std::sync::Arc;
+use std::time::SystemTime;
+
+use rust_widgets::core::{ObjectId, Rect};
+use rust_widgets::i18n::{self, InitOptions};
+use rust_widgets::widget::{TreeView, VecTreeModel};
+use rust_widgets::{
+    attach_menu_bar_to_window, create_button, create_label, create_line_edit, create_menu_bar,
+    create_panel, create_status_bar, create_window, init, menu_add_item, run, set_widget_enabled,
+    show_widget,
+};
+use rust_widgets::{runtime_gui_mode, RuntimeGuiMode};
+
+thread_local! {
+    static LOG_TEXT: RefCell<String> = RefCell::new(String::new());
+}
+
+fn tr(key: &str) -> String {
+    i18n::translate(key)
+}
+
+fn format_timestamp() -> String {
+    if let Ok(now) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        let secs = now.as_secs();
+        let hours = (secs % 86400) / 3600;
+        let mins = (secs % 3600) / 60;
+        let secs = secs % 60;
+        let millis = now.subsec_millis();
+        format!("[{:02}:{:02}:{:02}.{:03}]", hours, mins, secs, millis)
+    } else {
+        "[??:??:??.???]".to_string()
+    }
+}
+
+fn log_event(widget_type: &str, widget_id: ObjectId, event: &str) {
+    let entry = format!(
+        "{} {}(id={}) {}\n",
+        format_timestamp(),
+        widget_type,
+        widget_id,
+        event
+    );
+    LOG_TEXT.with(|t| {
+        let mut text = t.borrow_mut();
+        text.push_str(&entry);
+        if text.len() > 10000 {
+            *text = text[text.len() - 8000..].to_string();
+        }
+    });
+}
 
 fn main() {
-    // Initialize the runtime before creating widgets.
     init();
 
-    let platform = get_platform();
-    let runtime_mode = runtime_gui_mode();
-    let runtime_mode_text = match runtime_mode {
-        RuntimeGuiMode::NativeInteractive => "NativeInteractive",
-        RuntimeGuiMode::PreviewOrStub => "PreviewOrStub",
+    let i18n_dir = option_env!("CARGO_MANIFEST_DIR")
+        .map(|d| format!("{}/demos/assets", d))
+        .unwrap_or_else(|| "demos/assets".to_string());
+
+    let opts = InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some(i18n_dir),
+        diagnostics: true,
     };
-    let native_window_expected = false;
-    eprintln!(
-        "[demo_treeview] backend='{}' runtime_mode='{}' native_window_expected={} (model/view path)",
-        platform.backend_name(),
-        runtime_mode_text,
-        native_window_expected
-    );
+    let _report = i18n::init_with_options(opts);
 
-    let mut window = Window::new(
-        "TreeView Demo".to_string(),
-        Rect { x: 120, y: 120, width: 720, height: 460 },
-    );
-
-    // Build a source tree model with hierarchical path strings.
-    let source_model = Arc::new(VecTreeModel::new(vec![
-        "Root".to_string(),
-        "Root/Child-1".to_string(),
-        "Root/Child-2".to_string(),
-        "Settings".to_string(),
-    ]));
-
-    // Add a view model layer with filtering and ordering.
-    let mut view_model = SortFilterTreeModel::new(source_model);
-    view_model.set_filter_text(Some("Root".to_string()));
-    view_model.set_sort_ascending(true);
-
-    // Create the tree view and bind the model projection.
-    let mut tree = TreeView::new(Rect { x: 24, y: 24, width: 320, height: 260 });
-    tree.set_model(Arc::new(view_model));
-    let _ = tree.select_node(0);
-
-    println!("visible nodes: {}", tree.node_count());
-    if let Some(index) = tree.selected_node() {
-        println!("selected node: {}", tree.node_path(index).unwrap_or_default());
+    match runtime_gui_mode() {
+        RuntimeGuiMode::NativeInteractive => {
+            eprintln!("[demo_treeview] running in native-interactive mode");
+        }
+        RuntimeGuiMode::PreviewOrStub => {
+            eprintln!("[demo_treeview] preview/stub mode");
+        }
     }
-    window.add_child(tree.id());
 
-    // Show the demo window and enter the event loop.
-    window.show();
+    let window = create_window(&tr("treeview.title"), 100, 100, 900, 600);
+
+    let menu_bar = create_menu_bar(window, 0, 0, 900, 24);
+    let file_menu = menu_add_item(menu_bar, &tr("menu.file"), None);
+    let _exit_item = menu_add_item(file_menu, &tr("menu.file.exit"), Some("Alt+F4"));
+
+    let lang_menu = menu_add_item(menu_bar, &tr("menu.language"), None);
+    let _en_item = menu_add_item(lang_menu, &tr("menu.language.english"), None);
+    let _zh_cn_item = menu_add_item(lang_menu, &tr("menu.language.chinese_simplified"), None);
+    let _zh_tw_item = menu_add_item(lang_menu, &tr("menu.language.chinese_traditional"), None);
+    let _fr_item = menu_add_item(lang_menu, &tr("menu.language.french"), None);
+
+    let help_menu = menu_add_item(menu_bar, &tr("menu.help"), None);
+    let _about_item = menu_add_item(help_menu, &tr("menu.help.about"), None);
+
+    attach_menu_bar_to_window(window, menu_bar);
+
+    let mut y: i32 = 30;
+    let btn_height = 28;
+
+    let add_btn = create_button(window, &tr("treeview.add_node"), 10, y, 120, btn_height);
+    log_event("Button", add_btn, "Created (Add Node)");
+
+    let remove_btn = create_button(window, &tr("treeview.remove_node"), 140, y, 120, btn_height);
+    log_event("Button", remove_btn, "Created (Remove Node)");
+
+    let expand_btn = create_button(window, &tr("treeview.expand_all"), 270, y, 120, btn_height);
+    log_event("Button", expand_btn, "Created (Expand All)");
+
+    let collapse_btn = create_button(
+        window,
+        &tr("treeview.collapse_all"),
+        400,
+        y,
+        120,
+        btn_height,
+    );
+    log_event("Button", collapse_btn, "Created (Collapse All)");
+
+    y += btn_height as i32 + 10;
+
+    let tree_label = create_label(window, &tr("treeview.title"), 10, y, 880, btn_height);
+    log_event("Label", tree_label, "Created");
+
+    y += btn_height as i32 + 5;
+
+    let tree_panel = create_panel(window, 10, y, 430, 400);
+    log_event("Panel", tree_panel, "Created (Tree Area)");
+
+    let mut tree_view = TreeView::new(Rect::new(10, y, 430, 400));
+
+    let paths = vec![
+        tr("treeview.root"),
+        format!(
+            "{}/{}",
+            tr("treeview.root"),
+            format!("{} 1", tr("treeview.child"))
+        ),
+        format!(
+            "{}/{}",
+            tr("treeview.root"),
+            format!("{} 2", tr("treeview.child"))
+        ),
+        format!(
+            "{}/{}/{}",
+            tr("treeview.root"),
+            format!("{} 1", tr("treeview.child")),
+            format!("{} 1.1", tr("treeview.node"))
+        ),
+        format!(
+            "{}/{}/{}",
+            tr("treeview.root"),
+            format!("{} 1", tr("treeview.child")),
+            format!("{} 1.2", tr("treeview.node"))
+        ),
+    ];
+    let model = Arc::new(VecTreeModel::new(paths));
+    tree_view.set_model(model);
+    log_event("TreeView", 0, "Created with sample data");
+
+    let log_label = create_label(window, &tr("basic.log.title"), 450, y, 440, btn_height);
+    log_event("Label", log_label, "Created");
+
+    let log_panel = create_panel(window, 450, y + btn_height as i32 + 5, 440, 380);
+    log_event("Panel", log_panel, "Created (Log Area)");
+
+    let log_text = create_line_edit(log_panel, "", 5, 5, 430, 370);
+    set_widget_enabled(log_text, false);
+    log_event("TextEdit", log_text, "Created (Event Log)");
+
+    let status_bar = create_status_bar(window, &tr("status.ready"), 0, 576, 900, 24);
+    log_event("StatusBar", status_bar, "Created");
+
+    show_widget(window);
+
+    log_event("Window", window, "Shown - TreeView Demo Started");
+
     run();
 }

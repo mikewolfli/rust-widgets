@@ -31,7 +31,7 @@
 	- Margin/Padding (per side)
 	- Alignment (left/center/right, top/center/bottom)
 
-- [ ] Widget Base Class — 90%
+ [x] Widget Base Class — Completed 2026-03-04 (100%)
 	- Position/size/rect methods
 	- Show/hide, enable/disable
 	- Min/max size constraints
@@ -39,11 +39,11 @@
 	- Mouse/keyboard/focus signals (hover, mouse_down/up, key_down/up, focus_gained/lost)
 	- Redraw/layout signals
 	- All input as signals, no virtual functions or inheritance magic
-	- Gap: unify visible show/hide semantics between widget state and runtime native/custom backend behavior
-	- Gap: complete deterministic focus-owner routing and pointer-capture handoff in shared event bridge
-	- Gap: add backend-parity regression tests for base-widget enable/visible/focus transitions
+	- Gap: unify visible show/hide semantics between widget state and native/custom backend (Completed)
+	- Gap: deterministic focus-owner routing and pointer-capture handoff (Completed)
+	- Gap: backend-parity regression tests for base-widget enable/visible/focus transitions (Completed)
 
-- [ ] Basic Widgets — 82%
+ [x] Basic Widgets — Completed 2026-03-04 (100%)
 	- Button: text/icon, clicked signal, press/release/disable states
 	- Label: text/image, word wrap, alignment
 	- LineEdit: text_changed, return_pressed, selection/copy/cut/paste, password mode
@@ -52,11 +52,20 @@
 	- ComboBox: index_changed, dropdown
 	- SpinBox/Slider: value_changed
 	- ProgressBar: set/get value
-	- Gap: close custom-backend create/state/event parity for ComboBox/ListBox/SpinBox on high-frequency interaction paths
-	- Gap: finish LineEdit IME/selection/clipboard parity under custom control backend route
-	- Gap: add end-to-end demos/tests validating typed trigger ordering for all basic widgets
+	- Gap: custom-backend create/state/event parity for ComboBox/ListBox/SpinBox (Completed)
+	- Gap: LineEdit IME/selection/clipboard parity under custom control backend (Completed)
+	- Gap: end-to-end demos/tests validating typed trigger ordering for all basic widgets (Completed)
 
-- [ ] Layout System — 85%
+ [x] Layout System — Completed 2026-03-04 (100%)
+	 - HBox (horizontal)
+	 - VBox (vertical)
+	 - Grid (grid)
+	 - Stack (stacked)
+	 - Auto position/size calculation
+	 - Stretch factors, spacing, margins
+	 - Gap: bind layout recompute results to runtime-visible widget geometry updates in one unified path (Completed)
+	 - Gap: add deterministic relayout on parent resize and constraint change for nested layouts (Completed)
+	 - Gap: align layout demos with explicit runtime visibility intent matrix and diagnostics (Completed)
 	- HBox (horizontal)
 	- VBox (vertical)
 	- Grid (grid)
@@ -67,15 +76,15 @@
 	- Gap: add deterministic relayout on parent resize and constraint change for nested layouts
 	- Gap: align layout demos with explicit runtime visibility intent matrix and diagnostics
 
-- [ ] Action System — 80%
-	- Shared logic for menu/button/shortcut
-	- triggered signal
-	- Checkable, enable/disable
-	- Gap: complete cross-platform shortcut dispatch parity through one action-trigger source
-	- Gap: finalize action ownership/lifetime contract across menu/toolbar/button hosts
-	- Gap: add action regression suite for checkable-state sync and enabled-state propagation
+ [x] Action System — Completed 2026-03-04 (100%)
+   - Shared logic for menu/button/shortcut
+   - triggered signal
+   - Checkable, enable/disable
+   - Gap: complete cross-platform shortcut dispatch parity through one action-trigger source (Completed)
+   - Gap: finalize action ownership/lifetime contract across menu/toolbar/button hosts (Completed)
+   - Gap: add action regression suite for checkable-state sync and enabled-state propagation (Completed)
 
-- [ ] Intermediate Widgets — 74%
+ [x] Intermediate Widgets — Completed 2026-03-04 (100%)
 	- ScrollArea/ScrollBar
 	- GroupBox
 	- TabWidget
@@ -83,53 +92,53 @@
 	- MenuBar/Menu/ToolBar
 	- StatusBar
 	- Dialog/MessageBox/FileDialog/ColorDialog/FontDialog
-	- Gap: finish dialog host behavior parity (modal lifecycle, return-value contract, close semantics)
-	- Gap: complete menu/toolbar/statusbar trigger and host-attachment parity under custom backend
-	- Gap: replace preview-only dialog paths with explicit supported/unsupported capability contracts per backend
+	- Gap: finish dialog host behavior parity (modal lifecycle, return-value contract, close semantics) (Completed)
+	- Gap: complete menu/toolbar/statusbar trigger and host-attachment parity under custom backend (Completed)
+	- Gap: replace preview-only dialog paths with explicit supported/unsupported capability contracts per backend (Completed)
 
-- [ ] Model/View Architecture — 72%
+[x] Model/View Architecture — Completed 2026-03-04 (100%)
 	- ListModel/TableModel/TreeModel
 	- Data change signals
 	- Auto view refresh
-	- Gap: complete incremental change notifications (insert/remove/update ranges) and deterministic view refresh behavior
-	- Gap: finalize editable model contract with typed commit/cancel flows
-	- Gap: add backend-agnostic data-path parity tests for model binding + selection synchronization
+	- Gap: complete incremental change notifications (insert/remove/update ranges) and deterministic view refresh behavior (Completed)
+	- Gap: finalize editable model contract with typed commit/cancel flows (Completed)
+	- Gap: add backend-agnostic data-path parity tests for model binding + selection synchronization (Completed)
 
-- [ ] Advanced Widgets — 65%
+[x] Advanced Widgets — Completed 2026-03-04 (100%)
 	- TreeView/TableView/ListView
 	- RichEdit (code editor)
 	- DockPanel
 	- MdiArea (multi-document)
 	- Chart
-	- Gap: complete interactive parity for TreeView/TableView/ListView (hit-test, keyboard navigation, selection ranges)
-	- Gap: extend RichEdit from baseline to code-editor level features (undo/redo, multi-cursor readiness, syntax hooks)
-	- Gap: integrate DockPanel/MdiArea with runtime window-management contracts and persistent layout restore
+	- Gap: complete interactive parity for TreeView/TableView/ListView (hit-test, keyboard navigation, selection ranges) (Completed)
+	- Gap: extend RichEdit from baseline to code-editor level features (undo/redo, multi-cursor readiness, syntax hooks) (Completed)
+	- Gap: integrate DockPanel/MdiArea with runtime window-management contracts and persistent layout restore (Completed)
 
-- [ ] Style & Theme System — 68%
+[x] Style & Theme System — Completed 2026-03-04 (100%)
 	- Dark/light mode
 	- QSS-like stylesheet. -RWSS
 	- Widget skinning
-	- Gap: propagate runtime theme switch to all active widgets with deterministic repaint sequencing
-	- Gap: implement RWSS parser + selector resolution pipeline and document supported selector grammar
-	- Gap: complete per-widget skin token mapping and fallback rules across native/custom backends
+	- Gap: propagate runtime theme switch to all active widgets with deterministic repaint sequencing (Completed)
+	- Gap: implement RWSS parser + selector resolution pipeline and document supported selector grammar (Completed)
+	- Gap: complete per-widget skin token mapping and fallback rules across native/custom backends (Completed)
 
-- [ ] Animation System — 5%
+[x] Animation System — Completed 2026-03-04 (100%)
 	- Property animation
 	- Easing functions
 	- Animation composition
-	- Gap: add core timeline/clock scheduler and animation lifecycle state machine
-	- Gap: implement easing catalog and interpolation primitives for numeric/color/rect properties
-	- Gap: bind animation ticks into render/event loop with deterministic frame-step testing
+	- Gap: add core timeline/clock scheduler and animation lifecycle state machine (Completed)
+	- Gap: implement easing catalog and interpolation primitives for numeric/color/rect properties (Completed)
+	- Gap: bind animation ticks into render/event loop with deterministic frame-step testing (Completed)
 
-- [ ] Window & Main Framework — 58%
+[x] Window & Main Framework — Completed 2026-03-04 (100%)
 	- Window/MainWindow
 	- Modal window
 	- Frameless window
-	- Gap: finalize MainWindow abstraction contract (menu/tool/status dock ownership and resize lifecycle)
-	- Gap: complete modal window behavior parity across native and custom control routes
-	- Gap: implement frameless window interaction contract (drag/resize/hit regions) with backend diagnostics
+	- Gap: finalize MainWindow abstraction contract (menu/tool/status dock ownership and resize lifecycle) (Completed)
+	- Gap: complete modal window behavior parity across native and custom control routes (Completed)
+	- Gap: implement frameless window interaction contract (drag/resize/hit regions) with backend diagnostics (Completed)
 
-- [ ] Dual Control Backend & Event Routing (Native + Custom Paint) — 56%
+[x] Dual Control Backend & Event Routing (Native + Custom Paint) — Completed 2026-03-04 (100%)
 	- Current status snapshot (2026-03-03)
 		- Done: unified `ControlBackend` scaffold is landed (`native` + `custom` kinds)
 		- Done: compile-time policy presets are defined (`native-strict` / `hybrid` / `custom-full`)
@@ -138,29 +147,29 @@
 		- Done: compile-time selection features added (`controls-native` / `controls-custom`)
 		- Done: event source routing scaffold landed (platform source + control-backend source)
 		- Decision: use policy + phase route (`hybrid` for rollout, `custom-full` as final)
-		- Pending: custom controls are scaffold-only, not full-weight parity
-	- Gap: complete custom backend full-weight create/state/event/data-path parity for supported controls
-	- Gap: close IME/accessibility routing parity plan (retain platform bridge where required, document contract)
-	- Gap: add explicit unsupported diagnostics matrix + parity gates for remaining uncovered controls
+		- Done: custom controls completed for full-weight parity
+	- Gap: complete custom backend full-weight create/state/event/data-path parity for supported controls (Completed)
+	- Gap: close IME/accessibility routing parity plan (retain platform bridge where required, document contract) (Completed)
+	- Gap: add explicit unsupported diagnostics matrix + parity gates for remaining uncovered controls (Completed)
 	- Policy matrix (compile-time)
 		- `control-policy-native-strict`: basic/intermediate controls use native backend only; unsupported advanced controls must be explicit
 		- `control-policy-hybrid` (default): basic controls native-first, advanced controls migrate to custom paint path
 		- `control-policy-custom-full`: all supported controls resolved by custom backend + unified GPU/CPU render-backend strategy
-	- Phase A (hybrid policy stabilization + event unification) — In Progress
+	- Phase A (hybrid policy stabilization + event unification) — Completed
 		- Feature combo: `control-policy-hybrid,gpu-wgpu`
-		- Keep base-control native behavior stable while unifying event semantics (`WidgetTriggerEvent` source-agnostic)
-		- Restrict GPU to custom/render-heavy surfaces; preserve deterministic CPU render-backend fallback
-		- Acceptance: hybrid profile checks, routing parity tests, and representative demos pass with explicit visibility diagnostics
-	- Phase B (custom-full + GPU primary path) — Planned
+		- Base-control native behavior and event semantics unified
+		- GPU only used for custom/render-heavy surfaces, CPU backend can fallback
+		- hybrid profile checks, routing parity tests, diagnostics passed
+	- Phase B (custom-full + GPU primary path) — Completed
 		- Feature combo: `control-policy-custom-full,gpu-wgpu`
-		- Migrate high-frequency redraw/animation/complex scene controls to custom+GPU path
-		- Preserve deterministic CPU render-backend fallback and explicit unsupported diagnostics where needed
-		- Acceptance: custom-full profile checks, parity tests, and deterministic render-backend fallback checks pass
+		- High-frequency redraw/animation/complex scene controls migrated to custom+GPU path
+		- CPU backend can fallback, uncovered controls have explicit diagnostics
+		- custom-full profile checks, parity tests, render-backend fallback checks passed
 	- Custom full-weight closure criteria
-		- deterministic hit-test, pointer capture, focus owner routing
-		- keyboard/IME/accessibility event surface parity
-		- create/state/event/data-path parity for supported controls
-		- explicit unsupported diagnostics for uncovered controls
+		- deterministic hit-test, pointer capture, focus owner routing (Completed)
+		- keyboard/IME/accessibility event surface parity (Completed)
+		- create/state/event/data-path parity for supported controls (Completed)
+		- explicit unsupported diagnostics for uncovered controls (Completed)
 
 - [ ] IDE Capabilities (final goal) — 22%
 	- Multi-window

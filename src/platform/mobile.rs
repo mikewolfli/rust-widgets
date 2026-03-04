@@ -533,7 +533,7 @@ static MOBILE_PLATFORM: OnceLock<AndroidMobilePlatform> = OnceLock::new();
 
 /// Returns process-global mobile platform singleton.
 pub fn get_mobile_platform() -> &'static AndroidMobilePlatform {
-    MOBILE_PLATFORM.get_or_init(AndroidMobilePlatform::new)
+    MOBILE_PLATFORM.get_or_init(new)
 }
 
 #[cfg(test)]
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_creates_extended_controls() {
-        let platform = AndroidMobilePlatform::new();
+        let platform = new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         assert_ne!(window, 0);
 
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_routes_trigger_events_for_extended_controls() {
-        let platform = AndroidMobilePlatform::new();
+        let platform = new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         let line_edit = platform.create_line_edit(window, "", 10, 10, 120, 24);
         let checkbox = platform.create_checkbox(window, "", 10, 40, 120, 24);
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_creates_menu_host_controls_and_validates_triggers() {
-        let platform = AndroidMobilePlatform::new();
+        let platform = new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
 
         let menu_bar = platform.create_menu_bar(window, 0, 0, 320, 24);

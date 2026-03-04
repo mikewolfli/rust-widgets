@@ -1195,19 +1195,19 @@ mod tests {
 
     #[test]
     fn macos_backend_ime_and_accessibility_state_roundtrip() {
-        let platform = MacOSPlatform::new();
+        let platform = new();
         let widget_id = insert_dummy_widget(&platform);
 
-        assert!(Platform::set_widget_ime_enabled(&platform, widget_id, true));
-        assert!(Platform::is_widget_ime_enabled(&platform, widget_id));
+        assert!(set_widget_ime_enabled(&platform, widget_id, true));
+        assert!(is_widget_ime_enabled(&platform, widget_id));
 
-        assert!(Platform::set_widget_accessibility_name(
+        assert!(set_widget_accessibility_name(
             &platform,
             widget_id,
             "Accessible"
         ));
         assert_eq!(
-            Platform::get_widget_accessibility_name(&platform, widget_id),
+            get_widget_accessibility_name(&platform, widget_id),
             "Accessible".to_string()
         );
     }
