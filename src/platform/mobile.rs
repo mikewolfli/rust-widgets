@@ -512,6 +512,85 @@ impl Platform for AndroidMobilePlatform {
             .push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
+
+    fn create_message_box(
+        &self,
+        _parent: ObjectId,
+        title: &str,
+        _text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)
+    }
+
+    fn create_file_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.insert_widget(MobileHandleKind::Window, "file_dialog", x, y, width, height)
+    }
+
+    fn create_color_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.insert_widget(MobileHandleKind::Window, "color_dialog", x, y, width, height)
+    }
+
+    fn create_font_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.insert_widget(MobileHandleKind::Window, "font_dialog", x, y, width, height)
+    }
+
+    fn create_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::LineEdit, "spin_box", x, y, width, height)
+    }
+
+    fn create_list_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::ListBox, "list_view", x, y, width, height)
+    }
+
+    fn create_scroll_area(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::Panel, "scroll_area", x, y, width, height)
+    }
 }
 
 impl MobilePlatformExtension for AndroidMobilePlatform {
@@ -533,7 +612,7 @@ static MOBILE_PLATFORM: OnceLock<AndroidMobilePlatform> = OnceLock::new();
 
 /// Returns process-global mobile platform singleton.
 pub fn get_mobile_platform() -> &'static AndroidMobilePlatform {
-    MOBILE_PLATFORM.get_or_init(new)
+    MOBILE_PLATFORM.get_or_init(AndroidMobilePlatform::new)
 }
 
 #[cfg(test)]
@@ -542,7 +621,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_creates_extended_controls() {
-        let platform = new();
+        let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         assert_ne!(window, 0);
 
@@ -573,7 +652,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_routes_trigger_events_for_extended_controls() {
-        let platform = new();
+        let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         let line_edit = platform.create_line_edit(window, "", 10, 10, 120, 24);
         let checkbox = platform.create_checkbox(window, "", 10, 40, 120, 24);
@@ -596,7 +675,7 @@ mod tests {
 
     #[test]
     fn mobile_backend_creates_menu_host_controls_and_validates_triggers() {
-        let platform = new();
+        let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
 
         let menu_bar = platform.create_menu_bar(window, 0, 0, 320, 24);

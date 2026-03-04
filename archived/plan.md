@@ -1,3 +1,4 @@
+---
 # rust-widgets Development Plan
 
 ## Rules
@@ -5,7 +6,7 @@
 1. This file uses hierarchical TODO management, listing each top-level ITEM one by one.
 2. Unfinished items are left blank; completed items are marked "Completed" with a timestamp (e.g., Completed 2026-03-02).
 3. Deleted or canceled items are marked "Canceled" or "Deleted" with a timestamp.
-4. After all todo list are finished, review and check if there are gaps, added them after current version todo list.
+4. After all todo list are finished, review and check if there are gaps, added them after current version todo list. 
 
 ## ITEM List
 
@@ -181,44 +182,4 @@
 	- Gap: deliver multi-window + docking orchestration atop stable MainWindow contracts
 	- Gap: integrate code-editor workflow primitives (project tree, diagnostics, command palette baseline)
 
-- [ ] Extended Widget Set — 0%
-	- Toggle Button
-	- Check List Box
-	- Double Spin Box
-	- Dial
-	- Wizard
-	- Date Picker
-	- Time Picker
-	- Directory Picker
-	- Data View
-	- Property Grid / Property Sheet
-	- Header
-	- Notebook / Tab Widget
-	- Listbook
-	- Treebook
-	- Choicebook
-	- Toolbox
-	- Stacked / Simplebook
-	- Collapsible Pane / Collapsible Box
-	- HTML List Box
-	- Web View
-	- Styled Text / Scintilla
-	- Animation
-	- Activity Indicator
-	- Calendar
-	- Column View
-	- Undo View
-	- Data Widget Mapper
-	- Command Link
-	- Key Sequence Edit
-	- LCD Number
-	- Font Combo Box
-	- MDI Area
-	- Dock Widget
-	- Tool Box
-	- Menu Bar
-	- Status Bar
-	- Scroll Area
-	- Stacked Widget
-	- Wizard (Wizard)
-	- WizardPage (Wizard Page)
+

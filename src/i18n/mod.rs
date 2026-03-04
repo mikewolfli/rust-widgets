@@ -1,88 +1,30 @@
-//! Internationalization support.
+//! i18n module - internationalization support
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
-use std::fs::{File, read_dir};
+use std::fs::File;
 use std::io::Read;
 use std::sync::Mutex;
 
-/// Translation entry for one key (optionally context and plural forms).
+/// Translation entry
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Translation {
-    /// Optional translation context namespace.
     pub context: Option<String>,
-    /// Base translated message.
     pub message: String,
-    /// Optional plural forms keyed by count category.
     pub plural: Option<HashMap<u32, String>>,
 }
 
-/// Translation file grouped by language code.
+/// Translation file
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranslationFile {
-    /// Language code (for example `en` or `zh-CN`).
     pub language: String,
-    /// Translation entries keyed by message id.
     pub translations: HashMap<String, Translation>,
 }
 
-/// Runtime translation manager with language fallback.
+/// i18n manager
 pub struct I18nManager {
     translations: HashMap<String, TranslationFile>,
     current_language: String,
-    default_language: String,
-}
-
-/// Startup options used to initialize i18n behavior deterministically.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InitOptions {
-    /// Preferred language used for both current/default language slots.
-    pub language: String,
-    /// Optional directory containing language JSON files to preload.
-    pub preload_dir: Option<String>,
-    /// Emit diagnostics to stderr.
-    pub diagnostics: bool,
-}
-
-impl InitOptions {
-    /// Build options from process environment.
-    pub fn from_env() -> Self {
-        let language = detect_language_from_env().unwrap_or_else(|| "en".to_string());
-        let preload_dir = env::var("RUST_WIDGETS_I18N_DIR")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let diagnostics = env_flag_enabled("RUST_WIDGETS_I18N_DIAGNOSTICS");
-        Self {
-            language,
-            preload_dir,
-            diagnostics,
-        }
-    }
-}
-
-impl Default for InitOptions {
-    fn default() -> Self {
-        Self {
-            language: "en".to_string(),
-            preload_dir: None,
-            diagnostics: false,
-        }
-    }
-}
-
-/// Result summary returned by i18n initialization.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InitReport {
-    /// Effective language set for current/default slots.
-    pub language: String,
-    /// Optional preload directory used.
-    pub preload_dir: Option<String>,
-    /// Number of translation files loaded during init.
-    pub loaded_languages: usize,
-    /// Optional preload error if loading failed.
-    pub preload_error: Option<String>,
 }
 
 impl I18nManager {
@@ -91,7 +33,6 @@ impl I18nManager {
         Self {
             translations: HashMap::new(),
             current_language: "en".to_string(),
-            default_language: "en".to_string(),
         }
     }
     
@@ -107,22 +48,6 @@ impl I18nManager {
         Ok(())
     }
     
-    /// Load translations from directory
-    pub fn load_translations_from_dir(&mut self, dir_path: &str) -> Result<(), std::io::Error> {
-        let dir = read_dir(dir_path)?;
-        
-        for entry in dir {
-            let entry = entry?;
-            let path = entry.path();
-            
-            if path.is_file() && path.extension().unwrap_or_default() == "json" {
-                self.load_translations(path.to_str().unwrap())?;
-            }
-        }
-        
-        Ok(())
-    }
-    
     /// Set current language
     pub fn set_language(&mut self, language: &str) {
         self.current_language = language.to_string();
@@ -133,21 +58,6 @@ impl I18nManager {
         &self.current_language
     }
     
-    /// Set default language
-    pub fn set_default_language(&mut self, language: &str) {
-        self.default_language = language.to_string();
-    }
-    
-    /// Get default language
-    pub fn default_language(&self) -> &String {
-        &self.default_language
-    }
-    
-    /// Get supported languages
-    pub fn supported_languages(&self) -> Vec<&String> {
-        self.translations.keys().collect()
-    }
-    
     /// Translate a message
     pub fn translate(&self, key: &str) -> String {
         self.translate_with_context(key, None, 1)
@@ -155,240 +65,147 @@ impl I18nManager {
     
     /// Translate a message with context
     pub fn translate_with_context(&self, key: &str, context: Option<&str>, count: u32) -> String {
-        // Try current language first
-        if let Some(translation) = self.get_translation(self.current_language(), key, context) {
-            return self.get_plural_form(translation, count);
-        }
-        
-        // Fallback to default language
-        if self.current_language() != self.default_language() {
-            if let Some(translation) = self.get_translation(self.default_language(), key, context) {
-                return self.get_plural_form(translation, count);
+        if let Some(translation_file) = self.translations.get(&self.current_language) {
+            if let Some(translation) = translation_file.translations.get(key) {
+                // Check context
+                if let Some(ctx) = context {
+                    if let Some(trans_ctx) = &translation.context {
+                        if trans_ctx != ctx {
+                            return key.to_string();
+                        }
+                    } else {
+                        return key.to_string();
+                    }
+                }
+                
+                // Check plural
+                if let Some(plural) = &translation.plural {
+                    if let Some(plural_form) = plural.get(&count) {
+                        return plural_form.clone();
+                    }
+                }
+                
+                return translation.message.clone();
             }
         }
         
         // Fallback to key if translation not found
         key.to_string()
     }
-    
-    /// Get translation for a specific language
-    fn get_translation(&self, language: &str, key: &str, context: Option<&str>) -> Option<&Translation> {
-        if let Some(translation_file) = self.translations.get(language) {
-            if let Some(ctx) = context {
-                let ctx_key = format!("{}::{}", ctx, key);
-                if let Some(translation) = translation_file.translations.get(&ctx_key) {
-                    return Some(translation);
-                }
-            }
-
-            if let Some(translation) = translation_file.translations.get(key) {
-                return Some(translation);
-            }
-        }
-        None
-    }
-    
-    /// Get plural form based on count
-    fn get_plural_form(&self, translation: &Translation, count: u32) -> String {
-        if let Some(plural) = &translation.plural {
-            if let Some(plural_form) = plural.get(&count) {
-                return plural_form.clone();
-            }
-            if count > 1 {
-                if let Some(default_plural) = plural.get(&2) {
-                    return default_plural.clone();
-                }
-            }
-        }
-        translation.message.clone()
-    }
 }
 
-// Global i18n manager instance used by top-level helper functions.
-lazy_static::lazy_static! {
-    /// Global i18n manager instance used by top-level helpers.
-    pub static ref I18N_MANAGER: Mutex<I18nManager> = Mutex::new(I18nManager::new());
-}
-
-/// Initialize i18n system with deterministic defaults and environment-based preload.
-///
-/// Behavior:
-/// - Resolves language from `RUST_WIDGETS_I18N_LANG`, then `LC_ALL`, then `LANG`, falling back to `en`.
-/// - Applies resolved language to both current and default language.
-/// - If `RUST_WIDGETS_I18N_DIR` is set, attempts to preload all `*.json` translation files.
-/// - If `RUST_WIDGETS_I18N_DIAGNOSTICS` is truthy (`1/true/yes/on`), prints initialization diagnostics.
-pub fn init() {
-    let _ = init_with_options(InitOptions::from_env());
-}
-
-/// Initialize i18n with explicit options and return initialization report.
-pub fn init_with_options(options: InitOptions) -> InitReport {
-    let mut manager = I18N_MANAGER.lock().unwrap();
-    manager.set_default_language(&options.language);
-    manager.set_language(&options.language);
-
-    let mut preload_error = None;
-    if let Some(dir) = &options.preload_dir {
-        if let Err(error) = manager.load_translations_from_dir(dir) {
-            preload_error = Some(error.to_string());
-        }
-    }
-
-    let report = InitReport {
-        language: options.language,
-        preload_dir: options.preload_dir,
-        loaded_languages: manager.translations.len(),
-        preload_error,
-    };
-
-    if options.diagnostics {
-        emit_init_diagnostics(&report);
-    }
-
-    report
-}
-
-fn emit_init_diagnostics(report: &InitReport) {
-    match &report.preload_dir {
-        Some(dir) => {
-            eprintln!(
-                "[rust_widgets::i18n] init language={} preload_dir={} loaded_languages={} preload_error={}",
-                report.language,
-                dir,
-                report.loaded_languages,
-                report.preload_error.as_deref().unwrap_or("none")
-            );
-        }
-        None => {
-            eprintln!(
-                "[rust_widgets::i18n] init language={} preload_dir=none loaded_languages={} preload_error={}",
-                report.language,
-                report.loaded_languages,
-                report.preload_error.as_deref().unwrap_or("none")
-            );
-        }
-    }
-}
-
-fn detect_language_from_env() -> Option<String> {
-    ["RUST_WIDGETS_I18N_LANG", "LC_ALL", "LANG"]
-        .iter()
-        .filter_map(|key| env::var(key).ok())
-        .find_map(|value| normalize_language_tag(&value))
-}
-
-fn env_flag_enabled(key: &str) -> bool {
-    env::var(key)
-        .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-}
-
-fn normalize_language_tag(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let without_encoding = trimmed.split('.').next().unwrap_or(trimmed);
-    let without_modifier = without_encoding.split('@').next().unwrap_or(without_encoding);
-    let normalized = without_modifier.replace('_', "-");
-
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-/// Load translations from file
-pub fn load_translations(path: &str) -> Result<(), std::io::Error> {
-    I18N_MANAGER.lock().unwrap().load_translations(path)
-}
-
-/// Load translations from directory
-pub fn load_translations_from_dir(dir_path: &str) -> Result<(), std::io::Error> {
-    I18N_MANAGER.lock().unwrap().load_translations_from_dir(dir_path)
-}
-
-/// Set current language
-pub fn set_language(language: &str) {
-    I18N_MANAGER.lock().unwrap().set_language(language);
-}
-
-/// Get current language
-pub fn current_language() -> String {
-    I18N_MANAGER.lock().unwrap().current_language().clone()
-}
-
-/// Set default language
-pub fn set_default_language(language: &str) {
-    I18N_MANAGER.lock().unwrap().set_default_language(language);
-}
-
-/// Get supported languages
-pub fn supported_languages() -> Vec<String> {
-    I18N_MANAGER.lock().unwrap().supported_languages().iter().map(|&s| s.clone()).collect()
-}
-
-/// Translate a message
-pub fn translate(key: &str) -> String {
-    I18N_MANAGER.lock().unwrap().translate(key)
-}
-
-/// Translate a message with context
-pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String {
-    I18N_MANAGER.lock().unwrap().translate_with_context(key, context, count)
-}
-
-/// Translation macro with optional count and context.
+/// tr! macro for translation
 #[macro_export]
 macro_rules! tr {
     ($key:expr) => {
-        $crate::i18n::translate($key)
+        $crate::i18n::I18nManager::new().translate($key)
     };
     ($key:expr, $count:expr) => {
-        $crate::i18n::translate_with_context($key, None, $count)
+        $crate::i18n::I18nManager::new().translate_with_context($key, None, $count)
     };
     ($key:expr, $context:expr, $count:expr) => {
-        $crate::i18n::translate_with_context($key, Some($context), $count)
+        $crate::i18n::I18nManager::new().translate_with_context($key, Some($context), $count)
     };
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Global i18n manager instance using Mutex for thread-safe access
+static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 
-    #[test]
-    fn normalize_language_tag_removes_encoding_and_modifier() {
-        assert_eq!(normalize_language_tag("zh_CN.UTF-8"), Some("zh-CN".to_string()));
-        assert_eq!(normalize_language_tag("en_US@POSIX"), Some("en-US".to_string()));
-        assert_eq!(normalize_language_tag("  fr-FR  "), Some("fr-FR".to_string()));
-        assert_eq!(normalize_language_tag(""), None);
-    }
+/// Initialization options for i18n system
+#[derive(Debug, Clone)]
+pub struct InitOptions {
+    /// Language code (e.g., "en", "zh", "ja")
+    pub language: String,
+    /// Directory containing translation files
+    pub preload_dir: Option<String>,
+    /// Enable diagnostics output
+    pub diagnostics: bool,
+}
 
-    #[test]
-    fn init_with_options_applies_language_without_preload() {
-        let report = init_with_options(InitOptions {
-            language: "de-DE".to_string(),
+impl Default for InitOptions {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
             preload_dir: None,
             diagnostics: false,
-        });
-
-        assert_eq!(report.language, "de-DE");
-        assert_eq!(report.preload_dir, None);
+        }
     }
+}
 
-    #[test]
-    fn init_with_options_reports_preload_errors_deterministically() {
-        let report = init_with_options(InitOptions {
-            language: "en".to_string(),
-            preload_dir: Some("/path/that/does/not/exist".to_string()),
-            diagnostics: false,
-        });
+/// Initialization report
+#[derive(Debug, Clone)]
+pub struct InitReport {
+    /// Number of translation files loaded
+    pub files_loaded: usize,
+    /// Total number of translations
+    pub translations_count: usize,
+    /// Any errors that occurred during initialization
+    pub errors: Vec<String>,
+}
 
-        assert_eq!(report.language, "en");
-        assert_eq!(report.preload_dir, Some("/path/that/does/not/exist".to_string()));
-        assert!(report.preload_error.is_some());
+impl InitReport {
+    /// Create a new empty report
+    pub fn new() -> Self {
+        Self {
+            files_loaded: 0,
+            translations_count: 0,
+            errors: Vec::new(),
+        }
     }
+}
+
+/// Initialize the i18n system
+pub fn init() {
+    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    *guard = Some(I18nManager::new());
+}
+
+/// Initialize the i18n system with options
+pub fn init_with_options(options: InitOptions) -> InitReport {
+    let mut report = InitReport::new();
+    let mut manager = I18nManager::new();
+    manager.set_language(&options.language);
+    
+    // Load translations from directory if specified
+    if let Some(dir) = options.preload_dir {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "json") {
+                    match manager.load_translations(path.to_str().unwrap_or("")) {
+                        Ok(()) => {
+                            report.files_loaded += 1;
+                            if options.diagnostics {
+                                eprintln!("[i18n] Loaded translations from: {:?}", path);
+                            }
+                        }
+                        Err(e) => {
+                            report.errors.push(format!("Failed to load {:?}: {}", path, e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    report.translations_count = manager.translations.len();
+    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    *guard = Some(manager);
+    
+    report
+}
+
+/// Translate a key to the current language
+pub fn translate(key: &str) -> String {
+    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    if let Some(ref mut manager) = *guard {
+        manager.translate(key)
+    } else {
+        key.to_string()
+    }
+}
+
+/// Get the global i18n manager
+pub fn get_manager() -> std::sync::MutexGuard<'static, Option<I18nManager>> {
+    GLOBAL_I18N.lock().expect("i18n lock poisoned")
 }

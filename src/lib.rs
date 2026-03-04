@@ -2,7 +2,7 @@
 
 /// Action/command system.
 pub mod action;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+#[cfg(not(feature = "embedded"))]
 /// C ABI bindings for desktop runtime.
 pub mod bindings;
 /// Clipboard helpers.
@@ -13,7 +13,7 @@ pub mod control_backend;
 pub mod core;
 /// Event types and dispatch helpers.
 pub mod event;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+#[cfg(not(feature = "embedded"))]
 /// Internationalization module for desktop runtime.
 pub mod i18n;
 /// Layout managers.
@@ -22,6 +22,8 @@ pub mod layout;
 pub mod object;
 /// Platform abstraction and backend adapters.
 pub mod platform;
+/// Quality management for adaptive rendering.
+pub mod quality;
 /// Rendering traits and primitives.
 pub mod render;
 /// Runtime render-engine abstraction.
@@ -30,15 +32,15 @@ pub mod render_engine;
 pub mod signal;
 /// Style system primitives.
 pub mod style;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+#[cfg(not(feature = "embedded"))]
 /// Theme management for desktop runtime.
 pub mod theme;
-#[cfg(feature = "gpu-wgpu")]
+/// Optional WGPU GPU acceleration backend.
 /// Optional WGPU GPU acceleration backend.
 pub mod wgpu_backend;
 /// Widget definitions and widget helpers.
 pub mod widget;
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+#[cfg(not(feature = "embedded"))]
 /// XML utilities for desktop runtime.
 pub mod xml;
 
@@ -76,7 +78,8 @@ pub fn quit() {
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
         eprintln!(
-            "[rust_widgets.runtime] stage={stage} profile={} backend={} route={}",
+            "[rust_widgets.runtime] stage={} profile={} backend={} route={}",
+            stage,
             runtime_profile_name(),
             platform::get_platform().backend_name(),
             runtime_route_name()
@@ -134,18 +137,18 @@ fn quit_runtime_backend() {
     render_engine::default_render_engine().quit();
 }
 
-#[cfg(all(not(feature = "embedded"), feature = "desktop-runtime"))]
+#[cfg(not(feature = "embedded"))]
 fn init_i18n_runtime() {
     i18n::init();
 }
 
-#[cfg(any(feature = "embedded", not(feature = "desktop-runtime")))]
+#[cfg(feature = "embedded")]
 fn init_i18n_runtime() {}
 
 // Convenient wrapper functions for platform operations
-// Users can call these directly without manually getting the platform instance
+// Users can call these directly without manually getting a platform instance
 
-/// Create a top-level window with the specified title and geometry.
+/// Create a top-level window with specified title and geometry.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_window()`.
 ///
@@ -163,7 +166,7 @@ pub fn create_window(
     platform::get_platform().create_window(title, x, y, width, height)
 }
 
-/// Create a button control as a child of the specified parent.
+/// Create a button control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_button()`.
 pub fn create_button(
@@ -174,10 +177,13 @@ pub fn create_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_button(parent, text, x, y, width, height)
+    eprintln!("[rust_widgets] lib::create_button called: parent={}, text='{}'", parent, text);
+    let result = platform::get_platform().create_button(parent, text, x, y, width, height);
+    eprintln!("[rust_widgets] lib::create_button returning: {}", result);
+    result
 }
 
-/// Create a checkbox control as a child of the specified parent.
+/// Create a checkbox control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_checkbox()`.
 pub fn create_checkbox(
@@ -191,7 +197,7 @@ pub fn create_checkbox(
     platform::get_platform().create_checkbox(parent, text, x, y, width, height)
 }
 
-/// Create a line edit control as a child of the specified parent.
+/// Create a line edit control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_line_edit()`.
 pub fn create_line_edit(
@@ -205,7 +211,7 @@ pub fn create_line_edit(
     platform::get_platform().create_line_edit(parent, text, x, y, width, height)
 }
 
-/// Create a label control as a child of the specified parent.
+/// Create a label control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_label()`.
 pub fn create_label(
@@ -219,7 +225,7 @@ pub fn create_label(
     platform::get_platform().create_label(parent, text, x, y, width, height)
 }
 
-/// Create a radio button control as a child of the specified parent.
+/// Create a radio button control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_radio_button()`.
 pub fn create_radio_button(
@@ -233,7 +239,7 @@ pub fn create_radio_button(
     platform::get_platform().create_radio_button(parent, text, x, y, width, height)
 }
 
-/// Create a slider control as a child of the specified parent.
+/// Create a slider control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_slider()`.
 pub fn create_slider(
@@ -246,7 +252,7 @@ pub fn create_slider(
     platform::get_platform().create_slider(parent, x, y, width, height)
 }
 
-/// Create a progress bar control as a child of the specified parent.
+/// Create a progress bar control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_progress_bar()`.
 pub fn create_progress_bar(
@@ -259,7 +265,7 @@ pub fn create_progress_bar(
     platform::get_platform().create_progress_bar(parent, x, y, width, height)
 }
 
-/// Create a combo box control as a child of the specified parent.
+/// Create a combo box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_combo_box()`.
 pub fn create_combo_box(
@@ -272,7 +278,7 @@ pub fn create_combo_box(
     platform::get_platform().create_combo_box(parent, x, y, width, height)
 }
 
-/// Create a list box control as a child of the specified parent.
+/// Create a list box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_list_box()`.
 pub fn create_list_box(
@@ -285,7 +291,7 @@ pub fn create_list_box(
     platform::get_platform().create_list_box(parent, x, y, width, height)
 }
 
-/// Create a panel control as a child of the specified parent.
+/// Create a panel control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_panel()`.
 pub fn create_panel(
@@ -298,7 +304,7 @@ pub fn create_panel(
     platform::get_platform().create_panel(parent, x, y, width, height)
 }
 
-/// Create a message box dialog as a child of the specified parent.
+/// Create a message box dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_message_box()`.
 pub fn create_message_box(
@@ -313,7 +319,7 @@ pub fn create_message_box(
     platform::get_platform().create_message_box(parent, title, text, x, y, width, height)
 }
 
-/// Create a file dialog as a child of the specified parent.
+/// Create a file dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_file_dialog()`.
 pub fn create_file_dialog(
@@ -326,7 +332,7 @@ pub fn create_file_dialog(
     platform::get_platform().create_file_dialog(parent, x, y, width, height)
 }
 
-/// Create a color dialog as a child of the specified parent.
+/// Create a color dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_color_dialog()`.
 pub fn create_color_dialog(
@@ -339,7 +345,7 @@ pub fn create_color_dialog(
     platform::get_platform().create_color_dialog(parent, x, y, width, height)
 }
 
-/// Create a font dialog as a child of the specified parent.
+/// Create a font dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_font_dialog()`.
 pub fn create_font_dialog(
@@ -352,7 +358,7 @@ pub fn create_font_dialog(
     platform::get_platform().create_font_dialog(parent, x, y, width, height)
 }
 
-/// Create a spin box control as a child of the specified parent.
+/// Create a spin box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_spin_box()`.
 pub fn create_spin_box(
@@ -365,7 +371,7 @@ pub fn create_spin_box(
     platform::get_platform().create_spin_box(parent, x, y, width, height)
 }
 
-/// Create a list view control as a child of the specified parent.
+/// Create a list view control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_list_view()`.
 pub fn create_list_view(
@@ -378,7 +384,7 @@ pub fn create_list_view(
     platform::get_platform().create_list_view(parent, x, y, width, height)
 }
 
-/// Create a scroll area control as a child of the specified parent.
+/// Create a scroll area control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_scroll_area()`.
 pub fn create_scroll_area(
@@ -405,7 +411,7 @@ pub fn hide_widget(widget_id: crate::core::ObjectId) {
     platform::get_platform().hide_widget(widget_id);
 }
 
-/// Set the geometry of a widget.
+/// Set geometry of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_geometry()`.
 pub fn set_widget_geometry(
@@ -418,21 +424,22 @@ pub fn set_widget_geometry(
     platform::get_platform().set_widget_geometry(widget_id, x, y, width, height);
 }
 
-/// Set the text of a widget.
+/// Set text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
+    eprintln!("[rust_widgets] set_widget_text called: widget_id={}, text_len={}", widget_id, text.len());
     platform::get_platform().set_widget_text(widget_id, text);
 }
 
-/// Get the text of a widget.
+/// Get text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().get_widget_text()`.
 pub fn get_widget_text(widget_id: crate::core::ObjectId) -> String {
     platform::get_platform().get_widget_text(widget_id)
 }
 
-/// Set the enabled state of a widget.
+/// Set enabled state of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_enabled()`.
 pub fn set_widget_enabled(widget_id: crate::core::ObjectId, enabled: bool) {
@@ -446,7 +453,7 @@ pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_enabled(widget_id)
 }
 
-/// Set the visibility of a widget.
+/// Set visibility of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_visible()`.
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {

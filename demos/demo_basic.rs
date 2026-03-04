@@ -1,7 +1,7 @@
 //! Basic Widgets Demo - All basic controls in one dialog with event logging.
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, LazyLock};
 use std::thread;
 use std::time::Duration;
 // ...existing code...
@@ -21,8 +21,9 @@ use rust_widgets::{runtime_gui_mode, RuntimeGuiMode};
 use rust_widgets::event::NativeSignalBridge;
 use rust_widgets::set_widget_text;
 
+static LOG_TEXT: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
+
 thread_local! {
-    static LOG_TEXT: RefCell<String> = RefCell::new(String::new());
     static CURRENT_LANG: RefCell<String> = RefCell::new("en".to_string());
 }
 
@@ -44,6 +45,7 @@ fn format_timestamp() -> String {
 }
 
 fn log_event(widget_type: &str, widget_id: ObjectId, event: &str) {
+    eprintln!("[demo_basic] log_event called: {} {}(id={}) {}", format_timestamp(), widget_type, widget_id, event);
     let entry = format!(
         "{} {}(id={}) {}\n",
         format_timestamp(),
@@ -51,13 +53,15 @@ fn log_event(widget_type: &str, widget_id: ObjectId, event: &str) {
         widget_id,
         event
     );
-    LOG_TEXT.with(|t| {
-        let mut text = t.borrow_mut();
+    {
+        let mut text = LOG_TEXT.lock().expect("LOG_TEXT lock poisoned");
         text.push_str(&entry);
+        // Keep only the last 10000 characters
         if text.len() > 10000 {
             *text = text[text.len() - 8000..].to_string();
         }
-    });
+        eprintln!("[demo_basic] log_event: LOG_TEXT length = {}", text.len());
+    }
 }
 
 // ...existing code...
@@ -341,9 +345,10 @@ fn main() {
     });
 
     signal_bridge.connect_clicked(clear_btn, move || {
-        LOG_TEXT.with(|t| {
-            *t.borrow_mut() = String::new();
-        });
+        {
+            let mut text = LOG_TEXT.lock().expect("LOG_TEXT lock poisoned");
+            *text = String::new();
+        }
         set_widget_text(log_text, "");
         log_event("Button", clear_btn, "Clicked (Clear Log)");
     });
@@ -379,11 +384,12 @@ fn main() {
     log_event("Window", window, "Shown - Demo Started");
 
     // Initial log update
-    LOG_TEXT.with(|t| {
-        set_widget_text(log_text, &t.borrow());
-    });
+    {
+        let text = LOG_TEXT.lock().expect("LOG_TEXT lock poisoned");
+        set_widget_text(log_text, &text);
+    }
 
-    // Start a thread to pump events and update log
+    // Start a thread to pump events and update log UI
     let signal_bridge_clone = Arc::clone(&signal_bridge);
     let log_text_clone = log_text;
     thread::spawn(move || {
@@ -394,9 +400,13 @@ fn main() {
 
             // Update log every 100ms
             if last_update.elapsed().as_millis() >= 100 {
-                LOG_TEXT.with(|t| {
-                    set_widget_text(log_text_clone, &t.borrow());
-                });
+                let text_len = {
+                    let text = LOG_TEXT.lock().expect("LOG_TEXT lock poisoned");
+                    let len = text.len();
+                    set_widget_text(log_text_clone, &text);
+                    len
+                };
+                eprintln!("[demo_basic] updating log UI: text_len = {}", text_len);
                 last_update = std::time::Instant::now();
             }
 

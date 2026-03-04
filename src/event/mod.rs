@@ -330,6 +330,7 @@ impl NativeSignalBridge {
     where
         F: FnMut() + Send + 'static,
     {
+        eprintln!("[NativeSignalBridge] connect_widget_trigger: widget_id={}, kind={:?}", widget_id, kind);
         let signal = {
             let mut map = self
                 .widget_trigger_signals
@@ -337,6 +338,7 @@ impl NativeSignalBridge {
                 .expect("native bridge widget trigger lock poisoned");
             map.entry((widget_id, kind)).or_default().clone()
         };
+        eprintln!("[NativeSignalBridge] connect_widget_trigger: connected");
         signal.connect(slot)
     }
 
@@ -400,6 +402,7 @@ impl NativeSignalBridge {
     /// Poll one source once and emit mapped signals.
     pub fn pump_once_with_source(&self, source: &dyn TriggerEventSource) -> bool {
         if let Some(menu_item_id) = source.poll_menu_triggered() {
+            eprintln!("[NativeSignalBridge] pump_once: got menu event for item {}", menu_item_id);
             let signal = self
                 .menu_trigger_signals
                 .lock()
@@ -407,12 +410,16 @@ impl NativeSignalBridge {
                 .get(&menu_item_id)
                 .cloned();
             if let Some(signal) = signal {
+                eprintln!("[NativeSignalBridge] pump_once: emitting menu signal");
                 signal.emit();
                 return true;
+            } else {
+                eprintln!("[NativeSignalBridge] pump_once: no signal connected for menu item {}", menu_item_id);
             }
         }
 
         if let Some(event) = source.poll_widget_trigger_event() {
+            eprintln!("[NativeSignalBridge] pump_once: got widget event for widget {} kind {:?}", event.widget_id, event.kind);
             let signal: Option<GenericSignal> = if event.kind == WidgetTriggerKind::Unknown {
                 None
             } else {
@@ -424,8 +431,11 @@ impl NativeSignalBridge {
             };
 
             if let Some(signal) = signal {
+                eprintln!("[NativeSignalBridge] pump_once: emitting widget signal");
                 signal.emit();
                 return true;
+            } else {
+                eprintln!("[NativeSignalBridge] pump_once: no signal connected for widget {} kind {:?}", event.widget_id, event.kind);
             }
         }
 

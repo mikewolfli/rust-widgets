@@ -233,6 +233,7 @@ impl GenericSignal {
 
     /// Emit signal to all currently connected slots.
     pub fn emit(&self) {
+        eprintln!("[GenericSignal] emit: slot_count = {}", self.slot_count());
         self.inner.emit(())
     }
 

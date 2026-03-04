@@ -500,7 +500,7 @@ mod tests {
         assert!(normalized_to_bold.bold);
     }
 
-    #[cfg(feature = "desktop-runtime")]
+    #[cfg(not(feature = "embedded"))]
     #[test]
     fn font_deserialize_normalizes_weight_and_bold_contract() {
         let parsed: Font = serde_json::from_str(

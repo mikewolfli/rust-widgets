@@ -13,6 +13,9 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "gpu-wgpu")]
 use crate::wgpu_backend::WgpuRenderer;
 
+#[cfg(feature = "quality-management")]
+use crate::quality::QualityManager;
+
 /// Text measurement result for width, height, and baseline metrics.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextMetrics {
@@ -473,6 +476,42 @@ pub fn last_auto_render_backend() -> AutoRenderBackend {
         .expect("auto render backend lock poisoned")
 }
 
+#[cfg(feature = "quality-management")]
+/// Returns the current rendering quality level.
+pub fn current_quality_level() -> crate::quality::QualityLevel {
+    global_quality_manager()
+        .lock()
+        .expect("quality manager lock poisoned")
+        .quality_level()
+}
+
+#[cfg(feature = "quality-management")]
+/// Sets the rendering quality level manually.
+pub fn set_quality_level(level: crate::quality::QualityLevel) {
+    let mut quality_manager = global_quality_manager()
+        .lock()
+        .expect("quality manager lock poisoned");
+    quality_manager.set_quality_level(level);
+}
+
+#[cfg(feature = "quality-management")]
+/// Returns the current frame rate.
+pub fn current_fps() -> f32 {
+    global_quality_manager()
+        .lock()
+        .expect("quality manager lock poisoned")
+        .current_fps()
+}
+
+#[cfg(feature = "quality-management")]
+/// Returns the average frame time in seconds.
+pub fn average_frame_time() -> f32 {
+    global_quality_manager()
+        .lock()
+        .expect("quality manager lock poisoned")
+        .average_frame_time()
+}
+
 /// One scene layer that stores ordered draw commands.
 #[derive(Debug, Clone)]
 pub struct SceneLayer {
@@ -621,6 +660,12 @@ fn compose_scene_to_surface_software(
     surface.buffer = backend.surface.buffer;
 }
 
+#[cfg(feature = "quality-management")]
+fn global_quality_manager() -> &'static Mutex<QualityManager> {
+    static MANAGER: OnceLock<Mutex<QualityManager>> = OnceLock::new();
+    MANAGER.get_or_init(|| Mutex::new(QualityManager::new()))
+}
+
 #[cfg(feature = "gpu-wgpu")]
 fn compose_scene_to_surface_wgpu(
     scene: &RenderScene,
@@ -635,16 +680,29 @@ fn compose_scene_to_surface_wgpu(
 
     let renderer = cached_wgpu_renderer().ok_or_else(|| "wgpu renderer unavailable".to_string())?;
 
+    let start_time = std::time::Instant::now();
+
     let mut backend = SoftwarePaintBackend::new(size, surface.dpi_scale());
     backend.set_size(size);
     backend.apply_render_config(surface.render_config());
     scene.compose_with_backend_config(&mut backend, clear, config);
 
-    let pixels =
+    let pixels = 
         renderer.upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())?;
 
     surface.buffer.back = pixels;
     surface.buffer.present();
+
+    let frame_duration = start_time.elapsed();
+    
+    #[cfg(feature = "quality-management")]
+    {
+        let mut quality_manager = global_quality_manager()
+            .lock()
+            .expect("quality manager lock poisoned");
+        quality_manager.finish_frame(frame_duration);
+    }
+
     Ok(())
 }
 

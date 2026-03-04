@@ -322,8 +322,9 @@ impl XmlLayoutLoader {
     fn build_element(node: &roxmltree::Node<'_, '_>) -> XmlElement {
         let mut properties = HashMap::new();
         for attr in node.attributes() {
-            if attr.name() != "id" && attr.name() != "class" {
-                properties.insert(attr.name().to_string(), attr.value().to_string());
+            let attr_name: &str = attr.name();
+            if attr_name != "id" && attr_name != "class" {
+                properties.insert(attr_name.to_string(), attr.value().to_string());
             }
         }
         XmlElement {
@@ -332,7 +333,7 @@ impl XmlLayoutLoader {
             properties,
             children: node
                 .children()
-                .filter(|child| child.is_element())
+                .filter(|child: &roxmltree::Node| child.is_element())
                 .map(|child| Self::build_element(&child))
                 .collect(),
         }

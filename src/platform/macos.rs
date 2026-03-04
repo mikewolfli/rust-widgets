@@ -18,7 +18,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use crate::core::{ObjectId, PlatformFamily};
 
 use super::state::BackendState;
-use super::{DropEvent, Platform};
+use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum HandleKind {
@@ -40,6 +40,13 @@ enum HandleKind {
         MenuItem,
         ToolBar,
         StatusBar,
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
 }
 
 #[derive(Clone, Copy)]
@@ -69,29 +76,85 @@ pub struct MacOSPlatform {
 static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
 static MENU_TARGET: OnceLock<usize> = OnceLock::new();
 
+/// Widget button click events queue.
+static WIDGET_EVENTS: OnceLock<Mutex<Vec<WidgetTriggerEvent>>> = OnceLock::new();
+
 fn menu_events() -> &'static Mutex<Vec<u64>> {
     // Shared menu-trigger queue used by Cocoa selector bridge.
     MENU_EVENTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn widget_events() -> &'static Mutex<Vec<WidgetTriggerEvent>> {
+    // Shared widget-trigger queue used by Cocoa selector bridge.
+    WIDGET_EVENTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSMenuItem actions.
-    unsafe {
-        if sender == nil {
-            return;
+    let result = std::panic::catch_unwind(|| {
+        unsafe {
+            if sender == nil {
+                return;
+            }
+            let represented: id = msg_send![sender, representedObject];
+            if represented == nil {
+                return;
+            }
+            let item_id: u64 = msg_send![represented, unsignedLongLongValue];
+            if item_id != 0 {
+                if let Ok(mut events) = menu_events().lock() {
+                    events.push(item_id);
+                }
+            }
         }
-        let represented: id = msg_send![sender, representedObject];
-        if represented == nil {
-            return;
-        }
-        let item_id: u64 = msg_send![represented, unsignedLongLongValue];
-        if item_id != 0 {
-            menu_events()
-                .lock()
-                .expect("menu event lock poisoned")
-                .push(item_id);
-        }
+    });
+    
+    if let Err(_) = result {
+        eprintln!("[rust_widgets] Panic in on_menu_item handler");
     }
+}
+
+extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
+    // Selector callback invoked by NSButton actions.
+    eprintln!("[rust_widgets] on_button_clicked: CALLED! sender={:?}", sender);
+    
+    // Use catch_unwind to prevent panics from crossing FFI boundary
+    let result = std::panic::catch_unwind(|| {
+        unsafe {
+            if sender == nil {
+                eprintln!("[rust_widgets] on_button_clicked: sender is nil");
+                return;
+            }
+            let represented: id = msg_send![sender, representedObject];
+            eprintln!("[rust_widgets] on_button_clicked: represented={:?}", represented);
+            if represented == nil {
+                eprintln!("[rust_widgets] on_button_clicked: representedObject is nil");
+                return;
+            }
+            let widget_id: u64 = msg_send![represented, unsignedLongLongValue];
+            eprintln!("[rust_widgets] on_button_clicked: widget_id = {}", widget_id);
+            if widget_id != 0 {
+                // Push the event first (radio button handling is secondary)
+                if let Ok(mut events) = widget_events().lock() {
+                    events.push(WidgetTriggerEvent {
+                        widget_id,
+                        kind: WidgetTriggerKind::Clicked,
+                    });
+                    eprintln!("[rust_widgets] on_button_clicked: event pushed, queue size = {}", events.len());
+                } else {
+                    eprintln!("[rust_widgets] on_button_clicked: failed to lock widget_events");
+                }
+            }
+        }
+    });
+    
+    if let Err(_) = result {
+        eprintln!("[rust_widgets] Panic in on_button_clicked handler");
+    }
+}
+
+extern "C" fn on_button_clicked_simple(_this: &Object, _cmd: Sel) {
+    eprintln!("[rust_widgets] on_button_clicked_simple: called");
 }
 
 fn menu_target_class() -> *const Class {
@@ -113,6 +176,39 @@ fn shared_menu_target() -> id {
         let obj: id = msg_send![class, new];
         obj as usize
     });
+    ptr as id
+}
+
+static BUTTON_TARGET: OnceLock<usize> = OnceLock::new();
+
+fn button_target_class() -> *const Class {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    (*CLASS.get_or_init(|| {
+        let superclass = class!(NSObject);
+        let mut decl = ClassDecl::new("RustWidgetsButtonTarget", superclass)
+            .expect("failed to declare RustWidgetsButtonTarget");
+        unsafe {
+            decl.add_method(sel!(onButtonClicked:), on_button_clicked as extern "C" fn(&Object, Sel, id));
+            // Also add the method with a different selector name for testing
+            decl.add_method(sel!(buttonClicked:), on_button_clicked as extern "C" fn(&Object, Sel, id));
+            // Add a simple selector without colon
+            decl.add_method(sel!(buttonClick), on_button_clicked_simple as extern "C" fn(&Object, Sel));
+        }
+        (decl.register() as *const Class) as usize
+    })) as *const Class
+}
+
+fn shared_button_target() -> id {
+    let ptr = *BUTTON_TARGET.get_or_init(|| unsafe {
+        let class = button_target_class();
+        eprintln!("[rust_widgets] shared_button_target: creating target with class {:?}", class);
+        let obj: id = msg_send![class, new];
+        eprintln!("[rust_widgets] shared_button_target: created obj {:?}", obj);
+        // Retain the object to keep it alive
+        let _: () = msg_send![obj, retain];
+        obj as usize
+    });
+    eprintln!("[rust_widgets] shared_button_target: returning target {:?}", ptr as id);
     ptr as id
 }
 
@@ -327,12 +423,23 @@ impl Platform for MacOSPlatform {
     }
 
     fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        eprintln!("[rust_widgets] MacOSPlatform::create_button called: parent={}, text='{}'", parent, text);
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
             let button = NSButton::initWithFrame_(NSButton::alloc(nil), Self::make_rect(x, y, width, height));
+            eprintln!("[rust_widgets] MacOSPlatform::create_button: button created {:?}", button);
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
             NSButton::setBezelStyle_(button, NSBezelStyle::NSRoundedBezelStyle);
+            
+            // Set button type to momentary push button
+            let _: () = msg_send![button, setButtonType: 0u64]; // NSMomentaryPushInButton
+            
+            // Enable the button
+            let _: () = msg_send![button, setEnabled: YES];
+            
+            // Set button to send action on mouse up and mouse down
+            let _: () = msg_send![button, sendActionOn: 2u64]; // NSLeftMouseDownMask
 
             if let Some(parent_handle) = self.get_handle(parent) {
                 if let HandleKind::Window = parent_handle.kind {
@@ -342,6 +449,33 @@ impl Platform for MacOSPlatform {
             }
 
             let id = self.register_handle(HandleKind::Button, text, x, y, width, height, button as usize);
+            eprintln!("[rust_widgets] create_button: created button with id {}", id);
+
+            // Set up button click handler using NSButton methods
+            let target = shared_button_target();
+            eprintln!("[rust_widgets] create_button: setting target {:?}", target);
+            NSButton::setTarget_(button, target);
+            eprintln!("[rust_widgets] create_button: setting action");
+            let action_sel = sel!(onButtonClicked:);
+            eprintln!("[rust_widgets] create_button: action selector = {:?}", action_sel);
+            NSButton::setAction_(button, action_sel);
+            
+            // Test the button action
+            let _: () = msg_send![button, performClick: nil];
+            eprintln!("[rust_widgets] create_button: performed test click");
+            
+            // Verify the target and action are set correctly
+            let current_target: id = msg_send![button, target];
+            let current_action: Sel = msg_send![button, action];
+            eprintln!("[rust_widgets] create_button: current target = {:?}, current action = {:?}", current_target, current_action);
+              
+            // Create NSNumber to store widget id - use numberWithUnsignedLongLong
+            eprintln!("[rust_widgets] create_button: creating token for id {}", id);
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            // Retain the token to prevent it from being released
+            let _: () = msg_send![token, retain];
+            let _: () = msg_send![button, setRepresentedObject: token];
+            eprintln!("[rust_widgets] create_button: done");
 
             pool.drain();
             id
@@ -364,6 +498,14 @@ impl Platform for MacOSPlatform {
             }
 
             let id = self.register_handle(HandleKind::CheckBox, text, x, y, width, height, button as usize);
+
+            // Set up checkbox click handler
+            let target = shared_button_target();
+            NSButton::setTarget_(button, target);
+            NSButton::setAction_(button, sel!(onButtonClicked:));
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            let _: () = msg_send![token, retain];
+            let _: () = msg_send![button, setRepresentedObject: token];
 
             pool.drain();
             id
@@ -401,6 +543,14 @@ impl Platform for MacOSPlatform {
                 button as usize,
             );
 
+            // Set up radio button click handler
+            let target = shared_button_target();
+            NSButton::setTarget_(button, target);
+            NSButton::setAction_(button, sel!(onButtonClicked:));
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            let _: () = msg_send![token, retain];
+            let _: () = msg_send![button, setRepresentedObject: token];
+
             pool.drain();
             id
         }
@@ -410,7 +560,16 @@ impl Platform for MacOSPlatform {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
+            // Use NSTextField with multi-line support
             let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
+            
+            // Enable multi-line mode
+            let _: () = msg_send![field, setEditable: NO];
+            let _: () = msg_send![field, setSelectable: YES];
+            let _: () = msg_send![field, setBezeled: YES];
+            let _: () = msg_send![field, setDrawsBackground: YES];
+            
+            // Set initial text
             NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
 
             if let Some(parent_handle) = self.get_handle(parent) {
@@ -1077,24 +1236,58 @@ impl Platform for MacOSPlatform {
             if let Some(handle) = self.get_handle(widget_id) {
                 let ns_text = NSString::alloc(nil).init_str(text);
                 let native = Self::as_id(handle);
-                match handle.kind {
-                    HandleKind::Window => NSWindow::setTitle_(native, ns_text),
-                    HandleKind::LineEdit | HandleKind::Label | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
-                    HandleKind::ComboBox => {}
-                    HandleKind::ListBox => {
-                        let _: () = msg_send![native, setStringValue: ns_text];
-                    }
-                    HandleKind::Slider | HandleKind::ProgressBar => {
-                        if let Ok(value) = text.parse::<f64>() {
-                            let _: () = msg_send![native, setDoubleValue: value];
+                
+                // Check if we're on the main thread
+                let is_main_thread: bool = msg_send![class!(NSThread), isMainThread];
+                
+                if !is_main_thread {
+                    // For non-main thread, we need to dispatch to main thread
+                    // Use performSelectorOnMainThread with the control itself
+                    let _: () = msg_send![ns_text, retain];
+                    eprintln!("[rust_widgets] set_widget_text: dispatching to main thread, native={:?}, ns_text={:?}", native, ns_text);
+                    
+                    // For NSTextField, use setStringValue: selector
+                    let selector = sel!(setStringValue:);
+                    let result: bool = msg_send![native, respondsToSelector:selector];
+                    eprintln!("[rust_widgets] set_widget_text: native responds to setStringValue: ? {}", result);
+                    
+                    if result {
+                        let _: () = msg_send![native, performSelectorOnMainThread:selector withObject:ns_text waitUntilDone:YES];
+                        eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setStringValue:");
+                    } else {
+                        // Fallback: try setString: selector (NSTextView)
+                        let selector2 = sel!(setString:);
+                        let result2: bool = msg_send![native, respondsToSelector:selector2];
+                        eprintln!("[rust_widgets] set_widget_text: native responds to setString: ? {}", result2);
+                        if result2 {
+                            let _: () = msg_send![native, performSelectorOnMainThread:selector2 withObject:ns_text waitUntilDone:YES];
+                            eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setString:");
                         }
                     }
-                    HandleKind::MenuBar | HandleKind::ToolBar => {}
-                    HandleKind::Panel => {}
-                    HandleKind::Menu | HandleKind::MenuItem => {
-                        let _: () = msg_send![native, setTitle: ns_text];
+                } else {
+                    match handle.kind {
+                        HandleKind::Window => NSWindow::setTitle_(native, ns_text),
+                        HandleKind::LineEdit => {
+                            // NSTextField uses setStringValue: selector
+                            let _: () = msg_send![native, setStringValue: ns_text];
+                        }
+                        HandleKind::Label | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
+                        HandleKind::ComboBox => {}
+                        HandleKind::ListBox => {
+                            let _: () = msg_send![native, setStringValue: ns_text];
+                        }
+                        HandleKind::Slider | HandleKind::ProgressBar => {
+                            if let Ok(value) = text.parse::<f64>() {
+                                let _: () = msg_send![native, setDoubleValue: value];
+                            }
+                        }
+                        HandleKind::MenuBar | HandleKind::ToolBar => {}
+                        HandleKind::Panel => {}
+                        HandleKind::Menu | HandleKind::MenuItem => {
+                            let _: () = msg_send![native, setTitle: ns_text];
+                        }
+                        _ => NSButton::setTitle_(native, ns_text),
                     }
-                    _ => NSButton::setTitle_(native, ns_text),
                 }
             }
         }
@@ -1181,6 +1374,162 @@ impl Platform for MacOSPlatform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
+
+    fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        self.state.inject_menu_trigger(menu_item_id)
+    }
+
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        self.state.pop_widget_trigger()
+    }
+
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        // First check native widget events from Cocoa
+        if let Ok(mut events) = widget_events().lock() {
+            let len = events.len();
+            if len > 0 {
+                eprintln!("[rust_widgets] poll_widget_trigger_event: queue has {} events", len);
+            }
+            if let Some(event) = events.pop() {
+                eprintln!("[rust_widgets] poll_widget_trigger_event: returning event for widget {}", event.widget_id);
+                return Some(event);
+            }
+        }
+        // Fall back to state-based events
+        self.state.pop_widget_trigger_event()
+    }
+
+    fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
+    }
+
+    fn create_message_box(
+        &self,
+        _parent: ObjectId,
+        title: &str,
+        _text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::MessageBox,
+            title,
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_file_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::FileDialog,
+            "file_dialog",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_color_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::ColorDialog,
+            "color_dialog",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_font_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::FontDialog,
+            "font_dialog",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_spin_box(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::SpinBox,
+            "spin_box",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_list_view(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::ListView,
+            "list_view",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+
+    fn create_scroll_area(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(
+            HandleKind::ScrollArea,
+            "scroll_area",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1195,19 +1544,19 @@ mod tests {
 
     #[test]
     fn macos_backend_ime_and_accessibility_state_roundtrip() {
-        let platform = new();
+        let platform = MacOSPlatform::new();
         let widget_id = insert_dummy_widget(&platform);
 
-        assert!(set_widget_ime_enabled(&platform, widget_id, true));
-        assert!(is_widget_ime_enabled(&platform, widget_id));
+        assert!(Platform::set_widget_ime_enabled(&platform, widget_id, true));
+        assert!(Platform::is_widget_ime_enabled(&platform, widget_id));
 
-        assert!(set_widget_accessibility_name(
+        assert!(Platform::set_widget_accessibility_name(
             &platform,
             widget_id,
             "Accessible"
         ));
         assert_eq!(
-            get_widget_accessibility_name(&platform, widget_id),
+            Platform::get_widget_accessibility_name(&platform, widget_id),
             "Accessible".to_string()
         );
     }

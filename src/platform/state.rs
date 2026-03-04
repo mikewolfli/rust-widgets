@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use crate::core::ObjectId;
 
-use super::{DropEvent, WidgetTriggerEvent};
+use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
 
 /// Generic widget state record owned by backend state model.
 use serde::{Deserialize, Serialize};
@@ -336,6 +336,37 @@ where
             .lock()
             .expect("backend state drop lock poisoned")
             .push_back(event);
+        true
+    }
+
+    /// Inject menu trigger event.
+    pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        if !self.contains_widget(menu_item_id) {
+            return false;
+        }
+        self.push_menu_event(menu_item_id);
+        true
+    }
+
+    /// Pop widget trigger event.
+    pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
+        self.pop_menu_event()
+    }
+
+    /// Pop typed widget trigger event.
+    pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        self.pop_widget_event()
+    }
+
+    /// Inject widget trigger event.
+    pub fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
+        if !self.contains_widget(widget_id) {
+            return false;
+        }
+        self.push_widget_event(WidgetTriggerEvent {
+            widget_id,
+            kind,
+        });
         true
     }
 }
