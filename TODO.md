@@ -99,4 +99,59 @@ This file mirrors staged execution status.
 - [x] Evaluate thread safety and lock-free optimizations
     - Summary: Thread safety is managed via Mutex, OnceLock, Arc, and atomics for global state and engine data. No locking in pixel hot paths. Atomics are used for counters. For further optimization, profile lock contention, prefer atomics for simple state, and consider lock-free structures if bottlenecks are found. Current usage is safe and appropriate for most cases.
 
+### Signal System Optimization TODOs (2026-03-05)
+- [ ] Refactor slot storage to use RwLock or DashMap for reduced lock contention
+- [ ] Implement Arc<T> payloads in Signal to minimize cloning cost for large types
+- [ ] Add benchmarks for signal emit/connect/disconnect under high load
+- [ ] Profile and document performance improvements and tradeoffs
+- [ ] Update API documentation to reflect changes in signal system
+
+## TODO: src folder modules to optimize
+
+- action/
+- bindings/
+- chart/
+- clipboard/
+- control_backend/
+- core/
+- event/
+- i18n/
+- layout/
+- object/
+- pdf/
+- platform/
+- print/
+- render_engine/
+- style/
+- theme/
+- widget/
+- xml/
+
+(Already optimized: signal/, render/, quality.rs, wgpu_backend.rs, lib.rs)
+
+Please specify which folder or module to optimize next.
+
+## Platform Module Optimization Checklist
+
+- [ ] Ensure all platform backends implement the full Platform trait contract
+- [ ] Remove unused fallback logic and redundant stub methods
+- [ ] Refactor capability negotiation to minimize code duplication
+- [ ] Consolidate backend selection logic for clarity and maintainability
+- [ ] Audit Mutex, OnceLock, and atomics usage for lock-free optimization
+- [ ] Profile lock contention in widget creation and event loop paths
+- [ ] Add or update documentation for all public trait methods and structs
+- [ ] Add module-level documentation to all platform-specific files
+- [ ] Expand unit and integration tests for platform capability negotiation and event injection
+- [ ] Ensure all platform backends are covered by integration tests
+
+## Print Module Optimization Checklist
+
+- [ ] Review trait contracts (PrintDocument, PrintContext) for completeness and extensibility
+- [ ] Consider more efficient data structures for command recording (e.g., smallvec)
+- [ ] Profile and optimize file I/O in write_print_job_file for large print jobs
+- [ ] Add doc comments to all public structs and methods
+- [ ] Expand test coverage for edge cases (large page ranges, system print errors)
+- [ ] Refactor platform-specific print command logic for easier extension
+- [ ] Ensure all error messages are user-friendly and actionable
+
 ## Stage Progress

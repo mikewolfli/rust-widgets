@@ -1,4 +1,8 @@
-//! Rendering primitives and software surface baseline.
+/// Returns true if the given rect is empty (width == 0 or height == 0).
+fn is_empty_rect(rect: &crate::core::Rect) -> bool {
+    rect.width == 0 || rect.height == 0
+}
+/// Rendering primitives and software surface baseline.
 
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
@@ -8,8 +12,8 @@ use crate::widget::{
     TableWidget, TextEdit, ToolBar, TreeView, Widget, Window,
 };
 use font8x8::{UnicodeFonts, BASIC_FONTS};
-use rayon::prelude::*;
-use std::simd::{u8x4, Simd};
+// use rayon::prelude::*;
+// use std::simd::{u8x4, Simd};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(feature = "gpu-wgpu")]
@@ -735,7 +739,7 @@ fn push_widget_fill_and_border<W: Widget>(
     fallback_border: Option<(Color, u32)>,
 ) {
     let rect = widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -888,7 +892,7 @@ pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
 /// Append visual commands for a `CheckBox` baseline representation.
 pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckBox) {
     let rect = checkbox.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -948,7 +952,7 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
 /// Append visual commands for a `RadioButton` baseline representation.
 pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioButton) {
     let rect = radio.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1003,7 +1007,7 @@ pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &Line
 /// Append visual commands for a `ComboBox` baseline representation.
 pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &ComboBox) {
     let rect = combo_box.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1089,7 +1093,7 @@ pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBo
     );
 
     let rect = list_box.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1125,7 +1129,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
     );
 
     let rect = progress_bar.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1150,7 +1154,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
 /// Append visual commands for a `Slider` value representation.
 pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     let rect = slider.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1222,7 +1226,7 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
 /// Append visual commands for a `ScrollBar` value representation.
 pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &ScrollBar) {
     let rect = scroll_bar.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1282,7 +1286,7 @@ pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBa
     );
 
     let rect = menu_bar.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1322,7 +1326,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
     );
 
     let rect = menu.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1369,7 +1373,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     );
 
     let rect = tool_bar.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1434,7 +1438,7 @@ pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &Ta
     );
 
     let rect = tab_widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1479,7 +1483,7 @@ pub fn append_stack_widget_visual_commands(layer: &mut SceneLayer, stack_widget:
     );
 
     let rect = stack_widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1595,7 +1599,7 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     );
 
     let rect = tree_view.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1656,7 +1660,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     );
 
     let rect = table_widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1741,7 +1745,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
     );
 
     let rect = grid_widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1790,7 +1794,7 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
     );
 
     let rect = chart_widget.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1880,7 +1884,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
     );
 
     let rect = dock_panel.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -1969,7 +1973,7 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
     );
 
     let rect = splitter.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2019,7 +2023,7 @@ pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiAre
     );
 
     let rect = mdi_area.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2068,7 +2072,7 @@ pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
     );
 
     let rect = canvas.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2106,7 +2110,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     );
 
     let rect = spin_box.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2249,7 +2253,7 @@ pub fn append_list_view_visual_commands(
     );
 
     let rect = list_view.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2327,7 +2331,7 @@ pub fn append_scroll_area_visual_commands(
     );
 
     let rect = scroll_area.geometry();
-    if is_empty_rect(rect) {
+    if is_empty_rect(&rect) {
         return;
     }
 
@@ -2983,7 +2987,7 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
 
         let ring_radius = radius as f32;
-        let ring_half_width = stroke_width as f32 / 2.0;
+        // let ring_half_width = stroke_width as f32 / 2.0; // unused
         let x0 = (center.x - radius as i32 - 1).max(0);
         let y0 = (center.y - radius as i32 - 1).max(0);
         let x1 = (center.x + radius as i32 + 1).min(width - 1);
@@ -2996,7 +3000,6 @@ impl SoftwareSurface {
                     py,
                     center,
                     ring_radius,
-                    ring_half_width,
                     sample_grid,
                 );
                 if stroke_coverage > 0.0 {
@@ -3116,19 +3119,16 @@ fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }
 
-fn fill_pixels(pixels: &mut [u8], color: Color) {
-    let len = pixels.len();
+pub fn fill_pixels(pixels: &mut [u8], color: Color) {
     let chunk_size = 4;
     let color_arr = [color.r, color.g, color.b, color.a];
-    let simd_color = u8x4::from_array(color_arr);
-    pixels.par_chunks_mut(chunk_size).for_each(|px| {
-        if px.len() == chunk_size {
-            let simd_px = Simd::from_slice_mut(px);
-            *simd_px = simd_color;
+    for chunk in pixels.chunks_mut(chunk_size) {
+        if chunk.len() == chunk_size {
+            chunk.copy_from_slice(&color_arr);
         } else {
-            px.copy_from_slice(&color_arr[..px.len()]);
+            chunk.copy_from_slice(&color_arr[..chunk.len()]);
         }
-    });
+    }
 }
 
 fn set_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color) {
@@ -3142,7 +3142,7 @@ fn set_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color) {
     frame[idx + 3] = color.a;
 }
 
-fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
+pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
     if coverage <= 0.0 {
         return;
     }
@@ -3208,7 +3208,7 @@ fn circle_stroke_coverage_grid(
     py: i32,
     center: Point,
     radius: f32,
-    half_width: f32,
+    // half_width: f32, // unused
     grid: u8,
 ) -> f32 {
     let sample_count = grid.clamp(1, 8) as u32;
@@ -3219,8 +3219,10 @@ fn circle_stroke_coverage_grid(
         for sx in 0..sample_count {
             let sample_x = px as f32 + (sx as f32 + 0.5) / sample_count as f32;
             let sample_y = py as f32 + (sy as f32 + 0.5) / sample_count as f32;
-            let distance = point_to_segment_distance(sample_x, sample_y, center.x, center.y);
-            coverage_sum += (half_width + 0.5 - (distance - radius).abs()).clamp(0.0, 1.0);
+            let dx = sample_x - center.x as f32;
+            let dy = sample_y - center.y as f32;
+            let distance = (dx * dx + dy * dy).sqrt();
+            coverage_sum += circle_fill_coverage(distance, radius);
         }
     }
 

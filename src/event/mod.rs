@@ -334,7 +334,7 @@ impl NativeSignalBridge {
         slot: F,
     ) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         eprintln!("[NativeSignalBridge] connect_widget_trigger: widget_id={}, kind={:?}", widget_id, kind);
         let signal = {
@@ -351,7 +351,7 @@ impl NativeSignalBridge {
     /// Connect slot to widget clicked trigger.
     pub fn connect_clicked<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.connect_widget_trigger(widget_id, WidgetTriggerKind::Clicked, slot)
     }
@@ -359,7 +359,7 @@ impl NativeSignalBridge {
     /// Connect slot to widget value-changed trigger.
     pub fn connect_value_changed<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.connect_widget_trigger(widget_id, WidgetTriggerKind::ValueChanged, slot)
     }
@@ -367,7 +367,7 @@ impl NativeSignalBridge {
     /// Connect slot to widget selection-changed trigger.
     pub fn connect_selection_changed<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.connect_widget_trigger(widget_id, WidgetTriggerKind::SelectionChanged, slot)
     }
@@ -375,7 +375,7 @@ impl NativeSignalBridge {
     /// Connect slot to widget/window closed trigger.
     pub fn connect_closed<F>(&self, widget_id: ObjectId, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.connect_widget_trigger(widget_id, WidgetTriggerKind::Closed, slot)
     }
@@ -383,7 +383,7 @@ impl NativeSignalBridge {
     /// Connect slot to menu-item trigger.
     pub fn connect_menu_trigger<F>(&self, menu_item_id: ObjectId, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         let signal = {
             let mut map = self

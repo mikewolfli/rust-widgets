@@ -92,3 +92,6 @@ path = "demos/demo_mdiarea.rs"
 [[example]]
 name = "demo_quality"
 path = "demos/demo_quality.rs"
+
+[dev-dependencies]
+criterion = "0.8.2"

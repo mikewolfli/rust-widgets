@@ -1,6 +1,7 @@
 //! Action/shortcut/command framework.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::core::ObjectId;
 use crate::signal::{ConnectionHandle, GenericSignal};
@@ -83,7 +84,7 @@ impl Action {
     /// Connects a callback that runs when the action is triggered.
     pub fn connect_triggered<F>(&self, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.triggered.connect(slot)
     }
@@ -91,7 +92,7 @@ impl Action {
     /// Connects a callback for checked-state changes.
     pub fn connect_toggled<F>(&self, slot: F) -> ConnectionHandle
     where
-        F: FnMut(bool) + Send + 'static,
+        F: FnMut(Arc<bool>) + Send + Sync + 'static,
     {
         self.toggled.connect(slot)
     }
@@ -99,7 +100,7 @@ impl Action {
     /// Connects a callback for enabled-state changes.
     pub fn connect_enabled_changed<F>(&self, slot: F) -> ConnectionHandle
     where
-        F: FnMut(bool) + Send + 'static,
+        F: FnMut(Arc<bool>) + Send + Sync + 'static,
     {
         self.enabled_changed.connect(slot)
     }

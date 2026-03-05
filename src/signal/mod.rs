@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Opaque connection handle used to disconnect a slot.
@@ -10,7 +10,7 @@ pub struct ConnectionHandle(pub u64);
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-type SlotFn<T> = Box<dyn FnMut(T) + Send + 'static>;
+type SlotFn<T> = Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>;
 
 struct SlotEntry<T: Clone + Send + 'static> {
     callback: SlotFn<T>,
@@ -18,13 +18,13 @@ struct SlotEntry<T: Clone + Send + 'static> {
 }
 
 struct SignalInner<T: Clone + Send + 'static> {
-    slots: Mutex<HashMap<ConnectionHandle, SlotEntry<T>>>,
+    slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
 }
 
 impl<T: Clone + Send + 'static> SignalInner<T> {
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
         self.slots
-            .lock()
+            .write()
             .expect("signal lock poisoned")
             .remove(&handle)
             .is_some()
@@ -74,7 +74,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(SignalInner {
-                slots: Mutex::new(HashMap::new()),
+                slots: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -82,10 +82,10 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Connect a slot and return its connection handle.
     pub fn connect<F>(&self, slot: F) -> ConnectionHandle
     where
-        F: FnMut(T) + Send + 'static,
+        F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
-        self.inner.slots.lock().expect("signal lock poisoned").insert(
+        self.inner.slots.write().expect("signal lock poisoned").insert(
             handle,
             SlotEntry {
                 callback: Box::new(slot),
@@ -98,10 +98,10 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Connect a slot that is invoked once and then disconnected automatically.
     pub fn connect_once<F>(&self, slot: F) -> ConnectionHandle
     where
-        F: FnMut(T) + Send + 'static,
+        F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
-        self.inner.slots.lock().expect("signal lock poisoned").insert(
+        self.inner.slots.write().expect("signal lock poisoned").insert(
             handle,
             SlotEntry {
                 callback: Box::new(slot),
@@ -114,7 +114,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Connect a slot bound to a connection scope. It disconnects when the scope is dropped.
     pub fn connect_scoped<F>(&self, owner: &ConnectionScope, slot: F) -> ConnectionHandle
     where
-        F: FnMut(T) + Send + 'static,
+        F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = self.connect(slot);
         self.track_owner(owner, handle);
@@ -124,7 +124,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Connect a once-slot bound to a connection scope.
     pub fn connect_once_scoped<F>(&self, owner: &ConnectionScope, slot: F) -> ConnectionHandle
     where
-        F: FnMut(T) + Send + 'static,
+        F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = self.connect_once(slot);
         self.track_owner(owner, handle);
@@ -138,15 +138,16 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
-        self.inner.slots.lock().expect("signal lock poisoned").clear();
+        self.inner.slots.write().expect("signal lock poisoned").clear();
     }
 
     /// Emit a cloned value to all connected slots.
     pub fn emit(&self, value: T) {
-        let mut slots = self.inner.slots.lock().expect("signal lock poisoned");
+        let arc_value = Arc::new(value);
+        let mut slots = self.inner.slots.write().expect("signal lock poisoned");
         let mut once_handles = Vec::new();
         for (handle, slot) in slots.iter_mut() {
-            (slot.callback)(value.clone());
+            (slot.callback)(arc_value.clone());
             if slot.once {
                 once_handles.push(*handle);
             }
@@ -158,7 +159,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Return number of currently connected slots.
     pub fn slot_count(&self) -> usize {
-        self.inner.slots.lock().expect("signal lock poisoned").len()
+        self.inner.slots.read().expect("signal lock poisoned").len()
     }
 
     fn track_owner(&self, owner: &ConnectionScope, handle: ConnectionHandle) {
@@ -192,7 +193,7 @@ impl GenericSignal {
     /// Connect zero-argument slot and return connection handle.
     pub fn connect<F>(&self, mut slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.inner.connect(move |_| slot())
     }
@@ -200,7 +201,7 @@ impl GenericSignal {
     /// Connect zero-argument once-slot and return connection handle.
     pub fn connect_once<F>(&self, mut slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.inner.connect_once(move |_| slot())
     }
@@ -208,7 +209,7 @@ impl GenericSignal {
     /// Connect zero-argument slot bound to an owner scope.
     pub fn connect_scoped<F>(&self, owner: &ConnectionScope, mut slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.inner.connect_scoped(owner, move |_| slot())
     }
@@ -216,7 +217,7 @@ impl GenericSignal {
     /// Connect zero-argument once-slot bound to an owner scope.
     pub fn connect_once_scoped<F>(&self, owner: &ConnectionScope, mut slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.inner.connect_once_scoped(owner, move |_| slot())
     }
@@ -269,7 +270,7 @@ impl CustomSignalHub {
     /// Connects a slot to a named signal, creating it when missing.
     pub fn connect<F>(&mut self, name: impl Into<String>, slot: F) -> ConnectionHandle
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut() + Send + Sync + 'static,
     {
         self.signals.entry(name.into()).or_default().connect(slot)
     }
@@ -288,14 +289,14 @@ mod tests {
         let sum = Arc::new(AtomicUsize::new(0));
 
         let sum_a = Arc::clone(&sum);
-        signal.connect(move |value| {
-            sum_a.fetch_add(value as usize, Ordering::SeqCst);
-        });
+            signal.connect(move |value: Arc<u32>| {
+                sum_a.fetch_add(*value as usize, Ordering::SeqCst);
+            });
 
         let sum_b = Arc::clone(&sum);
-        signal.connect(move |value| {
-            sum_b.fetch_add((value as usize) * 2, Ordering::SeqCst);
-        });
+            signal.connect(move |value: Arc<u32>| {
+                sum_b.fetch_add((*value as usize) * 2, Ordering::SeqCst);
+            });
 
         signal.emit(3);
         assert_eq!(sum.load(Ordering::SeqCst), 9);
