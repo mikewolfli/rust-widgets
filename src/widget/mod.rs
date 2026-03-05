@@ -798,6 +798,7 @@ pub enum DialogResult {
 
 pub struct Dialog {
     base: BaseWidget,
+    title: String,
     modal: bool,
     result: Option<DialogResult>,
     pub accepted: GenericSignal,
@@ -807,15 +808,26 @@ pub struct Dialog {
 
 impl Dialog {
     /// Creates a dialog with geometry.
-    pub fn new(geometry: Rect) -> Self {
+    pub fn new(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Dialog, geometry, "Dialog"),
+            title,
             modal: false,
             result: None,
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
             finished: Signal1::new(),
         }
+    }
+
+    /// Returns dialog title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Updates dialog title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
     }
 
     /// Returns whether this dialog is modal.
@@ -925,6 +937,7 @@ impl_widget_delegate!(MessageBox, base);
 /// File dialog baseline contract.
 pub struct FileDialog {
     base: BaseWidget,
+    title: String,
     current_dir: String,
     selected_file: Option<String>,
     pub file_selected: Signal1<Option<String>>,
@@ -934,15 +947,26 @@ pub struct FileDialog {
 
 impl FileDialog {
     /// Creates a file dialog.
-    pub fn new(geometry: Rect) -> Self {
+    pub fn new(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
+            title,
             current_dir: String::new(),
             selected_file: None,
             file_selected: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
         }
+    }
+
+    /// Returns dialog title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Updates dialog title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
     }
 
     pub fn current_dir(&self) -> &str {
@@ -976,18 +1000,30 @@ impl_widget_delegate!(FileDialog, base);
 /// Color dialog baseline contract.
 pub struct ColorDialog {
     base: BaseWidget,
+    title: String,
     color: Color,
     pub color_selected: Signal1<Color>,
 }
 
 impl ColorDialog {
     /// Creates a color dialog with opaque black default.
-    pub fn new(geometry: Rect) -> Self {
+    pub fn new(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
+            title,
             color: Color::rgba(0, 0, 0, 255),
             color_selected: Signal1::new(),
         }
+    }
+
+    /// Returns dialog title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Updates dialog title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
     }
 
     pub fn color(&self) -> Color {
@@ -1007,18 +1043,30 @@ impl_widget_delegate!(ColorDialog, base);
 /// Font dialog baseline contract.
 pub struct FontDialog {
     base: BaseWidget,
+    title: String,
     font: Font,
     pub font_selected: Signal1<Font>,
 }
 
 impl FontDialog {
     /// Creates a font dialog with default UI font.
-    pub fn new(geometry: Rect) -> Self {
+    pub fn new(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FontDialog, geometry, "FontDialog"),
+            title,
             font: Font::default_ui(),
             font_selected: Signal1::new(),
         }
+    }
+
+    /// Returns dialog title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Updates dialog title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
     }
 
     pub fn font(&self) -> &Font {
@@ -4630,6 +4678,12 @@ impl CheckListBoxItem {
     }
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+}
+
+impl ToString for CheckListBoxItem {
+    fn to_string(&self) -> String {
+        self.text.clone()
     }
 }
 

@@ -399,7 +399,7 @@ impl XmlLayoutLoader {
 
         let mut widget: Box<dyn Widget> = match class.as_str() {
             "window" => Box::new(Window::new(title, rect)),
-            "dialog" => Box::new(Dialog::new(rect)),
+            "dialog" => Box::new(Dialog::new("Dialog".to_string(), rect)),
             "popupwindow" | "popup" => Box::new(PopupWindow::new(rect)),
             "button" => Box::new(Button::new(text, rect)),
             "checkbox" => {
