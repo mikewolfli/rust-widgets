@@ -40,6 +40,8 @@ pub mod theme;
 pub mod wgpu_backend;
 /// Widget definitions and widget helpers.
 pub mod widget;
+// Re-export all widget types for convenience
+pub use widget::*;
 #[cfg(not(feature = "embedded"))]
 /// XML utilities for desktop runtime.
 pub mod xml;
@@ -177,7 +179,10 @@ pub fn create_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    eprintln!("[rust_widgets] lib::create_button called: parent={}, text='{}'", parent, text);
+    eprintln!(
+        "[rust_widgets] lib::create_button called: parent={}, text='{}'",
+        parent, text
+    );
     let result = platform::get_platform().create_button(parent, text, x, y, width, height);
     eprintln!("[rust_widgets] lib::create_button returning: {}", result);
     result
@@ -428,7 +433,11 @@ pub fn set_widget_geometry(
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
-    eprintln!("[rust_widgets] set_widget_text called: widget_id={}, text_len={}", widget_id, text.len());
+    eprintln!(
+        "[rust_widgets] set_widget_text called: widget_id={}, text_len={}",
+        widget_id,
+        text.len()
+    );
     platform::get_platform().set_widget_text(widget_id, text);
 }
 

@@ -58,7 +58,18 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::MenuBar
         | WidgetKind::Menu
         | WidgetKind::ToolBar
-        | WidgetKind::StatusBar => ControlRoutePreference::NativePreferred,
+        | WidgetKind::StatusBar
+        | WidgetKind::ToggleButton
+        | WidgetKind::DoubleSpinBox
+        | WidgetKind::Dial
+        | WidgetKind::DatePicker
+        | WidgetKind::TimePicker
+        | WidgetKind::DateTimePicker
+        | WidgetKind::DirectoryPicker
+        | WidgetKind::ActivityIndicator
+        | WidgetKind::Calendar
+        | WidgetKind::LCDNumber
+        | WidgetKind::FontComboBox => ControlRoutePreference::NativePreferred,
         WidgetKind::TextEdit
         | WidgetKind::RichEdit
         | WidgetKind::ListView
@@ -68,7 +79,29 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::Canvas
         | WidgetKind::Table
         | WidgetKind::Grid
-        | WidgetKind::Chart => ControlRoutePreference::CustomRequired,
+        | WidgetKind::Chart
+        | WidgetKind::CheckListBox
+        | WidgetKind::Wizard
+        | WidgetKind::DataView
+        | WidgetKind::PropertyGrid
+        | WidgetKind::Toolbox
+        | WidgetKind::CollapsiblePane
+        | WidgetKind::DockWidget
+        | WidgetKind::WebView
+        | WidgetKind::ColumnView
+        | WidgetKind::UndoView
+        | WidgetKind::CommandLink
+        | WidgetKind::WebEngineView
+        | WidgetKind::WebEnginePage
+        | WidgetKind::WebEngineSettings
+        | WidgetKind::WebEngineDownloadItem
+        | WidgetKind::WebEngineCookieStore
+        | WidgetKind::WebEngineWebChannel
+        | WidgetKind::WebEngineFindTextResult
+        | WidgetKind::WebEngineNotification
+        | WidgetKind::WebEngineScriptDialog
+        | WidgetKind::WebEngineContextMenuRequest => ControlRoutePreference::CustomRequired,
+        WidgetKind::StackedWidget => ControlRoutePreference::CustomRequired,
     }
 }
 

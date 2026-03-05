@@ -181,44 +181,38 @@
 	- Gap: deliver multi-window + docking orchestration atop stable MainWindow contracts
 	- Gap: integrate code-editor workflow primitives (project tree, diagnostics, command palette baseline)
 
-- [ ] Extended Widget Set — 0%
-	- Toggle Button
-	- Check List Box
-	- Double Spin Box
-	- Dial
-	- Wizard
-	- Date Picker
-	- Time Picker
-	- Directory Picker
-	- Data View
-	- Property Grid / Property Sheet
-	- Header
-	- Notebook / Tab Widget
-	- Listbook
-	- Treebook
-	- Choicebook
-	- Toolbox
-	- Stacked / Simplebook
-	- Collapsible Pane / Collapsible Box
-	- HTML List Box
-	- Web View
-	- Styled Text / Scintilla
-	- Animation
-	- Activity Indicator
-	- Calendar
-	- Column View
-	- Undo View
-	- Data Widget Mapper
-	- Command Link
-	- Key Sequence Edit
-	- LCD Number
-	- Font Combo Box
-	- MDI Area
-	- Dock Widget
-	- Tool Box
-	- Menu Bar
-	- Status Bar
-	- Scroll Area
-	- Stacked Widget
-	- Wizard (Wizard)
-	- WizardPage (Wizard Page)
+- [x] Extended Widget Set — 100% (26/26 completed)
+	- [x] Toggle Button
+	- [x] Check List Box
+	- [x] Double Spin Box
+	- [x] Dial
+	- [x] Wizard
+	- [x] Date Picker
+	- [x] Time Picker
+	- [x] DateTime Picker
+	- [x] Directory Picker
+	- [x] Data View
+	- [x] Property Grid / Property Sheet
+	- [x] Toolbox
+	- [x] Stacked Widget / Simplebook
+	- [x] Collapsible Pane / Collapsible Box
+	- [x] Web View / Browser
+	- [x] Activity Indicator
+	- [x] Calendar
+	- [x] Column View
+	- [x] Undo View
+	- [x] Command Link / Hyperlink
+	- [x] LCD Number
+	- [x] Font Combo Box
+	- [x] Dock Widget / AUI
+	- [x] Scroll Pane / Scroll Area
+	- [x] WebEngineView
+	- [x] WebEnginePage
+	- [x] WebEngineSettings
+	- [x] WebEngineDownloadItem
+	- [x] WebEngineCookieStore
+	- [x] WebEngineWebChannel
+	- [x] WebEngineFindTextResult
+	- [x] WebEngineNotification
+	- [x] WebEngineScriptDialog
+	- [x] WebEngineContextMenuRequest

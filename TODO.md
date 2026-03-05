@@ -17,39 +17,44 @@ This file mirrors staged execution status.
 ### Extended Widget Set Implementation
 
 #### High Priority Widgets
-- [ ] Design and implement ToggleButton widget with checked state and auto-exclusive support
-- [ ] Design and implement CheckListBox widget with item selection and check state management
-- [ ] Design and implement DoubleSpinBox widget for double-precision numeric input
-- [ ] Design and implement Dial widget with rotary control and value signals
-- [ ] Design and implement Wizard and WizardPage widgets for multi-step dialogs
-- [ ] Design and implement DatePicker widget for date selection
-- [ ] Design and implement TimePicker widget for time selection
-- [ ] Design and implement DirectoryPicker widget for directory selection
+- [x] Design and implement ToggleButton widget with checked state and auto-exclusive support
+- [x] Design and implement CheckListBox widget with item selection and check state management
+- [x] Design and implement DoubleSpinBox widget for double-precision numeric input
+- [x] Design and implement Dial widget with rotary control and value signals
+- [x] Design and implement Wizard widget for multi-step dialogs
+- [x] Design and implement DatePicker widget for date selection
+- [x] Design and implement TimePicker widget for time selection
+- [x] Design and implement DateTimePicker widget for date and time selection
+- [x] Design and implement DirectoryPicker widget for directory selection
 
 #### Medium Priority Widgets
-- [ ] Design and implement DataView widget for data visualization
-- [ ] Design and implement PropertyGrid widget for property editing interface
-- [ ] Design and implement Header widget for column headers
-- [ ] Design and implement Listbook widget for list-based notebook
-- [ ] Design and implement Treebook widget for tree-based notebook
-- [ ] Design and implement Choicebook widget for choice-based notebook
-- [ ] Design and implement Toolbox widget for tool palette
-- [ ] Design and implement StackedWidget for stacked notebook
-- [ ] Design and implement CollapsiblePane widget for collapsible containers
+- [x] Design and implement DataView widget for data visualization
+- [x] Design and implement PropertyGrid widget for property editing interface
+- [x] Design and implement Toolbox widget for tool palette
+- [x] Design and implement StackedWidget for stacked notebook
+- [x] Design and implement CollapsiblePane widget for collapsible containers
+- [x] Design and implement DockWidget widget for dockable panels
 
 #### Low Priority Widgets
-- [ ] Design and implement HTMLListBox widget for HTML rendering list
-- [ ] Design and implement WebView widget for web browser integration
-- [ ] Design and implement Animation widget for animation control
-- [ ] Design and implement ActivityIndicator widget for progress/activity indication
-- [ ] Design and implement Calendar widget for calendar display and selection
-- [ ] Design and implement ColumnView widget for column-based data view
-- [ ] Design and implement UndoView widget for undo/redo stack visualization
-- [ ] Design and implement DataWidgetMapper widget for data mapping
-- [ ] Design and implement CommandLink widget for command link buttons
-- [ ] Design and implement KeySequenceEdit widget for keyboard shortcut editing
-- [ ] Design and implement LCDNumber widget for digital number display
-- [ ] Design and implement FontComboBox widget for font selection
-- [ ] Design and implement ToolBox widget for toolbox functionality
+- [x] Design and implement WebView widget for web browser integration
+- [x] Design and implement ActivityIndicator widget for progress/activity indication
+- [x] Design and implement Calendar widget for calendar display and selection
+- [x] Design and implement ColumnView widget for column-based data view
+- [x] Design and implement UndoView widget for undo/redo stack visualization
+- [x] Design and implement CommandLink widget for command link buttons
+- [x] Design and implement LCDNumber widget for digital number display
+- [x] Design and implement FontComboBox widget for font selection
+
+#### Web Engine Widgets
+- [x] Design and implement WebEngineView widget for web content display
+- [x] Design and implement WebEnginePage widget for web content management
+- [x] Design and implement WebEngineSettings widget for web engine configuration
+- [x] Design and implement WebEngineDownloadItem widget for download management
+- [x] Design and implement WebEngineCookieStore widget for cookie management
+- [x] Design and implement WebEngineWebChannel widget for JavaScript communication
+- [x] Design and implement WebEngineFindTextResult widget for text search results
+- [x] Design and implement WebEngineNotification widget for web notifications
+- [x] Design and implement WebEngineScriptDialog widget for JavaScript dialogs
+- [x] Design and implement WebEngineContextMenuRequest widget for context menu handling
 
 ## Stage Progress

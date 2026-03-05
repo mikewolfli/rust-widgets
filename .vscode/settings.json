@@ -1,5 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
         "cargo add": true
-    }
+    },
+    "trae.agent.docker.keep": true,
+    "trae.agent.docker.keepDelay": 3000
 }

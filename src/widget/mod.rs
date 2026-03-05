@@ -3,11 +3,27 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use chrono::{Datelike, Timelike};
+
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
+
+/// Image structure for widget icons and favicons.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Image {
+    // In a real implementation, this would contain image data
+    // For now, we'll just use a placeholder
+    pub data: Vec<u8>,
+}
+
+impl Image {
+    pub fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+}
 
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +68,49 @@ pub enum WidgetKind {
     Grid,
     /// Chart surface widget.
     Chart,
+    ToggleButton,
+    CheckListBox,
+    DoubleSpinBox,
+    Dial,
+    Wizard,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    DirectoryPicker,
+    DataView,
+    PropertyGrid,
+    Toolbox,
+    StackedWidget,
+    CollapsiblePane,
+    DockWidget,
+    WebView,
+    ActivityIndicator,
+    Calendar,
+    ColumnView,
+    UndoView,
+    CommandLink,
+    LCDNumber,
+    FontComboBox,
+    /// Web engine view widget for displaying web content.
+    WebEngineView,
+    /// Web engine page widget for managing web content.
+    WebEnginePage,
+    /// Web engine settings widget for configuring web engine behavior.
+    WebEngineSettings,
+    /// Web engine download item widget for managing downloads.
+    WebEngineDownloadItem,
+    /// Web engine cookie store widget for managing cookies.
+    WebEngineCookieStore,
+    /// Web engine web channel widget for JavaScript communication.
+    WebEngineWebChannel,
+    /// Web engine find text result widget for text search results.
+    WebEngineFindTextResult,
+    /// Web engine notification widget for web notifications.
+    WebEngineNotification,
+    /// Web engine script dialog widget for JavaScript dialogs.
+    WebEngineScriptDialog,
+    /// Web engine context menu request widget for context menu handling.
+    WebEngineContextMenuRequest,
 }
 
 /// Common widget contract implemented by all widget models.
@@ -4273,6 +4332,7666 @@ impl_widget_delegate!(TableView, table);
 simple_control!(GridWidget, WidgetKind::Grid);
 
 simple_control!(ChartWidget, WidgetKind::Chart);
+
+/// Toggle button state enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleButtonState {
+    Normal,
+    Checked,
+    Disabled,
+}
+
+pub struct ToggleButton {
+    base: BaseWidget,
+    text: String,
+    checked: bool,
+    auto_exclusive: bool,
+    group_id: Option<String>,
+    pressed: bool,
+    pub toggled: Signal1<bool>,
+    pub checked_changed: Signal1<bool>,
+    pub pressed_signal: GenericSignal,
+    pub released_signal: GenericSignal,
+    pub state_changed: Signal1<ToggleButtonState>,
+}
+
+impl ToggleButton {
+    pub fn new(text: String, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ToggleButton, geometry, "ToggleButton"),
+            text,
+            checked: false,
+            auto_exclusive: false,
+            group_id: None,
+            pressed: false,
+            toggled: Signal1::new(),
+            checked_changed: Signal1::new(),
+            pressed_signal: GenericSignal::new(),
+            released_signal: GenericSignal::new(),
+            state_changed: Signal1::new(),
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_text(&mut self, text: String) {
+        if self.text != text {
+            self.text = text;
+        }
+    }
+
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn set_checked(&mut self, checked: bool) {
+        if self.checked == checked {
+            return;
+        }
+        self.checked = checked;
+        self.checked_changed.emit(checked);
+        self.toggled.emit(checked);
+        self.state_changed.emit(self.state());
+    }
+
+    pub fn toggle(&mut self) {
+        self.set_checked(!self.checked);
+    }
+
+    pub fn is_auto_exclusive(&self) -> bool {
+        self.auto_exclusive
+    }
+
+    pub fn set_auto_exclusive(&mut self, exclusive: bool) {
+        self.auto_exclusive = exclusive;
+    }
+
+    pub fn group_id(&self) -> Option<&str> {
+        self.group_id.as_deref()
+    }
+
+    pub fn set_group_id(&mut self, group_id: Option<String>) {
+        self.group_id = group_id;
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+
+    fn set_pressed(&mut self, pressed: bool) {
+        if self.pressed == pressed {
+            return;
+        }
+        self.pressed = pressed;
+        if pressed {
+            self.pressed_signal.emit();
+        } else {
+            self.released_signal.emit();
+        }
+        self.state_changed.emit(self.state());
+    }
+
+    pub fn state(&self) -> ToggleButtonState {
+        if !self.base.is_enabled() {
+            ToggleButtonState::Disabled
+        } else if self.checked {
+            ToggleButtonState::Checked
+        } else {
+            ToggleButtonState::Normal
+        }
+    }
+
+    pub fn select_in_group(peers: &mut [&mut ToggleButton], selected_index: usize) -> bool {
+        if selected_index >= peers.len() {
+            return false;
+        }
+
+        let selected_group = peers[selected_index].group_id.clone();
+        for (index, peer) in peers.iter_mut().enumerate() {
+            if selected_group.is_some() && peer.group_id != selected_group {
+                continue;
+            }
+            peer.set_checked(index == selected_index);
+        }
+        true
+    }
+}
+
+impl Widget for ToggleButton {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+        self.state_changed.emit(self.state());
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for ToggleButton {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { .. } => {
+                self.set_pressed(true);
+            }
+            Event::MouseRelease { .. } => {
+                let was_pressed = self.is_pressed();
+                self.set_pressed(false);
+                if was_pressed {
+                    self.toggle();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckListBoxItemState {
+    Unchecked,
+    Checked,
+    PartiallyChecked,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckListBoxItem {
+    text: String,
+    state: CheckListBoxItemState,
+    enabled: bool,
+}
+
+impl CheckListBoxItem {
+    pub fn new(text: String) -> Self {
+        Self {
+            text,
+            state: CheckListBoxItemState::Unchecked,
+            enabled: true,
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+    }
+    pub fn state(&self) -> CheckListBoxItemState {
+        self.state
+    }
+    pub fn set_state(&mut self, state: CheckListBoxItemState) {
+        self.state = state;
+    }
+    pub fn is_checked(&self) -> bool {
+        matches!(self.state, CheckListBoxItemState::Checked)
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+}
+
+pub struct CheckListBox {
+    base: BaseWidget,
+    items: Vec<CheckListBoxItem>,
+    selected_index: Option<usize>,
+    tristate_enabled: bool,
+    pub item_state_changed: Signal1<(usize, CheckListBoxItemState)>,
+    pub selection_changed: Signal1<usize>,
+    pub item_checked: Signal1<usize>,
+    pub item_unchecked: Signal1<usize>,
+}
+
+impl CheckListBox {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::CheckListBox, geometry, "CheckListBox"),
+            items: Vec::new(),
+            selected_index: None,
+            tristate_enabled: false,
+            item_state_changed: Signal1::new(),
+            selection_changed: Signal1::new(),
+            item_checked: Signal1::new(),
+            item_unchecked: Signal1::new(),
+        }
+    }
+
+    pub fn add_item(&mut self, text: impl Into<String>) -> usize {
+        let item = CheckListBoxItem::new(text.into());
+        self.items.push(item);
+        self.items.len() - 1
+    }
+
+    pub fn insert_item(&mut self, index: usize, text: impl Into<String>) -> bool {
+        if index > self.items.len() {
+            return false;
+        }
+        let item = CheckListBoxItem::new(text.into());
+        self.items.insert(index, item);
+        true
+    }
+
+    pub fn remove_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.items.remove(index);
+        if self.selected_index == Some(index) {
+            self.selected_index = None;
+        } else if self.selected_index.map(|i| i > index).unwrap_or(false) {
+            self.selected_index = self.selected_index.map(|i| i - 1);
+        }
+        true
+    }
+
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+    pub fn item(&self, index: usize) -> Option<&CheckListBoxItem> {
+        self.items.get(index)
+    }
+    pub fn item_mut(&mut self, index: usize) -> Option<&mut CheckListBoxItem> {
+        self.items.get_mut(index)
+    }
+    pub fn item_text(&self, index: usize) -> Option<&str> {
+        self.items.get(index).map(|item| item.text.as_str())
+    }
+
+    pub fn set_item_text(&mut self, index: usize, text: String) -> bool {
+        if let Some(item) = self.items.get_mut(index) {
+            item.set_text(text);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn item_state(&self, index: usize) -> Option<CheckListBoxItemState> {
+        self.items.get(index).map(|item| item.state())
+    }
+
+    pub fn set_item_state(&mut self, index: usize, state: CheckListBoxItemState) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+
+        let normalized_state =
+            if !self.tristate_enabled && state == CheckListBoxItemState::PartiallyChecked {
+                CheckListBoxItemState::Unchecked
+            } else {
+                state
+            };
+
+        let item = &mut self.items[index];
+        if item.state() == normalized_state {
+            return true;
+        }
+
+        let was_checked = item.is_checked();
+        item.set_state(normalized_state);
+        let is_checked = item.is_checked();
+
+        self.item_state_changed.emit((index, normalized_state));
+
+        if was_checked && !is_checked {
+            self.item_unchecked.emit(index);
+        } else if !was_checked && is_checked {
+            self.item_checked.emit(index);
+        }
+
+        true
+    }
+
+    pub fn is_item_checked(&self, index: usize) -> bool {
+        self.items
+            .get(index)
+            .map(|item| item.is_checked())
+            .unwrap_or(false)
+    }
+
+    pub fn set_item_checked(&mut self, index: usize, checked: bool) -> bool {
+        let state = if checked {
+            CheckListBoxItemState::Checked
+        } else {
+            CheckListBoxItemState::Unchecked
+        };
+        self.set_item_state(index, state)
+    }
+
+    pub fn toggle_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+
+        let item = &self.items[index];
+        let next_state = if self.tristate_enabled {
+            match item.state() {
+                CheckListBoxItemState::Unchecked => CheckListBoxItemState::PartiallyChecked,
+                CheckListBoxItemState::PartiallyChecked => CheckListBoxItemState::Checked,
+                CheckListBoxItemState::Checked => CheckListBoxItemState::Unchecked,
+            }
+        } else if item.is_checked() {
+            CheckListBoxItemState::Unchecked
+        } else {
+            CheckListBoxItemState::Checked
+        };
+
+        self.set_item_state(index, next_state)
+    }
+
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    pub fn set_selected_index(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        if self.selected_index == Some(index) {
+            return true;
+        }
+        self.selected_index = Some(index);
+        self.selection_changed.emit(index);
+        true
+    }
+
+    pub fn clear_selection(&mut self) {
+        if self.selected_index.is_some() {
+            self.selected_index = None;
+        }
+    }
+
+    pub fn is_tristate_enabled(&self) -> bool {
+        self.tristate_enabled
+    }
+
+    pub fn set_tristate_enabled(&mut self, enabled: bool) {
+        self.tristate_enabled = enabled;
+        if !enabled {
+            for (index, item) in self.items.iter_mut().enumerate() {
+                if item.state() == CheckListBoxItemState::PartiallyChecked {
+                    item.set_state(CheckListBoxItemState::Unchecked);
+                    self.item_state_changed
+                        .emit((index, CheckListBoxItemState::Unchecked));
+                }
+            }
+        }
+    }
+
+    pub fn checked_indices(&self) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.is_checked())
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn check_all(&mut self) {
+        for index in 0..self.items.len() {
+            self.set_item_checked(index, true);
+        }
+    }
+
+    pub fn uncheck_all(&mut self) {
+        for index in 0..self.items.len() {
+            self.set_item_checked(index, false);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.selected_index = None;
+    }
+}
+
+impl Widget for CheckListBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for CheckListBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+pub struct DoubleSpinBox {
+    base: BaseWidget,
+    min: f64,
+    max: f64,
+    value: f64,
+    single_step: f64,
+    decimals: u32,
+    prefix: String,
+    suffix: String,
+    pub value_changed: Signal1<f64>,
+    pub decimals_changed: Signal1<u32>,
+}
+
+impl DoubleSpinBox {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DoubleSpinBox, geometry, "DoubleSpinBox"),
+            min: 0.0,
+            max: 100.0,
+            value: 0.0,
+            single_step: 1.0,
+            decimals: 2,
+            prefix: String::new(),
+            suffix: String::new(),
+            value_changed: Signal1::new(),
+            decimals_changed: Signal1::new(),
+        }
+    }
+
+    pub fn min(&self) -> f64 {
+        self.min
+    }
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+    pub fn single_step(&self) -> f64 {
+        self.single_step
+    }
+    pub fn decimals(&self) -> u32 {
+        self.decimals
+    }
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+    pub fn suffix(&self) -> &str {
+        &self.suffix
+    }
+
+    pub fn set_range(&mut self, min: f64, max: f64) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    pub fn set_single_step(&mut self, step: f64) {
+        self.single_step = step.max(0.0);
+    }
+
+    pub fn set_decimals(&mut self, decimals: u32) {
+        if self.decimals != decimals {
+            self.decimals = decimals;
+            self.decimals_changed.emit(decimals);
+        }
+    }
+
+    pub fn set_prefix(&mut self, prefix: String) {
+        self.prefix = prefix;
+    }
+    pub fn set_suffix(&mut self, suffix: String) {
+        self.suffix = suffix;
+    }
+
+    pub fn set_value(&mut self, value: f64) {
+        let factor = 10f64.powi(self.decimals as i32);
+        let rounded = (value * factor).round() / factor;
+        let clamped = rounded.clamp(self.min, self.max);
+
+        if (self.value - clamped).abs() > f64::EPSILON {
+            self.value = clamped;
+            self.value_changed.emit(clamped);
+        }
+    }
+
+    pub fn step_up(&mut self) {
+        self.set_value(self.value + self.single_step);
+    }
+    pub fn step_down(&mut self) {
+        self.set_value(self.value - self.single_step);
+    }
+
+    pub fn text(&self) -> String {
+        format!(
+            "{}{:.decimals$}{}",
+            self.prefix,
+            self.value,
+            self.suffix,
+            decimals = self.decimals as usize
+        )
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        let text_without_prefix_suffix = text
+            .strip_prefix(&self.prefix)
+            .unwrap_or(text)
+            .strip_suffix(&self.suffix)
+            .unwrap_or(text);
+
+        if let Ok(value) = text_without_prefix_suffix.trim().parse::<f64>() {
+            self.set_value(value);
+        }
+    }
+}
+
+impl Widget for DoubleSpinBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for DoubleSpinBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+pub struct Dial {
+    base: BaseWidget,
+    min: i32,
+    max: i32,
+    value: i32,
+    single_step: i32,
+    page_step: i32,
+    wrapping: bool,
+    notch_target: i32,
+    pub value_changed: Signal1<i32>,
+    pub pressed: GenericSignal,
+    pub released: GenericSignal,
+}
+
+impl Dial {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Dial, geometry, "Dial"),
+            min: 0,
+            max: 100,
+            value: 0,
+            single_step: 1,
+            page_step: 10,
+            wrapping: false,
+            notch_target: 0,
+            value_changed: Signal1::new(),
+            pressed: GenericSignal::new(),
+            released: GenericSignal::new(),
+        }
+    }
+
+    pub fn min(&self) -> i32 {
+        self.min
+    }
+    pub fn max(&self) -> i32 {
+        self.max
+    }
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+    pub fn single_step(&self) -> i32 {
+        self.single_step
+    }
+    pub fn page_step(&self) -> i32 {
+        self.page_step
+    }
+    pub fn is_wrapping(&self) -> bool {
+        self.wrapping
+    }
+    pub fn notch_target(&self) -> i32 {
+        self.notch_target
+    }
+
+    pub fn set_range(&mut self, min: i32, max: i32) {
+        self.min = min;
+        self.max = max.max(min);
+        self.set_value(self.value);
+    }
+
+    pub fn set_single_step(&mut self, step: i32) {
+        self.single_step = step.max(1);
+    }
+    pub fn set_page_step(&mut self, step: i32) {
+        self.page_step = step.max(1);
+    }
+    pub fn set_wrapping(&mut self, wrapping: bool) {
+        self.wrapping = wrapping;
+    }
+    pub fn set_notch_target(&mut self, target: i32) {
+        self.notch_target = target;
+    }
+
+    pub fn set_value(&mut self, value: i32) {
+        let normalized = if self.wrapping {
+            let range = self.max - self.min + 1;
+            if range > 0 {
+                let offset = (value - self.min).rem_euclid(range);
+                self.min + offset
+            } else {
+                self.min
+            }
+        } else {
+            value.clamp(self.min, self.max)
+        };
+
+        if self.value != normalized {
+            self.value = normalized;
+            self.value_changed.emit(normalized);
+        }
+    }
+
+    pub fn step_up(&mut self) {
+        self.set_value(self.value.saturating_add(self.single_step));
+    }
+    pub fn step_down(&mut self) {
+        self.set_value(self.value.saturating_sub(self.single_step));
+    }
+    pub fn page_up(&mut self) {
+        self.set_value(self.value.saturating_add(self.page_step));
+    }
+    pub fn page_down(&mut self) {
+        self.set_value(self.value.saturating_sub(self.page_step));
+    }
+
+    pub fn angle(&self) -> f64 {
+        if self.max == self.min {
+            return 0.0;
+        }
+        let ratio = (self.value - self.min) as f64 / (self.max - self.min) as f64;
+        ratio * 360.0
+    }
+
+    pub fn set_angle(&mut self, angle: f64) {
+        if self.max == self.min {
+            return;
+        }
+        let normalized_angle = angle.rem_euclid(360.0);
+        let ratio = normalized_angle / 360.0;
+        let value = self.min + (ratio * (self.max - self.min) as f64).round() as i32;
+        self.set_value(value);
+    }
+}
+
+impl Widget for Dial {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for Dial {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MousePress { .. } => {
+                self.pressed.emit();
+            }
+            Event::MouseRelease { .. } => {
+                self.released.emit();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Wizard page structure.
+pub struct WizardPage {
+    id: ObjectId,
+    title: String,
+    subtitle: String,
+    enabled: bool,
+    complete: bool,
+}
+
+impl WizardPage {
+    pub fn new(id: ObjectId, title: String, subtitle: String) -> Self {
+        Self {
+            id,
+            title,
+            subtitle,
+            enabled: true,
+            complete: false,
+        }
+    }
+
+    pub fn id(&self) -> ObjectId {
+        self.id
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn subtitle(&self) -> &str {
+        &self.subtitle
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+    pub fn set_subtitle(&mut self, subtitle: String) {
+        self.subtitle = subtitle;
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    pub fn set_complete(&mut self, complete: bool) {
+        self.complete = complete;
+    }
+}
+
+/// Wizard widget for multi-step dialogs.
+pub struct Wizard {
+    base: BaseWidget,
+    pages: Vec<WizardPage>,
+    current_page: Option<usize>,
+    title: String,
+    /// Emitted when the current page changes.
+    pub current_page_changed: Signal1<usize>,
+    /// Emitted when the wizard is finished.
+    pub finished: Signal1<WizardResult>,
+    /// Emitted when the wizard is canceled.
+    pub canceled: GenericSignal,
+    /// Emitted when a page is added.
+    pub page_added: Signal1<usize>,
+    /// Emitted when a page is removed.
+    pub page_removed: Signal1<usize>,
+}
+
+/// Wizard result enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardResult {
+    /// Wizard was accepted.
+    Accepted,
+    /// Wizard was rejected.
+    Rejected,
+}
+
+impl Wizard {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Wizard, geometry, "Wizard"),
+            pages: Vec::new(),
+            current_page: None,
+            title: String::new(),
+            current_page_changed: Signal1::new(),
+            finished: Signal1::new(),
+            canceled: GenericSignal::new(),
+            page_added: Signal1::new(),
+            page_removed: Signal1::new(),
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    pub fn add_page(&mut self, page: WizardPage) -> usize {
+        let index = self.pages.len();
+        self.pages.push(page);
+        self.page_added.emit(index);
+        if self.current_page.is_none() && !self.pages.is_empty() {
+            self.set_current_page(0);
+        }
+        index
+    }
+
+    pub fn insert_page(&mut self, index: usize, page: WizardPage) -> bool {
+        if index > self.pages.len() {
+            return false;
+        }
+        self.pages.insert(index, page);
+        self.page_added.emit(index);
+        if let Some(current) = self.current_page {
+            if current >= index {
+                self.current_page = Some(current + 1);
+            }
+        }
+        true
+    }
+
+    pub fn remove_page(&mut self, index: usize) -> bool {
+        if index >= self.pages.len() {
+            return false;
+        }
+        self.pages.remove(index);
+        self.page_removed.emit(index);
+        if let Some(current) = self.current_page {
+            if current == index {
+                if self.pages.is_empty() {
+                    self.current_page = None;
+                } else {
+                    self.current_page = Some(current.min(self.pages.len() - 1));
+                    self.current_page_changed.emit(self.current_page.unwrap());
+                }
+            } else if current > index {
+                self.current_page = Some(current - 1);
+            }
+        }
+        true
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+    pub fn page(&self, index: usize) -> Option<&WizardPage> {
+        self.pages.get(index)
+    }
+    pub fn page_mut(&mut self, index: usize) -> Option<&mut WizardPage> {
+        self.pages.get_mut(index)
+    }
+
+    pub fn current_page(&self) -> Option<usize> {
+        self.current_page
+    }
+
+    pub fn set_current_page(&mut self, index: usize) -> bool {
+        if index >= self.pages.len() {
+            return false;
+        }
+        if self.current_page == Some(index) {
+            return true;
+        }
+        self.current_page = Some(index);
+        self.current_page_changed.emit(index);
+        true
+    }
+
+    pub fn next_page(&mut self) -> bool {
+        if let Some(current) = self.current_page {
+            if current < self.pages.len() - 1 {
+                self.set_current_page(current + 1);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn previous_page(&mut self) -> bool {
+        if let Some(current) = self.current_page {
+            if current > 0 {
+                self.set_current_page(current - 1);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn accept(&mut self) {
+        self.finished.emit(WizardResult::Accepted);
+    }
+
+    pub fn reject(&mut self) {
+        self.finished.emit(WizardResult::Rejected);
+    }
+
+    pub fn cancel(&mut self) {
+        self.canceled.emit();
+    }
+
+    pub fn is_last_page(&self) -> bool {
+        if let Some(current) = self.current_page {
+            current == self.pages.len() - 1
+        } else {
+            false
+        }
+    }
+
+    pub fn is_first_page(&self) -> bool {
+        self.current_page == Some(0)
+    }
+
+    pub fn can_next(&self) -> bool {
+        if let Some(current) = self.current_page {
+            current < self.pages.len() - 1
+                && self
+                    .pages
+                    .get(current)
+                    .map(|p| p.is_complete())
+                    .unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    pub fn can_previous(&self) -> bool {
+        self.current_page.map(|c| c > 0).unwrap_or(false)
+    }
+}
+
+impl Widget for Wizard {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for Wizard {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Date picker widget for date selection.
+pub struct DatePicker {
+    base: BaseWidget,
+    date: chrono::NaiveDate,
+    minimum_date: Option<chrono::NaiveDate>,
+    maximum_date: Option<chrono::NaiveDate>,
+    calendar_popup: bool,
+    /// Emitted when the date changes.
+    pub date_changed: Signal1<chrono::NaiveDate>,
+    /// Emitted when the calendar popup is opened.
+    pub calendar_opened: GenericSignal,
+    /// Emitted when the calendar popup is closed.
+    pub calendar_closed: GenericSignal,
+}
+
+impl DatePicker {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DatePicker, geometry, "DatePicker"),
+            date: chrono::Local::now().date_naive(),
+            minimum_date: None,
+            maximum_date: None,
+            calendar_popup: true,
+            date_changed: Signal1::new(),
+            calendar_opened: GenericSignal::new(),
+            calendar_closed: GenericSignal::new(),
+        }
+    }
+
+    pub fn date(&self) -> chrono::NaiveDate {
+        self.date
+    }
+    pub fn minimum_date(&self) -> Option<chrono::NaiveDate> {
+        self.minimum_date
+    }
+    pub fn maximum_date(&self) -> Option<chrono::NaiveDate> {
+        self.maximum_date
+    }
+    pub fn calendar_popup(&self) -> bool {
+        self.calendar_popup
+    }
+
+    pub fn set_date(&mut self, date: chrono::NaiveDate) {
+        let clamped = self.clamp_date(date);
+        if self.date != clamped {
+            self.date = clamped;
+            self.date_changed.emit(clamped);
+        }
+    }
+
+    pub fn set_minimum_date(&mut self, date: Option<chrono::NaiveDate>) {
+        self.minimum_date = date;
+        self.set_date(self.date);
+    }
+
+    pub fn set_maximum_date(&mut self, date: Option<chrono::NaiveDate>) {
+        self.maximum_date = date;
+        self.set_date(self.date);
+    }
+
+    pub fn set_calendar_popup(&mut self, enabled: bool) {
+        self.calendar_popup = enabled;
+    }
+
+    fn clamp_date(&self, date: chrono::NaiveDate) -> chrono::NaiveDate {
+        let mut result = date;
+        if let Some(min) = self.minimum_date {
+            if result < min {
+                result = min;
+            }
+        }
+        if let Some(max) = self.maximum_date {
+            if result > max {
+                result = max;
+            }
+        }
+        result
+    }
+
+    pub fn add_days(&mut self, days: i64) {
+        self.set_date(self.date + chrono::Duration::days(days));
+    }
+
+    pub fn add_months(&mut self, months: i32) {
+        let new_date = self
+            .date
+            .checked_add_months(chrono::Months::new(months.try_into().unwrap()));
+        if let Some(date) = new_date {
+            self.set_date(date);
+        }
+    }
+
+    pub fn add_years(&mut self, years: i32) {
+        let new_date = self
+            .date
+            .checked_add_months(chrono::Months::new((years * 12).try_into().unwrap()));
+        if let Some(date) = new_date {
+            self.set_date(date);
+        }
+    }
+
+    pub fn set_date_from_ymd(&mut self, year: i32, month: u32, day: u32) {
+        if let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
+            self.set_date(date);
+        }
+    }
+
+    pub fn year(&self) -> i32 {
+        self.date.year()
+    }
+    pub fn month(&self) -> u32 {
+        self.date.month()
+    }
+    pub fn day(&self) -> u32 {
+        self.date.day()
+    }
+
+    pub fn open_calendar(&mut self) {
+        self.calendar_opened.emit();
+    }
+
+    pub fn close_calendar(&mut self) {
+        self.calendar_closed.emit();
+    }
+}
+
+impl Widget for DatePicker {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for DatePicker {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Time picker widget for time selection.
+pub struct TimePicker {
+    base: BaseWidget,
+    time: chrono::NaiveTime,
+    minimum_time: Option<chrono::NaiveTime>,
+    maximum_time: Option<chrono::NaiveTime>,
+    is_24_hour: bool,
+    /// Emitted when the time changes.
+    pub time_changed: Signal1<chrono::NaiveTime>,
+    /// Emitted when the time is edited.
+    pub time_edited: Signal1<String>,
+}
+
+impl TimePicker {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::TimePicker, geometry, "TimePicker"),
+            time: chrono::Local::now().time(),
+            minimum_time: None,
+            maximum_time: None,
+            is_24_hour: true,
+            time_changed: Signal1::new(),
+            time_edited: Signal1::new(),
+        }
+    }
+
+    pub fn time(&self) -> chrono::NaiveTime {
+        self.time
+    }
+    pub fn minimum_time(&self) -> Option<chrono::NaiveTime> {
+        self.minimum_time
+    }
+    pub fn maximum_time(&self) -> Option<chrono::NaiveTime> {
+        self.maximum_time
+    }
+    pub fn is_24_hour(&self) -> bool {
+        self.is_24_hour
+    }
+
+    pub fn set_time(&mut self, time: chrono::NaiveTime) {
+        let clamped = self.clamp_time(time);
+        if self.time != clamped {
+            self.time = clamped;
+            self.time_changed.emit(clamped);
+        }
+    }
+
+    pub fn set_minimum_time(&mut self, time: Option<chrono::NaiveTime>) {
+        self.minimum_time = time;
+        self.set_time(self.time);
+    }
+
+    pub fn set_maximum_time(&mut self, time: Option<chrono::NaiveTime>) {
+        self.maximum_time = time;
+        self.set_time(self.time);
+    }
+
+    pub fn set_24_hour(&mut self, enabled: bool) {
+        self.is_24_hour = enabled;
+    }
+
+    fn clamp_time(&self, time: chrono::NaiveTime) -> chrono::NaiveTime {
+        let mut result = time;
+        if let Some(min) = self.minimum_time {
+            if result < min {
+                result = min;
+            }
+        }
+        if let Some(max) = self.maximum_time {
+            if result > max {
+                result = max;
+            }
+        }
+        result
+    }
+
+    pub fn set_time_from_hms(&mut self, hour: u32, minute: u32, second: u32) {
+        if let Some(time) = chrono::NaiveTime::from_hms_opt(hour, minute, second) {
+            self.set_time(time);
+        }
+    }
+
+    pub fn hour(&self) -> u32 {
+        self.time.hour()
+    }
+    pub fn minute(&self) -> u32 {
+        self.time.minute()
+    }
+    pub fn second(&self) -> u32 {
+        self.time.second()
+    }
+
+    pub fn add_hours(&mut self, hours: i64) {
+        self.set_time(self.time + chrono::Duration::hours(hours));
+    }
+
+    pub fn add_minutes(&mut self, minutes: i64) {
+        self.set_time(self.time + chrono::Duration::minutes(minutes));
+    }
+
+    pub fn add_seconds(&mut self, seconds: i64) {
+        self.set_time(self.time + chrono::Duration::seconds(seconds));
+    }
+
+    pub fn set_time_from_string(&mut self, time_str: &str) {
+        if let Ok(time) = chrono::NaiveTime::parse_from_str(
+            time_str,
+            if self.is_24_hour {
+                "%H:%M:%S"
+            } else {
+                "%I:%M:%S %p"
+            },
+        ) {
+            self.set_time(time);
+            self.time_edited.emit(time_str.to_string());
+        }
+    }
+
+    pub fn format_time(&self) -> String {
+        self.time
+            .format(if self.is_24_hour {
+                "%H:%M:%S"
+            } else {
+                "%I:%M:%S %p"
+            })
+            .to_string()
+    }
+}
+
+impl Widget for TimePicker {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for TimePicker {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Date and time picker widget for date and time selection.
+pub struct DateTimePicker {
+    base: BaseWidget,
+    date_time: chrono::NaiveDateTime,
+    minimum_date_time: Option<chrono::NaiveDateTime>,
+    maximum_date_time: Option<chrono::NaiveDateTime>,
+    calendar_popup: bool,
+    is_24_hour: bool,
+    /// Emitted when the date and time changes.
+    pub date_time_changed: Signal1<chrono::NaiveDateTime>,
+    /// Emitted when the date changes.
+    pub date_changed: Signal1<chrono::NaiveDate>,
+    /// Emitted when the time changes.
+    pub time_changed: Signal1<chrono::NaiveTime>,
+    /// Emitted when the calendar popup is opened.
+    pub calendar_opened: GenericSignal,
+    /// Emitted when the calendar popup is closed.
+    pub calendar_closed: GenericSignal,
+}
+
+impl DateTimePicker {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DateTimePicker, geometry, "DateTimePicker"),
+            date_time: chrono::Local::now().naive_local(),
+            minimum_date_time: None,
+            maximum_date_time: None,
+            calendar_popup: true,
+            is_24_hour: true,
+            date_time_changed: Signal1::new(),
+            date_changed: Signal1::new(),
+            time_changed: Signal1::new(),
+            calendar_opened: GenericSignal::new(),
+            calendar_closed: GenericSignal::new(),
+        }
+    }
+
+    pub fn date_time(&self) -> chrono::NaiveDateTime {
+        self.date_time
+    }
+    pub fn minimum_date_time(&self) -> Option<chrono::NaiveDateTime> {
+        self.minimum_date_time
+    }
+    pub fn maximum_date_time(&self) -> Option<chrono::NaiveDateTime> {
+        self.maximum_date_time
+    }
+    pub fn calendar_popup(&self) -> bool {
+        self.calendar_popup
+    }
+    pub fn is_24_hour(&self) -> bool {
+        self.is_24_hour
+    }
+
+    pub fn set_date_time(&mut self, date_time: chrono::NaiveDateTime) {
+        let clamped = self.clamp_date_time(date_time);
+        if self.date_time != clamped {
+            let old_date = self.date_time.date();
+            let old_time = self.date_time.time();
+            self.date_time = clamped;
+            self.date_time_changed.emit(clamped);
+            if old_date != clamped.date() {
+                self.date_changed.emit(clamped.date());
+            }
+            if old_time != clamped.time() {
+                self.time_changed.emit(clamped.time());
+            }
+        }
+    }
+
+    pub fn set_minimum_date_time(&mut self, date_time: Option<chrono::NaiveDateTime>) {
+        self.minimum_date_time = date_time;
+        self.set_date_time(self.date_time);
+    }
+
+    pub fn set_maximum_date_time(&mut self, date_time: Option<chrono::NaiveDateTime>) {
+        self.maximum_date_time = date_time;
+        self.set_date_time(self.date_time);
+    }
+
+    pub fn set_calendar_popup(&mut self, enabled: bool) {
+        self.calendar_popup = enabled;
+    }
+
+    pub fn set_24_hour(&mut self, enabled: bool) {
+        self.is_24_hour = enabled;
+    }
+
+    fn clamp_date_time(&self, date_time: chrono::NaiveDateTime) -> chrono::NaiveDateTime {
+        let mut result = date_time;
+        if let Some(min) = self.minimum_date_time {
+            if result < min {
+                result = min;
+            }
+        }
+        if let Some(max) = self.maximum_date_time {
+            if result > max {
+                result = max;
+            }
+        }
+        result
+    }
+
+    pub fn set_date(&mut self, date: chrono::NaiveDate) {
+        let new_date_time = chrono::NaiveDateTime::new(date, self.date_time.time());
+        self.set_date_time(new_date_time);
+    }
+
+    pub fn set_time(&mut self, time: chrono::NaiveTime) {
+        let new_date_time = chrono::NaiveDateTime::new(self.date_time.date(), time);
+        self.set_date_time(new_date_time);
+    }
+
+    pub fn date(&self) -> chrono::NaiveDate {
+        self.date_time.date()
+    }
+    pub fn time(&self) -> chrono::NaiveTime {
+        self.date_time.time()
+    }
+
+    pub fn add_days(&mut self, days: i64) {
+        self.set_date_time(self.date_time + chrono::Duration::days(days));
+    }
+
+    pub fn add_hours(&mut self, hours: i64) {
+        self.set_date_time(self.date_time + chrono::Duration::hours(hours));
+    }
+
+    pub fn add_minutes(&mut self, minutes: i64) {
+        self.set_date_time(self.date_time + chrono::Duration::minutes(minutes));
+    }
+
+    pub fn add_seconds(&mut self, seconds: i64) {
+        self.set_date_time(self.date_time + chrono::Duration::seconds(seconds));
+    }
+
+    pub fn set_date_time_from_ymd_hms(
+        &mut self,
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) {
+        if let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
+            if let Some(time) = chrono::NaiveTime::from_hms_opt(hour, minute, second) {
+                let date_time = chrono::NaiveDateTime::new(date, time);
+                self.set_date_time(date_time);
+            }
+        }
+    }
+
+    pub fn open_calendar(&mut self) {
+        self.calendar_opened.emit();
+    }
+
+    pub fn close_calendar(&mut self) {
+        self.calendar_closed.emit();
+    }
+
+    pub fn format_date_time(&self) -> String {
+        self.date_time
+            .format(if self.is_24_hour {
+                "%Y-%m-%d %H:%M:%S"
+            } else {
+                "%Y-%m-%d %I:%M:%S %p"
+            })
+            .to_string()
+    }
+}
+
+impl Widget for DateTimePicker {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for DateTimePicker {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Directory picker widget for directory selection.
+pub struct DirectoryPicker {
+    base: BaseWidget,
+    directory: String,
+    show_hidden: bool,
+    /// Emitted when the directory is selected.
+    pub directory_selected: Signal1<String>,
+    /// Emitted when the directory is changed.
+    pub directory_changed: Signal1<String>,
+    /// Emitted when the dialog is accepted.
+    pub accepted: GenericSignal,
+    /// Emitted when the dialog is rejected.
+    pub rejected: GenericSignal,
+}
+
+impl DirectoryPicker {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DirectoryPicker, geometry, "DirectoryPicker"),
+            directory: std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                .to_string_lossy()
+                .to_string(),
+            show_hidden: false,
+            directory_selected: Signal1::new(),
+            directory_changed: Signal1::new(),
+            accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
+        }
+    }
+
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_directory(&mut self, directory: String) {
+        if self.directory != directory {
+            self.directory = directory.clone();
+            self.directory_changed.emit(directory);
+        }
+    }
+
+    pub fn set_show_hidden(&mut self, show: bool) {
+        self.show_hidden = show;
+    }
+
+    pub fn select_directory(&mut self, directory: String) {
+        self.set_directory(directory.clone());
+        self.directory_selected.emit(directory);
+    }
+
+    pub fn accept(&mut self) {
+        self.accepted.emit();
+    }
+
+    pub fn reject(&mut self) {
+        self.rejected.emit();
+    }
+
+    pub fn browse(&mut self) {
+        // In a real implementation, this would open a file dialog
+        // For now, we'll just emit the signals
+    }
+
+    pub fn current_directory(&self) -> String {
+        self.directory.clone()
+    }
+
+    pub fn set_current_directory(&mut self, directory: String) {
+        self.set_directory(directory);
+    }
+}
+
+impl Widget for DirectoryPicker {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for DirectoryPicker {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Data view widget for data visualization and manipulation.
+pub struct DataView {
+    base: BaseWidget,
+    model: Option<ObjectId>,
+    selection_mode: DataViewSelectionMode,
+    show_headers: bool,
+    alternating_row_colors: bool,
+    /// Emitted when the selection changes.
+    pub selection_changed: Signal1<Vec<usize>>,
+    /// Emitted when an item is activated (double-clicked).
+    pub item_activated: Signal1<usize>,
+    /// Emitted when a context menu is requested.
+    pub context_menu_requested: Signal1<(Point, Option<usize>)>,
+    /// Emitted when columns are reordered.
+    pub columns_reordered: Signal1<Vec<usize>>,
+    /// Emitted when columns are resized.
+    pub columns_resized: Signal1<Vec<(usize, u32)>>,
+}
+
+/// Data view selection modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataViewSelectionMode {
+    /// No selection allowed.
+    NoSelection,
+    /// Single item selection.
+    SingleSelection,
+    /// Multiple item selection with keyboard modifiers.
+    MultiSelection,
+    /// Extended selection with shift key support.
+    ExtendedSelection,
+}
+
+impl DataView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DataView, geometry, "DataView"),
+            model: None,
+            selection_mode: DataViewSelectionMode::SingleSelection,
+            show_headers: true,
+            alternating_row_colors: false,
+            selection_changed: Signal1::new(),
+            item_activated: Signal1::new(),
+            context_menu_requested: Signal1::new(),
+            columns_reordered: Signal1::new(),
+            columns_resized: Signal1::new(),
+        }
+    }
+
+    pub fn model(&self) -> Option<ObjectId> {
+        self.model
+    }
+    pub fn selection_mode(&self) -> DataViewSelectionMode {
+        self.selection_mode
+    }
+    pub fn show_headers(&self) -> bool {
+        self.show_headers
+    }
+    pub fn alternating_row_colors(&self) -> bool {
+        self.alternating_row_colors
+    }
+
+    pub fn set_model(&mut self, model: Option<ObjectId>) {
+        self.model = model;
+    }
+
+    pub fn set_selection_mode(&mut self, mode: DataViewSelectionMode) {
+        self.selection_mode = mode;
+    }
+
+    pub fn set_show_headers(&mut self, show: bool) {
+        self.show_headers = show;
+    }
+
+    pub fn set_alternating_row_colors(&mut self, enabled: bool) {
+        self.alternating_row_colors = enabled;
+    }
+
+    pub fn select_item(&mut self, index: usize) {
+        // In a real implementation, this would select the item
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(vec![index]);
+    }
+
+    pub fn select_items(&mut self, indices: Vec<usize>) {
+        // In a real implementation, this would select multiple items
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(indices);
+    }
+
+    pub fn clear_selection(&mut self) {
+        // In a real implementation, this would clear the selection
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(vec![]);
+    }
+
+    pub fn activate_item(&mut self, index: usize) {
+        // In a real implementation, this would activate the item
+        // For now, we'll just emit the signal
+        self.item_activated.emit(index);
+    }
+
+    pub fn request_context_menu(&mut self, position: Point, item_index: Option<usize>) {
+        // In a real implementation, this would show a context menu
+        // For now, we'll just emit the signal
+        self.context_menu_requested.emit((position, item_index));
+    }
+
+    pub fn reorder_columns(&mut self, new_order: Vec<usize>) {
+        // In a real implementation, this would reorder the columns
+        // For now, we'll just emit the signal
+        self.columns_reordered.emit(new_order);
+    }
+
+    pub fn resize_column(&mut self, column_index: usize, new_width: u32) {
+        // In a real implementation, this would resize the column
+        // For now, we'll just emit the signal
+        self.columns_resized.emit(vec![(column_index, new_width)]);
+    }
+}
+
+impl Widget for DataView {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for DataView {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Property grid widget for property editing interface.
+pub struct PropertyGrid {
+    base: BaseWidget,
+    object: Option<ObjectId>,
+    show_category_headers: bool,
+    auto_expand_all: bool,
+    sort_properties: bool,
+    /// Emitted when a property value changes.
+    pub property_changed: Signal1<(String, String)>,
+    /// Emitted when a property is selected.
+    pub property_selected: Signal1<String>,
+    /// Emitted when the object being edited changes.
+    pub object_changed: Signal1<Option<ObjectId>>,
+    /// Emitted when a property is double-clicked.
+    pub property_activated: Signal1<String>,
+}
+
+impl PropertyGrid {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::PropertyGrid, geometry, "PropertyGrid"),
+            object: None,
+            show_category_headers: true,
+            auto_expand_all: false,
+            sort_properties: true,
+            property_changed: Signal1::new(),
+            property_selected: Signal1::new(),
+            object_changed: Signal1::new(),
+            property_activated: Signal1::new(),
+        }
+    }
+
+    pub fn object(&self) -> Option<ObjectId> {
+        self.object
+    }
+    pub fn show_category_headers(&self) -> bool {
+        self.show_category_headers
+    }
+    pub fn auto_expand_all(&self) -> bool {
+        self.auto_expand_all
+    }
+    pub fn sort_properties(&self) -> bool {
+        self.sort_properties
+    }
+
+    pub fn set_object(&mut self, object: Option<ObjectId>) {
+        if self.object != object {
+            self.object = object;
+            self.object_changed.emit(object);
+        }
+    }
+
+    pub fn set_show_category_headers(&mut self, show: bool) {
+        self.show_category_headers = show;
+    }
+
+    pub fn set_auto_expand_all(&mut self, auto_expand: bool) {
+        self.auto_expand_all = auto_expand;
+    }
+
+    pub fn set_sort_properties(&mut self, sort: bool) {
+        self.sort_properties = sort;
+    }
+
+    pub fn set_property_value(&mut self, property_name: &str, value: &str) {
+        // In a real implementation, this would set the property value
+        // For now, we'll just emit the signal
+        self.property_changed
+            .emit((property_name.to_string(), value.to_string()));
+    }
+
+    pub fn select_property(&mut self, property_name: &str) {
+        // In a real implementation, this would select the property
+        // For now, we'll just emit the signal
+        self.property_selected.emit(property_name.to_string());
+    }
+
+    pub fn activate_property(&mut self, property_name: &str) {
+        // In a real implementation, this would activate the property
+        // For now, we'll just emit the signal
+        self.property_activated.emit(property_name.to_string());
+    }
+
+    pub fn refresh(&mut self) {
+        // In a real implementation, this would refresh the property grid
+        // For now, we'll just do nothing
+    }
+
+    pub fn clear(&mut self) {
+        // In a real implementation, this would clear the property grid
+        // For now, we'll just do nothing
+    }
+}
+
+impl Widget for PropertyGrid {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for PropertyGrid {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Toolbox widget for tool palette.
+pub struct Toolbox {
+    base: BaseWidget,
+    items: Vec<ToolboxItem>,
+    current_selection: Option<usize>,
+    icon_size: Size,
+    show_labels: bool,
+    /// Emitted when a tool is selected.
+    pub tool_selected: Signal1<usize>,
+    /// Emitted when a tool is activated (clicked).
+    pub tool_activated: Signal1<usize>,
+    /// Emitted when a tool is added.
+    pub tool_added: Signal1<usize>,
+    /// Emitted when a tool is removed.
+    pub tool_removed: Signal1<usize>,
+}
+
+/// Toolbox item structure.
+pub struct ToolboxItem {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<ObjectId>,
+    pub tooltip: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+impl Toolbox {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Toolbox, geometry, "Toolbox"),
+            items: Vec::new(),
+            current_selection: None,
+            icon_size: Size::new(32, 32),
+            show_labels: true,
+            tool_selected: Signal1::new(),
+            tool_activated: Signal1::new(),
+            tool_added: Signal1::new(),
+            tool_removed: Signal1::new(),
+        }
+    }
+
+    pub fn items(&self) -> &[ToolboxItem] {
+        &self.items
+    }
+    pub fn current_selection(&self) -> Option<usize> {
+        self.current_selection
+    }
+    pub fn icon_size(&self) -> Size {
+        self.icon_size
+    }
+    pub fn show_labels(&self) -> bool {
+        self.show_labels
+    }
+
+    pub fn set_icon_size(&mut self, size: Size) {
+        self.icon_size = size;
+    }
+
+    pub fn set_show_labels(&mut self, show: bool) {
+        self.show_labels = show;
+    }
+
+    pub fn add_item(&mut self, item: ToolboxItem) {
+        let index = self.items.len();
+        self.items.push(item);
+        self.tool_added.emit(index);
+    }
+
+    pub fn remove_item(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.items.remove(index);
+            if let Some(selection) = self.current_selection {
+                if selection >= index {
+                    self.current_selection = selection.checked_sub(1);
+                }
+            }
+            self.tool_removed.emit(index);
+        }
+    }
+
+    pub fn clear_items(&mut self) {
+        self.items.clear();
+        self.current_selection = None;
+    }
+
+    pub fn select_item(&mut self, index: Option<usize>) {
+        if self.current_selection != index {
+            self.current_selection = index;
+            if let Some(idx) = index {
+                self.tool_selected.emit(idx);
+            }
+        }
+    }
+
+    pub fn activate_item(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.tool_activated.emit(index);
+        }
+    }
+
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(item) = self.items.get_mut(index) {
+            item.enabled = enabled;
+        }
+    }
+
+    pub fn set_item_checked(&mut self, index: usize, checked: bool) {
+        if let Some(item) = self.items.get_mut(index) {
+            item.checked = checked;
+        }
+    }
+
+    pub fn item_at(&self, _point: Point) -> Option<usize> {
+        // In a real implementation, this would find the item at the given point
+        // For now, we'll just return None
+        None
+    }
+}
+
+impl Widget for Toolbox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for Toolbox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Stacked widget for stacked notebook interface.
+pub struct StackedWidget {
+    base: BaseWidget,
+    pages: Vec<StackedPage>,
+    current_index: Option<usize>,
+    /// Emitted when the current page changes.
+    pub current_changed: Signal1<Option<usize>>,
+    /// Emitted when a page is added.
+    pub page_added: Signal1<usize>,
+    /// Emitted when a page is removed.
+    pub page_removed: Signal1<usize>,
+    /// Emitted when a page is shown.
+    pub page_shown: Signal1<usize>,
+    /// Emitted when a page is hidden.
+    pub page_hidden: Signal1<usize>,
+}
+
+/// Stacked page structure.
+pub struct StackedPage {
+    pub widget: ObjectId,
+    pub title: String,
+    pub tooltip: String,
+    pub enabled: bool,
+    pub visible: bool,
+}
+
+impl StackedWidget {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::StackedWidget, geometry, "StackedWidget"),
+            pages: Vec::new(),
+            current_index: None,
+            current_changed: Signal1::new(),
+            page_added: Signal1::new(),
+            page_removed: Signal1::new(),
+            page_shown: Signal1::new(),
+            page_hidden: Signal1::new(),
+        }
+    }
+
+    pub fn pages(&self) -> &[StackedPage] {
+        &self.pages
+    }
+    pub fn current_index(&self) -> Option<usize> {
+        self.current_index
+    }
+    pub fn current_page(&self) -> Option<&StackedPage> {
+        self.current_index.and_then(|i| self.pages.get(i))
+    }
+
+    pub fn add_page(&mut self, page: StackedPage) {
+        let index = self.pages.len();
+        self.pages.push(page);
+        self.page_added.emit(index);
+        if self.current_index.is_none() {
+            self.set_current_index(Some(index));
+        }
+    }
+
+    pub fn remove_page(&mut self, index: usize) {
+        if index < self.pages.len() {
+            self.pages.remove(index);
+            if let Some(selection) = self.current_index {
+                if selection == index {
+                    self.set_current_index(if self.pages.is_empty() {
+                        None
+                    } else if selection >= self.pages.len() {
+                        Some(self.pages.len() - 1)
+                    } else {
+                        Some(selection)
+                    });
+                } else if selection > index {
+                    self.current_index = Some(selection - 1);
+                }
+            }
+            self.page_removed.emit(index);
+        }
+    }
+
+    pub fn clear_pages(&mut self) {
+        self.pages.clear();
+        self.set_current_index(None);
+    }
+
+    pub fn set_current_index(&mut self, index: Option<usize>) {
+        if self.current_index != index {
+            let old_index = self.current_index;
+            self.current_index = index;
+            self.current_changed.emit(index);
+            if let Some(idx) = old_index {
+                self.page_hidden.emit(idx);
+            }
+            if let Some(idx) = index {
+                self.page_shown.emit(idx);
+            }
+        }
+    }
+
+    pub fn set_current_page(&mut self, widget: ObjectId) {
+        if let Some(index) = self.pages.iter().position(|p| p.widget == widget) {
+            self.set_current_index(Some(index));
+        }
+    }
+
+    pub fn set_page_title(&mut self, index: usize, title: String) {
+        if let Some(page) = self.pages.get_mut(index) {
+            page.title = title;
+        }
+    }
+
+    pub fn set_page_tooltip(&mut self, index: usize, tooltip: String) {
+        if let Some(page) = self.pages.get_mut(index) {
+            page.tooltip = tooltip;
+        }
+    }
+
+    pub fn set_page_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(page) = self.pages.get_mut(index) {
+            page.enabled = enabled;
+        }
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn index_of(&self, widget: ObjectId) -> Option<usize> {
+        self.pages.iter().position(|p| p.widget == widget)
+    }
+}
+
+impl Widget for StackedWidget {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for StackedWidget {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Collapsible pane widget for collapsible containers.
+pub struct CollapsiblePane {
+    base: BaseWidget,
+    title: String,
+    collapsed: bool,
+    animating: bool,
+    content: Option<ObjectId>,
+    /// Emitted when the pane is collapsed.
+    pub collapsed_signal: GenericSignal,
+    /// Emitted when the pane is expanded.
+    pub expanded: GenericSignal,
+    /// Emitted when the collapse/expand animation starts.
+    pub animation_started: GenericSignal,
+    /// Emitted when the collapse/expand animation finishes.
+    pub animation_finished: GenericSignal,
+}
+
+impl CollapsiblePane {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::CollapsiblePane, geometry, "CollapsiblePane"),
+            title: "Collapsible Pane".to_string(),
+            collapsed: false,
+            animating: false,
+            content: None,
+            collapsed_signal: GenericSignal::new(),
+            expanded: GenericSignal::new(),
+            animation_started: GenericSignal::new(),
+            animation_finished: GenericSignal::new(),
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+    pub fn is_animating(&self) -> bool {
+        self.animating
+    }
+    pub fn content(&self) -> Option<ObjectId> {
+        self.content
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    pub fn set_content(&mut self, content: Option<ObjectId>) {
+        self.content = content;
+    }
+
+    pub fn toggle(&mut self) {
+        if self.collapsed {
+            self.expand();
+        } else {
+            self.collapse();
+        }
+    }
+
+    pub fn collapse(&mut self) {
+        if !self.collapsed && !self.animating {
+            self.animating = true;
+            self.animation_started.emit();
+            // In a real implementation, this would start the collapse animation
+            // For now, we'll just simulate it
+            self.collapsed = true;
+            self.animating = false;
+            self.animation_finished.emit();
+            self.collapsed_signal.emit();
+        }
+    }
+
+    pub fn expand(&mut self) {
+        if self.collapsed && !self.animating {
+            self.animating = true;
+            self.animation_started.emit();
+            // In a real implementation, this would start the expand animation
+            // For now, we'll just simulate it
+            self.collapsed = false;
+            self.animating = false;
+            self.animation_finished.emit();
+            self.expanded.emit();
+        }
+    }
+
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        if self.collapsed != collapsed {
+            if collapsed {
+                self.collapse();
+            } else {
+                self.expand();
+            }
+        }
+    }
+}
+
+impl Widget for CollapsiblePane {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for CollapsiblePane {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web view widget for web browser integration.
+pub struct WebView {
+    base: BaseWidget,
+    url: String,
+    loading: bool,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    /// Emitted when the page starts loading.
+    pub loading_started: Signal1<String>,
+    /// Emitted when the page finishes loading.
+    pub loading_finished: Signal1<String>,
+    /// Emitted when the title changes.
+    pub title_changed: Signal1<String>,
+    /// Emitted when the URL changes.
+    pub url_changed: Signal1<String>,
+    /// Emitted when an error occurs.
+    pub error_occurred: Signal1<String>,
+    /// Emitted when the navigation state changes.
+    pub navigation_state_changed: Signal1<(bool, bool)>,
+}
+
+impl WebView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::WebView, geometry, "WebView"),
+            url: "about:blank".to_string(),
+            loading: false,
+            title: "".to_string(),
+            can_go_back: false,
+            can_go_forward: false,
+            loading_started: Signal1::new(),
+            loading_finished: Signal1::new(),
+            title_changed: Signal1::new(),
+            url_changed: Signal1::new(),
+            error_occurred: Signal1::new(),
+            navigation_state_changed: Signal1::new(),
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn can_go_back(&self) -> bool {
+        self.can_go_back
+    }
+    pub fn can_go_forward(&self) -> bool {
+        self.can_go_forward
+    }
+
+    pub fn set_url(&mut self, url: String) {
+        if self.url != url {
+            self.url = url;
+            self.url_changed.emit(self.url.clone());
+            self.loading = true;
+            self.loading_started.emit(self.url.clone());
+            // In a real implementation, this would start loading the URL
+            // For now, we'll just simulate it
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+        }
+    }
+
+    pub fn load_url(&mut self, url: &str) {
+        self.set_url(url.to_string());
+    }
+
+    pub fn load_html(&mut self, _html: &str) {
+        // In a real implementation, this would load the HTML
+        // For now, we'll just simulate it
+        self.url = "data:text/html".to_string();
+        self.title = "HTML Content".to_string();
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
+        self.url_changed.emit(self.url.clone());
+    }
+
+    pub fn go_back(&mut self) {
+        if self.can_go_back {
+            // In a real implementation, this would navigate back
+            // For now, we'll just simulate it
+            self.can_go_back = false;
+            self.can_go_forward = true;
+            self.navigation_state_changed
+                .emit((self.can_go_back, self.can_go_forward));
+        }
+    }
+
+    pub fn go_forward(&mut self) {
+        if self.can_go_forward {
+            // In a real implementation, this would navigate forward
+            // For now, we'll just simulate it
+            self.can_go_back = true;
+            self.can_go_forward = false;
+            self.navigation_state_changed
+                .emit((self.can_go_back, self.can_go_forward));
+        }
+    }
+
+    pub fn reload(&mut self) {
+        // In a real implementation, this would reload the current page
+        // For now, we'll just simulate it
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+    }
+
+    pub fn stop(&mut self) {
+        // In a real implementation, this would stop loading
+        // For now, we'll just simulate it
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        if self.title != title {
+            self.title = title;
+            self.title_changed.emit(self.title.clone());
+        }
+    }
+
+    pub fn evaluate_javascript(&mut self, _script: &str) -> Option<String> {
+        // In a real implementation, this would evaluate the JavaScript
+        // For now, we'll just return None
+        None
+    }
+}
+
+impl Widget for WebView {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebView {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Activity indicator widget for showing busy status.
+pub struct ActivityIndicator {
+    base: BaseWidget,
+    animating: bool,
+    minimum_delay: u32,
+    color: Color,
+    size: u32,
+    /// Emitted when the animation starts.
+    pub animation_started: GenericSignal,
+    /// Emitted when the animation stops.
+    pub animation_stopped: GenericSignal,
+}
+
+impl ActivityIndicator {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ActivityIndicator, geometry, "ActivityIndicator"),
+            animating: false,
+            minimum_delay: 0,
+            color: Color::rgb(0, 0, 0),
+            size: 24,
+            animation_started: GenericSignal::new(),
+            animation_stopped: GenericSignal::new(),
+        }
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.animating
+    }
+    pub fn minimum_delay(&self) -> u32 {
+        self.minimum_delay
+    }
+    pub fn color(&self) -> Color {
+        self.color
+    }
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    pub fn set_animating(&mut self, animating: bool) {
+        if self.animating != animating {
+            self.animating = animating;
+            if animating {
+                self.animation_started.emit();
+            } else {
+                self.animation_stopped.emit();
+            }
+        }
+    }
+
+    pub fn start(&mut self) {
+        self.set_animating(true);
+    }
+
+    pub fn stop(&mut self) {
+        self.set_animating(false);
+    }
+
+    pub fn set_minimum_delay(&mut self, delay: u32) {
+        self.minimum_delay = delay;
+    }
+
+    pub fn set_color(&mut self, color: Color) {
+        self.color = color;
+    }
+
+    pub fn set_size(&mut self, size: u32) {
+        self.size = size;
+    }
+}
+
+impl Widget for ActivityIndicator {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for ActivityIndicator {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Calendar widget for date selection and display.
+pub struct Calendar {
+    base: BaseWidget,
+    selected_date: chrono::NaiveDate,
+    minimum_date: Option<chrono::NaiveDate>,
+    maximum_date: Option<chrono::NaiveDate>,
+    first_day_of_week: chrono::Weekday,
+    grid_visible: bool,
+    navigation_visible: bool,
+    /// Emitted when the selected date changes.
+    pub selection_changed: Signal1<chrono::NaiveDate>,
+    /// Emitted when the current month changes.
+    pub current_page_changed: Signal1<(i32, u32)>,
+    /// Emitted when a date is double-clicked.
+    pub date_double_clicked: Signal1<chrono::NaiveDate>,
+    /// Emitted when the calendar is activated.
+    pub activated: Signal1<chrono::NaiveDate>,
+}
+
+impl Calendar {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
+            selected_date: chrono::Local::now().date_naive(),
+            minimum_date: None,
+            maximum_date: None,
+            first_day_of_week: chrono::Weekday::Mon,
+            grid_visible: true,
+            navigation_visible: true,
+            selection_changed: Signal1::new(),
+            current_page_changed: Signal1::new(),
+            date_double_clicked: Signal1::new(),
+            activated: Signal1::new(),
+        }
+    }
+
+    pub fn selected_date(&self) -> chrono::NaiveDate {
+        self.selected_date
+    }
+    pub fn minimum_date(&self) -> Option<chrono::NaiveDate> {
+        self.minimum_date
+    }
+    pub fn maximum_date(&self) -> Option<chrono::NaiveDate> {
+        self.maximum_date
+    }
+    pub fn first_day_of_week(&self) -> chrono::Weekday {
+        self.first_day_of_week
+    }
+    pub fn is_grid_visible(&self) -> bool {
+        self.grid_visible
+    }
+    pub fn is_navigation_visible(&self) -> bool {
+        self.navigation_visible
+    }
+
+    pub fn set_selected_date(&mut self, date: chrono::NaiveDate) {
+        let clamped = self.clamp_date(date);
+        if self.selected_date != clamped {
+            self.selected_date = clamped;
+            self.selection_changed.emit(clamped);
+        }
+    }
+
+    pub fn set_minimum_date(&mut self, date: Option<chrono::NaiveDate>) {
+        self.minimum_date = date;
+        self.set_selected_date(self.selected_date);
+    }
+
+    pub fn set_maximum_date(&mut self, date: Option<chrono::NaiveDate>) {
+        self.maximum_date = date;
+        self.set_selected_date(self.selected_date);
+    }
+
+    pub fn set_first_day_of_week(&mut self, day: chrono::Weekday) {
+        self.first_day_of_week = day;
+    }
+
+    pub fn set_grid_visible(&mut self, visible: bool) {
+        self.grid_visible = visible;
+    }
+
+    pub fn set_navigation_visible(&mut self, visible: bool) {
+        self.navigation_visible = visible;
+    }
+
+    fn clamp_date(&self, date: chrono::NaiveDate) -> chrono::NaiveDate {
+        let mut result = date;
+        if let Some(min) = self.minimum_date {
+            if result < min {
+                result = min;
+            }
+        }
+        if let Some(max) = self.maximum_date {
+            if result > max {
+                result = max;
+            }
+        }
+        result
+    }
+
+    pub fn select_today(&mut self) {
+        self.set_selected_date(chrono::Local::now().date_naive());
+    }
+
+    pub fn show_month(&mut self, year: i32, month: u32) {
+        // In a real implementation, this would show the specified month
+        // For now, we'll just emit the signal
+        self.current_page_changed.emit((year, month));
+    }
+
+    pub fn show_prev_month(&mut self) {
+        // In a real implementation, this would show the previous month
+        // For now, we'll just emit the signal
+        let year = self.selected_date.year();
+        let month = self.selected_date.month();
+        let prev_month = if month == 1 {
+            (year - 1, 12)
+        } else {
+            (year, month - 1)
+        };
+        self.current_page_changed.emit(prev_month);
+    }
+
+    pub fn show_next_month(&mut self) {
+        // In a real implementation, this would show the next month
+        // For now, we'll just emit the signal
+        let year = self.selected_date.year();
+        let month = self.selected_date.month();
+        let next_month = if month == 12 {
+            (year + 1, 1)
+        } else {
+            (year, month + 1)
+        };
+        self.current_page_changed.emit(next_month);
+    }
+
+    pub fn show_prev_year(&mut self) {
+        // In a real implementation, this would show the previous year
+        // For now, we'll just emit the signal
+        let year = self.selected_date.year();
+        let month = self.selected_date.month();
+        self.current_page_changed.emit((year - 1, month));
+    }
+
+    pub fn show_next_year(&mut self) {
+        // In a real implementation, this would show the next year
+        // For now, we'll just emit the signal
+        let year = self.selected_date.year();
+        let month = self.selected_date.month();
+        self.current_page_changed.emit((year + 1, month));
+    }
+
+    pub fn double_click_date(&mut self, date: chrono::NaiveDate) {
+        // In a real implementation, this would handle double-click on a date
+        // For now, we'll just emit the signal
+        self.date_double_clicked.emit(date);
+        self.activated.emit(date);
+    }
+}
+
+impl Widget for Calendar {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for Calendar {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Column view widget for hierarchical data display.
+pub struct ColumnView {
+    base: BaseWidget,
+    columns: Vec<ColumnViewColumn>,
+    root_item: Option<ObjectId>,
+    selection_mode: ColumnViewSelectionMode,
+    /// Emitted when the selection changes.
+    pub selection_changed: Signal1<Vec<ObjectId>>,
+    /// Emitted when an item is activated (double-clicked).
+    pub item_activated: Signal1<ObjectId>,
+    /// Emitted when a column is added.
+    pub column_added: Signal1<usize>,
+    /// Emitted when a column is removed.
+    pub column_removed: Signal1<usize>,
+    /// Emitted when a column is resized.
+    pub column_resized: Signal1<(usize, u32)>,
+    /// Emitted when a column is reordered.
+    pub column_reordered: Signal1<(usize, usize)>,
+}
+
+/// Column view selection modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnViewSelectionMode {
+    /// No selection allowed.
+    NoSelection,
+    /// Single item selection.
+    SingleSelection,
+    /// Multiple item selection with keyboard modifiers.
+    MultiSelection,
+    /// Extended selection with shift key support.
+    ExtendedSelection,
+}
+
+/// Column view column structure.
+pub struct ColumnViewColumn {
+    pub id: String,
+    pub title: String,
+    pub width: u32,
+    pub resizable: bool,
+    pub visible: bool,
+}
+
+impl ColumnView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ColumnView, geometry, "ColumnView"),
+            columns: Vec::new(),
+            root_item: None,
+            selection_mode: ColumnViewSelectionMode::SingleSelection,
+            selection_changed: Signal1::new(),
+            item_activated: Signal1::new(),
+            column_added: Signal1::new(),
+            column_removed: Signal1::new(),
+            column_resized: Signal1::new(),
+            column_reordered: Signal1::new(),
+        }
+    }
+
+    pub fn columns(&self) -> &[ColumnViewColumn] {
+        &self.columns
+    }
+    pub fn root_item(&self) -> Option<ObjectId> {
+        self.root_item
+    }
+    pub fn selection_mode(&self) -> ColumnViewSelectionMode {
+        self.selection_mode
+    }
+
+    pub fn set_root_item(&mut self, item: Option<ObjectId>) {
+        self.root_item = item;
+    }
+
+    pub fn set_selection_mode(&mut self, mode: ColumnViewSelectionMode) {
+        self.selection_mode = mode;
+    }
+
+    pub fn add_column(&mut self, column: ColumnViewColumn) {
+        let index = self.columns.len();
+        self.columns.push(column);
+        self.column_added.emit(index);
+    }
+
+    pub fn remove_column(&mut self, index: usize) {
+        if index < self.columns.len() {
+            self.columns.remove(index);
+            self.column_removed.emit(index);
+        }
+    }
+
+    pub fn clear_columns(&mut self) {
+        self.columns.clear();
+    }
+
+    pub fn resize_column(&mut self, index: usize, width: u32) {
+        if let Some(column) = self.columns.get_mut(index) {
+            column.width = width;
+            self.column_resized.emit((index, width));
+        }
+    }
+
+    pub fn reorder_column(&mut self, from_index: usize, to_index: usize) {
+        if from_index < self.columns.len() && to_index < self.columns.len() {
+            let column = self.columns.remove(from_index);
+            self.columns.insert(to_index, column);
+            self.column_reordered.emit((from_index, to_index));
+        }
+    }
+
+    pub fn select_item(&mut self, item: ObjectId) {
+        // In a real implementation, this would select the item
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(vec![item]);
+    }
+
+    pub fn select_items(&mut self, items: Vec<ObjectId>) {
+        // In a real implementation, this would select multiple items
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(items);
+    }
+
+    pub fn clear_selection(&mut self) {
+        // In a real implementation, this would clear the selection
+        // For now, we'll just emit the signal
+        self.selection_changed.emit(vec![]);
+    }
+
+    pub fn activate_item(&mut self, item: ObjectId) {
+        // In a real implementation, this would activate the item
+        // For now, we'll just emit the signal
+        self.item_activated.emit(item);
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
+    pub fn column_at(&self, index: usize) -> Option<&ColumnViewColumn> {
+        self.columns.get(index)
+    }
+}
+
+impl Widget for ColumnView {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for ColumnView {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Undo view widget for undo/redo history display.
+pub struct UndoView {
+    base: BaseWidget,
+    stack: Vec<UndoCommand>,
+    current_index: usize,
+    clean_index: usize,
+    max_stack_size: usize,
+    /// Emitted when the undo stack changes.
+    pub stack_changed: GenericSignal,
+    /// Emitted when an item is activated (double-clicked).
+    pub item_activated: Signal1<usize>,
+    /// Emitted when the clean state changes.
+    pub clean_changed: Signal1<bool>,
+}
+
+/// Undo command structure.
+pub struct UndoCommand {
+    pub text: String,
+    pub timestamp: chrono::NaiveDateTime,
+    pub merged: bool,
+}
+
+impl UndoView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::UndoView, geometry, "UndoView"),
+            stack: Vec::new(),
+            current_index: 0,
+            clean_index: 0,
+            max_stack_size: 100,
+            stack_changed: GenericSignal::new(),
+            item_activated: Signal1::new(),
+            clean_changed: Signal1::new(),
+        }
+    }
+
+    pub fn stack(&self) -> &[UndoCommand] {
+        &self.stack
+    }
+    pub fn current_index(&self) -> usize {
+        self.current_index
+    }
+    pub fn clean_index(&self) -> usize {
+        self.clean_index
+    }
+    pub fn max_stack_size(&self) -> usize {
+        self.max_stack_size
+    }
+    pub fn can_undo(&self) -> bool {
+        self.current_index > 0
+    }
+    pub fn can_redo(&self) -> bool {
+        self.current_index < self.stack.len()
+    }
+    pub fn is_clean(&self) -> bool {
+        self.current_index == self.clean_index
+    }
+
+    pub fn set_max_stack_size(&mut self, size: usize) {
+        self.max_stack_size = size;
+        self.trim_stack();
+    }
+
+    pub fn add_command(&mut self, command: UndoCommand) {
+        // Remove any commands after the current index
+        self.stack.truncate(self.current_index);
+
+        // Add the new command
+        self.stack.push(command);
+        self.current_index = self.stack.len();
+
+        // Trim the stack if it's too big
+        self.trim_stack();
+
+        // Emit signals
+        self.stack_changed.emit();
+        self.clean_changed.emit(self.is_clean());
+    }
+
+    pub fn undo(&mut self) -> Option<&UndoCommand> {
+        if self.can_undo() {
+            self.current_index -= 1;
+            self.stack_changed.emit();
+            self.clean_changed.emit(self.is_clean());
+            self.stack.get(self.current_index)
+        } else {
+            None
+        }
+    }
+
+    pub fn redo(&mut self) -> Option<&UndoCommand> {
+        if self.can_redo() {
+            self.current_index += 1;
+            self.stack_changed.emit();
+            self.clean_changed.emit(self.is_clean());
+            self.stack.get(self.current_index - 1)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_clean(&mut self) {
+        self.clean_index = self.current_index;
+        self.clean_changed.emit(true);
+    }
+
+    pub fn clear(&mut self) {
+        self.stack.clear();
+        self.current_index = 0;
+        self.clean_index = 0;
+        self.stack_changed.emit();
+        self.clean_changed.emit(true);
+    }
+
+    pub fn activate_item(&mut self, index: usize) {
+        if index < self.stack.len() {
+            self.item_activated.emit(index);
+            // In a real implementation, this would navigate to the specified index
+            // For now, we'll just emit the signal
+        }
+    }
+
+    fn trim_stack(&mut self) {
+        if self.stack.len() > self.max_stack_size {
+            let remove_count = self.stack.len() - self.max_stack_size;
+            self.stack.drain(0..remove_count);
+            self.current_index = self.current_index.saturating_sub(remove_count);
+            self.clean_index = self.clean_index.saturating_sub(remove_count);
+            self.stack_changed.emit();
+        }
+    }
+}
+
+impl Widget for UndoView {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for UndoView {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine view widget for web content rendering.
+pub struct WebEngineView {
+    base: BaseWidget,
+    url: String,
+    loading: bool,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    javascript_enabled: bool,
+    plugins_enabled: bool,
+    private_browsing: bool,
+    /// Emitted when the page starts loading.
+    pub loading_started: Signal1<String>,
+    /// Emitted when the page finishes loading.
+    pub loading_finished: Signal1<String>,
+    /// Emitted when the title changes.
+    pub title_changed: Signal1<String>,
+    /// Emitted when the URL changes.
+    pub url_changed: Signal1<String>,
+    /// Emitted when an error occurs.
+    pub error_occurred: Signal1<String>,
+    /// Emitted when the navigation state changes.
+    pub navigation_state_changed: Signal1<(bool, bool)>,
+    /// Emitted when a certificate error occurs.
+    pub certificate_error: Signal1<String>,
+    /// Emitted when a JavaScript console message is received.
+    pub console_message: Signal1<(String, u32, String)>,
+    /// Emitted when a download is requested.
+    pub download_requested: Signal1<String>,
+    /// Emitted when the page is created.
+    pub page_created: Signal1<ObjectId>,
+    /// Emitted when the page is destroyed.
+    pub page_destroyed: Signal1<ObjectId>,
+}
+
+impl WebEngineView {
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "WebEngineView"),
+            url: "".to_string(),
+            loading: false,
+            title: "".to_string(),
+            can_go_back: false,
+            can_go_forward: false,
+            javascript_enabled: true,
+            plugins_enabled: false,
+            private_browsing: false,
+            loading_started: Signal1::new(),
+            loading_finished: Signal1::new(),
+            title_changed: Signal1::new(),
+            url_changed: Signal1::new(),
+            error_occurred: Signal1::new(),
+            navigation_state_changed: Signal1::new(),
+            certificate_error: Signal1::new(),
+            console_message: Signal1::new(),
+            download_requested: Signal1::new(),
+            page_created: Signal1::new(),
+            page_destroyed: Signal1::new(),
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn can_go_back(&self) -> bool {
+        self.can_go_back
+    }
+    pub fn can_go_forward(&self) -> bool {
+        self.can_go_forward
+    }
+    pub fn is_javascript_enabled(&self) -> bool {
+        self.javascript_enabled
+    }
+    pub fn is_plugins_enabled(&self) -> bool {
+        self.plugins_enabled
+    }
+    pub fn is_private_browsing(&self) -> bool {
+        self.private_browsing
+    }
+
+    pub fn set_url(&mut self, url: String) {
+        if self.url != url {
+            self.url = url;
+            self.url_changed.emit(self.url.clone());
+            self.loading = true;
+            self.loading_started.emit(self.url.clone());
+            // In a real implementation, this would start loading the URL
+            // For now, we'll just simulate it
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+            self.update_navigation_state();
+        }
+    }
+
+    pub fn load_html(&mut self, _html: &str) {
+        // In a real implementation, this would load the HTML
+        // For now, we'll just simulate it
+        self.url = "data:text/html".to_string();
+        self.title = "HTML Content".to_string();
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
+        self.url_changed.emit(self.url.clone());
+        self.update_navigation_state();
+    }
+
+    pub fn load_data(&mut self, _data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
+        // In a real implementation, this would load the data
+        // For now, we'll just simulate it
+        self.url = base_url.to_string();
+        self.title = "Data Content".to_string();
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
+        self.url_changed.emit(self.url.clone());
+        self.update_navigation_state();
+    }
+
+    pub fn go_back(&mut self) {
+        if self.can_go_back {
+            // In a real implementation, this would navigate back
+            // For now, we'll just simulate it
+            self.can_go_back = false;
+            self.can_go_forward = true;
+            self.update_navigation_state();
+        }
+    }
+
+    pub fn go_forward(&mut self) {
+        if self.can_go_forward {
+            // In a real implementation, this would navigate forward
+            // For now, we'll just simulate it
+            self.can_go_forward = false;
+            self.can_go_back = true;
+            self.update_navigation_state();
+        }
+    }
+
+    pub fn reload(&mut self) {
+        if !self.url.is_empty() {
+            // In a real implementation, this would reload the page
+            // For now, we'll just simulate it
+            self.loading = true;
+            self.loading_started.emit(self.url.clone());
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if self.loading {
+            // In a real implementation, this would stop loading
+            // For now, we'll just simulate it
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+        }
+    }
+
+    pub fn evaluate_javascript(&mut self, _script: &str) -> Result<String, String> {
+        // In a real implementation, this would evaluate the JavaScript
+        // For now, we'll just return a placeholder
+        Ok("Result".to_string())
+    }
+
+    pub fn set_javascript_enabled(&mut self, enabled: bool) {
+        self.javascript_enabled = enabled;
+    }
+
+    pub fn set_plugins_enabled(&mut self, enabled: bool) {
+        self.plugins_enabled = enabled;
+    }
+
+    pub fn set_private_browsing(&mut self, enabled: bool) {
+        self.private_browsing = enabled;
+    }
+
+    pub fn clear_history(&mut self) {
+        // In a real implementation, this would clear the history
+        // For now, we'll just update the navigation state
+        self.can_go_back = false;
+        self.can_go_forward = false;
+        self.update_navigation_state();
+    }
+
+    pub fn clear_cache(&mut self) {
+        // In a real implementation, this would clear the cache
+        // For now, we'll just do nothing
+    }
+
+    pub fn clear_cookies(&mut self) {
+        // In a real implementation, this would clear the cookies
+        // For now, we'll just do nothing
+    }
+
+    pub fn zoom_in(&mut self) {
+        // In a real implementation, this would zoom in
+        // For now, we'll just do nothing
+    }
+
+    pub fn zoom_out(&mut self) {
+        // In a real implementation, this would zoom out
+        // For now, we'll just do nothing
+    }
+
+    pub fn reset_zoom(&mut self) {
+        // In a real implementation, this would reset the zoom
+        // For now, we'll just do nothing
+    }
+
+    pub fn print(&mut self) {
+        // In a real implementation, this would print the page
+        // For now, we'll just do nothing
+    }
+
+    pub fn save_page(&mut self, _path: &str, _format: SaveFormat) -> Result<(), String> {
+        // In a real implementation, this would save the page
+        // For now, we'll just return a placeholder
+        Ok(())
+    }
+
+    fn update_navigation_state(&mut self) {
+        self.navigation_state_changed
+            .emit((self.can_go_back, self.can_go_forward));
+    }
+}
+
+/// Save format for web pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveFormat {
+    /// Save as HTML only.
+    HtmlOnly,
+    /// Save as complete HTML with resources.
+    CompleteHtml,
+    /// Save as MHTML.
+    MHtml,
+}
+
+impl Widget for WebEngineView {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineView {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine page widget for web content management.
+pub struct WebEnginePage {
+    base: BaseWidget,
+    url: String,
+    title: String,
+    favicon: Option<Image>,
+    loading: bool,
+    can_go_back: bool,
+    can_go_forward: bool,
+    javascript_enabled: bool,
+    plugins_enabled: bool,
+    private_browsing: bool,
+    /// Emitted when the page starts loading.
+    pub loading_started: Signal1<String>,
+    /// Emitted when the page finishes loading.
+    pub loading_finished: Signal1<String>,
+    /// Emitted when the title changes.
+    pub title_changed: Signal1<String>,
+    /// Emitted when the URL changes.
+    pub url_changed: Signal1<String>,
+    /// Emitted when the favicon changes.
+    pub favicon_changed: Signal1<Option<Image>>,
+    /// Emitted when an error occurs.
+    pub error_occurred: Signal1<String>,
+    /// Emitted when the navigation state changes.
+    pub navigation_state_changed: Signal1<(bool, bool)>,
+    /// Emitted when a certificate error occurs.
+    pub certificate_error: Signal1<String>,
+    /// Emitted when a JavaScript console message is received.
+    pub console_message: Signal1<(String, u32, String)>,
+    /// Emitted when a download is requested.
+    pub download_requested: Signal1<String>,
+    /// Emitted when a form is submitted.
+    pub form_submitted: Signal1<String>,
+    /// Emitted when a link is clicked.
+    pub link_clicked: Signal1<String>,
+    /// Emitted when a new window is requested.
+    pub new_window_requested: Signal1<String>,
+    /// Emitted when a popup window is requested.
+    pub popup_window_requested: Signal1<String>,
+}
+
+impl WebEnginePage {
+    pub fn new() -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEnginePage,
+                Rect::new(0, 0, 0, 0),
+                "WebEnginePage",
+            ),
+            url: "".to_string(),
+            title: "".to_string(),
+            favicon: None,
+            loading: false,
+            can_go_back: false,
+            can_go_forward: false,
+            javascript_enabled: true,
+            plugins_enabled: false,
+            private_browsing: false,
+            loading_started: Signal1::new(),
+            loading_finished: Signal1::new(),
+            title_changed: Signal1::new(),
+            url_changed: Signal1::new(),
+            favicon_changed: Signal1::new(),
+            error_occurred: Signal1::new(),
+            navigation_state_changed: Signal1::new(),
+            certificate_error: Signal1::new(),
+            console_message: Signal1::new(),
+            download_requested: Signal1::new(),
+            form_submitted: Signal1::new(),
+            link_clicked: Signal1::new(),
+            new_window_requested: Signal1::new(),
+            popup_window_requested: Signal1::new(),
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn favicon(&self) -> Option<&Image> {
+        self.favicon.as_ref()
+    }
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+    pub fn can_go_back(&self) -> bool {
+        self.can_go_back
+    }
+    pub fn can_go_forward(&self) -> bool {
+        self.can_go_forward
+    }
+    pub fn is_javascript_enabled(&self) -> bool {
+        self.javascript_enabled
+    }
+    pub fn is_plugins_enabled(&self) -> bool {
+        self.plugins_enabled
+    }
+    pub fn is_private_browsing(&self) -> bool {
+        self.private_browsing
+    }
+
+    pub fn set_url(&mut self, url: String) {
+        if self.url != url {
+            self.url = url;
+            self.url_changed.emit(self.url.clone());
+            self.loading = true;
+            self.loading_started.emit(self.url.clone());
+            // In a real implementation, this would start loading the URL
+            // For now, we'll just simulate it
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+            self.update_navigation_state();
+        }
+    }
+
+    pub fn load_html(&mut self, _html: &str) {
+        // In a real implementation, this would load the HTML
+        // For now, we'll just simulate it
+        self.url = "data:text/html".to_string();
+        self.title = "HTML Content".to_string();
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
+        self.url_changed.emit(self.url.clone());
+        self.update_navigation_state();
+    }
+
+    pub fn load_data(&mut self, _data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
+        // In a real implementation, this would load the data
+        // For now, we'll just simulate it
+        self.url = base_url.to_string();
+        self.title = "Data Content".to_string();
+        self.loading = true;
+        self.loading_started.emit(self.url.clone());
+        self.loading = false;
+        self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
+        self.url_changed.emit(self.url.clone());
+        self.update_navigation_state();
+    }
+
+    pub fn go_back(&mut self) -> bool {
+        if self.can_go_back {
+            // In a real implementation, this would navigate back
+            // For now, we'll just simulate it
+            self.can_go_back = false;
+            self.can_go_forward = true;
+            self.update_navigation_state();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn go_forward(&mut self) -> bool {
+        if self.can_go_forward {
+            // In a real implementation, this would navigate forward
+            // For now, we'll just simulate it
+            self.can_go_forward = false;
+            self.can_go_back = true;
+            self.update_navigation_state();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reload(&mut self) {
+        if !self.url.is_empty() {
+            // In a real implementation, this would reload the page
+            // For now, we'll just simulate it
+            self.loading = true;
+            self.loading_started.emit(self.url.clone());
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if self.loading {
+            // In a real implementation, this would stop loading
+            // For now, we'll just simulate it
+            self.loading = false;
+            self.loading_finished.emit(self.url.clone());
+        }
+    }
+
+    pub fn evaluate_javascript(&mut self, _script: &str) -> Result<String, String> {
+        // In a real implementation, this would evaluate the JavaScript
+        // For now, we'll just return a placeholder
+        Ok("Result".to_string())
+    }
+
+    pub fn run_javascript(&mut self, _script: &str) {
+        // In a real implementation, this would run the JavaScript
+        // For now, we'll just do nothing
+    }
+
+    pub fn run_javascript_with_callback(
+        &mut self,
+        _script: &str,
+        callback: impl FnOnce(Result<String, String>),
+    ) {
+        // In a real implementation, this would run the JavaScript with a callback
+        // For now, we'll just call the callback with a placeholder
+        callback(Ok("Result".to_string()));
+    }
+
+    pub fn set_javascript_enabled(&mut self, enabled: bool) {
+        self.javascript_enabled = enabled;
+    }
+
+    pub fn set_plugins_enabled(&mut self, enabled: bool) {
+        self.plugins_enabled = enabled;
+    }
+
+    pub fn set_private_browsing(&mut self, enabled: bool) {
+        self.private_browsing = enabled;
+    }
+
+    pub fn set_favicon(&mut self, favicon: Option<Image>) {
+        if self.favicon != favicon {
+            self.favicon = favicon;
+            self.favicon_changed.emit(self.favicon.clone());
+        }
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        if self.title != title {
+            self.title = title;
+            self.title_changed.emit(self.title.clone());
+        }
+    }
+
+    pub fn trigger_form_submitted(&mut self, url: &str) {
+        self.form_submitted.emit(url.to_string());
+    }
+
+    pub fn trigger_link_clicked(&mut self, url: &str) {
+        self.link_clicked.emit(url.to_string());
+    }
+
+    pub fn trigger_new_window_requested(&mut self, url: &str) {
+        self.new_window_requested.emit(url.to_string());
+    }
+
+    pub fn trigger_popup_window_requested(&mut self, url: &str) {
+        self.popup_window_requested.emit(url.to_string());
+    }
+
+    pub fn trigger_certificate_error(&mut self, error: &str) {
+        self.certificate_error.emit(error.to_string());
+    }
+
+    pub fn trigger_console_message(&mut self, message: &str, line: u32, source: &str) {
+        self.console_message
+            .emit((message.to_string(), line, source.to_string()));
+    }
+
+    pub fn trigger_download_requested(&mut self, url: &str) {
+        self.download_requested.emit(url.to_string());
+    }
+
+    fn update_navigation_state(&mut self) {
+        self.navigation_state_changed
+            .emit((self.can_go_back, self.can_go_forward));
+    }
+}
+
+impl Widget for WebEnginePage {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEnginePage {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine settings widget for web engine configuration.
+pub struct WebEngineSettings {
+    base: BaseWidget,
+    javascript_enabled: bool,
+    plugins_enabled: bool,
+    private_browsing: bool,
+    local_storage_enabled: bool,
+    session_storage_enabled: bool,
+    cookies_enabled: bool,
+    images_enabled: bool,
+    javascript_can_open_windows_automatically: bool,
+    javascript_can_access_clipboard: bool,
+    webgl_enabled: bool,
+    webrtc_enabled: bool,
+    pdf_viewer_enabled: bool,
+    auto_load_images: bool,
+    auto_play_media: bool,
+    user_agent: String,
+    default_font_family: String,
+    default_font_size: u32,
+    minimum_font_size: u32,
+    /// Emitted when a setting changes.
+    pub setting_changed: Signal1<(String, String)>,
+}
+
+impl WebEngineSettings {
+    pub fn new() -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::WebEngineSettings, Rect::new(0, 0, 0, 0), "WebEngineSettings"),
+            javascript_enabled: true,
+            plugins_enabled: false,
+            private_browsing: false,
+            local_storage_enabled: true,
+            session_storage_enabled: true,
+            cookies_enabled: true,
+            images_enabled: true,
+            javascript_can_open_windows_automatically: false,
+            javascript_can_access_clipboard: false,
+            webgl_enabled: true,
+            webrtc_enabled: true,
+            pdf_viewer_enabled: true,
+            auto_load_images: true,
+            auto_play_media: false,
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
+            default_font_family: "Arial".to_string(),
+            default_font_size: 16,
+            minimum_font_size: 8,
+            setting_changed: Signal1::new(),
+        }
+    }
+
+    pub fn is_javascript_enabled(&self) -> bool {
+        self.javascript_enabled
+    }
+    pub fn is_plugins_enabled(&self) -> bool {
+        self.plugins_enabled
+    }
+    pub fn is_private_browsing(&self) -> bool {
+        self.private_browsing
+    }
+    pub fn is_local_storage_enabled(&self) -> bool {
+        self.local_storage_enabled
+    }
+    pub fn is_session_storage_enabled(&self) -> bool {
+        self.session_storage_enabled
+    }
+    pub fn is_cookies_enabled(&self) -> bool {
+        self.cookies_enabled
+    }
+    pub fn is_images_enabled(&self) -> bool {
+        self.images_enabled
+    }
+    pub fn is_javascript_can_open_windows_automatically(&self) -> bool {
+        self.javascript_can_open_windows_automatically
+    }
+    pub fn is_javascript_can_access_clipboard(&self) -> bool {
+        self.javascript_can_access_clipboard
+    }
+    pub fn is_webgl_enabled(&self) -> bool {
+        self.webgl_enabled
+    }
+    pub fn is_webrtc_enabled(&self) -> bool {
+        self.webrtc_enabled
+    }
+    pub fn is_pdf_viewer_enabled(&self) -> bool {
+        self.pdf_viewer_enabled
+    }
+    pub fn is_auto_load_images(&self) -> bool {
+        self.auto_load_images
+    }
+    pub fn is_auto_play_media(&self) -> bool {
+        self.auto_play_media
+    }
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
+    }
+    pub fn default_font_family(&self) -> &str {
+        &self.default_font_family
+    }
+    pub fn default_font_size(&self) -> u32 {
+        self.default_font_size
+    }
+    pub fn minimum_font_size(&self) -> u32 {
+        self.minimum_font_size
+    }
+
+    pub fn set_javascript_enabled(&mut self, enabled: bool) {
+        if self.javascript_enabled != enabled {
+            self.javascript_enabled = enabled;
+            self.setting_changed
+                .emit(("javascript_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_plugins_enabled(&mut self, enabled: bool) {
+        if self.plugins_enabled != enabled {
+            self.plugins_enabled = enabled;
+            self.setting_changed
+                .emit(("plugins_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_private_browsing(&mut self, enabled: bool) {
+        if self.private_browsing != enabled {
+            self.private_browsing = enabled;
+            self.setting_changed
+                .emit(("private_browsing".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_local_storage_enabled(&mut self, enabled: bool) {
+        if self.local_storage_enabled != enabled {
+            self.local_storage_enabled = enabled;
+            self.setting_changed
+                .emit(("local_storage_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_session_storage_enabled(&mut self, enabled: bool) {
+        if self.session_storage_enabled != enabled {
+            self.session_storage_enabled = enabled;
+            self.setting_changed
+                .emit(("session_storage_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_cookies_enabled(&mut self, enabled: bool) {
+        if self.cookies_enabled != enabled {
+            self.cookies_enabled = enabled;
+            self.setting_changed
+                .emit(("cookies_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_images_enabled(&mut self, enabled: bool) {
+        if self.images_enabled != enabled {
+            self.images_enabled = enabled;
+            self.setting_changed
+                .emit(("images_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_javascript_can_open_windows_automatically(&mut self, enabled: bool) {
+        if self.javascript_can_open_windows_automatically != enabled {
+            self.javascript_can_open_windows_automatically = enabled;
+            self.setting_changed.emit((
+                "javascript_can_open_windows_automatically".to_string(),
+                enabled.to_string(),
+            ));
+        }
+    }
+
+    pub fn set_javascript_can_access_clipboard(&mut self, enabled: bool) {
+        if self.javascript_can_access_clipboard != enabled {
+            self.javascript_can_access_clipboard = enabled;
+            self.setting_changed.emit((
+                "javascript_can_access_clipboard".to_string(),
+                enabled.to_string(),
+            ));
+        }
+    }
+
+    pub fn set_webgl_enabled(&mut self, enabled: bool) {
+        if self.webgl_enabled != enabled {
+            self.webgl_enabled = enabled;
+            self.setting_changed
+                .emit(("webgl_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_webrtc_enabled(&mut self, enabled: bool) {
+        if self.webrtc_enabled != enabled {
+            self.webrtc_enabled = enabled;
+            self.setting_changed
+                .emit(("webrtc_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_pdf_viewer_enabled(&mut self, enabled: bool) {
+        if self.pdf_viewer_enabled != enabled {
+            self.pdf_viewer_enabled = enabled;
+            self.setting_changed
+                .emit(("pdf_viewer_enabled".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_auto_load_images(&mut self, enabled: bool) {
+        if self.auto_load_images != enabled {
+            self.auto_load_images = enabled;
+            self.setting_changed
+                .emit(("auto_load_images".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_auto_play_media(&mut self, enabled: bool) {
+        if self.auto_play_media != enabled {
+            self.auto_play_media = enabled;
+            self.setting_changed
+                .emit(("auto_play_media".to_string(), enabled.to_string()));
+        }
+    }
+
+    pub fn set_user_agent(&mut self, user_agent: String) {
+        if self.user_agent != user_agent {
+            self.user_agent = user_agent;
+            self.setting_changed
+                .emit(("user_agent".to_string(), self.user_agent.clone()));
+        }
+    }
+
+    pub fn set_default_font_family(&mut self, font_family: String) {
+        if self.default_font_family != font_family {
+            self.default_font_family = font_family;
+            self.setting_changed.emit((
+                "default_font_family".to_string(),
+                self.default_font_family.clone(),
+            ));
+        }
+    }
+
+    pub fn set_default_font_size(&mut self, font_size: u32) {
+        if self.default_font_size != font_size {
+            self.default_font_size = font_size;
+            self.setting_changed
+                .emit(("default_font_size".to_string(), font_size.to_string()));
+        }
+    }
+
+    pub fn set_minimum_font_size(&mut self, font_size: u32) {
+        if self.minimum_font_size != font_size {
+            self.minimum_font_size = font_size;
+            self.setting_changed
+                .emit(("minimum_font_size".to_string(), font_size.to_string()));
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.javascript_enabled = true;
+        self.plugins_enabled = false;
+        self.private_browsing = false;
+        self.local_storage_enabled = true;
+        self.session_storage_enabled = true;
+        self.cookies_enabled = true;
+        self.images_enabled = true;
+        self.javascript_can_open_windows_automatically = false;
+        self.javascript_can_access_clipboard = false;
+        self.webgl_enabled = true;
+        self.webrtc_enabled = true;
+        self.pdf_viewer_enabled = true;
+        self.auto_load_images = true;
+        self.auto_play_media = false;
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string();
+        self.default_font_family = "Arial".to_string();
+        self.default_font_size = 16;
+        self.minimum_font_size = 8;
+        self.setting_changed
+            .emit(("reset".to_string(), "all".to_string()));
+    }
+
+    pub fn get_setting(&self, name: &str) -> Option<String> {
+        match name {
+            "javascript_enabled" => Some(self.javascript_enabled.to_string()),
+            "plugins_enabled" => Some(self.plugins_enabled.to_string()),
+            "private_browsing" => Some(self.private_browsing.to_string()),
+            "local_storage_enabled" => Some(self.local_storage_enabled.to_string()),
+            "session_storage_enabled" => Some(self.session_storage_enabled.to_string()),
+            "cookies_enabled" => Some(self.cookies_enabled.to_string()),
+            "images_enabled" => Some(self.images_enabled.to_string()),
+            "javascript_can_open_windows_automatically" => {
+                Some(self.javascript_can_open_windows_automatically.to_string())
+            }
+            "javascript_can_access_clipboard" => {
+                Some(self.javascript_can_access_clipboard.to_string())
+            }
+            "webgl_enabled" => Some(self.webgl_enabled.to_string()),
+            "webrtc_enabled" => Some(self.webrtc_enabled.to_string()),
+            "pdf_viewer_enabled" => Some(self.pdf_viewer_enabled.to_string()),
+            "auto_load_images" => Some(self.auto_load_images.to_string()),
+            "auto_play_media" => Some(self.auto_play_media.to_string()),
+            "user_agent" => Some(self.user_agent.clone()),
+            "default_font_family" => Some(self.default_font_family.clone()),
+            "default_font_size" => Some(self.default_font_size.to_string()),
+            "minimum_font_size" => Some(self.minimum_font_size.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn set_setting(&mut self, name: &str, value: &str) -> bool {
+        match name {
+            "javascript_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_javascript_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "plugins_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_plugins_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "private_browsing" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_private_browsing(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "local_storage_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_local_storage_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "session_storage_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_session_storage_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "cookies_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_cookies_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "images_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_images_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "javascript_can_open_windows_automatically" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_javascript_can_open_windows_automatically(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "javascript_can_access_clipboard" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_javascript_can_access_clipboard(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "webgl_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_webgl_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "webrtc_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_webrtc_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "pdf_viewer_enabled" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_pdf_viewer_enabled(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "auto_load_images" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_auto_load_images(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "auto_play_media" => {
+                if let Ok(enabled) = value.parse() {
+                    self.set_auto_play_media(enabled);
+                    true
+                } else {
+                    false
+                }
+            }
+            "user_agent" => {
+                self.set_user_agent(value.to_string());
+                true
+            }
+            "default_font_family" => {
+                self.set_default_font_family(value.to_string());
+                true
+            }
+            "default_font_size" => {
+                if let Ok(font_size) = value.parse() {
+                    self.set_default_font_size(font_size);
+                    true
+                } else {
+                    false
+                }
+            }
+            "minimum_font_size" => {
+                if let Ok(font_size) = value.parse() {
+                    self.set_minimum_font_size(font_size);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Widget for WebEngineSettings {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineSettings {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine download item widget for download management.
+pub struct WebEngineDownloadItem {
+    base: BaseWidget,
+    url: String,
+    filename: String,
+    total_bytes: u64,
+    received_bytes: u64,
+    state: DownloadState,
+    speed: u64, // bytes per second
+    error: Option<String>,
+    /// Emitted when the download state changes.
+    pub state_changed: Signal1<DownloadState>,
+    /// Emitted when the download progress changes.
+    pub progress_changed: Signal1<(u64, u64)>,
+    /// Emitted when the download speed changes.
+    pub speed_changed: Signal1<u64>,
+    /// Emitted when the download filename changes.
+    pub filename_changed: Signal1<String>,
+    /// Emitted when the download is finished.
+    pub finished: Signal1<()>,
+    /// Emitted when the download is canceled.
+    pub canceled: Signal1<()>,
+    /// Emitted when an error occurs.
+    pub error_occurred: Signal1<String>,
+}
+
+/// Download state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadState {
+    /// The download has not started yet.
+    Idle,
+    /// The download is in progress.
+    Downloading,
+    /// The download is paused.
+    Paused,
+    /// The download is completed.
+    Completed,
+    /// The download is canceled.
+    Canceled,
+    /// The download failed with an error.
+    Failed,
+}
+
+impl WebEngineDownloadItem {
+    pub fn new(url: String, filename: String) -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineDownloadItem,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineDownloadItem",
+            ),
+            url,
+            filename,
+            total_bytes: 0,
+            received_bytes: 0,
+            state: DownloadState::Idle,
+            speed: 0,
+            error: None,
+            state_changed: Signal1::new(),
+            progress_changed: Signal1::new(),
+            speed_changed: Signal1::new(),
+            filename_changed: Signal1::new(),
+            finished: Signal1::new(),
+            canceled: Signal1::new(),
+            error_occurred: Signal1::new(),
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+    pub fn received_bytes(&self) -> u64 {
+        self.received_bytes
+    }
+    pub fn state(&self) -> DownloadState {
+        self.state
+    }
+    pub fn speed(&self) -> u64 {
+        self.speed
+    }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn progress(&self) -> f64 {
+        if self.total_bytes > 0 {
+            self.received_bytes as f64 / self.total_bytes as f64
+        } else {
+            0.0
+        }
+    }
+
+    pub fn start(&mut self) {
+        if self.state == DownloadState::Idle || self.state == DownloadState::Paused {
+            self.state = DownloadState::Downloading;
+            self.state_changed.emit(self.state);
+        }
+    }
+
+    pub fn pause(&mut self) {
+        if self.state == DownloadState::Downloading {
+            self.state = DownloadState::Paused;
+            self.state_changed.emit(self.state);
+        }
+    }
+
+    pub fn resume(&mut self) {
+        if self.state == DownloadState::Paused {
+            self.state = DownloadState::Downloading;
+            self.state_changed.emit(self.state);
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if self.state == DownloadState::Downloading || self.state == DownloadState::Paused {
+            self.state = DownloadState::Canceled;
+            self.state_changed.emit(self.state);
+            self.canceled.emit(());
+        }
+    }
+
+    pub fn set_filename(&mut self, filename: String) {
+        if self.filename != filename {
+            self.filename = filename;
+            self.filename_changed.emit(self.filename.clone());
+        }
+    }
+
+    pub fn set_total_bytes(&mut self, total_bytes: u64) {
+        self.total_bytes = total_bytes;
+        self.progress_changed
+            .emit((self.received_bytes, self.total_bytes));
+    }
+
+    pub fn set_received_bytes(&mut self, received_bytes: u64) {
+        self.received_bytes = received_bytes;
+        self.progress_changed
+            .emit((self.received_bytes, self.total_bytes));
+
+        if self.received_bytes >= self.total_bytes && self.total_bytes > 0 {
+            self.state = DownloadState::Completed;
+            self.state_changed.emit(self.state);
+            self.finished.emit(());
+        }
+    }
+
+    pub fn set_speed(&mut self, speed: u64) {
+        if self.speed != speed {
+            self.speed = speed;
+            self.speed_changed.emit(self.speed);
+        }
+    }
+
+    pub fn set_error(&mut self, error: Option<String>) {
+        if self.error != error {
+            let error_msg = error.clone();
+            self.error = error;
+            if let Some(ref msg) = error_msg {
+                self.state = DownloadState::Failed;
+                self.state_changed.emit(self.state);
+                self.error_occurred.emit(msg.clone());
+            }
+        }
+    }
+
+    pub fn open(&self) {
+        // In a real implementation, this would open the downloaded file
+        // For now, we'll just do nothing
+    }
+
+    pub fn open_folder(&self) {
+        // In a real implementation, this would open the folder containing the downloaded file
+        // For now, we'll just do nothing
+    }
+
+    pub fn remove(&mut self) {
+        // In a real implementation, this would remove the downloaded file
+        // For now, we'll just do nothing
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.state == DownloadState::Completed
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.state == DownloadState::Canceled
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.state == DownloadState::Failed
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state == DownloadState::Downloading || self.state == DownloadState::Paused
+    }
+}
+
+impl Widget for WebEngineDownloadItem {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineDownloadItem {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine cookie store widget for cookie management.
+pub struct WebEngineCookieStore {
+    base: BaseWidget,
+    cookies: Vec<Cookie>,
+    /// Emitted when a cookie is added.
+    pub cookie_added: Signal1<Cookie>,
+    /// Emitted when a cookie is removed.
+    pub cookie_removed: Signal1<String>, // cookie name
+    /// Emitted when a cookie is changed.
+    pub cookie_changed: Signal1<Cookie>,
+    /// Emitted when all cookies are removed.
+    pub cookies_cleared: GenericSignal,
+}
+
+/// Cookie structure.
+#[derive(Debug, Clone)]
+pub struct Cookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub expires: Option<chrono::NaiveDateTime>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: SameSitePolicy,
+    pub session: bool,
+}
+
+/// Same-site policy for cookies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SameSitePolicy {
+    /// No same-site policy.
+    None,
+    /// Lax same-site policy.
+    Lax,
+    /// Strict same-site policy.
+    Strict,
+}
+
+impl WebEngineCookieStore {
+    pub fn new() -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineCookieStore,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineCookieStore",
+            ),
+            cookies: Vec::new(),
+            cookie_added: Signal1::new(),
+            cookie_removed: Signal1::new(),
+            cookie_changed: Signal1::new(),
+            cookies_cleared: GenericSignal::new(),
+        }
+    }
+
+    pub fn cookies(&self) -> &[Cookie] {
+        &self.cookies
+    }
+    pub fn cookie_count(&self) -> usize {
+        self.cookies.len()
+    }
+
+    pub fn add_cookie(&mut self, cookie: Cookie) {
+        // Check if the cookie already exists
+        if let Some(index) = self.cookies.iter().position(|c| {
+            c.name == cookie.name && c.domain == cookie.domain && c.path == cookie.path
+        }) {
+            // Update existing cookie
+            self.cookies[index] = cookie.clone();
+            self.cookie_changed.emit(cookie);
+        } else {
+            // Add new cookie
+            self.cookies.push(cookie.clone());
+            self.cookie_added.emit(cookie);
+        }
+    }
+
+    pub fn remove_cookie(&mut self, name: &str, domain: &str, path: &str) -> bool {
+        if let Some(index) = self
+            .cookies
+            .iter()
+            .position(|c| c.name == name && c.domain == domain && c.path == path)
+        {
+            self.cookies.remove(index);
+            self.cookie_removed.emit(name.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_all_cookies(&mut self) {
+        self.cookies.clear();
+        self.cookies_cleared.emit();
+    }
+
+    pub fn remove_cookies_for_domain(&mut self, domain: &str) -> usize {
+        let initial_len = self.cookies.len();
+        self.cookies.retain(|c| c.domain != domain);
+        let removed = initial_len - self.cookies.len();
+        if removed > 0 {
+            // Emit cookie_removed for each removed cookie
+            for _ in 0..removed {
+                self.cookie_removed.emit("domain_cookies".to_string());
+            }
+        }
+        removed
+    }
+
+    pub fn remove_session_cookies(&mut self) -> usize {
+        let initial_len = self.cookies.len();
+        self.cookies.retain(|c| !c.session);
+        let removed = initial_len - self.cookies.len();
+        if removed > 0 {
+            // Emit cookie_removed for each removed cookie
+            for _ in 0..removed {
+                self.cookie_removed.emit("session_cookie".to_string());
+            }
+        }
+        removed
+    }
+
+    pub fn get_cookie(&self, name: &str, domain: &str, path: &str) -> Option<&Cookie> {
+        self.cookies
+            .iter()
+            .find(|c| c.name == name && c.domain == domain && c.path == path)
+    }
+
+    pub fn get_cookies_for_domain(&self, domain: &str) -> Vec<&Cookie> {
+        self.cookies.iter().filter(|c| c.domain == domain).collect()
+    }
+
+    pub fn get_all_cookies(&self) -> Vec<Cookie> {
+        self.cookies.clone()
+    }
+
+    pub fn contains_cookie(&self, name: &str, domain: &str, path: &str) -> bool {
+        self.cookies
+            .iter()
+            .any(|c| c.name == name && c.domain == domain && c.path == path)
+    }
+
+    pub fn clear_expired_cookies(&mut self) -> usize {
+        let now = chrono::Local::now().naive_local();
+        let initial_len = self.cookies.len();
+        self.cookies.retain(|c| {
+            if let Some(expires) = c.expires {
+                expires > now
+            } else {
+                true
+            }
+        });
+        let removed = initial_len - self.cookies.len();
+        if removed > 0 {
+            // Emit cookie_removed for each removed cookie
+            for _ in 0..removed {
+                self.cookie_removed.emit("expired_cookie".to_string());
+            }
+        }
+        removed
+    }
+
+    pub fn set_cookie(
+        &mut self,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: &str,
+        expires: Option<chrono::NaiveDateTime>,
+        secure: bool,
+        http_only: bool,
+        same_site: SameSitePolicy,
+    ) {
+        let cookie = Cookie {
+            name: name.to_string(),
+            value: value.to_string(),
+            domain: domain.to_string(),
+            path: path.to_string(),
+            expires,
+            secure,
+            http_only,
+            same_site,
+            session: expires.is_none(),
+        };
+        self.add_cookie(cookie);
+    }
+
+    pub fn load_cookies(&mut self, cookies: Vec<Cookie>) {
+        for cookie in cookies {
+            self.add_cookie(cookie);
+        }
+    }
+
+    pub fn save_cookies(&self) -> Vec<Cookie> {
+        self.get_all_cookies()
+    }
+}
+
+impl Widget for WebEngineCookieStore {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineCookieStore {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine web channel widget for JavaScript communication.
+pub struct WebEngineWebChannel {
+    base: BaseWidget,
+    objects: Vec<WebChannelObject>,
+    /// Emitted when a message is received from JavaScript.
+    pub message_received: Signal1<(String, serde_json::Value)>,
+    /// Emitted when an object is registered.
+    pub object_registered: Signal1<String>, // object name
+    /// Emitted when an object is unregistered.
+    pub object_unregistered: Signal1<String>, // object name
+}
+
+/// Web channel object structure.
+pub struct WebChannelObject {
+    pub name: String,
+    pub data: serde_json::Value,
+    pub methods: Vec<String>,
+}
+
+impl WebEngineWebChannel {
+    pub fn new() -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineWebChannel,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineWebChannel",
+            ),
+            objects: Vec::new(),
+            message_received: Signal1::new(),
+            object_registered: Signal1::new(),
+            object_unregistered: Signal1::new(),
+        }
+    }
+
+    pub fn objects(&self) -> &[WebChannelObject] {
+        &self.objects
+    }
+    pub fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+
+    pub fn register_object(&mut self, name: String, data: serde_json::Value, methods: Vec<String>) {
+        // Check if the object already exists
+        if let Some(index) = self.objects.iter().position(|o| o.name == name) {
+            // Update existing object
+            self.objects[index] = WebChannelObject {
+                name: name.clone(),
+                data,
+                methods,
+            };
+        } else {
+            // Add new object
+            self.objects.push(WebChannelObject {
+                name: name.clone(),
+                data,
+                methods,
+            });
+            self.object_registered.emit(name);
+        }
+    }
+
+    pub fn unregister_object(&mut self, name: &str) -> bool {
+        if let Some(index) = self.objects.iter().position(|o| o.name == name) {
+            self.objects.remove(index);
+            self.object_unregistered.emit(name.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn unregister_all_objects(&mut self) {
+        for object in &self.objects {
+            self.object_unregistered.emit(object.name.clone());
+        }
+        self.objects.clear();
+    }
+
+    pub fn get_object(&self, name: &str) -> Option<&WebChannelObject> {
+        self.objects.iter().find(|o| o.name == name)
+    }
+
+    pub fn send_message(&mut self, _name: &str, _message: serde_json::Value) {
+        // In a real implementation, this would send the message to JavaScript
+        // For now, we'll just do nothing
+    }
+
+    pub fn send_message_to_all(&mut self, _message: serde_json::Value) {
+        // In a real implementation, this would send the message to all registered objects
+        // For now, we'll just do nothing
+    }
+
+    pub fn receive_message(&mut self, name: &str, message: serde_json::Value) {
+        // This method would be called when a message is received from JavaScript
+        self.message_received.emit((name.to_string(), message));
+    }
+
+    pub fn has_object(&self, name: &str) -> bool {
+        self.objects.iter().any(|o| o.name == name)
+    }
+
+    pub fn clear(&mut self) {
+        self.unregister_all_objects();
+    }
+}
+
+impl Widget for WebEngineWebChannel {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineWebChannel {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine find text result widget for text search results.
+pub struct WebEngineFindTextResult {
+    base: BaseWidget,
+    active_match_ordinal: u32,
+    number_of_matches: u32,
+    finished: bool,
+    /// Emitted when the find text result changes.
+    pub result_changed: Signal1<(u32, u32, bool)>,
+}
+
+impl WebEngineFindTextResult {
+    pub fn new() -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineFindTextResult,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineFindTextResult",
+            ),
+            active_match_ordinal: 0,
+            number_of_matches: 0,
+            finished: false,
+            result_changed: Signal1::new(),
+        }
+    }
+
+    pub fn active_match_ordinal(&self) -> u32 {
+        self.active_match_ordinal
+    }
+    pub fn number_of_matches(&self) -> u32 {
+        self.number_of_matches
+    }
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    pub fn set_active_match_ordinal(&mut self, ordinal: u32) {
+        if self.active_match_ordinal != ordinal {
+            self.active_match_ordinal = ordinal;
+            self.result_changed.emit((
+                self.active_match_ordinal,
+                self.number_of_matches,
+                self.finished,
+            ));
+        }
+    }
+
+    pub fn set_number_of_matches(&mut self, count: u32) {
+        if self.number_of_matches != count {
+            self.number_of_matches = count;
+            self.result_changed.emit((
+                self.active_match_ordinal,
+                self.number_of_matches,
+                self.finished,
+            ));
+        }
+    }
+
+    pub fn set_finished(&mut self, finished: bool) {
+        if self.finished != finished {
+            self.finished = finished;
+            self.result_changed.emit((
+                self.active_match_ordinal,
+                self.number_of_matches,
+                self.finished,
+            ));
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.active_match_ordinal = 0;
+        self.number_of_matches = 0;
+        self.finished = false;
+        self.result_changed.emit((
+            self.active_match_ordinal,
+            self.number_of_matches,
+            self.finished,
+        ));
+    }
+
+    pub fn update(&mut self, active_match: u32, total_matches: u32, is_finished: bool) {
+        self.active_match_ordinal = active_match;
+        self.number_of_matches = total_matches;
+        self.finished = is_finished;
+        self.result_changed.emit((
+            self.active_match_ordinal,
+            self.number_of_matches,
+            self.finished,
+        ));
+    }
+}
+
+impl Widget for WebEngineFindTextResult {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineFindTextResult {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine notification widget for web notifications.
+pub struct WebEngineNotification {
+    base: BaseWidget,
+    title: String,
+    body: String,
+    icon: Option<Image>,
+    tag: String,
+    lang: String,
+    require_interaction: bool,
+    silent: bool,
+    data: serde_json::Value,
+    /// Emitted when the notification is shown.
+    pub shown: GenericSignal,
+    /// Emitted when the notification is closed.
+    pub closed: GenericSignal,
+    /// Emitted when the notification is clicked.
+    pub clicked: GenericSignal,
+    /// Emitted when the notification's action is activated.
+    pub action_activated: Signal1<String>, // action name
+}
+
+impl WebEngineNotification {
+    pub fn new(title: String, body: String) -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineNotification,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineNotification",
+            ),
+            title,
+            body,
+            icon: None,
+            tag: "".to_string(),
+            lang: "".to_string(),
+            require_interaction: false,
+            silent: false,
+            data: serde_json::Value::Null,
+            shown: GenericSignal::new(),
+            closed: GenericSignal::new(),
+            clicked: GenericSignal::new(),
+            action_activated: Signal1::new(),
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+    pub fn icon(&self) -> Option<&Image> {
+        self.icon.as_ref()
+    }
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+    pub fn lang(&self) -> &str {
+        &self.lang
+    }
+    pub fn require_interaction(&self) -> bool {
+        self.require_interaction
+    }
+    pub fn is_silent(&self) -> bool {
+        self.silent
+    }
+    pub fn data(&self) -> &serde_json::Value {
+        &self.data
+    }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    pub fn set_body(&mut self, body: String) {
+        self.body = body;
+    }
+
+    pub fn set_icon(&mut self, icon: Option<Image>) {
+        self.icon = icon;
+    }
+
+    pub fn set_tag(&mut self, tag: String) {
+        self.tag = tag;
+    }
+
+    pub fn set_lang(&mut self, lang: String) {
+        self.lang = lang;
+    }
+
+    pub fn set_require_interaction(&mut self, require: bool) {
+        self.require_interaction = require;
+    }
+
+    pub fn set_silent(&mut self, silent: bool) {
+        self.silent = silent;
+    }
+
+    pub fn set_data(&mut self, data: serde_json::Value) {
+        self.data = data;
+    }
+
+    pub fn show(&mut self) {
+        // In a real implementation, this would show the notification
+        // For now, we'll just emit the signal
+        self.shown.emit();
+    }
+
+    pub fn close(&mut self) {
+        // In a real implementation, this would close the notification
+        // For now, we'll just emit the signal
+        self.closed.emit();
+    }
+
+    pub fn click(&mut self) {
+        // In a real implementation, this would handle a click on the notification
+        // For now, we'll just emit the signal
+        self.clicked.emit();
+    }
+
+    pub fn activate_action(&mut self, action: &str) {
+        // In a real implementation, this would handle an action activation
+        // For now, we'll just emit the signal
+        self.action_activated.emit(action.to_string());
+    }
+}
+
+impl Widget for WebEngineNotification {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineNotification {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine script dialog widget for JavaScript dialogs.
+pub struct WebEngineScriptDialog {
+    base: BaseWidget,
+    dialog_type: ScriptDialogType,
+    message: String,
+    default_value: String,
+    prompt_text: String,
+    accept_text: String,
+    reject_text: String,
+    /// Emitted when the dialog is accepted.
+    pub accepted: Signal1<String>, // input text for prompt dialogs
+    /// Emitted when the dialog is rejected.
+    pub rejected: GenericSignal,
+    /// Emitted when the dialog is closed.
+    pub closed: GenericSignal,
+}
+
+/// Script dialog type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptDialogType {
+    /// Alert dialog.
+    Alert,
+    /// Confirm dialog.
+    Confirm,
+    /// Prompt dialog.
+    Prompt,
+    /// Before unload dialog.
+    BeforeUnload,
+}
+
+impl WebEngineScriptDialog {
+    pub fn new(dialog_type: ScriptDialogType, message: String) -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineScriptDialog,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineScriptDialog",
+            ),
+            dialog_type,
+            message,
+            default_value: "".to_string(),
+            prompt_text: "".to_string(),
+            accept_text: "OK".to_string(),
+            reject_text: "Cancel".to_string(),
+            accepted: Signal1::new(),
+            rejected: GenericSignal::new(),
+            closed: GenericSignal::new(),
+        }
+    }
+
+    pub fn dialog_type(&self) -> ScriptDialogType {
+        self.dialog_type
+    }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+    pub fn default_value(&self) -> &str {
+        &self.default_value
+    }
+    pub fn prompt_text(&self) -> &str {
+        &self.prompt_text
+    }
+    pub fn accept_text(&self) -> &str {
+        &self.accept_text
+    }
+    pub fn reject_text(&self) -> &str {
+        &self.reject_text
+    }
+
+    pub fn set_default_value(&mut self, value: String) {
+        self.default_value = value;
+    }
+
+    pub fn set_prompt_text(&mut self, text: String) {
+        self.prompt_text = text;
+    }
+
+    pub fn set_accept_text(&mut self, text: String) {
+        self.accept_text = text;
+    }
+
+    pub fn set_reject_text(&mut self, text: String) {
+        self.reject_text = text;
+    }
+
+    pub fn accept(&mut self, input: String) {
+        // In a real implementation, this would handle the dialog acceptance
+        // For now, we'll just emit the signal
+        self.accepted.emit(input);
+        self.closed.emit();
+    }
+
+    pub fn reject(&mut self) {
+        // In a real implementation, this would handle the dialog rejection
+        // For now, we'll just emit the signal
+        self.rejected.emit();
+        self.closed.emit();
+    }
+
+    pub fn close(&mut self) {
+        // In a real implementation, this would close the dialog
+        // For now, we'll just emit the signal
+        self.closed.emit();
+    }
+}
+
+impl Widget for WebEngineScriptDialog {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineScriptDialog {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+/// Web engine context menu request widget for context menu handling.
+pub struct WebEngineContextMenuRequest {
+    base: BaseWidget,
+    position: Point,
+    link_url: String,
+    image_url: String,
+    selected_text: String,
+    media_url: String,
+    media_type: MediaType,
+    is_editable: bool,
+    is_selected: bool,
+    menu_items: Vec<ContextMenuItem>,
+    /// Emitted when the context menu is accepted.
+    pub accepted: Signal1<usize>, // menu item index
+    /// Emitted when the context menu is rejected.
+    pub rejected: GenericSignal,
+    /// Emitted when the context menu is closed.
+    pub closed: GenericSignal,
+}
+
+/// Media type for context menu requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaType {
+    /// No media.
+    None,
+    /// Image media.
+    Image,
+    /// Video media.
+    Video,
+    /// Audio media.
+    Audio,
+}
+
+/// Context menu item structure.
+pub struct ContextMenuItem {
+    pub id: String,
+    pub text: String,
+    pub enabled: bool,
+    pub checked: bool,
+    pub action: ContextMenuAction,
+}
+
+/// Context menu action type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    /// No action.
+    None,
+    /// Custom action.
+    Custom,
+    /// Copy action.
+    Copy,
+    /// Cut action.
+    Cut,
+    /// Paste action.
+    Paste,
+    /// Delete action.
+    Delete,
+    /// Select all action.
+    SelectAll,
+    /// Open link action.
+    OpenLink,
+    /// Save link action.
+    SaveLink,
+    /// Copy link action.
+    CopyLink,
+    /// Open link in new tab action.
+    OpenLinkInNewTab,
+    /// Open link in new window action.
+    OpenLinkInNewWindow,
+    /// Save image action.
+    SaveImage,
+    /// Copy image action.
+    CopyImage,
+    /// Open image in new tab action.
+    OpenImageInNewTab,
+    /// Reload action.
+    Reload,
+    /// Stop action.
+    Stop,
+    /// Back action.
+    Back,
+    /// Forward action.
+    Forward,
+    /// Print action.
+    Print,
+    /// View source action.
+    ViewSource,
+    /// Inspect element action.
+    InspectElement,
+}
+
+impl WebEngineContextMenuRequest {
+    pub fn new(position: Point) -> Self {
+        Self {
+            base: BaseWidget::new(
+                WidgetKind::WebEngineContextMenuRequest,
+                Rect::new(0, 0, 0, 0),
+                "WebEngineContextMenuRequest",
+            ),
+            position,
+            link_url: "".to_string(),
+            image_url: "".to_string(),
+            selected_text: "".to_string(),
+            media_url: "".to_string(),
+            media_type: MediaType::None,
+            is_editable: false,
+            is_selected: false,
+            menu_items: Vec::new(),
+            accepted: Signal1::new(),
+            rejected: GenericSignal::new(),
+            closed: GenericSignal::new(),
+        }
+    }
+
+    pub fn position(&self) -> Point {
+        self.position
+    }
+    pub fn link_url(&self) -> &str {
+        &self.link_url
+    }
+    pub fn image_url(&self) -> &str {
+        &self.image_url
+    }
+    pub fn selected_text(&self) -> &str {
+        &self.selected_text
+    }
+    pub fn media_url(&self) -> &str {
+        &self.media_url
+    }
+    pub fn media_type(&self) -> MediaType {
+        self.media_type
+    }
+    pub fn is_editable(&self) -> bool {
+        self.is_editable
+    }
+    pub fn is_selected(&self) -> bool {
+        self.is_selected
+    }
+    pub fn menu_items(&self) -> &[ContextMenuItem] {
+        &self.menu_items
+    }
+    pub fn menu_item_count(&self) -> usize {
+        self.menu_items.len()
+    }
+
+    pub fn set_link_url(&mut self, url: String) {
+        self.link_url = url;
+    }
+
+    pub fn set_image_url(&mut self, url: String) {
+        self.image_url = url;
+    }
+
+    pub fn set_selected_text(&mut self, text: String) {
+        self.selected_text = text;
+    }
+
+    pub fn set_media_url(&mut self, url: String) {
+        self.media_url = url;
+    }
+
+    pub fn set_media_type(&mut self, media_type: MediaType) {
+        self.media_type = media_type;
+    }
+
+    pub fn set_editable(&mut self, editable: bool) {
+        self.is_editable = editable;
+    }
+
+    pub fn set_selected(&mut self, selected: bool) {
+        self.is_selected = selected;
+    }
+
+    pub fn add_menu_item(&mut self, item: ContextMenuItem) {
+        self.menu_items.push(item);
+    }
+
+    pub fn remove_menu_item(&mut self, index: usize) -> bool {
+        if index < self.menu_items.len() {
+            self.menu_items.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_menu_items(&mut self) {
+        self.menu_items.clear();
+    }
+
+    pub fn accept(&mut self, index: usize) {
+        // In a real implementation, this would handle the menu item selection
+        // For now, we'll just emit the signal
+        self.accepted.emit(index);
+        self.closed.emit();
+    }
+
+    pub fn reject(&mut self) {
+        // In a real implementation, this would handle the menu rejection
+        // For now, we'll just emit the signal
+        self.rejected.emit();
+        self.closed.emit();
+    }
+
+    pub fn close(&mut self) {
+        // In a real implementation, this would close the context menu
+        // For now, we'll just emit the signal
+        self.closed.emit();
+    }
+
+    pub fn has_link(&self) -> bool {
+        !self.link_url.is_empty()
+    }
+    pub fn has_image(&self) -> bool {
+        !self.image_url.is_empty()
+    }
+    pub fn has_selected_text(&self) -> bool {
+        !self.selected_text.is_empty()
+    }
+    pub fn has_media(&self) -> bool {
+        self.media_type != MediaType::None && !self.media_url.is_empty()
+    }
+}
+
+impl Widget for WebEngineContextMenuRequest {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for WebEngineContextMenuRequest {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
 
 #[cfg(test)]
 mod tests {
