@@ -94,6 +94,12 @@ impl I18nManager {
     }
 }
 
+impl Default for I18nManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// tr! macro for translation
 #[macro_export]
 macro_rules! tr {
@@ -154,6 +160,12 @@ impl InitReport {
     }
 }
 
+impl Default for InitReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Initialize the i18n system
 pub fn init() {
     let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
@@ -171,7 +183,7 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "json") {
+                if path.extension().is_some_and(|ext| ext == "json") {
                     match manager.load_translations(path.to_str().unwrap_or("")) {
                         Ok(()) => {
                             report.files_loaded += 1;

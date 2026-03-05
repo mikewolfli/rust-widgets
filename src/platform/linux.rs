@@ -98,7 +98,15 @@ impl LinuxPlatform {
             native: Mutex::new(LinuxNativeState::default()),
         }
     }
+}
 
+impl Default for LinuxPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LinuxPlatform {
     /// Insert and initialize one widget state record.
     fn insert_widget(
         &self,

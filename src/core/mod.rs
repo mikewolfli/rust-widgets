@@ -302,7 +302,7 @@ impl Font {
             && self.size.is_finite()
             && self.weight >= 100
             && self.weight <= 900
-            && self.weight % 100 == 0
+            && self.weight.is_multiple_of(100)
     }
 }
 

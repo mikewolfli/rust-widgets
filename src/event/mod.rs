@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::control_backend::get_control_backend;
 use crate::core::{ObjectId, Point, Size};
@@ -122,6 +122,12 @@ impl EventQueue {
     /// Returns a cloneable sender handle for posting events.
     pub fn sender(&self) -> EventSender {
         self.sender.clone()
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -524,18 +530,35 @@ impl EventLoop {
     }
 
     /// Perform hit-test to find the widget at the given point.
-    /// This is a placeholder implementation that will be replaced with
-    /// a real hit-test implementation that traverses the widget hierarchy.
-    pub fn hit_test(&self, _point: Point) -> Option<ObjectId> {
-        // TODO: Implement real hit-test that traverses widget hierarchy
-        // For now, return None as a placeholder
-        None
+    pub fn hit_test(&self, point: Point, registry: &crate::xml::WidgetRegistry, root_id: ObjectId) -> Option<ObjectId> {
+        fn hit_recursive(point: Point, registry: &crate::xml::WidgetRegistry, widget_id: ObjectId) -> Option<ObjectId> {
+            let widget = registry.widget(widget_id)?;
+            if !widget.is_visible() || !widget.rect().contains_point(point) {
+                return None;
+            }
+            for &child_id in widget.children() {
+                if let Some(hit) = hit_recursive(point, registry, child_id) {
+                    return Some(hit);
+                }
+            }
+            Some(widget_id)
+        }
+        hit_recursive(point, registry, root_id)
     }
 
     /// Returns event sender associated with this event loop.
     pub fn sender(&self) -> EventSender {
         self.queue.sender()
     }
+}
+
+impl Default for EventLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventLoop {
 
     /// Register timer and return timer id.
     pub fn register_timer(
@@ -615,11 +638,8 @@ impl EventLoop {
     }
 
     fn drain_incoming(&self) {
-        loop {
-            match self.queue.receiver.try_recv() {
-                Ok(envelope) => self.enqueue(envelope.target, envelope.event, envelope.priority),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(envelope) = self.queue.receiver.try_recv() {
+            self.enqueue(envelope.target, envelope.event, envelope.priority);
         }
     }
 

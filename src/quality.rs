@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 /// Rendering quality levels for adaptive performance control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QualityLevel {
     /// High quality: full effects including anti-aliasing, shadows, complex shaders.
+    #[default]
     High,
     /// Medium quality: basic effects with simple shaders, no shadows.
     Medium,
@@ -13,9 +14,23 @@ pub enum QualityLevel {
     Low,
 }
 
-impl Default for QualityLevel {
-    fn default() -> Self {
-        Self::High
+impl PartialOrd for QualityLevel {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for QualityLevel {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (QualityLevel::High, QualityLevel::High) => std::cmp::Ordering::Equal,
+            (QualityLevel::High, _) => std::cmp::Ordering::Greater,
+            (_, QualityLevel::High) => std::cmp::Ordering::Less,
+            (QualityLevel::Medium, QualityLevel::Medium) => std::cmp::Ordering::Equal,
+            (QualityLevel::Medium, QualityLevel::Low) => std::cmp::Ordering::Greater,
+            (QualityLevel::Low, QualityLevel::Medium) => std::cmp::Ordering::Less,
+            (QualityLevel::Low, QualityLevel::Low) => std::cmp::Ordering::Equal,
+        }
     }
 }
 
@@ -92,7 +107,7 @@ impl QualityConfig {
     pub fn normalized(self) -> Self {
         Self {
             degrade_threshold: self.degrade_threshold.max(1.0),
-            upgrade_threshold: self.upgrade_threshold.min(1.0).max(0.1),
+            upgrade_threshold: self.upgrade_threshold.clamp(0.1, 1.0),
             degrade_frame_count: self.degrade_frame_count.max(1),
             upgrade_frame_count: self.upgrade_frame_count.max(1),
             ..self
@@ -452,6 +467,17 @@ mod tests {
     }
 
     #[test]
+    fn quality_level_clamp() {
+        // Test clamp behavior with valid min <= max
+        assert_eq!(QualityLevel::High.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::High);
+        assert_eq!(QualityLevel::Medium.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::Medium);
+        assert_eq!(QualityLevel::Low.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::Low);
+        
+        // Test clamp with same min and max
+        assert_eq!(QualityLevel::Medium.clamp(QualityLevel::Medium, QualityLevel::Medium), QualityLevel::Medium);
+    }
+
+    #[test]
     fn quality_level_navigation() {
         assert_eq!(QualityLevel::High.lower(), Some(QualityLevel::Medium));
         assert_eq!(QualityLevel::Medium.lower(), Some(QualityLevel::Low));
@@ -525,14 +551,22 @@ mod tests {
             upgrade_frame_count: 5,
         };
 
-        let mut manager = QualityManager::with_config(config);
+        // Use a high-tier GPU capability to ensure initial quality is High
+        let gpu_capability = GpuCapability {
+            supports_high_quality: true,
+            is_integrated: false,
+            performance_tier: 5,
+        };
+        let mut manager = QualityManager::with_config_and_capability(config, gpu_capability);
 
         assert_eq!(manager.quality_level(), QualityLevel::High);
 
-        for _ in 0..5 {
+        // Record exactly degrade_frame_count slow frames to trigger one degradation
+        for _ in 0..3 {
             manager.finish_frame_secs(0.030);
         }
 
+        // Quality should have degraded from High to Medium
         assert_eq!(manager.quality_level(), QualityLevel::Medium);
     }
 
@@ -548,13 +582,22 @@ mod tests {
             upgrade_frame_count: 3,
         };
 
-        let mut manager = QualityManager::with_config(config);
-        manager.set_quality_level(QualityLevel::Low);
+        // Use a low-tier GPU capability to ensure initial quality is Low
+        let gpu_capability = GpuCapability {
+            supports_high_quality: true,
+            is_integrated: true,
+            performance_tier: 1,
+        };
+        let mut manager = QualityManager::with_config_and_capability(config, gpu_capability);
 
-        for _ in 0..5 {
+        assert_eq!(manager.quality_level(), QualityLevel::Low);
+
+        // Record exactly upgrade_frame_count fast frames to trigger one upgrade
+        for _ in 0..3 {
             manager.finish_frame_secs(0.010);
         }
 
+        // Quality should have upgraded from Low to Medium
         assert_eq!(manager.quality_level(), QualityLevel::Medium);
     }
 

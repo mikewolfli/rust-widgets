@@ -322,6 +322,7 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId;
+    #[allow(clippy::too_many_arguments)]
     fn create_message_box(
         &self,
         parent: ObjectId,

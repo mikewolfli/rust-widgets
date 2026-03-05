@@ -183,7 +183,7 @@ pub struct Shadow {
 }
 
 /// Resolved style values applied to a widget.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct WidgetStyle {
     /// Optional background color.
     pub background_color: Option<Color>,
@@ -203,22 +203,6 @@ pub struct WidgetStyle {
     pub margin: Margin,
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
-}
-
-impl Default for WidgetStyle {
-    fn default() -> Self {
-        Self {
-            background_color: None,
-            text_color: None,
-            font: None,
-            border_color: None,
-            border_width: 0,
-            border_radius: 0,
-            padding: Padding::default(),
-            margin: Margin::default(),
-            shadow: None,
-        }
-    }
 }
 
 #[cfg(test)]

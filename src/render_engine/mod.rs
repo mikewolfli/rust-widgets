@@ -578,7 +578,7 @@ mod tests {
 
         let after = embedded_engine_stats();
 
-        assert!(after.window_count >= before.window_count + 1);
-        assert!(after.button_count >= before.button_count + 1);
+        assert!(after.window_count > before.window_count);
+        assert!(after.button_count > before.button_count);
     }
 }

@@ -109,7 +109,7 @@ extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
         }
     });
     
-    if let Err(_) = result {
+    if result.is_err() {
         eprintln!("[rust_widgets] Panic in on_menu_item handler");
     }
 }
@@ -148,7 +148,7 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
         }
     });
     
-    if let Err(_) = result {
+    if result.is_err() {
         eprintln!("[rust_widgets] Panic in on_button_clicked handler");
     }
 }
@@ -260,7 +260,15 @@ impl MacOSPlatform {
             list_box_selection: Mutex::new(HashMap::new()),
         }
     }
+}
 
+impl Default for MacOSPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MacOSPlatform {
     fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
         NSRect::new(
             NSPoint::new(x as f64, y as f64),
@@ -283,6 +291,7 @@ impl MacOSPlatform {
             .copied()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn register_handle(
         &self,
         kind: HandleKind,
@@ -471,7 +480,7 @@ impl Platform for MacOSPlatform {
               
             // Create NSNumber to store widget id - use numberWithUnsignedLongLong
             eprintln!("[rust_widgets] create_button: creating token for id {}", id);
-            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id];
             // Retain the token to prevent it from being released
             let _: () = msg_send![token, retain];
             let _: () = msg_send![button, setRepresentedObject: token];
@@ -503,7 +512,7 @@ impl Platform for MacOSPlatform {
             let target = shared_button_target();
             NSButton::setTarget_(button, target);
             NSButton::setAction_(button, sel!(onButtonClicked:));
-            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id];
             let _: () = msg_send![token, retain];
             let _: () = msg_send![button, setRepresentedObject: token];
 
@@ -547,7 +556,7 @@ impl Platform for MacOSPlatform {
             let target = shared_button_target();
             NSButton::setTarget_(button, target);
             NSButton::setAction_(button, sel!(onButtonClicked:));
-            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id as u64];
+            let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id];
             let _: () = msg_send![token, retain];
             let _: () = msg_send![button, setRepresentedObject: token];
 
@@ -560,26 +569,41 @@ impl Platform for MacOSPlatform {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            // Use NSTextField with multi-line support
-            let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
+            // Create scroll view first
+            let scroll_view: id = msg_send![class!(NSScrollView), alloc];
+            let scroll_view: id = msg_send![scroll_view, initWithFrame: Self::make_rect(x, y, width, height)];
             
-            // Enable multi-line mode
-            let _: () = msg_send![field, setEditable: NO];
-            let _: () = msg_send![field, setSelectable: YES];
-            let _: () = msg_send![field, setBezeled: YES];
-            let _: () = msg_send![field, setDrawsBackground: YES];
+            // Create text view with frame
+            let text_view: id = msg_send![class!(NSTextView), alloc];
+            let text_view: id = msg_send![text_view, initWithFrame: Self::make_rect(0, 0, width, height)];
+            
+            // Configure text view
+            let _: () = msg_send![text_view, setEditable: NO];
+            let _: () = msg_send![text_view, setSelectable: YES];
+            let _: () = msg_send![text_view, setAutoresizingMask: 18u64]; // NSViewWidthSizable | NSViewHeightSizable
+            
+            // Set font
+            let font: id = msg_send![class!(NSFont), systemFontOfSize: 10.0f64];
+            let _: () = msg_send![text_view, setFont: font];
             
             // Set initial text
-            NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
+            let ns_text = NSString::alloc(nil).init_str(text);
+            let _: () = msg_send![text_view, setString: ns_text];
+            
+            // Configure scroll view
+            let _: () = msg_send![scroll_view, setDocumentView: text_view];
+            let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
+            let _: () = msg_send![scroll_view, setAutoresizingMask: 18u64];
+            let _: () = msg_send![scroll_view, setBorderType: 2u64]; // NSBezelBorder
 
             if let Some(parent_handle) = self.get_handle(parent) {
                 if let HandleKind::Window = parent_handle.kind {
                     let content_view = NSWindow::contentView(Self::as_id(parent_handle));
-                    content_view.addSubview_(field);
+                    content_view.addSubview_(scroll_view);
                 }
             }
 
-            let id = self.register_handle(HandleKind::LineEdit, text, x, y, width, height, field as usize);
+            let id = self.register_handle(HandleKind::LineEdit, text, x, y, width, height, text_view as usize);
 
             pool.drain();
             id

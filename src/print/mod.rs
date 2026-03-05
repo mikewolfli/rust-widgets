@@ -479,7 +479,7 @@ fn run_print_command(path: &PathBuf) -> Result<(), String> {
             }
         }
 
-        return Err("no available system print command succeeded (tried: lpr, lp)".to_string());
+        Err("no available system print command succeeded (tried: lpr, lp)".to_string())
     }
 
     #[cfg(target_os = "windows")]

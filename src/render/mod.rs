@@ -8,6 +8,8 @@ use crate::widget::{
     TableWidget, TextEdit, ToolBar, TreeView, Widget, Window,
 };
 use font8x8::{UnicodeFonts, BASIC_FONTS};
+use rayon::prelude::*;
+use std::simd::{u8x4, Simd};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(feature = "gpu-wgpu")]
@@ -667,34 +669,49 @@ fn global_quality_manager() -> &'static Mutex<QualityManager> {
 }
 
 #[cfg(feature = "gpu-wgpu")]
+#[derive(Debug)]
+pub enum GpuRenderError {
+    SurfaceSizeZero,
+    RendererUnavailable,
+    UploadFailed(String),
+    Other(String),
+}
+
+impl std::fmt::Display for GpuRenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GpuRenderError::SurfaceSizeZero => write!(f, "surface size must be > 0 for gpu compose"),
+            GpuRenderError::RendererUnavailable => write!(f, "wgpu renderer unavailable"),
+            GpuRenderError::UploadFailed(e) => write!(f, "upload failed: {e}"),
+            GpuRenderError::Other(e) => write!(f, "gpu error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuRenderError {}
+
+#[cfg(feature = "gpu-wgpu")]
 fn compose_scene_to_surface_wgpu(
     scene: &RenderScene,
     surface: &mut SoftwareSurface,
     clear: Color,
     config: Option<SoftwareRenderConfig>,
-) -> Result<(), String> {
+) -> Result<(), GpuRenderError> {
     let size = surface.size();
     if size.width == 0 || size.height == 0 {
-        return Err("surface size must be > 0 for gpu compose".to_string());
+        return Err(GpuRenderError::SurfaceSizeZero);
     }
-
-    let renderer = cached_wgpu_renderer().ok_or_else(|| "wgpu renderer unavailable".to_string())?;
-
+    let renderer = cached_wgpu_renderer().ok_or(GpuRenderError::RendererUnavailable)?;
     let start_time = std::time::Instant::now();
-
     let mut backend = SoftwarePaintBackend::new(size, surface.dpi_scale());
     backend.set_size(size);
     backend.apply_render_config(surface.render_config());
     scene.compose_with_backend_config(&mut backend, clear, config);
-
-    let pixels = 
-        renderer.upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())?;
-
+    let pixels = renderer.upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())
+        .map_err(GpuRenderError::UploadFailed)?;
     surface.buffer.back = pixels;
     surface.buffer.present();
-
     let frame_duration = start_time.elapsed();
-    
     #[cfg(feature = "quality-management")]
     {
         let mut quality_manager = global_quality_manager()
@@ -702,7 +719,6 @@ fn compose_scene_to_surface_wgpu(
             .expect("quality manager lock poisoned");
         quality_manager.finish_frame(frame_duration);
     }
-
     Ok(())
 }
 
@@ -719,7 +735,7 @@ fn push_widget_fill_and_border<W: Widget>(
     fallback_border: Option<(Color, u32)>,
 ) {
     let rect = widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -872,11 +888,11 @@ pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
 /// Append visual commands for a `CheckBox` baseline representation.
 pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckBox) {
     let rect = checkbox.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
-    let box_side = rect.width.min(rect.height).min(16).max(8);
+    let box_side = rect.width.min(rect.height).clamp(8, 16);
     let indicator = Rect {
         x: rect.x + 2,
         y: rect.y + ((rect.height as i32 - box_side as i32) / 2),
@@ -932,7 +948,7 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
 /// Append visual commands for a `RadioButton` baseline representation.
 pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioButton) {
     let rect = radio.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -986,15 +1002,8 @@ pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &Line
 
 /// Append visual commands for a `ComboBox` baseline representation.
 pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &ComboBox) {
-    push_widget_fill_and_border(
-        layer,
-        combo_box,
-        Some(Color::rgba(255, 255, 255, 255)),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-
     let rect = combo_box.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1080,12 +1089,12 @@ pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBo
     );
 
     let rect = list_box.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
     let row_height = 16u32;
-    let max_rows = (rect.height / row_height).max(1).min(4) as usize;
+    let max_rows = (rect.height / row_height).clamp(1, 4) as usize;
     for row in 0..list_box.item_count().min(max_rows) {
         let item_rect = Rect {
             x: rect.x + 2,
@@ -1116,7 +1125,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
     );
 
     let rect = progress_bar.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1141,7 +1150,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
 /// Append visual commands for a `Slider` value representation.
 pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     let rect = slider.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1213,7 +1222,7 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
 /// Append visual commands for a `ScrollBar` value representation.
 pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &ScrollBar) {
     let rect = scroll_bar.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1273,7 +1282,7 @@ pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBa
     );
 
     let rect = menu_bar.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1313,7 +1322,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
     );
 
     let rect = menu.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1360,7 +1369,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     );
 
     let rect = tool_bar.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1425,7 +1434,7 @@ pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &Ta
     );
 
     let rect = tab_widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1470,7 +1479,7 @@ pub fn append_stack_widget_visual_commands(layer: &mut SceneLayer, stack_widget:
     );
 
     let rect = stack_widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1586,7 +1595,7 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     );
 
     let rect = tree_view.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1647,7 +1656,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     );
 
     let rect = table_widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1732,7 +1741,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
     );
 
     let rect = grid_widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1781,7 +1790,7 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
     );
 
     let rect = chart_widget.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1871,7 +1880,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
     );
 
     let rect = dock_panel.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -1960,7 +1969,7 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
     );
 
     let rect = splitter.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -2010,7 +2019,7 @@ pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiAre
     );
 
     let rect = mdi_area.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -2059,7 +2068,7 @@ pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
     );
 
     let rect = canvas.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -2097,12 +2106,12 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     );
 
     let rect = spin_box.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
     // Up/down button width
-    let button_width = (rect.width / 5).max(16).min(24);
+    let button_width = (rect.width / 5).clamp(16, 24);
     let value_area_width = rect.width.saturating_sub(button_width);
 
     // Draw value text
@@ -2240,7 +2249,7 @@ pub fn append_list_view_visual_commands(
     );
 
     let rect = list_view.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -2318,7 +2327,7 @@ pub fn append_scroll_area_visual_commands(
     );
 
     let rect = scroll_area.geometry();
-    if rect.width == 0 || rect.height == 0 {
+    if is_empty_rect(rect) {
         return;
     }
 
@@ -3043,6 +3052,7 @@ impl SoftwareSurface {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_bitmap_glyph(
     frame: &mut [u8],
     surface_width: u32,
@@ -3107,12 +3117,18 @@ fn pixel_bytes_len(size: Size) -> usize {
 }
 
 fn fill_pixels(pixels: &mut [u8], color: Color) {
-    for px in pixels.chunks_exact_mut(4) {
-        px[0] = color.r;
-        px[1] = color.g;
-        px[2] = color.b;
-        px[3] = color.a;
-    }
+    let len = pixels.len();
+    let chunk_size = 4;
+    let color_arr = [color.r, color.g, color.b, color.a];
+    let simd_color = u8x4::from_array(color_arr);
+    pixels.par_chunks_mut(chunk_size).for_each(|px| {
+        if px.len() == chunk_size {
+            let simd_px = Simd::from_slice_mut(px);
+            *simd_px = simd_color;
+        } else {
+            px.copy_from_slice(&color_arr[..px.len()]);
+        }
+    });
 }
 
 fn set_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color) {
@@ -3130,43 +3146,34 @@ fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, cover
     if coverage <= 0.0 {
         return;
     }
-
     let idx = ((y * width + x) * 4) as usize;
     if idx + 3 >= frame.len() {
         return;
     }
-
     let src_a = (color.a as f32 / 255.0) * coverage.clamp(0.0, 1.0);
     if src_a <= 0.0 {
-        return;
-    }
-
-    let dst_r = frame[idx] as f32 / 255.0;
-    let dst_g = frame[idx + 1] as f32 / 255.0;
-    let dst_b = frame[idx + 2] as f32 / 255.0;
-    let dst_a = frame[idx + 3] as f32 / 255.0;
-
-    let out_a = src_a + dst_a * (1.0 - src_a);
-    if out_a <= f32::EPSILON {
         frame[idx] = 0;
         frame[idx + 1] = 0;
         frame[idx + 2] = 0;
         frame[idx + 3] = 0;
         return;
     }
-
-    let src_r = color.r as f32 / 255.0;
-    let src_g = color.g as f32 / 255.0;
-    let src_b = color.b as f32 / 255.0;
-
-    let out_r = (src_r * src_a + dst_r * dst_a * (1.0 - src_a)) / out_a;
-    let out_g = (src_g * src_a + dst_g * dst_a * (1.0 - src_a)) / out_a;
-    let out_b = (src_b * src_a + dst_b * dst_a * (1.0 - src_a)) / out_a;
-
-    frame[idx] = (out_r * 255.0).round().clamp(0.0, 255.0) as u8;
-    frame[idx + 1] = (out_g * 255.0).round().clamp(0.0, 255.0) as u8;
-    frame[idx + 2] = (out_b * 255.0).round().clamp(0.0, 255.0) as u8;
-    frame[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    let dst = &mut frame[idx..idx + 4];
+    let src = [color.r, color.g, color.b, color.a];
+    let src_f: [f32; 4] = [src[0] as f32 / 255.0, src[1] as f32 / 255.0, src[2] as f32 / 255.0, src[3] as f32 / 255.0];
+    let dst_f: [f32; 4] = [dst[0] as f32 / 255.0, dst[1] as f32 / 255.0, dst[2] as f32 / 255.0, dst[3] as f32 / 255.0];
+    let out_a = src_a + dst_f[3] * (1.0 - src_a);
+    if out_a <= f32::EPSILON {
+        dst.copy_from_slice(&[0, 0, 0, 0]);
+        return;
+    }
+    let out_r = (src_f[0] * src_a + dst_f[0] * dst_f[3] * (1.0 - src_a)) / out_a;
+    let out_g = (src_f[1] * src_a + dst_f[1] * dst_f[3] * (1.0 - src_a)) / out_a;
+    let out_b = (src_f[2] * src_a + dst_f[2] * dst_f[3] * (1.0 - src_a)) / out_a;
+    dst[0] = (out_r * 255.0).round().clamp(0.0, 255.0) as u8;
+    dst[1] = (out_g * 255.0).round().clamp(0.0, 255.0) as u8;
+    dst[2] = (out_b * 255.0).round().clamp(0.0, 255.0) as u8;
+    dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 fn circle_fill_coverage(distance: f32, radius: f32) -> f32 {
@@ -3212,9 +3219,7 @@ fn circle_stroke_coverage_grid(
         for sx in 0..sample_count {
             let sample_x = px as f32 + (sx as f32 + 0.5) / sample_count as f32;
             let sample_y = py as f32 + (sy as f32 + 0.5) / sample_count as f32;
-            let dx = sample_x - center.x as f32;
-            let dy = sample_y - center.y as f32;
-            let distance = (dx * dx + dy * dy).sqrt();
+            let distance = point_to_segment_distance(sample_x, sample_y, center.x, center.y);
             coverage_sum += (half_width + 0.5 - (distance - radius).abs()).clamp(0.0, 1.0);
         }
     }
@@ -3243,6 +3248,7 @@ fn point_to_segment_distance(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f3
     (dx * dx + dy * dy).sqrt()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line_stroke_coverage_grid(
     px: i32,
     py: i32,
@@ -3572,7 +3578,7 @@ mod tests {
         );
         scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
 
-        let idx = ((1 * 8 + 1) * 4) as usize;
+        let idx = 36;
         assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[7, 8, 9, 255]);
     }
 
@@ -4927,7 +4933,9 @@ mod tests {
 
     #[test]
     fn host_navigation_visual_builders_emit_expected_commands() {
-        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+        use crate::widget::{
+            Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget,
+        };
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -4983,7 +4991,9 @@ mod tests {
 
     #[test]
     fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
-        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+        use crate::widget::{
+            Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget,
+        };
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -4998,18 +5008,17 @@ mod tests {
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
         tool_bar.add_action("Cut");
         tool_bar.add_action("Copy");
-        tool_bar.add_action("Paste");
 
-        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
+        let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
         status_bar.set_message("Ready".to_string());
 
-        let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
-        tabs.add_tab(2001);
-        tabs.add_tab(2002);
+        let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
+        tabs.add_tab(1);
+        tabs.add_tab(2);
         tabs.set_current_index(1);
 
-        let mut stack = StackWidget::new(Rect::new(170, 98, 90, 58));
-        stack.set_background_color(Some(Color::rgba(230, 234, 240, 255)));
+        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
+        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
 
         let mut scene = RenderScene::new();
         let mut layer = SceneLayer::new(0);

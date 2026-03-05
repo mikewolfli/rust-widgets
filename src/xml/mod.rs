@@ -105,6 +105,11 @@ impl WidgetRegistry {
         self.widgets.len()
     }
 
+    /// Returns true if there are no registered widgets.
+    pub fn is_empty(&self) -> bool {
+        self.widgets.is_empty()
+    }
+
     /// Return true when symbolic id exists.
     pub fn contains_name(&self, name: &str) -> bool {
         self.index_by_name.contains_key(name)
@@ -122,6 +127,12 @@ impl WidgetRegistry {
         }
         self.index_by_name.retain(|_, mapped_id| *mapped_id != id);
         true
+    }
+}
+
+impl Default for WidgetRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -535,38 +546,39 @@ fn apply_common_properties(widget: &mut Box<dyn Widget>, properties: &HashMap<St
 }
 
 fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
-    let mut style = WidgetStyle::default();
-
-    style.background_color = parse_color_property(properties, "style.background")
+    let background_color = parse_color_property(properties, "style.background")
         .or_else(|| parse_color_property(properties, "background_color"));
-    style.text_color = parse_color_property(properties, "style.text")
+    let text_color = parse_color_property(properties, "style.text")
         .or_else(|| parse_color_property(properties, "text_color"));
-    style.border_color = parse_color_property(properties, "style.border")
+    let border_color = parse_color_property(properties, "style.border")
         .or_else(|| parse_color_property(properties, "border_color"));
 
-    if let Some(width) = parse_u32_property(properties, "style.border_width")
+    let border_width = parse_u32_property(properties, "style.border_width")
         .or_else(|| parse_u32_property(properties, "border_width"))
-    {
-        style.border_width = width;
-    }
-    if let Some(radius) = parse_u32_property(properties, "style.border_radius")
+        .unwrap_or(0);
+    let border_radius = parse_u32_property(properties, "style.border_radius")
         .or_else(|| parse_u32_property(properties, "border_radius"))
-    {
-        style.border_radius = radius;
-    }
+        .unwrap_or(0);
 
-    if let Some(padding) = parse_u32_property(properties, "style.padding")
+    let padding = parse_u32_property(properties, "style.padding")
         .or_else(|| parse_u32_property(properties, "padding"))
-    {
-        style.padding = Padding::all(padding);
-    }
-    if let Some(margin) = parse_u32_property(properties, "style.margin")
+        .map(Padding::all)
+        .unwrap_or_default();
+    let margin = parse_u32_property(properties, "style.margin")
         .or_else(|| parse_u32_property(properties, "margin"))
-    {
-        style.margin = Margin::all(margin);
-    }
+        .map(Margin::all)
+        .unwrap_or_default();
 
-    style
+    WidgetStyle {
+        background_color,
+        text_color,
+        border_color,
+        border_width,
+        border_radius,
+        padding,
+        margin,
+        ..Default::default()
+    }
 }
 
 fn parse_bool_property(properties: &HashMap<String, String>, key: &str) -> Option<bool> {

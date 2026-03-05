@@ -449,7 +449,7 @@ fn draw_text_cpu_rgba8(
                 if ((bits >> gx) & 1) == 0 {
                     continue;
                 }
-                let px = origin_x + gx as i32;
+                let px = origin_x + gx;
                 let py = origin_y + gy as i32;
                 if px < clip_rect.x
                     || py < clip_rect.y
@@ -561,7 +561,7 @@ fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
 }
 
 fn align_to(value: u32, alignment: u32) -> u32 {
-    ((value + alignment - 1) / alignment) * alignment
+    value.div_ceil(alignment) * alignment
 }
 
 #[cfg(test)]

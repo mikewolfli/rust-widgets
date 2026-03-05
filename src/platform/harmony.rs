@@ -73,7 +73,15 @@ impl HarmonyPlatform {
             runtime: HarmonyRuntimeState::new(),
         }
     }
+}
 
+impl Default for HarmonyPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HarmonyPlatform {
     /// Insert widget state and return allocated logical id.
     fn insert_widget(
         &self,

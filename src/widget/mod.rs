@@ -25,6 +25,12 @@ impl Image {
     }
 }
 
+impl Default for Image {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetKind {
@@ -5825,18 +5831,20 @@ impl DatePicker {
     }
 
     pub fn add_months(&mut self, months: i32) {
+        let months_u32 = months.try_into().unwrap_or(0);
         let new_date = self
             .date
-            .checked_add_months(chrono::Months::new(months.try_into().unwrap()));
+            .checked_add_months(chrono::Months::new(months_u32));
         if let Some(date) = new_date {
             self.set_date(date);
         }
     }
 
     pub fn add_years(&mut self, years: i32) {
+        let months_u32 = (years * 12).try_into().unwrap_or(0);
         let new_date = self
             .date
-            .checked_add_months(chrono::Months::new((years * 12).try_into().unwrap()));
+            .checked_add_months(chrono::Months::new(months_u32));
         if let Some(date) = new_date {
             self.set_date(date);
         }
@@ -9545,6 +9553,12 @@ impl WebEnginePage {
     }
 }
 
+impl Default for WebEnginePage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for WebEnginePage {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -10097,6 +10111,12 @@ impl WebEngineSettings {
             }
             _ => false,
         }
+    }
+}
+
+impl Default for WebEngineSettings {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -10674,6 +10694,7 @@ impl WebEngineCookieStore {
         removed
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_cookie(
         &mut self,
         name: &str,
@@ -10707,6 +10728,12 @@ impl WebEngineCookieStore {
 
     pub fn save_cookies(&self) -> Vec<Cookie> {
         self.get_all_cookies()
+    }
+}
+
+impl Default for WebEngineCookieStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -10921,6 +10948,12 @@ impl WebEngineWebChannel {
     }
 }
 
+impl Default for WebEngineWebChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for WebEngineWebChannel {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -11114,6 +11147,12 @@ impl WebEngineFindTextResult {
             self.number_of_matches,
             self.finished,
         ));
+    }
+}
+
+impl Default for WebEngineFindTextResult {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

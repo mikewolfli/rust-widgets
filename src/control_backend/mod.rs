@@ -248,6 +248,7 @@ pub trait ControlBackend: Send + Sync {
         height: u32,
     ) -> ObjectId;
     /// Create message box control.
+    #[allow(clippy::too_many_arguments)]
     fn create_message_box(
         &self,
         parent: ObjectId,
@@ -484,6 +485,12 @@ impl NativeControlBackend {
     /// Create native control backend.
     pub const fn new() -> Self {
         Self
+    }
+}
+
+impl Default for NativeControlBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

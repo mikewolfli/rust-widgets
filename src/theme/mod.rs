@@ -162,28 +162,34 @@ impl ThemeManager {
             return WidgetStyle::default();
         };
 
-        let mut style = WidgetStyle::default();
-        style.background_color = Some(theme.colors.background);
-        style.text_color = Some(theme.colors.foreground);
-        style.border_color = Some(theme.colors.secondary);
-        style.border_width = theme.borders.width;
-        style.border_radius = theme.borders.radius;
-        style.padding = Padding::all(theme.spacing.medium);
-        style.margin = Margin::all(theme.spacing.small);
-        if theme.borders.shadow {
-            style.shadow = Some(Shadow {
+        let shadow = if theme.borders.shadow {
+            Some(Shadow {
                 x: 0,
                 y: 2,
                 blur: 6,
                 color: Color::rgba(0, 0, 0, 60),
-            });
-        }
+            })
+        } else {
+            None
+        };
 
-        if class_name == "button" {
-            style.background_color = Some(theme.colors.primary);
-            style.text_color = Some(Color::rgba(255, 255, 255, 255));
+        let (background_color, text_color) = if class_name == "button" {
+            (Some(theme.colors.primary), Some(Color::rgba(255, 255, 255, 255)))
+        } else {
+            (Some(theme.colors.background), Some(theme.colors.foreground))
+        };
+
+        WidgetStyle {
+            background_color,
+            text_color,
+            border_color: Some(theme.colors.secondary),
+            border_width: theme.borders.width,
+            border_radius: theme.borders.radius,
+            padding: Padding::all(theme.spacing.medium),
+            margin: Margin::all(theme.spacing.small),
+            shadow,
+            ..Default::default()
         }
-        style
     }
 }
 

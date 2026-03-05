@@ -409,6 +409,12 @@ impl LineChart {
     }
 }
 
+impl Default for LineChart {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chart for LineChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -559,6 +565,12 @@ impl BarChart {
     }
 }
 
+impl Default for BarChart {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chart for BarChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -678,6 +690,12 @@ impl PieChart {
             title: String::new(),
             series: Vec::new(),
         }
+    }
+}
+
+impl Default for PieChart {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

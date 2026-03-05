@@ -54,7 +54,15 @@ impl AndroidMobilePlatform {
             menus: Mutex::new(MobileMenuState::default()),
         }
     }
+}
 
+impl Default for AndroidMobilePlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AndroidMobilePlatform {
     /// Insert one widget into the mobile state table.
     fn insert_widget(
         &self,
@@ -68,6 +76,7 @@ impl AndroidMobilePlatform {
         self.state.create_widget(kind, text, x, y, width, height)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_child_widget(
         &self,
         parent: ObjectId,

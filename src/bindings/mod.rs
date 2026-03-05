@@ -322,15 +322,17 @@ pub extern "C" fn rust_widgets_poll_widget_triggered() -> u64 {
     get_control_backend().poll_widget_triggered().unwrap_or(0)
 }
 
+/// Polls the next widget trigger event and optionally writes the widget ID to the provided pointer.
+///
+/// # Safety
+/// The `widget_id_out` pointer must be either null or valid for writing a `u64`.
 #[no_mangle]
-pub extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64) -> c_uint {
+pub unsafe extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64) -> c_uint {
     let Some(event) = get_control_backend().poll_widget_trigger_event() else {
         return 0;
     };
     if !widget_id_out.is_null() {
-        unsafe {
-            *widget_id_out = event.widget_id;
-        }
+        *widget_id_out = event.widget_id;
     }
     event.kind as c_uint
 }
@@ -665,9 +667,9 @@ pub extern "C" fn rust_widgets_platform_capability_contract(profile_code: c_uint
 pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
     #[cfg(feature = "mobile-api")]
     {
-        return CString::new(crate::platform::mobile_backend_name())
+        CString::new(crate::platform::mobile_backend_name())
             .expect("backend string is valid")
-            .into_raw();
+            .into_raw()
     }
     #[cfg(not(feature = "mobile-api"))]
     {
@@ -679,7 +681,7 @@ pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
 pub extern "C" fn rust_widgets_mobile_attach_native_view(native_handle: u64) -> CBool {
     #[cfg(feature = "mobile-api")]
     {
-        return crate::platform::mobile_attach_to_native_view(native_handle as usize);
+        crate::platform::mobile_attach_to_native_view(native_handle as usize)
     }
     #[cfg(not(feature = "mobile-api"))]
     {

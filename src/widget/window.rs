@@ -67,4 +67,7 @@ impl Window {
     }
 }
 
-// TODO: Integrate with platform event loop and rendering backend.
+// NOTE: The show() method uses winit for standalone window display.
+// For full application integration, use the platform event loop via crate::run().
+// The platform backend (macOS: NSApp().run(), Windows: message loop, etc.)
+// handles all event dispatch and rendering coordination.

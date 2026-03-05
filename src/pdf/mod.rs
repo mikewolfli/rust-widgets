@@ -197,6 +197,12 @@ impl PdfWriter {
     }
 }
 
+impl Default for PdfWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// PDF reader
 pub struct PdfReader {
     /// Backend profile name used by reader diagnostics.
@@ -277,6 +283,12 @@ impl PdfReader {
     /// Return active reader backend name.
     pub fn backend_name(&self) -> &'static str {
         self.backend_name
+    }
+}
+
+impl Default for PdfReader {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
