@@ -2,7 +2,7 @@
 
 use crate::core::{Rect, Size};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -210,7 +210,7 @@ fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
 pub trait PrintDocument {
     /// Get number of pages
     fn page_count(&self) -> u32;
-    
+
     /// Draw one page into provided print context.
     fn draw_page(&self, page_num: u32, context: &mut dyn PrintContext);
 }
@@ -219,19 +219,19 @@ pub trait PrintDocument {
 pub trait PrintContext {
     /// Draw text
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32);
-    
+
     /// Draw line
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32);
-    
+
     /// Draw rectangle
     fn draw_rect(&mut self, rect: Rect, width: f32);
-    
+
     /// Draw filled rectangle
     fn fill_rect(&mut self, rect: Rect, color: u32);
-    
+
     /// Draw image
     fn draw_image(&mut self, image: &[u8], rect: Rect);
-    
+
     /// Get page size
     fn page_size(&self) -> Size;
 }
@@ -357,7 +357,11 @@ impl Printer {
     }
 
     /// Print with explicit pagination controls.
-    pub fn print_with_pagination(&self, document: &dyn PrintDocument, pagination: &PrintPagination) {
+    pub fn print_with_pagination(
+        &self,
+        document: &dyn PrintDocument,
+        pagination: &PrintPagination,
+    ) {
         let _ = self.print_with_pagination_result(document, pagination);
     }
 
@@ -462,7 +466,7 @@ fn write_print_job_file(job: &PrintJob) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn run_print_command(path: &PathBuf) -> Result<(), String> {
+fn run_print_command(path: &Path) -> Result<(), String> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let lpr_status = Command::new("lpr").arg(path).status();
@@ -499,7 +503,7 @@ fn run_print_command(path: &PathBuf) -> Result<(), String> {
             }
         }
 
-        return Err("system print command failed on windows".to_string());
+        Err("system print command failed on windows".to_string())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -533,23 +537,38 @@ impl MemoryPrintContext {
 
 impl PrintContext for MemoryPrintContext {
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32) {
-        self.commands.push(format!("text:{text}@{x},{y}:{font_size}"));
+        self.commands
+            .push(format!("text:{text}@{x},{y}:{font_size}"));
     }
 
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) {
-        self.commands.push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
+        self.commands
+            .push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
     }
 
     fn draw_rect(&mut self, rect: Rect, width: f32) {
-        self.commands.push(format!("rect:{},{},{},{}:{}", rect.x, rect.y, rect.width, rect.height, width));
+        self.commands.push(format!(
+            "rect:{},{},{},{}:{}",
+            rect.x, rect.y, rect.width, rect.height, width
+        ));
     }
 
     fn fill_rect(&mut self, rect: Rect, color: u32) {
-        self.commands.push(format!("fill:{},{},{},{}:{color}", rect.x, rect.y, rect.width, rect.height));
+        self.commands.push(format!(
+            "fill:{},{},{},{}:{color}",
+            rect.x, rect.y, rect.width, rect.height
+        ));
     }
 
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
-        self.commands.push(format!("img:{}bytes:{},{},{},{}", image.len(), rect.x, rect.y, rect.width, rect.height));
+        self.commands.push(format!(
+            "img:{}bytes:{},{},{},{}",
+            image.len(),
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
+        ));
     }
 
     fn page_size(&self) -> Size {

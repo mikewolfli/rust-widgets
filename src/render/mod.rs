@@ -3,7 +3,6 @@ fn is_empty_rect(rect: &crate::core::Rect) -> bool {
     rect.width == 0 || rect.height == 0
 }
 /// Rendering primitives and software surface baseline.
-
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
     Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ComboBox, DockPanel,
@@ -684,7 +683,9 @@ pub enum GpuRenderError {
 impl std::fmt::Display for GpuRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GpuRenderError::SurfaceSizeZero => write!(f, "surface size must be > 0 for gpu compose"),
+            GpuRenderError::SurfaceSizeZero => {
+                write!(f, "surface size must be > 0 for gpu compose")
+            }
             GpuRenderError::RendererUnavailable => write!(f, "wgpu renderer unavailable"),
             GpuRenderError::UploadFailed(e) => write!(f, "upload failed: {e}"),
             GpuRenderError::Other(e) => write!(f, "gpu error: {e}"),
@@ -711,7 +712,8 @@ fn compose_scene_to_surface_wgpu(
     backend.set_size(size);
     backend.apply_render_config(surface.render_config());
     scene.compose_with_backend_config(&mut backend, clear, config);
-    let pixels = renderer.upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())
+    let pixels = renderer
+        .upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())
         .map_err(GpuRenderError::UploadFailed)?;
     surface.buffer.back = pixels;
     surface.buffer.present();
@@ -1010,6 +1012,17 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
     if is_empty_rect(&rect) {
         return;
     }
+
+    // Render main background
+    layer.push(RenderCommand::FillRect {
+        rect,
+        color: Color::rgba(255, 255, 255, 255),
+    });
+    layer.push(RenderCommand::DrawRectStroke {
+        rect,
+        color: Color::rgba(122, 128, 138, 255),
+        width: 1,
+    });
 
     let arrow_width = 14u32.min(rect.width);
     let arrow_rect = Rect {
@@ -3000,6 +3013,7 @@ impl SoftwareSurface {
                     py,
                     center,
                     ring_radius,
+                    stroke_width as f32,
                     sample_grid,
                 );
                 if stroke_coverage > 0.0 {
@@ -3160,8 +3174,18 @@ pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, c
     }
     let dst = &mut frame[idx..idx + 4];
     let src = [color.r, color.g, color.b, color.a];
-    let src_f: [f32; 4] = [src[0] as f32 / 255.0, src[1] as f32 / 255.0, src[2] as f32 / 255.0, src[3] as f32 / 255.0];
-    let dst_f: [f32; 4] = [dst[0] as f32 / 255.0, dst[1] as f32 / 255.0, dst[2] as f32 / 255.0, dst[3] as f32 / 255.0];
+    let src_f: [f32; 4] = [
+        src[0] as f32 / 255.0,
+        src[1] as f32 / 255.0,
+        src[2] as f32 / 255.0,
+        src[3] as f32 / 255.0,
+    ];
+    let dst_f: [f32; 4] = [
+        dst[0] as f32 / 255.0,
+        dst[1] as f32 / 255.0,
+        dst[2] as f32 / 255.0,
+        dst[3] as f32 / 255.0,
+    ];
     let out_a = src_a + dst_f[3] * (1.0 - src_a);
     if out_a <= f32::EPSILON {
         dst.copy_from_slice(&[0, 0, 0, 0]);
@@ -3208,12 +3232,15 @@ fn circle_stroke_coverage_grid(
     py: i32,
     center: Point,
     radius: f32,
-    // half_width: f32, // unused
+    stroke_width: f32,
     grid: u8,
 ) -> f32 {
     let sample_count = grid.clamp(1, 8) as u32;
     let total = sample_count * sample_count;
     let mut coverage_sum = 0.0f32;
+    // radius is the outer radius, stroke_width is the width of the ring
+    let outer_radius = radius;
+    let inner_radius = (radius - stroke_width).max(0.0);
 
     for sy in 0..sample_count {
         for sx in 0..sample_count {
@@ -3222,7 +3249,11 @@ fn circle_stroke_coverage_grid(
             let dx = sample_x - center.x as f32;
             let dy = sample_y - center.y as f32;
             let distance = (dx * dx + dy * dy).sqrt();
-            coverage_sum += circle_fill_coverage(distance, radius);
+            // Ring coverage: outside inner radius and inside outer radius
+            let inner_coverage = circle_fill_coverage(distance, inner_radius);
+            let outer_coverage = circle_fill_coverage(distance, outer_radius);
+            // Ring is outer circle minus inner circle
+            coverage_sum += (outer_coverage - inner_coverage).max(0.0);
         }
     }
 
@@ -4935,9 +4966,7 @@ mod tests {
 
     #[test]
     fn host_navigation_visual_builders_emit_expected_commands() {
-        use crate::widget::{
-            Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget,
-        };
+        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -4993,9 +5022,7 @@ mod tests {
 
     #[test]
     fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
-        use crate::widget::{
-            Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget,
-        };
+        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -5011,15 +5038,15 @@ mod tests {
         tool_bar.add_action("Cut");
         tool_bar.add_action("Copy");
 
-        let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
+        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
         status_bar.set_message("Ready".to_string());
 
-        let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
+        let mut tabs = TabWidget::new(Rect::new(140, 120, 120, 32));
         tabs.add_tab(1);
         tabs.add_tab(2);
         tabs.set_current_index(1);
 
-        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
+        let mut stack = StackWidget::new(Rect::new(140, 80, 120, 30));
         stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
 
         let mut scene = RenderScene::new();
@@ -5068,10 +5095,10 @@ mod tests {
         let status_px = sample(8, 166);
         assert!(status_px[3] > 0);
 
-        let tabs_px = sample(174, 28);
+        let tabs_px = sample(150, 130);
         assert!(tabs_px[3] > 0);
 
-        let stack_px = sample(174, 104);
+        let stack_px = sample(150, 90);
         assert!(stack_px[3] > 0);
     }
 

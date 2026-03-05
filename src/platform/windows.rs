@@ -362,7 +362,9 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::Button, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            self.bind_control_command(widget_id, hwnd);
+            unsafe {
+                self.bind_control_command(widget_id, hwnd);
+            }
             return widget_id;
         }
         #[cfg(not(target_os = "windows"))]
@@ -440,7 +442,9 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::CheckBox, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            self.bind_control_command(widget_id, hwnd);
+            unsafe {
+                self.bind_control_command(widget_id, hwnd);
+            }
             return widget_id;
         }
         #[cfg(not(target_os = "windows"))]
@@ -495,7 +499,9 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::RadioButton, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            self.bind_control_command(widget_id, hwnd);
+            unsafe {
+                self.bind_control_command(widget_id, hwnd);
+            }
             return widget_id;
         }
         #[cfg(not(target_os = "windows"))]
@@ -517,8 +523,8 @@ impl Platform for WindowsPlatform {
         {
             use std::ptr::null_mut;
             use winapi::um::winuser::{
-                CreateWindowExW, ES_AUTOVSCROLL, ES_LEFT, ES_MULTILINE, WS_BORDER, WS_CHILD, WS_TABSTOP,
-                WS_VISIBLE,
+                CreateWindowExW, ES_AUTOVSCROLL, ES_LEFT, ES_MULTILINE, WS_BORDER, WS_CHILD,
+                WS_TABSTOP, WS_VISIBLE,
             };
 
             let parent_hwnd = match self.get_native_handle(parent) {
@@ -557,7 +563,9 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::LineEdit, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            self.bind_control_command(widget_id, hwnd);
+            unsafe {
+                self.bind_control_command(widget_id, hwnd);
+            }
             return widget_id;
         }
         #[cfg(not(target_os = "windows"))]
@@ -785,7 +793,9 @@ impl Platform for WindowsPlatform {
                 height,
             );
             self.bind_native_handle(widget_id, hwnd);
-            self.bind_control_command(widget_id, hwnd);
+            unsafe {
+                self.bind_control_command(widget_id, hwnd);
+            }
             return widget_id;
         }
         #[cfg(not(target_os = "windows"))]
@@ -1879,7 +1889,7 @@ impl WindowsPlatform {
     }
 
     #[cfg(target_os = "windows")]
-    pub fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
+    pub unsafe fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
         use winapi::um::winuser::{SetWindowLongPtrW, GWLP_ID};
 
         let command_id = self
@@ -2118,6 +2128,12 @@ impl WindowsPlatform {
             #[cfg(target_os = "windows")]
             menu_state: Win32MenuState::new(),
         }
+    }
+}
+
+impl Default for WindowsPlatform {
+    fn default() -> Self {
+        Self::new()
     }
 }
 pub trait WindowsPlatformExtSlider {
