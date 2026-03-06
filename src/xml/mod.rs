@@ -8,11 +8,12 @@ use std::sync::Arc;
 use crate::core::{Color, Rect};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{
-    Button, Canvas, ChartWidget, CheckBox, ComboBox, Dialog, GridWidget, GroupBox, Label,
-    LineEdit, ListBox, Menu, MenuBar, Panel, PopupWindow, ProgressBar, RadioButton, ScrollBar,
-    Slider, StackWidget, StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar,
-    TreeModel, TreeView, Widget, Window,
+    Button, Canvas, ChartWidget, CheckBox, ComboBox, Dialog, GridWidget, GroupBox, Label, LineEdit,
+    ListBox, Menu, MenuBar, Panel, PopupWindow, ProgressBar, RadioButton, ScrollBar, Slider,
+    StackWidget, StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar, TreeModel,
+    TreeView, Widget,
 };
+use crate::window::Window;
 
 /// Declarative widget node parsed from XML/JSON layout sources.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +166,11 @@ impl BoundLayout {
     }
 
     /// Update widget tooltip by declarative id name.
-    pub fn set_tooltip_by_name(&mut self, name: &str, tooltip: impl Into<String>) -> Result<(), String> {
+    pub fn set_tooltip_by_name(
+        &mut self,
+        name: &str,
+        tooltip: impl Into<String>,
+    ) -> Result<(), String> {
         let Some(widget) = self.widget_by_name_mut(name) else {
             return Err(format!("widget '{name}' not found"));
         };
@@ -253,7 +258,11 @@ impl XmlLayoutLoader {
     }
 
     /// Load layout from JSON or XML file path.
-    pub fn load_layout(&mut self, name: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_layout(
+        &mut self,
+        name: &str,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
         if path.ends_with(".json") {
             let layout: XmlLayout = serde_json::from_str(&content)?;
@@ -264,7 +273,11 @@ impl XmlLayoutLoader {
     }
 
     /// Parse and cache layout directly from XML string.
-    pub fn load_layout_from_xml_str(&mut self, name: &str, xml: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_layout_from_xml_str(
+        &mut self,
+        name: &str,
+        xml: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let doc = roxmltree::Document::parse(xml)?;
         let root_node = doc.root_element();
         let layout = XmlLayout {
@@ -340,7 +353,10 @@ impl XmlLayoutLoader {
         }
         XmlElement {
             id: node.attribute("id").map(ToString::to_string),
-            class: node.attribute("class").unwrap_or(node.tag_name().name()).to_string(),
+            class: node
+                .attribute("class")
+                .unwrap_or(node.tag_name().name())
+                .to_string(),
             properties,
             children: node
                 .children()
@@ -386,11 +402,7 @@ impl XmlLayoutLoader {
     fn create_widget_from_element(&self, element: &XmlElement) -> Box<dyn Widget> {
         let rect = parse_rect(&element.properties);
         let class = element.class.to_lowercase();
-        let text = element
-            .properties
-            .get("text")
-            .cloned()
-            .unwrap_or_default();
+        let text = element.properties.get("text").cloned().unwrap_or_default();
         let title = element
             .properties
             .get("title")
@@ -438,7 +450,11 @@ impl XmlLayoutLoader {
             "combobox" => {
                 let mut combo = ComboBox::new(rect);
                 if let Some(items) = element.properties.get("items") {
-                    for item in items.split(',').map(|part| part.trim()).filter(|part| !part.is_empty()) {
+                    for item in items
+                        .split(',')
+                        .map(|part| part.trim())
+                        .filter(|part| !part.is_empty())
+                    {
                         combo.add_item(item.to_string());
                     }
                 }
@@ -450,7 +466,11 @@ impl XmlLayoutLoader {
             "listbox" => {
                 let mut list = ListBox::new(rect);
                 if let Some(items) = element.properties.get("items") {
-                    for item in items.split(',').map(|part| part.trim()).filter(|part| !part.is_empty()) {
+                    for item in items
+                        .split(',')
+                        .map(|part| part.trim())
+                        .filter(|part| !part.is_empty())
+                    {
                         list.add_item(item.to_string());
                     }
                 }
@@ -669,9 +689,33 @@ mod tests {
         assert!(!button.is_enabled());
 
         let style = button.style();
-        assert_eq!(style.background_color, Some(Color { r: 0x11, g: 0x22, b: 0x33, a: 255 }));
-        assert_eq!(style.text_color, Some(Color { r: 0xAA, g: 0xBB, b: 0xCC, a: 255 }));
-        assert_eq!(style.border_color, Some(Color { r: 0x33, g: 0x44, b: 0x55, a: 255 }));
+        assert_eq!(
+            style.background_color,
+            Some(Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33,
+                a: 255
+            })
+        );
+        assert_eq!(
+            style.text_color,
+            Some(Color {
+                r: 0xAA,
+                g: 0xBB,
+                b: 0xCC,
+                a: 255
+            })
+        );
+        assert_eq!(
+            style.border_color,
+            Some(Color {
+                r: 0x33,
+                g: 0x44,
+                b: 0x55,
+                a: 255
+            })
+        );
         assert_eq!(style.border_width, 2);
         assert_eq!(style.border_radius, 4);
         assert_eq!(style.padding, Padding::all(3));
@@ -698,14 +742,22 @@ mod tests {
             )
             .expect("load xml");
 
-        let registry = loader.instantiate_layout("hex_layout").expect("instantiate");
+        let registry = loader
+            .instantiate_layout("hex_layout")
+            .expect("instantiate");
         let button_id = registry.id_by_name("btn").expect("button id exists");
         let button = registry.widget(button_id).expect("button exists");
 
         let style = button.style();
-        assert_eq!(style.background_color, Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF)));
+        assert_eq!(
+            style.background_color,
+            Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF))
+        );
         assert_eq!(style.text_color, Some(Color::rgba(0x11, 0x22, 0x33, 0x44)));
-        assert_eq!(style.border_color, Some(Color::rgba(0x00, 0xFF, 0x00, 0x88)));
+        assert_eq!(
+            style.border_color,
+            Some(Color::rgba(0x00, 0xFF, 0x00, 0x88))
+        );
     }
 
     #[test]
@@ -723,7 +775,9 @@ mod tests {
             )
             .expect("load xml");
 
-        let registry = loader.instantiate_layout("state_layout").expect("instantiate");
+        let registry = loader
+            .instantiate_layout("state_layout")
+            .expect("instantiate");
         let check_id = registry.id_by_name("check").expect("check id");
         let line_id = registry.id_by_name("line").expect("line id");
 
@@ -785,7 +839,9 @@ mod tests {
             )
             .expect("load xml");
 
-        let registry = loader.instantiate_layout("model_layout").expect("instantiate");
+        let registry = loader
+            .instantiate_layout("model_layout")
+            .expect("instantiate");
         assert!(registry.id_by_name("table").is_some());
         assert!(registry.id_by_name("tree").is_some());
     }
@@ -801,5 +857,3 @@ mod tests {
         assert_eq!(resolve_model_name(&properties), Some("fallback"));
     }
 }
-
-

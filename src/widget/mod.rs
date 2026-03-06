@@ -1,5 +1,10 @@
 //! Widget models and controls.
 
+pub mod command_link;
+pub mod font_combo_box;
+pub mod web_engine;
+pub mod window;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -648,145 +653,7 @@ macro_rules! impl_widget_delegate {
     };
 }
 
-/// Top-level window widget.
-pub struct Window {
-    base: BaseWidget,
-    title: String,
-    /// Emitted when the window is closed.
-    pub closed: GenericSignal,
-}
-
-impl Window {
-    /// Creates a new window with title and geometry.
-    pub fn new(title: String, geometry: Rect) -> Self {
-        Self {
-            base: BaseWidget::new(WidgetKind::Window, geometry, "Window"),
-            title,
-            closed: GenericSignal::new(),
-        }
-    }
-    /// Returns window title.
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-    /// Updates window title.
-    pub fn set_title(&mut self, title: String) {
-        self.title = title;
-    }
-
-    /// Emits the window closed signal.
-    pub fn close(&mut self) {
-        self.closed.emit();
-    }
-}
-
-impl Widget for Window {
-    fn id(&self) -> ObjectId {
-        self.base.id()
-    }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
-    }
-}
-
-impl EventHandler for Window {
-    fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
-        if matches!(event, Event::Quit) {
-            self.closed.emit();
-        }
-    }
-}
+// Window widget is now defined in window.rs
 
 /// Dialog widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,7 +1266,132 @@ impl CheckBox {
         self.set_state(next);
     }
 }
-impl_widget_delegate!(CheckBox, base);
+impl Widget for CheckBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for CheckBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.toggle();
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    32 | 13 => {
+                        // Space or Enter
+                        self.toggle();
+                        self.base.clicked.emit();
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Radio button widget.
 pub struct RadioButton {
@@ -1551,7 +1543,130 @@ impl Label {
         &self.text
     }
 }
-impl_widget_delegate!(Label, base);
+impl Widget for Label {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for Label {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    32 | 13 => {
+                        // Space or Enter
+                        self.base.clicked.emit();
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Single-line text editor widget.
 pub struct LineEdit {
@@ -1798,8 +1913,68 @@ impl Widget for LineEdit {
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if matches!(event, Event::KeyPress { key: 13, .. }) {
-            self.return_pressed.emit();
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.base.clicked.emit();
+                    // 模拟文本选择
+                    self.set_selection(0, self.text.len());
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    13 => {
+                        // Enter键
+                        self.return_pressed.emit();
+                    }
+                    8 => {
+                        // Backspace键
+                        if !self.text.is_empty() {
+                            self.text.pop();
+                            self.text_changed.emit(self.text.clone());
+                        }
+                    }
+                    46 => {
+                        // Delete键
+                        if let Some((start, end)) = self.selection {
+                            self.text.replace_range(start..end, "");
+                            self.text_changed.emit(self.text.clone());
+                            self.selection = None;
+                            self.selection_changed.emit(None);
+                        } else if !self.text.is_empty() {
+                            self.text.pop();
+                            self.text_changed.emit(self.text.clone());
+                        }
+                    }
+                    37 => {
+                        // 左箭头
+                        // 模拟光标左移
+                    }
+                    39 => {
+                        // 右箭头
+                        // 模拟光标右移
+                    }
+                    36 => {
+                        // Home键
+                        // 模拟光标移动到开始
+                    }
+                    35 => {
+                        // End键
+                        // 模拟光标移动到结束
+                    }
+                    97..=122 | 48..=57 | 32 => {
+                        // 字母、数字和空格
+                        let c = *key as u8 as char;
+                        self.text.push(c);
+                        self.text_changed.emit(self.text.clone());
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -2085,7 +2260,174 @@ impl ComboBox {
         self.close_dropdown();
     }
 }
-impl_widget_delegate!(ComboBox, base);
+impl Widget for ComboBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for ComboBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.toggle_dropdown();
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    32 | 13 => {
+                        // Space or Enter
+                        if self.dropdown_open {
+                            // 选择当前项
+                            if let Some(index) = self.current {
+                                self.selection_changed.emit(index);
+                                self.index_changed.emit(index);
+                                if let Some(value) = self.items.get(index) {
+                                    self.value_changed.emit(value.clone());
+                                }
+                            }
+                            self.close_dropdown();
+                        } else {
+                            self.open_dropdown();
+                        }
+                        self.base.clicked.emit();
+                    }
+                    27 => {
+                        // Escape
+                        self.close_dropdown();
+                    }
+                    38 => {
+                        // 上箭头
+                        if self.dropdown_open {
+                            if let Some(current) = self.current {
+                                if current > 0 {
+                                    self.set_current_index(current - 1);
+                                }
+                            } else if !self.items.is_empty() {
+                                self.set_current_index(self.items.len() - 1);
+                            }
+                        }
+                    }
+                    40 => {
+                        // 下箭头
+                        if self.dropdown_open {
+                            if let Some(current) = self.current {
+                                if current < self.items.len() - 1 {
+                                    self.set_current_index(current + 1);
+                                }
+                            } else if !self.items.is_empty() {
+                                self.set_current_index(0);
+                            }
+                        } else {
+                            self.open_dropdown();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Spin-box widget.
 pub struct SpinBox {
@@ -2168,6 +2510,9 @@ impl_widget_delegate!(SpinBox, base);
 pub struct ListBox {
     base: BaseWidget,
     items: Vec<String>,
+    selected_index: Option<usize>,
+    pub selection_changed: Signal1<usize>,
+    pub item_activated: Signal1<usize>,
 }
 /// Creates an empty list-box and appends items.
 impl ListBox {
@@ -2175,6 +2520,9 @@ impl ListBox {
         Self {
             base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"),
             items: Vec::new(),
+            selected_index: None,
+            selection_changed: Signal1::new(),
+            item_activated: Signal1::new(),
         }
     }
     pub fn add_item(&mut self, item: impl Into<String>) {
@@ -2194,9 +2542,213 @@ impl ListBox {
     /// Clears all items from the list box.
     pub fn clear(&mut self) {
         self.items.clear();
+        self.selected_index = None;
+    }
+
+    /// Returns currently selected index.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    /// Sets selected index and emits selection signal when changed.
+    pub fn set_selected_index(&mut self, index: Option<usize>) {
+        let normalized = index.filter(|i| *i < self.items.len());
+        if self.selected_index == normalized {
+            return;
+        }
+        self.selected_index = normalized;
+        if let Some(idx) = normalized {
+            self.selection_changed.emit(idx);
+        }
+    }
+
+    /// Activates the currently selected item.
+    pub fn activate_current_item(&mut self) {
+        if let Some(index) = self.selected_index {
+            self.item_activated.emit(index);
+        }
+    }
+
+    /// Selects the next item.
+    pub fn select_next(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let next = match self.selected_index {
+            None => 0,
+            Some(idx) if idx < self.items.len() - 1 => idx + 1,
+            Some(_) => 0,
+        };
+        self.set_selected_index(Some(next));
+    }
+
+    /// Selects the previous item.
+    pub fn select_previous(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let prev = match self.selected_index {
+            None => self.items.len() - 1,
+            Some(0) => self.items.len() - 1,
+            Some(idx) => idx - 1,
+        };
+        self.set_selected_index(Some(prev));
     }
 }
-impl_widget_delegate!(ListBox, base);
+impl Widget for ListBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for ListBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.base.clicked.emit();
+                    // 模拟点击选择第一个项目
+                    if !self.items.is_empty() {
+                        self.set_selected_index(Some(0));
+                    }
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    13 => {
+                        // Enter键
+                        self.activate_current_item();
+                        self.base.clicked.emit();
+                    }
+                    32 => {
+                        // Space键
+                        self.activate_current_item();
+                        self.base.clicked.emit();
+                    }
+                    38 => {
+                        // 上箭头
+                        self.select_previous();
+                    }
+                    40 => {
+                        // 下箭头
+                        self.select_next();
+                    }
+                    36 => {
+                        // Home键
+                        if !self.items.is_empty() {
+                            self.set_selected_index(Some(0));
+                        }
+                    }
+                    35 => {
+                        // End键
+                        if !self.items.is_empty() {
+                            self.set_selected_index(Some(self.items.len() - 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// List view widget with optional external model binding and row selection.
 pub struct ListView {
@@ -3309,7 +3861,134 @@ impl GroupBox {
         }
     }
 }
-impl_widget_delegate!(GroupBox, base);
+impl Widget for GroupBox {
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base.set_min_size(min_size);
+    }
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base.set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base.set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base.add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base.remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base.set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base.set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base.set_style(style);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
+}
+
+impl EventHandler for GroupBox {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 && self.checkable {
+                    self.toggle_checked();
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                if self.checkable {
+                    match *key {
+                        32 | 13 => {
+                            // Space or Enter
+                            self.toggle_checked();
+                            self.base.clicked.emit();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Tab widget with deterministic selected-index contract.
 pub struct TabWidget {
@@ -6261,6 +6940,48 @@ impl Widget for DatePicker {
 impl EventHandler for DatePicker {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    if self.calendar_popup {
+                        self.open_calendar();
+                    }
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    32 | 13 => {
+                        // Space or Enter
+                        if self.calendar_popup {
+                            self.open_calendar();
+                        }
+                        self.base.clicked.emit();
+                    }
+                    37 => {
+                        // 左箭头
+                        self.add_days(-1);
+                    }
+                    39 => {
+                        // 右箭头
+                        self.add_days(1);
+                    }
+                    38 => {
+                        // 上箭头
+                        self.add_months(1);
+                    }
+                    40 => {
+                        // 下箭头
+                        self.add_months(-1);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -6771,6 +7492,64 @@ impl Widget for DateTimePicker {
 impl EventHandler for DateTimePicker {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    if self.calendar_popup {
+                        self.open_calendar();
+                    }
+                    self.base.clicked.emit();
+                }
+            }
+            Event::KeyPress { key, modifiers: _ } => {
+                match *key {
+                    32 | 13 => {
+                        // Space or Enter
+                        if self.calendar_popup {
+                            self.open_calendar();
+                        }
+                        self.base.clicked.emit();
+                    }
+                    37 => {
+                        // 左箭头
+                        self.add_days(-1);
+                    }
+                    39 => {
+                        // 右箭头
+                        self.add_days(1);
+                    }
+                    38 => {
+                        // 上箭头
+                        self.add_hours(1);
+                    }
+                    40 => {
+                        // 下箭头
+                        self.add_hours(-1);
+                    }
+                    104 => {
+                        // H键
+                        self.add_hours(1);
+                    }
+                    106 => {
+                        // J键
+                        self.add_minutes(-1);
+                    }
+                    107 => {
+                        // K键
+                        self.add_minutes(1);
+                    }
+                    108 => {
+                        // L键
+                        self.add_days(1);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -12523,6 +13302,7 @@ mod tests {
 
     #[test]
     fn window_closed_signal_emits_on_quit_event() {
+        use crate::window::Window;
         let mut window = Window::new(
             "Main".to_string(),
             Rect {

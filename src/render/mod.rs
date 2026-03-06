@@ -3,14 +3,19 @@ fn is_empty_rect(rect: &crate::core::Rect) -> bool {
     rect.width == 0 || rect.height == 0
 }
 /// Rendering primitives and software surface baseline.
+pub mod command_link;
+pub mod font_combo_box;
+pub mod web_engine;
+
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
     Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog, ComboBox, Dialog,
     DirectoryPicker, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox, Label, LineEdit,
     ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar, RadioButton,
     RichEdit, ScrollBar, Slider, Splitter, StackWidget, StatusBar, TabWidget, TableWidget,
-    TextEdit, ToolBar, TreeView, Widget, Window,
+    TextEdit, ToolBar, TreeView, Widget,
 };
+use crate::window::Window;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 // use rayon::prelude::*;
 // use std::simd::{u8x4, Simd};
@@ -4697,7 +4702,7 @@ mod tests {
     #[test]
     fn base_control_visual_builders_emit_expected_command_types() {
         use crate::widget::{
-            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget, Window,
+            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
@@ -4751,7 +4756,7 @@ mod tests {
     #[test]
     fn auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend() {
         use crate::widget::{
-            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget, Window,
+            Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
@@ -5099,7 +5104,7 @@ mod tests {
         use crate::widget::{
             Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
             ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
-            ToolBar, Widget, Window,
+            ToolBar, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
@@ -5197,7 +5202,7 @@ mod tests {
         use crate::widget::{
             Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
             ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
-            ToolBar, Widget, Window,
+            ToolBar, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));

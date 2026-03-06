@@ -41,10 +41,10 @@ This file mirrors staged execution status.
 - [x] Implement rendering support for Calendar widget
 - [x] Implement rendering support for ColumnView widget
 - [x] Implement rendering support for UndoView widget
-- [ ] Implement rendering support for CommandLink widget
+- [x] Implement rendering support for CommandLink widget
 - [x] Implement rendering support for LCDNumber widget
-- [ ] Implement rendering support for FontComboBox widget
-- [ ] Implement rendering support for WebEngine widgets (WebEngineView, WebEnginePage, etc.)
+- [x] Implement rendering support for FontComboBox widget
+- [x] Implement rendering support for WebEngine widgets (WebEngineView, WebEnginePage, etc.)
 
 ### Widget Implementation Completion
 - [ ] Complete DataView widget implementation (add missing functionality)
@@ -56,10 +56,10 @@ This file mirrors staged execution status.
 - [ ] Complete Calendar widget implementation (add missing functionality)
 - [ ] Complete ColumnView widget implementation (add missing functionality)
 - [ ] Complete UndoView widget implementation (add missing functionality)
-- [ ] Complete CommandLink widget implementation (add missing functionality)
-- [ ] Complete LCDNumber widget implementation (add missing functionality)
-- [ ] Complete FontComboBox widget implementation (add missing functionality)
-- [ ] Complete WebEngine widgets implementation (add missing functionality)
+- [x] Complete CommandLink widget implementation (add missing functionality)
+- [x] Complete LCDNumber widget implementation (add missing functionality)
+- [x] Complete FontComboBox widget implementation (add missing functionality)
+- [x] Complete WebEngine widgets implementation (add missing functionality)
 
 ### Miscellaneous
 - [ ] Review and update roadmap and changelog

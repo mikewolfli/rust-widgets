@@ -1,51 +1,64 @@
-//! Window widget and platform integration.
-
-use crate::core::{ObjectId, Rect};
+use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 
-/// Main application window.
-pub struct Window {
+/// Command link widget for command link buttons.
+pub struct CommandLink {
     base: BaseWidget,
-    title: String,
-    /// Emitted when the window is closed.
-    pub closed: GenericSignal,
+    text: String,
+    description: String,
+    enabled: bool,
+    /// Emitted when command link is clicked.
+    pub clicked: GenericSignal,
+    /// Emitted when command link is hovered.
+    pub hovered: Signal1<bool>,
 }
 
-impl Window {
-    /// Creates a new window with title and geometry.
-    pub fn new(title: String, geometry: Rect) -> Self {
+impl CommandLink {
+    pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Window, geometry, "Window"),
-            title,
-            closed: GenericSignal::new(),
+            base: BaseWidget::new(WidgetKind::CommandLink, geometry, "CommandLink"),
+            text: "Command".to_string(),
+            description: "".to_string(),
+            enabled: true,
+            clicked: GenericSignal::new(),
+            hovered: Signal1::new(),
         }
     }
 
-    /// Adds a child widget to the window.
-    pub fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
-    /// Returns window title.
-    pub fn title(&self) -> &str {
-        &self.title
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.base.request_redraw();
+    }
+    pub fn set_description(&mut self, description: String) {
+        self.description = description;
+        self.base.request_redraw();
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.base.request_redraw();
     }
 
-    /// Updates window title.
-    pub fn set_title(&mut self, title: String) {
-        self.title = title;
-    }
-
-    /// Emits the window closed signal.
-    pub fn close(&mut self) {
-        self.closed.emit();
+    pub fn click(&self) {
+        if self.enabled {
+            self.clicked.emit();
+        }
     }
 }
 
-impl Widget for Window {
+impl Widget for CommandLink {
     fn id(&self) -> ObjectId {
         self.base.id()
     }
@@ -58,16 +71,16 @@ impl Widget for Window {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
     }
-    fn min_size(&self) -> Option<crate::core::Size> {
+    fn min_size(&self) -> Option<Size> {
         self.base.min_size()
     }
-    fn max_size(&self) -> Option<crate::core::Size> {
+    fn max_size(&self) -> Option<Size> {
         self.base.max_size()
     }
-    fn set_min_size(&mut self, min_size: Option<crate::core::Size>) {
+    fn set_min_size(&mut self, min_size: Option<Size>) {
         self.base.set_min_size(min_size);
     }
-    fn set_max_size(&mut self, max_size: Option<crate::core::Size>) {
+    fn set_max_size(&mut self, max_size: Option<Size>) {
         self.base.set_max_size(max_size);
     }
     fn parent(&self) -> Option<ObjectId> {
@@ -76,14 +89,14 @@ impl Widget for Window {
     fn set_parent(&mut self, parent: Option<ObjectId>) {
         self.base.set_parent(parent);
     }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
     fn add_child(&mut self, child: ObjectId) {
         self.base.add_child(child);
     }
     fn remove_child(&mut self, child: ObjectId) {
         self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
     }
     fn show(&mut self) {
         self.base.show();
@@ -98,7 +111,7 @@ impl Widget for Window {
         self.base.set_enabled(enabled);
     }
     fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
+        self.enabled && self.base.is_enabled()
     }
     fn set_tooltip(&mut self, tooltip: String) {
         self.base.set_tooltip(tooltip);
@@ -115,13 +128,13 @@ impl Widget for Window {
     fn connection_scope(&self) -> &ConnectionScope {
         self.base.connection_scope()
     }
-    fn hover_signal(&self) -> &Signal1<crate::core::Point> {
+    fn hover_signal(&self) -> &Signal1<Point> {
         self.base.hover_signal()
     }
-    fn mouse_down_signal(&self) -> &Signal1<(crate::core::Point, u32)> {
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
         self.base.mouse_down_signal()
     }
-    fn mouse_up_signal(&self) -> &Signal1<(crate::core::Point, u32)> {
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
         self.base.mouse_up_signal()
     }
     fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
@@ -144,16 +157,22 @@ impl Widget for Window {
     }
 }
 
-impl EventHandler for Window {
+impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if matches!(event, Event::Quit) {
-            self.closed.emit();
+        match event {
+            Event::MousePress { button: 1, .. } => {
+                if self.enabled {
+                    self.clicked.emit();
+                }
+            }
+            Event::MouseEnter { .. } => {
+                self.hovered.emit(true);
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered.emit(false);
+            }
+            _ => {}
         }
     }
 }
-
-// NOTE: The show() method is now handled by the platform backend.
-// For full application integration, use the platform event loop via crate::run().
-// The platform backend (macOS: NSApp().run(), Windows: message loop, etc.)
-// handles all event dispatch and rendering coordination.
