@@ -148,6 +148,91 @@ impl Color {
         Self::rgba(r, g, b, 255)
     }
 
+    /// Common color constants
+    pub const BLACK: Self = Self::rgb(0, 0, 0);
+    pub const WHITE: Self = Self::rgb(255, 255, 255);
+    pub const RED: Self = Self::rgb(255, 0, 0);
+    pub const GREEN: Self = Self::rgb(0, 255, 0);
+    pub const BLUE: Self = Self::rgb(0, 0, 255);
+    pub const YELLOW: Self = Self::rgb(255, 255, 0);
+    pub const CYAN: Self = Self::rgb(0, 255, 255);
+    pub const MAGENTA: Self = Self::rgb(255, 0, 255);
+    pub const GRAY: Self = Self::rgb(128, 128, 128);
+    pub const LIGHT_GRAY: Self = Self::rgb(200, 200, 200);
+    pub const DARK_GRAY: Self = Self::rgb(64, 64, 64);
+    pub const EXTRA_LIGHT_GRAY: Self = Self::rgb(230, 230, 230);
+    pub const MEDIUM_GRAY: Self = Self::rgb(160, 160, 160);
+    pub const EXTRA_DARK_GRAY: Self = Self::rgb(32, 32, 32);
+    pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
+
+    /// Color variants
+    pub const LIGHT_RED: Self = Self::rgb(255, 100, 100);
+    pub const DARK_RED: Self = Self::rgb(150, 0, 0);
+    pub const LIGHT_GREEN: Self = Self::rgb(100, 255, 100);
+    pub const DARK_GREEN: Self = Self::rgb(0, 150, 0);
+    pub const LIGHT_BLUE: Self = Self::rgb(100, 100, 255);
+    pub const DARK_BLUE: Self = Self::rgb(0, 0, 150);
+    pub const LIGHT_YELLOW: Self = Self::rgb(255, 255, 150);
+    pub const DARK_YELLOW: Self = Self::rgb(150, 150, 0);
+
+    /// UI color constants
+    pub const PRIMARY: Self = Self::rgb(72, 142, 246);
+    pub const SECONDARY: Self = Self::rgb(120, 124, 132);
+    pub const SUCCESS: Self = Self::rgb(62, 165, 82);
+    pub const WARNING: Self = Self::rgb(245, 166, 35);
+    pub const ERROR: Self = Self::rgb(234, 57, 67);
+    pub const BACKGROUND: Self = Self::rgb(245, 246, 248);
+    pub const FOREGROUND: Self = Self::rgb(26, 28, 32);
+    pub const LINK: Self = Self::rgb(0, 112, 201);
+    pub const LINK_HOVER: Self = Self::rgb(0, 142, 251);
+    pub const BORDER: Self = Self::rgb(192, 196, 204);
+    pub const DIVIDER: Self = Self::rgb(223, 225, 230);
+    pub const SELECTION: Self = Self::rgb(173, 216, 230);
+    pub const TOOLTIP: Self = Self::rgb(255, 255, 224);
+    pub const MENU_BACKGROUND: Self = Self::rgb(255, 255, 255);
+    pub const MENU_FOREGROUND: Self = Self::rgb(26, 28, 32);
+
+    /// Semantic colors
+    pub const INFO: Self = Self::rgb(66, 133, 244);
+    pub const NOTIFICATION: Self = Self::rgb(103, 58, 183);
+    pub const DISABLED_BACKGROUND: Self = Self::rgb(245, 245, 245);
+    pub const DISABLED_FOREGROUND: Self = Self::rgb(153, 153, 153);
+
+    /// Neutral colors
+    pub const ALICE_BLUE: Self = Self::rgb(240, 248, 255);
+    pub const BEIGE: Self = Self::rgb(245, 245, 220);
+    pub const CORAL: Self = Self::rgb(255, 127, 80);
+    pub const GOLD: Self = Self::rgb(255, 215, 0);
+    pub const IVORY: Self = Self::rgb(255, 255, 240);
+    pub const LAVENDER: Self = Self::rgb(230, 230, 250);
+    pub const ROSE: Self = Self::rgb(255, 105, 180);
+    pub const SILVER: Self = Self::rgb(192, 192, 192);
+    pub const TAN: Self = Self::rgb(210, 180, 140);
+
+    /// Additional QT-like colors
+    pub const AQUA: Self = Self::rgb(0, 255, 255);
+    pub const BROWN: Self = Self::rgb(165, 42, 42);
+    pub const FOREST_GREEN: Self = Self::rgb(34, 139, 34);
+    pub const INDIGO: Self = Self::rgb(75, 0, 130);
+    pub const MAROON: Self = Self::rgb(128, 0, 0);
+    pub const NAVY: Self = Self::rgb(0, 0, 128);
+    pub const OLIVE: Self = Self::rgb(128, 128, 0);
+    pub const ORANGE: Self = Self::rgb(255, 165, 0);
+    pub const PINK: Self = Self::rgb(255, 192, 203);
+    pub const PURPLE: Self = Self::rgb(128, 0, 128);
+    pub const TEAL: Self = Self::rgb(0, 128, 128);
+
+    /// Additional WX-like colors
+    pub const SKY_BLUE: Self = Self::rgb(135, 206, 235);
+    pub const STEEL_BLUE: Self = Self::rgb(70, 130, 180);
+    pub const SLATE_GRAY: Self = Self::rgb(112, 128, 144);
+    pub const DARK_SLATE_GRAY: Self = Self::rgb(47, 79, 79);
+    pub const LIGHT_SLATE_GRAY: Self = Self::rgb(119, 136, 153);
+    pub const LIGHT_CYAN: Self = Self::rgb(224, 255, 255);
+    pub const LIGHT_GOLDENROD_YELLOW: Self = Self::rgb(250, 250, 210);
+    pub const LIGHT_PINK: Self = Self::rgb(255, 182, 193);
+    pub const LIGHT_SALMON: Self = Self::rgb(255, 160, 122);
+
     /// Parses `#RRGGBB`, `#RRGGBBAA`, `#RGB` or `#RGBA` hex color strings.
     ///
     /// The parser is intentionally strict and deterministic:
@@ -414,7 +499,13 @@ mod tests {
         let point = Point::new(10, -3);
         let size = Size::new(80, 24);
         assert_eq!(point, Point { x: 10, y: -3 });
-        assert_eq!(size, Size { width: 80, height: 24 });
+        assert_eq!(
+            size,
+            Size {
+                width: 80,
+                height: 24
+            }
+        );
         assert!(!size.is_empty());
         assert!(Size::new(0, 1).is_empty());
     }
@@ -465,18 +556,36 @@ mod tests {
 
     #[test]
     fn axis_alignment_mapping_is_explicit() {
-        assert_eq!(HorizontalAlignment::from_alignment(Alignment::Left), Some(HorizontalAlignment::Left));
+        assert_eq!(
+            HorizontalAlignment::from_alignment(Alignment::Left),
+            Some(HorizontalAlignment::Left)
+        );
         assert_eq!(HorizontalAlignment::from_alignment(Alignment::Top), None);
-        assert_eq!(VerticalAlignment::from_alignment(Alignment::Bottom), Some(VerticalAlignment::Bottom));
+        assert_eq!(
+            VerticalAlignment::from_alignment(Alignment::Bottom),
+            Some(VerticalAlignment::Bottom)
+        );
         assert_eq!(VerticalAlignment::from_alignment(Alignment::Right), None);
     }
 
     #[test]
     fn color_hex_parse_and_serialize_are_deterministic() {
-        assert_eq!(Color::parse_hex("#112233"), Some(Color::rgba(0x11, 0x22, 0x33, 0xFF)));
-        assert_eq!(Color::parse_hex("#11223344"), Some(Color::rgba(0x11, 0x22, 0x33, 0x44)));
-        assert_eq!(Color::parse_hex("#abc"), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF)));
-        assert_eq!(Color::parse_hex(" #AbCd "), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xDD)));
+        assert_eq!(
+            Color::parse_hex("#112233"),
+            Some(Color::rgba(0x11, 0x22, 0x33, 0xFF))
+        );
+        assert_eq!(
+            Color::parse_hex("#11223344"),
+            Some(Color::rgba(0x11, 0x22, 0x33, 0x44))
+        );
+        assert_eq!(
+            Color::parse_hex("#abc"),
+            Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF))
+        );
+        assert_eq!(
+            Color::parse_hex(" #AbCd "),
+            Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xDD))
+        );
         assert_eq!(Color::parse_hex("112233"), None);
         assert_eq!(Color::parse_hex("#12"), None);
 
@@ -512,10 +621,9 @@ mod tests {
         assert!(parsed.bold);
         assert!(parsed.italic);
 
-        let parsed_legacy: Font = serde_json::from_str(
-            r#"{"family":"Sans","size":12.0,"bold":true,"italic":false}"#,
-        )
-        .expect("legacy font deserialize should succeed");
+        let parsed_legacy: Font =
+            serde_json::from_str(r#"{"family":"Sans","size":12.0,"bold":true,"italic":false}"#)
+                .expect("legacy font deserialize should succeed");
 
         assert_eq!(parsed_legacy.weight, 700);
         assert!(parsed_legacy.bold);

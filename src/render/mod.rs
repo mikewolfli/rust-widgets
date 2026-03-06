@@ -7,9 +7,9 @@ use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
     Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog, ComboBox, Dialog,
     DirectoryPicker, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox, Label, LineEdit,
-    ListBox, ListView, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar,
-    RadioButton, RichEdit, ScrollBar, Slider, SpinBox, Splitter, StackWidget, StatusBar, TabWidget,
-    TableWidget, TextEdit, ToolBar, TreeView, Widget, Window,
+    ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar, RadioButton,
+    RichEdit, ScrollBar, Slider, Splitter, StackWidget, StatusBar, TabWidget, TableWidget,
+    TextEdit, ToolBar, TreeView, Widget, Window,
 };
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 // use rayon::prelude::*;
@@ -816,8 +816,8 @@ pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
     push_widget_fill_and_border(
         layer,
         window,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = window.geometry();
@@ -829,9 +829,7 @@ pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
             },
             text: window.title().to_string(),
             font: window.font().cloned().unwrap_or_default(),
-            color: window
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: window.foreground_color().unwrap_or(Color::FOREGROUND),
         });
     }
 }
@@ -865,21 +863,21 @@ pub fn append_label_visual_commands(layer: &mut SceneLayer, label: &Label) {
 /// Append visual commands for a `Button` baseline representation.
 pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
     let fallback_bg = match button.state() {
-        ButtonState::Pressed => Color::rgba(66, 133, 244, 255),
-        ButtonState::Disabled => Color::rgba(199, 203, 210, 255),
-        ButtonState::Normal => Color::rgba(84, 154, 255, 255),
+        ButtonState::Pressed => Color::PRIMARY,
+        ButtonState::Disabled => Color::LIGHT_GRAY,
+        ButtonState::Normal => Color::PRIMARY,
     };
     let fallback_fg = if matches!(button.state(), ButtonState::Disabled) {
-        Color::rgba(110, 116, 126, 255)
+        Color::GRAY
     } else {
-        Color::rgba(255, 255, 255, 255)
+        Color::WHITE
     };
 
     push_widget_fill_and_border(
         layer,
         button,
         Some(fallback_bg),
-        Some((Color::rgba(52, 84, 135, 255), 1)),
+        Some((Color::DARK_GRAY, 1)),
     );
 
     if !button.text().is_empty() {
@@ -990,7 +988,7 @@ pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &Line
     push_widget_fill_and_border(
         layer,
         line_edit,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -1017,7 +1015,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
     // Render main background
     layer.push(RenderCommand::FillRect {
         rect,
-        color: Color::rgba(255, 255, 255, 255),
+        color: Color::WHITE,
     });
     layer.push(RenderCommand::DrawRectStroke {
         rect,
@@ -1158,9 +1156,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
                 width: filled_width.min(rect.width),
                 height: rect.height,
             },
-            color: progress_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(72, 142, 246, 255)),
+            color: progress_bar.foreground_color().unwrap_or(Color::PRIMARY),
         });
     }
 }
@@ -1516,7 +1512,7 @@ pub fn append_text_edit_visual_commands(layer: &mut SceneLayer, text_edit: &Text
     push_widget_fill_and_border(
         layer,
         text_edit,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -1550,7 +1546,7 @@ pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &Rich
     let bg_color = if rich_edit.is_read_only() {
         Color::rgba(245, 245, 245, 255)
     } else {
-        Color::rgba(255, 255, 255, 255)
+        Color::WHITE
     };
 
     push_widget_fill_and_border(
@@ -1608,7 +1604,7 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     push_widget_fill_and_border(
         layer,
         tree_view,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -1669,7 +1665,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     push_widget_fill_and_border(
         layer,
         table_widget,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -1803,7 +1799,7 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
     push_widget_fill_and_border(
         layer,
         chart_widget,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -1893,7 +1889,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
     push_widget_fill_and_border(
         layer,
         dock_panel,
-        Some(Color::rgba(245, 246, 248, 255)),
+        Some(Color::BACKGROUND),
         Some((Color::rgba(160, 168, 180, 255), 1)),
     );
 
@@ -1960,7 +1956,7 @@ pub fn append_group_box_visual_commands(layer: &mut SceneLayer, group_box: &Grou
             width: 60,
             height: title_height as u32,
         },
-        color: Color::rgba(245, 246, 248, 255),
+        color: Color::BACKGROUND,
     });
 
     // Draw title text
@@ -2053,7 +2049,7 @@ pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiAre
         // Child window background
         layer.push(RenderCommand::FillRect {
             rect: child_rect,
-            color: Color::rgba(255, 255, 255, 255),
+            color: Color::WHITE,
         });
 
         // Child window title bar
@@ -2081,7 +2077,7 @@ pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
     push_widget_fill_and_border(
         layer,
         canvas,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(100, 108, 120, 255), 1)),
     );
 
@@ -2119,7 +2115,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     push_widget_fill_and_border(
         layer,
         spin_box,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(160, 168, 180, 255), 1)),
     );
 
@@ -2262,7 +2258,7 @@ pub fn append_list_view_visual_commands(
     push_widget_fill_and_border(
         layer,
         list_view,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(160, 168, 180, 255), 1)),
     );
 
@@ -2274,8 +2270,8 @@ pub fn append_list_view_visual_commands(
     let row_height = 24u32;
     let padding = 8i32;
     let text_color = Color::rgba(40, 44, 52, 255);
-    let selected_bg = Color::rgba(72, 142, 246, 255);
-    let selected_text = Color::rgba(255, 255, 255, 255);
+    let selected_bg = Color::PRIMARY;
+    let selected_text = Color::WHITE;
     let font = Font::default_ui();
 
     let visible_rows = (rect.height / row_height) as usize;
@@ -2308,7 +2304,7 @@ pub fn append_list_view_visual_commands(
                     width: rect.width.saturating_sub(2),
                     height: row_height.saturating_sub(2),
                 },
-                color: Color::rgba(72, 142, 246, 255),
+                color: Color::PRIMARY,
                 width: 1,
             });
         }
@@ -3479,11 +3475,11 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(255, 0, 0, 255));
+        surface.begin_frame(Color::RED);
         surface.end_frame();
         assert_eq!(&surface.frame_rgba()[0..4], &[255, 0, 0, 255]);
 
-        surface.begin_frame(Color::rgba(0, 0, 255, 255));
+        surface.begin_frame(Color::BLUE);
         surface.end_frame();
         assert_eq!(&surface.frame_rgba()[0..4], &[0, 0, 255, 255]);
     }
@@ -3497,7 +3493,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 255));
+        surface.begin_frame(Color::BLACK);
         surface.fill_rect(
             Rect {
                 x: 2,
@@ -3573,7 +3569,7 @@ mod tests {
         let mut scene = RenderScene::new();
         scene.add_layer(front);
         scene.add_layer(back);
-        scene.compose_to(&mut surface, Color::rgba(0, 0, 0, 255));
+        scene.compose_to(&mut surface, Color::BLACK);
 
         let idx = ((2 * 8 + 2) * 4) as usize;
         assert_eq!(&surface.frame_rgba()[idx..idx + 4], &[200, 1, 2, 255]);
@@ -3610,7 +3606,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
+        scene.compose_with_backend(&mut backend, Color::BLACK);
 
         let idx = 36;
         assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[7, 8, 9, 255]);
@@ -3638,13 +3634,8 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
-        surface.draw_text(
-            Point { x: 4, y: 4 },
-            "A",
-            &font(),
-            Color::rgba(255, 255, 255, 255),
-        );
+        surface.begin_frame(Color::TRANSPARENT);
+        surface.draw_text(Point { x: 4, y: 4 }, "A", &font(), Color::WHITE);
         surface.end_frame();
 
         let metrics = surface.measure_text("A", &font());
@@ -3672,7 +3663,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 255));
+        surface.begin_frame(Color::BLACK);
         surface.fill_circle(Point { x: 6, y: 6 }, 3, Color::rgba(9, 10, 11, 255));
         surface.end_frame();
 
@@ -3703,7 +3694,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
+        scene.compose_with_backend(&mut backend, Color::BLACK);
 
         let stroke_idx = ((5 * 12 + 7) * 4) as usize;
         let stroke_px = &backend.frame_rgba()[stroke_idx..stroke_idx + 4];
@@ -3727,7 +3718,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_circle_with_width(Point { x: 8, y: 8 }, 4, Color::rgba(170, 171, 172, 255), 2);
         surface.end_frame();
 
@@ -3750,7 +3741,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(190, 191, 192, 255));
         surface.end_frame();
 
@@ -3784,7 +3775,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let band_idx = ((8 * 16 + 10) * 4) as usize;
         let band_px = &backend.frame_rgba()[band_idx..band_idx + 4];
@@ -3812,7 +3803,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
         assert_eq!(
@@ -3834,7 +3825,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 255));
+        surface.begin_frame(Color::BLACK);
         surface.draw_line_with_width(
             Point { x: 2, y: 6 },
             Point { x: 9, y: 6 },
@@ -3881,7 +3872,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
+        scene.compose_with_backend(&mut backend, Color::BLACK);
 
         let idx = ((5 * 12 + 5) * 4) as usize;
         assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[31, 32, 33, 255]);
@@ -3896,7 +3887,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 255));
+        surface.begin_frame(Color::BLACK);
         surface.draw_rect_with_width(
             Rect {
                 x: 4,
@@ -3945,7 +3936,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
+        scene.compose_with_backend(&mut backend, Color::BLACK);
 
         let idx = ((5 * 14 + 6) * 4) as usize;
         assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[51, 52, 53, 255]);
@@ -3960,7 +3951,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 255));
+        surface.begin_frame(Color::BLACK);
         surface.fill_rounded_rect(
             Rect {
                 x: 3,
@@ -4020,7 +4011,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 255));
+        scene.compose_with_backend(&mut backend, Color::BLACK);
 
         let stroke_idx = ((3 * 14 + 7) * 4) as usize;
         assert_eq!(
@@ -4044,7 +4035,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_rounded_rect_aa_with_width(
             Rect {
                 x: 3,
@@ -4078,7 +4069,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_rounded_rect_aa(
             Rect {
                 x: 3,
@@ -4114,7 +4105,7 @@ mod tests {
 
         surface.set_aa_samples_per_axis(1);
         assert_eq!(surface.aa_samples_per_axis(), 1);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_rounded_rect_aa(
             Rect {
                 x: 3,
@@ -4131,7 +4122,7 @@ mod tests {
 
         surface.set_aa_samples_per_axis(4);
         assert_eq!(surface.aa_samples_per_axis(), 4);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_rounded_rect_aa(
             Rect {
                 x: 3,
@@ -4239,7 +4230,7 @@ mod tests {
 
         scene.compose_with_backend_config(
             &mut backend,
-            Color::rgba(0, 0, 0, 0),
+            Color::TRANSPARENT,
             Some(SoftwareRenderConfig {
                 aa_samples_per_axis: 1,
             }),
@@ -4274,7 +4265,7 @@ mod tests {
         backend_default.apply_render_config(SoftwareRenderConfig {
             aa_samples_per_axis: 4,
         });
-        scene.compose_with_backend(&mut backend_default, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend_default, Color::TRANSPARENT);
         let edge_idx = ((4 * 16 + 3) * 4) as usize;
         let alpha_default = backend_default.frame_rgba()[edge_idx + 3];
 
@@ -4290,7 +4281,7 @@ mod tests {
         });
         scene.compose_with_backend_config(
             &mut backend_temp,
-            Color::rgba(0, 0, 0, 0),
+            Color::TRANSPARENT,
             Some(SoftwareRenderConfig {
                 aa_samples_per_axis: 1,
             }),
@@ -4311,14 +4302,14 @@ mod tests {
         );
 
         surface.set_aa_samples_per_axis(1);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(120, 121, 122, 255));
         surface.end_frame();
         let edge_idx = ((8 * 16 + 12) * 4) as usize;
         let alpha_low = surface.frame_rgba()[edge_idx + 3];
 
         surface.set_aa_samples_per_axis(4);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(120, 121, 122, 255));
         surface.end_frame();
         let alpha_high = surface.frame_rgba()[edge_idx + 3];
@@ -4337,7 +4328,7 @@ mod tests {
         );
 
         surface.set_aa_samples_per_axis(1);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_line_aa_with_width(
             Point { x: 2, y: 2 },
             Point { x: 13, y: 9 },
@@ -4349,7 +4340,7 @@ mod tests {
         let alpha_low = surface.frame_rgba()[edge_idx + 3];
 
         surface.set_aa_samples_per_axis(4);
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_line_aa_with_width(
             Point { x: 2, y: 2 },
             Point { x: 13, y: 9 },
@@ -4371,7 +4362,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_circle(Point { x: 7, y: 7 }, 3, Color::rgba(100, 120, 140, 255));
         surface.end_frame();
 
@@ -4389,7 +4380,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.fill_rounded_rect(
             Rect {
                 x: 3,
@@ -4416,7 +4407,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_line_aa(
             Point { x: 1, y: 1 },
             Point { x: 10, y: 8 },
@@ -4447,7 +4438,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let idx = ((3 * 12 + 4) * 4) as usize;
         let px = &backend.frame_rgba()[idx..idx + 4];
@@ -4466,7 +4457,7 @@ mod tests {
             },
             1.0,
         );
-        surface.begin_frame(Color::rgba(0, 0, 0, 0));
+        surface.begin_frame(Color::TRANSPARENT);
         surface.draw_line_aa_with_width(
             Point { x: 2, y: 8 },
             Point { x: 13, y: 8 },
@@ -4505,7 +4496,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let core_idx = ((8 * 16 + 8) * 4) as usize;
         assert_eq!(
@@ -4542,7 +4533,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let core_idx = ((3 * 16 + 8) * 4) as usize;
         assert_eq!(
@@ -4578,7 +4569,7 @@ mod tests {
             },
             1.0,
         );
-        scene.compose_with_backend(&mut backend, Color::rgba(0, 0, 0, 0));
+        scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
 
         let center_idx = ((8 * 16 + 8) * 4) as usize;
         assert_eq!(
@@ -4610,7 +4601,7 @@ mod tests {
             },
             1.0,
         );
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -4639,7 +4630,7 @@ mod tests {
             },
             1.0,
         );
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -4671,7 +4662,7 @@ mod tests {
             },
             1.0,
         );
-        let selected = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        let selected = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
         assert_eq!(selected, last_auto_render_backend());
     }
 
@@ -4698,7 +4689,7 @@ mod tests {
             1.0,
         );
 
-        let selected = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 255), None);
+        let selected = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
         assert_eq!(selected, AutoRenderBackend::CpuSoftware);
         assert_eq!(last_auto_render_backend(), AutoRenderBackend::CpuSoftware);
     }
@@ -4803,7 +4794,7 @@ mod tests {
             1.0,
         );
 
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -4933,7 +4924,7 @@ mod tests {
             1.0,
         );
 
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -5068,7 +5059,7 @@ mod tests {
             1.0,
         );
 
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -5306,7 +5297,7 @@ mod tests {
             1.0,
         );
 
-        let backend = scene.compose_to_config_auto(&mut surface, Color::rgba(0, 0, 0, 0), None);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
         assert!(matches!(
             backend,
             AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
@@ -5322,8 +5313,8 @@ pub fn append_dialog_visual_commands(layer: &mut SceneLayer, dialog: &Dialog) {
     push_widget_fill_and_border(
         layer,
         dialog,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = dialog.geometry();
@@ -5335,9 +5326,7 @@ pub fn append_dialog_visual_commands(layer: &mut SceneLayer, dialog: &Dialog) {
             },
             text: dialog.title().to_string(),
             font: dialog.font().cloned().unwrap_or_default(),
-            color: dialog
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: dialog.foreground_color().unwrap_or(Color::FOREGROUND),
         });
     }
 }
@@ -5347,8 +5336,8 @@ pub fn append_message_box_visual_commands(layer: &mut SceneLayer, message_box: &
     push_widget_fill_and_border(
         layer,
         message_box,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = message_box.geometry();
@@ -5360,9 +5349,7 @@ pub fn append_message_box_visual_commands(layer: &mut SceneLayer, message_box: &
             },
             text: message_box.title().to_string(),
             font: message_box.font().cloned().unwrap_or_default(),
-            color: message_box
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: message_box.foreground_color().unwrap_or(Color::FOREGROUND),
         });
 
         if rect.height > 30 {
@@ -5373,9 +5360,7 @@ pub fn append_message_box_visual_commands(layer: &mut SceneLayer, message_box: &
                 },
                 text: "Message content".to_string(),
                 font: message_box.font().cloned().unwrap_or_default(),
-                color: message_box
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(26, 28, 32, 255)),
+                color: message_box.foreground_color().unwrap_or(Color::FOREGROUND),
             });
         }
     }
@@ -5386,8 +5371,8 @@ pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &
     push_widget_fill_and_border(
         layer,
         file_dialog,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = file_dialog.geometry();
@@ -5399,9 +5384,7 @@ pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &
             },
             text: file_dialog.title().to_string(),
             font: file_dialog.font().cloned().unwrap_or_default(),
-            color: file_dialog
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: file_dialog.foreground_color().unwrap_or(Color::FOREGROUND),
         });
 
         if rect.height > 30 {
@@ -5412,7 +5395,7 @@ pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &
                     width: rect.width - 16,
                     height: rect.height - 40,
                 },
-                color: Color::rgba(255, 255, 255, 255),
+                color: Color::WHITE,
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
@@ -5431,9 +5414,7 @@ pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &
                 },
                 text: "File browser".to_string(),
                 font: file_dialog.font().cloned().unwrap_or_default(),
-                color: file_dialog
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(26, 28, 32, 255)),
+                color: file_dialog.foreground_color().unwrap_or(Color::FOREGROUND),
             });
         }
     }
@@ -5444,8 +5425,8 @@ pub fn append_color_dialog_visual_commands(layer: &mut SceneLayer, color_dialog:
     push_widget_fill_and_border(
         layer,
         color_dialog,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = color_dialog.geometry();
@@ -5457,9 +5438,7 @@ pub fn append_color_dialog_visual_commands(layer: &mut SceneLayer, color_dialog:
             },
             text: color_dialog.title().to_string(),
             font: color_dialog.font().cloned().unwrap_or_default(),
-            color: color_dialog
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: color_dialog.foreground_color().unwrap_or(Color::FOREGROUND),
         });
 
         if rect.width > 40 && rect.height > 40 {
@@ -5470,7 +5449,7 @@ pub fn append_color_dialog_visual_commands(layer: &mut SceneLayer, color_dialog:
                     width: 80,
                     height: 80,
                 },
-                color: Color::rgba(255, 0, 0, 255),
+                color: Color::RED,
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
@@ -5491,8 +5470,8 @@ pub fn append_font_dialog_visual_commands(layer: &mut SceneLayer, font_dialog: &
     push_widget_fill_and_border(
         layer,
         font_dialog,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = font_dialog.geometry();
@@ -5504,9 +5483,7 @@ pub fn append_font_dialog_visual_commands(layer: &mut SceneLayer, font_dialog: &
             },
             text: font_dialog.title().to_string(),
             font: font_dialog.font().clone(),
-            color: font_dialog
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: font_dialog.foreground_color().unwrap_or(Color::FOREGROUND),
         });
 
         if rect.height > 30 {
@@ -5517,9 +5494,7 @@ pub fn append_font_dialog_visual_commands(layer: &mut SceneLayer, font_dialog: &
                 },
                 text: "Font preview: ABCabc123".to_string(),
                 font: font_dialog.font().clone(),
-                color: font_dialog
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(26, 28, 32, 255)),
+                color: font_dialog.foreground_color().unwrap_or(Color::FOREGROUND),
             });
         }
     }
@@ -5531,7 +5506,7 @@ pub fn append_popup_window_visual_commands(layer: &mut SceneLayer, popup_window:
         layer,
         popup_window,
         Some(Color::rgba(250, 250, 252, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = popup_window.geometry();
@@ -5543,9 +5518,7 @@ pub fn append_popup_window_visual_commands(layer: &mut SceneLayer, popup_window:
             },
             text: "Popup Window".to_string(),
             font: popup_window.font().cloned().unwrap_or_default(),
-            color: popup_window
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: popup_window.foreground_color().unwrap_or(Color::FOREGROUND),
         });
     }
 }
@@ -5558,8 +5531,8 @@ pub fn append_directory_picker_visual_commands(
     push_widget_fill_and_border(
         layer,
         directory_picker,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = directory_picker.geometry();
@@ -5573,7 +5546,7 @@ pub fn append_directory_picker_visual_commands(
             font: directory_picker.font().cloned().unwrap_or_default(),
             color: directory_picker
                 .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+                .unwrap_or(Color::FOREGROUND),
         });
 
         if rect.height > 30 {
@@ -5584,7 +5557,7 @@ pub fn append_directory_picker_visual_commands(
                     width: rect.width - 16,
                     height: rect.height - 40,
                 },
-                color: Color::rgba(255, 255, 255, 255),
+                color: Color::WHITE,
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
@@ -5605,7 +5578,7 @@ pub fn append_directory_picker_visual_commands(
                 font: directory_picker.font().cloned().unwrap_or_default(),
                 color: directory_picker
                     .foreground_color()
-                    .unwrap_or(Color::rgba(26, 28, 32, 255)),
+                    .unwrap_or(Color::FOREGROUND),
             });
         }
     }
@@ -5620,9 +5593,9 @@ pub fn append_toggle_button_visual_commands(
         layer,
         toggle_button,
         Some(if toggle_button.is_checked() {
-            Color::rgba(72, 142, 246, 255)
+            Color::PRIMARY
         } else {
-            Color::rgba(245, 246, 248, 255)
+            Color::BACKGROUND
         }),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
@@ -5637,7 +5610,7 @@ pub fn append_toggle_button_visual_commands(
         text: toggle_button.text().to_string(),
         font: toggle_button.font().cloned().unwrap_or_default(),
         color: if toggle_button.is_checked() {
-            Color::rgba(255, 255, 255, 255)
+            Color::WHITE
         } else {
             toggle_button
                 .foreground_color()
@@ -5654,7 +5627,7 @@ pub fn append_check_list_box_visual_commands(
     push_widget_fill_and_border(
         layer,
         check_list_box,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(160, 168, 180, 255), 1)),
     );
 
@@ -5696,7 +5669,7 @@ pub fn append_check_list_box_visual_commands(
                     width: 10,
                     height: 10,
                 },
-                color: Color::rgba(72, 142, 246, 255),
+                color: Color::PRIMARY,
             });
         }
 
@@ -5723,7 +5696,7 @@ pub fn append_double_spin_box_visual_commands(
     push_widget_fill_and_border(
         layer,
         double_spin_box,
-        Some(Color::rgba(255, 255, 255, 255)),
+        Some(Color::WHITE),
         Some((Color::rgba(160, 168, 180, 255), 1)),
     );
 
@@ -5783,7 +5756,7 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
     push_widget_fill_and_border(
         layer,
         dial,
-        Some(Color::rgba(245, 246, 248, 255)),
+        Some(Color::BACKGROUND),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
 
@@ -5822,14 +5795,14 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
     layer.push(RenderCommand::DrawLine {
         from: center,
         to: needle_end,
-        color: Color::rgba(72, 142, 246, 255),
+        color: Color::PRIMARY,
     });
 
     // Draw center point
     layer.push(RenderCommand::FillCircle {
         center,
         radius: 4,
-        color: Color::rgba(72, 142, 246, 255),
+        color: Color::PRIMARY,
     });
 }
 
@@ -5838,8 +5811,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
     push_widget_fill_and_border(
         layer,
         wizard,
-        Some(Color::rgba(245, 246, 248, 255)),
-        Some((Color::rgba(120, 124, 132, 255), 1)),
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
     );
 
     let rect = wizard.geometry();
@@ -5851,9 +5824,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             },
             text: "Wizard".to_string(),
             font: wizard.font().cloned().unwrap_or_default(),
-            color: wizard
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 28, 32, 255)),
+            color: wizard.foreground_color().unwrap_or(Color::FOREGROUND),
         });
 
         if rect.height > 30 {
@@ -5865,7 +5836,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                     width: rect.width,
                     height: 40,
                 },
-                color: Color::rgba(72, 142, 246, 255),
+                color: Color::PRIMARY,
             });
 
             layer.push(RenderCommand::DrawText {
@@ -5875,7 +5846,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                 },
                 text: "Wizard Step 1 of 3".to_string(),
                 font: wizard.font().cloned().unwrap_or_default(),
-                color: Color::rgba(255, 255, 255, 255),
+                color: Color::WHITE,
             });
 
             // Draw content area
@@ -5886,7 +5857,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                     width: rect.width - 16,
                     height: rect.height - 120,
                 },
-                color: Color::rgba(255, 255, 255, 255),
+                color: Color::WHITE,
             });
 
             layer.push(RenderCommand::DrawRectStroke {
@@ -5912,7 +5883,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                     width: button_width,
                     height: button_height,
                 },
-                color: Color::rgba(245, 246, 248, 255),
+                color: Color::BACKGROUND,
             });
 
             layer.push(RenderCommand::DrawRectStroke {
@@ -5948,7 +5919,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                     width: button_width,
                     height: button_height,
                 },
-                color: Color::rgba(72, 142, 246, 255),
+                color: Color::PRIMARY,
             });
 
             layer.push(RenderCommand::DrawRectStroke {
@@ -5971,7 +5942,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                 }),
                 text: "Next".to_string(),
                 font: wizard.font().cloned().unwrap_or_default(),
-                color: Color::rgba(255, 255, 255, 255),
+                color: Color::WHITE,
             });
         }
     }

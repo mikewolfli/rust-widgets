@@ -1011,7 +1011,7 @@ impl ColorDialog {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
             title,
-            color: Color::rgba(0, 0, 0, 255),
+            color: Color::BLACK,
             color_selected: Signal1::new(),
         }
     }
@@ -8075,7 +8075,7 @@ impl ActivityIndicator {
             base: BaseWidget::new(WidgetKind::ActivityIndicator, geometry, "ActivityIndicator"),
             animating: false,
             minimum_delay: 0,
-            color: Color::rgb(0, 0, 0),
+            color: Color::BLACK,
             size: 24,
             animation_started: GenericSignal::new(),
             animation_stopped: GenericSignal::new(),
@@ -13311,7 +13311,7 @@ mod tests {
 
     #[test]
     fn dialog_family_contracts_emit_deterministic_result_signals() {
-        let mut dialog = Dialog::new(Rect::new(0, 0, 200, 120));
+        let mut dialog = Dialog::new("Dialog".to_string(), Rect::new(0, 0, 200, 120));
         let dialog_finished = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&dialog_finished);
@@ -13343,7 +13343,7 @@ mod tests {
         assert_eq!(msg.result(), Some(DialogResult::Rejected));
         assert_eq!(msg_hits.load(Ordering::SeqCst), 1);
 
-        let mut file = FileDialog::new(Rect::new(0, 0, 220, 140));
+        let mut file = FileDialog::new("File Dialog".to_string(), Rect::new(0, 0, 220, 140));
         let file_hits = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&file_hits);
@@ -13357,7 +13357,8 @@ mod tests {
         assert_eq!(file.selected_file(), Some("a.txt"));
         assert_eq!(file_hits.load(Ordering::SeqCst), 1);
 
-        let mut color_dialog = ColorDialog::new(Rect::new(0, 0, 140, 120));
+        let mut color_dialog =
+            ColorDialog::new("Color Dialog".to_string(), Rect::new(0, 0, 140, 120));
         let color_hits = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&color_hits);
@@ -13369,7 +13370,7 @@ mod tests {
         assert_eq!(color_dialog.color(), Color::rgba(12, 34, 56, 255));
         assert_eq!(color_hits.load(Ordering::SeqCst), 1);
 
-        let mut font_dialog = FontDialog::new(Rect::new(0, 0, 140, 120));
+        let mut font_dialog = FontDialog::new("Font Dialog".to_string(), Rect::new(0, 0, 140, 120));
         let font_hits = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&font_hits);
