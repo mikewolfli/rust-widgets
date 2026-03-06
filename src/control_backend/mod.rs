@@ -54,7 +54,6 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::GroupBox
         | WidgetKind::TabWidget
         | WidgetKind::Splitter
-        | WidgetKind::StackWidget
         | WidgetKind::MenuBar
         | WidgetKind::Menu
         | WidgetKind::ToolBar
@@ -65,7 +64,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::DatePicker
         | WidgetKind::TimePicker
         | WidgetKind::DateTimePicker
-        | WidgetKind::DirectoryPicker
+        | WidgetKind::DirectoryDialog
         | WidgetKind::ActivityIndicator
         | WidgetKind::Calendar
         | WidgetKind::LCDNumber
@@ -2323,7 +2322,7 @@ impl ControlBackend for CustomPaintControlBackend {
                 y,
                 width,
                 height,
-                widget_kind: WidgetKind::StackWidget,
+                widget_kind: WidgetKind::StackedWidget,
             },
         );
         widget_id

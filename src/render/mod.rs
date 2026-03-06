@@ -5,14 +5,16 @@ fn is_empty_rect(rect: &crate::core::Rect) -> bool {
 /// Rendering primitives and software surface baseline.
 pub mod command_link;
 pub mod font_combo_box;
+pub mod lcd_number;
 pub mod web_engine;
+pub mod web_view;
 
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
-    Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog, ComboBox, Dialog,
-    DirectoryPicker, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox, Label, LineEdit,
-    ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar, RadioButton,
-    RichEdit, ScrollBar, Slider, Splitter, StackWidget, StatusBar, TabWidget, TableWidget,
+    ActivityIndicator, Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog,
+    ComboBox, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox,
+    Label, LineEdit, ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar,
+    RadioButton, RichEdit, ScrollBar, Slider, Splitter, StatusBar, TabWidget, TableWidget,
     TextEdit, ToolBar, TreeView, Widget,
 };
 use crate::window::Window;
@@ -1486,30 +1488,6 @@ pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &Ta
                 .unwrap_or(Color::rgba(30, 32, 36, 255)),
         });
     }
-}
-
-/// Append visual commands for a `StackWidget` navigation representation.
-pub fn append_stack_widget_visual_commands(layer: &mut SceneLayer, stack_widget: &StackWidget) {
-    push_widget_fill_and_border(
-        layer,
-        stack_widget,
-        Some(Color::rgba(244, 246, 250, 255)),
-        Some((Color::rgba(126, 132, 142, 255), 1)),
-    );
-
-    let rect = stack_widget.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-
-    layer.push(RenderCommand::DrawText {
-        origin: centered_text_origin(rect),
-        text: "Stack".to_string(),
-        font: stack_widget.font().cloned().unwrap_or_default(),
-        color: stack_widget
-            .foreground_color()
-            .unwrap_or(Color::rgba(30, 32, 36, 255)),
-    });
 }
 
 /// Append visual commands for a `TextEdit` multi-line text editor representation.
@@ -4963,7 +4941,7 @@ mod tests {
 
     #[test]
     fn host_navigation_visual_builders_emit_expected_commands() {
-        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+        use crate::widget::{Menu, MenuBar, StatusBar, TabWidget, ToolBar};
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -4988,16 +4966,12 @@ mod tests {
         tabs.add_tab(2002);
         tabs.set_current_index(1);
 
-        let mut stack = StackWidget::new(Rect::new(170, 98, 90, 58));
-        stack.set_background_color(Some(Color::rgba(230, 234, 240, 255)));
-
         let mut layer = SceneLayer::new(0);
         append_menu_bar_visual_commands(&mut layer, &menu_bar);
         append_menu_visual_commands(&mut layer, &menu);
         append_tool_bar_visual_commands(&mut layer, &tool_bar);
         append_status_bar_visual_commands(&mut layer, &status_bar);
         append_tab_widget_visual_commands(&mut layer, &tabs);
-        append_stack_widget_visual_commands(&mut layer, &stack);
 
         let mut draw_text_count = 0usize;
         let mut fill_rect_count = 0usize;
@@ -5019,7 +4993,7 @@ mod tests {
 
     #[test]
     fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
-        use crate::widget::{Menu, MenuBar, StackWidget, StatusBar, TabWidget, ToolBar, Widget};
+        use crate::widget::{Menu, MenuBar, StatusBar, TabWidget, ToolBar};
 
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
         menu_bar.add_menu(1001);
@@ -5043,9 +5017,6 @@ mod tests {
         tabs.add_tab(2);
         tabs.set_current_index(1);
 
-        let mut stack = StackWidget::new(Rect::new(140, 80, 120, 30));
-        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
-
         let mut scene = RenderScene::new();
         let mut layer = SceneLayer::new(0);
         append_menu_bar_visual_commands(&mut layer, &menu_bar);
@@ -5053,7 +5024,6 @@ mod tests {
         append_tool_bar_visual_commands(&mut layer, &tool_bar);
         append_status_bar_visual_commands(&mut layer, &status_bar);
         append_tab_widget_visual_commands(&mut layer, &tabs);
-        append_stack_widget_visual_commands(&mut layer, &stack);
         scene.add_layer(layer);
 
         let mut surface = SoftwareSurface::new(
@@ -5103,8 +5073,7 @@ mod tests {
     fn gpu_parity_covered_controls_emit_non_empty_command_suite() {
         use crate::widget::{
             Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
-            ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
-            ToolBar, Widget,
+            ProgressBar, RadioButton, ScrollBar, Slider, StatusBar, TabWidget, ToolBar, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
@@ -5170,9 +5139,6 @@ mod tests {
         tabs.add_tab(1);
         tabs.add_tab(2);
         tabs.set_current_index(1);
-
-        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
-        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
 
         let mut layer = SceneLayer::new(0);
         append_window_visual_commands(&mut layer, &window);
@@ -5192,7 +5158,6 @@ mod tests {
         append_tool_bar_visual_commands(&mut layer, &tool_bar);
         append_status_bar_visual_commands(&mut layer, &status_bar);
         append_tab_widget_visual_commands(&mut layer, &tabs);
-        append_stack_widget_visual_commands(&mut layer, &stack);
 
         assert!(layer.commands().len() >= 30);
     }
@@ -5201,8 +5166,7 @@ mod tests {
     fn gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend() {
         use crate::widget::{
             Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
-            ProgressBar, RadioButton, ScrollBar, Slider, StackWidget, StatusBar, TabWidget,
-            ToolBar, Widget,
+            ProgressBar, RadioButton, ScrollBar, Slider, StatusBar, TabWidget, ToolBar, Widget,
         };
 
         let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
@@ -5268,9 +5232,6 @@ mod tests {
         tabs.add_tab(1);
         tabs.add_tab(2);
         tabs.set_current_index(1);
-
-        let mut stack = StackWidget::new(Rect::new(192, 168, 120, 30));
-        stack.set_background_color(Some(Color::rgba(214, 220, 230, 255)));
 
         let mut scene = RenderScene::new();
         let mut layer = SceneLayer::new(0);
@@ -5291,7 +5252,6 @@ mod tests {
         append_tool_bar_visual_commands(&mut layer, &tool_bar);
         append_status_bar_visual_commands(&mut layer, &status_bar);
         append_tab_widget_visual_commands(&mut layer, &tabs);
-        append_stack_widget_visual_commands(&mut layer, &stack);
         scene.add_layer(layer);
 
         let mut surface = SoftwareSurface::new(
@@ -5528,28 +5488,28 @@ pub fn append_popup_window_visual_commands(layer: &mut SceneLayer, popup_window:
     }
 }
 
-/// Append visual commands for a `DirectoryPicker` baseline representation.
-pub fn append_directory_picker_visual_commands(
+/// Append visual commands for a `DirectoryDialog` baseline representation.
+pub fn append_directory_dialog_visual_commands(
     layer: &mut SceneLayer,
-    directory_picker: &DirectoryPicker,
+    directory_dialog: &DirectoryDialog,
 ) {
     push_widget_fill_and_border(
         layer,
-        directory_picker,
+        directory_dialog,
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
 
-    let rect = directory_picker.geometry();
+    let rect = directory_dialog.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
             origin: Point {
                 x: rect.x + 8,
                 y: rect.y + 4,
             },
-            text: "Directory Picker".to_string(),
-            font: directory_picker.font().cloned().unwrap_or_default(),
-            color: directory_picker
+            text: "Directory Dialog".to_string(),
+            font: directory_dialog.font().cloned().unwrap_or_default(),
+            color: directory_dialog
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
@@ -5580,12 +5540,51 @@ pub fn append_directory_picker_visual_commands(
                     y: rect.y + 32,
                 },
                 text: "Directory browser".to_string(),
-                font: directory_picker.font().cloned().unwrap_or_default(),
-                color: directory_picker
+                font: directory_dialog.font().cloned().unwrap_or_default(),
+                color: directory_dialog
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
         }
+    }
+}
+
+/// Append visual commands for an `ActivityIndicator` baseline representation.
+pub fn append_activity_indicator_visual_commands(
+    layer: &mut SceneLayer,
+    activity_indicator: &ActivityIndicator,
+) {
+    push_widget_fill_and_border(
+        layer,
+        activity_indicator,
+        Some(Color::BACKGROUND),
+        Some((Color::SECONDARY, 1)),
+    );
+
+    let rect = activity_indicator.geometry();
+    let center = Point {
+        x: rect.x + (rect.width / 2) as i32,
+        y: rect.y + (rect.height / 2) as i32,
+    };
+    let radius = (rect.width.min(rect.height) / 2 - 4) as f32;
+
+    // Draw activity indicator
+    for i in 0..8 {
+        let angle = (i as f32) * std::f32::consts::PI / 4.0;
+        let alpha = (i as f32 / 8.0) * 255.0;
+        let color = Color {
+            r: 0,
+            g: 128,
+            b: 255,
+            a: alpha as u8,
+        };
+        let x = center.x + (angle.cos() * radius) as i32;
+        let y = center.y + (angle.sin() * radius) as i32;
+        layer.push(RenderCommand::DrawCircle {
+            center: Point { x, y },
+            radius: 3,
+            color: color,
+        });
     }
 }
 
@@ -5948,68 +5947,6 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                 text: "Next".to_string(),
                 font: wizard.font().cloned().unwrap_or_default(),
                 color: Color::WHITE,
-            });
-        }
-    }
-}
-
-/// Append visual commands for an `LCDNumber` baseline representation.
-pub fn append_lcd_number_visual_commands(
-    layer: &mut SceneLayer,
-    lcd_number: &crate::widget::LCDNumber,
-) {
-    push_widget_fill_and_border(
-        layer,
-        lcd_number,
-        Some(Color::BLACK),
-        Some((Color::SECONDARY, 1)),
-    );
-
-    let rect = lcd_number.geometry();
-    if rect.width > 16 && rect.height > 12 {
-        layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: rect.x + 8,
-                y: rect.y + 4,
-            },
-            text: "LCDNumber".to_string(),
-            font: lcd_number.font().cloned().unwrap_or_default(),
-            color: lcd_number.foreground_color().unwrap_or(Color::FOREGROUND),
-        });
-
-        if rect.height > 30 {
-            // Draw LCD display area
-            layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x: rect.x + 8,
-                    y: rect.y + 24,
-                    width: rect.width - 16,
-                    height: rect.height - 32,
-                },
-                color: Color::rgba(20, 40, 20, 255),
-            });
-
-            // Draw LCD border
-            layer.push(RenderCommand::DrawRectStroke {
-                rect: Rect {
-                    x: rect.x + 8,
-                    y: rect.y + 24,
-                    width: rect.width - 16,
-                    height: rect.height - 32,
-                },
-                color: Color::rgba(80, 100, 80, 255),
-                width: 2,
-            });
-
-            // Draw sample LCD digits
-            layer.push(RenderCommand::DrawText {
-                origin: Point {
-                    x: rect.x + 24,
-                    y: rect.y + rect.height as i32 / 2 + 8,
-                },
-                text: "12:34:56".to_string(),
-                font: lcd_number.font().cloned().unwrap_or_default(),
-                color: Color::rgba(0, 255, 0, 255),
             });
         }
     }

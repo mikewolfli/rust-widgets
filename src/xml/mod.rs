@@ -10,8 +10,7 @@ use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{
     Button, Canvas, ChartWidget, CheckBox, ComboBox, Dialog, GridWidget, GroupBox, Label, LineEdit,
     ListBox, Menu, MenuBar, Panel, PopupWindow, ProgressBar, RadioButton, ScrollBar, Slider,
-    StackWidget, StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar, TreeModel,
-    TreeView, Widget,
+    StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar, TreeModel, TreeView, Widget,
 };
 use crate::window::Window;
 
@@ -509,7 +508,6 @@ impl XmlLayoutLoader {
             "panel" => Box::new(Panel::new(rect)),
             "groupbox" => Box::new(GroupBox::new(rect)),
             "tabwidget" => Box::new(TabWidget::new(rect)),
-            "stackwidget" => Box::new(StackWidget::new(rect)),
             "menubar" => Box::new(MenuBar::new(rect)),
             "menu" => Box::new(Menu::new(rect)),
             "toolbar" => Box::new(ToolBar::new(rect)),
