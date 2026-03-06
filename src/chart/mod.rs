@@ -740,6 +740,322 @@ impl Chart for PieChart {
     }
 }
 
+/// Scatter plot chart
+pub struct ScatterChart {
+    title: String,
+    x_axis_label: String,
+    y_axis_label: String,
+    series: Vec<ChartSeries>,
+    x_tick_count: usize,
+    y_tick_count: usize,
+    show_grid: bool,
+    point_radius: f32,
+}
+
+impl ScatterChart {
+    /// Create a new scatter plot chart
+    pub fn new() -> Self {
+        Self {
+            title: String::new(),
+            x_axis_label: String::new(),
+            y_axis_label: String::new(),
+            series: Vec::new(),
+            x_tick_count: 5,
+            y_tick_count: 5,
+            show_grid: false,
+            point_radius: 4.0,
+        }
+    }
+
+    /// Configure x-axis tick density
+    pub fn set_x_tick_count(&mut self, tick_count: usize) {
+        self.x_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Configure y-axis tick density
+    pub fn set_y_tick_count(&mut self, tick_count: usize) {
+        self.y_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Enable or disable grid rendering
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.show_grid = enabled;
+    }
+
+    /// Set point radius
+    pub fn set_point_radius(&mut self, radius: f32) {
+        self.point_radius = radius.max(1.0);
+    }
+}
+
+impl Default for ScatterChart {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Chart for ScatterChart {
+    fn add_series(&mut self, series: ChartSeries) {
+        self.series.push(series);
+    }
+
+    fn remove_series(&mut self, name: &str) {
+        self.series.retain(|s| s.name != name);
+    }
+
+    fn clear_series(&mut self) {
+        self.series.clear();
+    }
+
+    fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    fn set_x_axis_label(&mut self, label: String) {
+        self.x_axis_label = label;
+    }
+
+    fn set_y_axis_label(&mut self, label: String) {
+        self.y_axis_label = label;
+    }
+
+    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
+        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
+        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
+
+        let visible_series: Vec<&ChartSeries> = self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .collect();
+        let layout = compute_cartesian_layout(
+            rect,
+            !self.x_axis_label.is_empty(),
+            !self.y_axis_label.is_empty(),
+            visible_series.len(),
+        );
+        draw_cartesian_axes(context, &layout);
+
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        for series in &visible_series {
+            for point in &series.data {
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
+                min_y = min_y.min(point.y);
+                max_y = max_y.max(point.y);
+            }
+        }
+        if min_x == f64::MAX || min_y == f64::MAX {
+            return;
+        }
+        let span_x = (max_x - min_x).max(1.0);
+        let span_y = (max_y - min_y).max(1.0);
+
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+
+        if !self.x_axis_label.is_empty() {
+            context.draw_text(
+                &self.x_axis_label,
+                layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                layout.plot_y + layout.plot_h + 36.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        if !self.y_axis_label.is_empty() {
+            context.draw_text(
+                &self.y_axis_label,
+                layout.plot_x - 56.0,
+                layout.plot_y - 10.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        for series in &visible_series {
+            for point in &series.data {
+                let x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y = layout.plot_y + layout.plot_h - (((point.y - min_y) / span_y) as f32) * layout.plot_h;
+                context.draw_circle(
+                    Point { x: x as i32, y: y as i32 },
+                    self.point_radius,
+                    series.color,
+                );
+            }
+        }
+
+        draw_legend(context, &layout, &visible_series);
+    }
+}
+
+/// Area chart
+pub struct AreaChart {
+    title: String,
+    x_axis_label: String,
+    y_axis_label: String,
+    series: Vec<ChartSeries>,
+    x_tick_count: usize,
+    y_tick_count: usize,
+    show_grid: bool,
+    stacked: bool,
+}
+
+impl AreaChart {
+    /// Create a new area chart
+    pub fn new() -> Self {
+        Self {
+            title: String::new(),
+            x_axis_label: String::new(),
+            y_axis_label: String::new(),
+            series: Vec::new(),
+            x_tick_count: 5,
+            y_tick_count: 5,
+            show_grid: false,
+            stacked: false,
+        }
+    }
+
+    /// Configure x-axis tick density
+    pub fn set_x_tick_count(&mut self, tick_count: usize) {
+        self.x_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Configure y-axis tick density
+    pub fn set_y_tick_count(&mut self, tick_count: usize) {
+        self.y_tick_count = tick_count.clamp(2, 16);
+    }
+
+    /// Enable or disable grid rendering
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.show_grid = enabled;
+    }
+
+    /// Set stacked mode
+    pub fn set_stacked(&mut self, stacked: bool) {
+        self.stacked = stacked;
+    }
+}
+
+impl Default for AreaChart {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Chart for AreaChart {
+    fn add_series(&mut self, series: ChartSeries) {
+        self.series.push(series);
+    }
+
+    fn remove_series(&mut self, name: &str) {
+        self.series.retain(|s| s.name != name);
+    }
+
+    fn clear_series(&mut self) {
+        self.series.clear();
+    }
+
+    fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    fn set_x_axis_label(&mut self, label: String) {
+        self.x_axis_label = label;
+    }
+
+    fn set_y_axis_label(&mut self, label: String) {
+        self.y_axis_label = label;
+    }
+
+    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
+        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
+        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
+
+        let visible_series: Vec<&ChartSeries> = self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .collect();
+        let layout = compute_cartesian_layout(
+            rect,
+            !self.x_axis_label.is_empty(),
+            !self.y_axis_label.is_empty(),
+            visible_series.len(),
+        );
+        draw_cartesian_axes(context, &layout);
+
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        for series in &visible_series {
+            for point in &series.data {
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
+                min_y = min_y.min(point.y);
+                max_y = max_y.max(point.y);
+            }
+        }
+        if min_x == f64::MAX || min_y == f64::MAX {
+            return;
+        }
+        let span_x = (max_x - min_x).max(1.0);
+        let span_y = (max_y - min_y).max(1.0);
+
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+
+        if !self.x_axis_label.is_empty() {
+            context.draw_text(
+                &self.x_axis_label,
+                layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                layout.plot_y + layout.plot_h + 36.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        if !self.y_axis_label.is_empty() {
+            context.draw_text(
+                &self.y_axis_label,
+                layout.plot_x - 56.0,
+                layout.plot_y - 10.0,
+                11.0,
+                Color { r: 40, g: 40, b: 40, a: 255 },
+            );
+        }
+
+        for series in &visible_series {
+            if series.data.len() < 2 {
+                continue;
+            }
+            for i in 1..series.data.len() {
+                let p1 = &series.data[i - 1];
+                let p2 = &series.data[i];
+                let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y1 = layout.plot_y + layout.plot_h - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
+                let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y2 = layout.plot_y + layout.plot_h - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
+                context.draw_line(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    2.0,
+                    series.color,
+                );
+            }
+        }
+
+        draw_legend(context, &layout, &visible_series);
+    }
+}
+
 fn svg_color_hex(color: Color) -> String {
     format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
 }

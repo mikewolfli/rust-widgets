@@ -1,5 +1,11 @@
 //! Layout managers.
 
+pub mod absolute;
+pub mod flow;
+
+pub use absolute::*;
+pub use flow::*;
+
 use crate::core::{ObjectId, Point, Rect, Size};
 
 /// Space allocation preference used by layout items.

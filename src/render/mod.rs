@@ -3,6 +3,8 @@ fn is_empty_rect(rect: &crate::core::Rect) -> bool {
     rect.width == 0 || rect.height == 0
 }
 /// Rendering primitives and software surface baseline.
+pub mod batch;
+pub mod text_cache;
 pub mod command_link;
 pub mod font_combo_box;
 pub mod lcd_number;
@@ -182,6 +184,106 @@ pub fn default_software_render_config() -> SoftwareRenderConfig {
     *global_software_render_config()
         .lock()
         .expect("software render config lock poisoned")
+}
+
+/// Render context for custom widget drawing.
+pub struct RenderContext<'a> {
+    backend: &'a mut dyn PaintBackend,
+}
+
+impl<'a> RenderContext<'a> {
+    pub fn new(backend: &'a mut dyn PaintBackend) -> Self {
+        Self { backend }
+    }
+
+    pub fn backend(&mut self) -> &mut dyn PaintBackend {
+        self.backend
+    }
+
+    pub fn size(&self) -> Size {
+        self.backend.size()
+    }
+
+    pub fn dpi_scale(&self) -> f32 {
+        self.backend.dpi_scale()
+    }
+
+    pub fn fill_rect(&mut self, rect: Rect, color: Color) {
+        self.backend.execute_command(&RenderCommand::FillRect { rect, color });
+    }
+
+    pub fn draw_rect(&mut self, rect: Rect, color: Color) {
+        self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
+    }
+
+    pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
+    }
+
+    pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
+        self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
+    }
+
+    pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
+        self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
+    }
+
+    pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
+    }
+
+    pub fn draw_rounded_rect_stroke_aa(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
+    }
+
+    pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
+        self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
+    }
+
+    pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
+        self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
+    }
+
+    pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
+    }
+
+    pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
+    }
+
+    pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
+        self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
+    }
+
+    pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
+        self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
+    }
+
+    pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
+        self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
+    }
+
+    pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawCircleStroke { center, radius, color, width });
+    }
+
+    pub fn draw_text(&mut self, origin: Point, text: &str, font: &Font, color: Color) {
+        self.backend.execute_command(&RenderCommand::DrawText {
+            origin,
+            text: text.to_string(),
+            font: font.clone(),
+            color,
+        });
+    }
+
+    pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+        self.backend.measure_text(text, font)
+    }
+
+    pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+        self.backend.shape_text(text, font)
+    }
 }
 
 /// Pluggable paint backend strategy used by render scene composition.
@@ -5948,6 +6050,77 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                 font: wizard.font().cloned().unwrap_or_default(),
                 color: Color::WHITE,
             });
+        }
+    }
+}
+
+/// Routing logic for native vs custom widget drawing.
+/// This function provides a framework for routing between native and custom drawing paths.
+/// Widgets that implement the Draw trait will use custom drawing, others use native.
+pub fn route_widget_drawing<W>(
+    widget: &mut W,
+    context: &mut RenderContext,
+    custom_renderer: impl FnOnce(&mut W, &mut RenderContext),
+    native_renderer: impl FnOnce(&mut W, &mut RenderContext),
+) where
+    W: Widget + ?Sized,
+{
+    // In a real implementation, this would check if widget implements Draw trait
+    // For now, we provide both paths and let the caller choose
+    // This is a simplified routing mechanism
+    custom_renderer(widget, context);
+}
+
+/// Check if a widget uses custom drawing.
+/// This is a placeholder for future implementation with trait object system.
+pub fn widget_uses_custom_drawing<W>(_widget: &W) -> bool
+where
+    W: Widget + ?Sized,
+{
+    // Placeholder: In a real implementation, this would check if widget implements Draw trait
+    // For now, return false to indicate native rendering
+    false
+}
+
+/// Render a widget with automatic routing between native and custom drawing.
+/// This is a simplified version that delegates to the provided renderer.
+pub fn render_widget<W>(
+    widget: &mut W,
+    backend: &mut dyn PaintBackend,
+    custom_renderer: impl FnOnce(&mut W, &mut RenderContext),
+) where
+    W: Widget + ?Sized,
+{
+    let mut context = RenderContext::new(backend);
+    custom_renderer(widget, &mut context);
+}
+
+/// Helper function to render widgets that implement Draw trait.
+pub fn render_custom_widget<W>(widget: &mut W, context: &mut RenderContext)
+where
+    W: crate::widget::Draw,
+{
+    widget.draw(context);
+}
+
+/// Helper function to render widgets using native platform rendering.
+pub fn render_native_widget<W>(widget: &W, context: &mut RenderContext)
+where
+    W: Widget,
+{
+    // Native rendering is handled by the platform backend
+    // This function is a placeholder for future native rendering integration
+    let rect = widget.geometry();
+    let style = widget.style();
+    
+    // Draw basic widget background and border as fallback
+    if let Some(bg_color) = style.background_color {
+        context.fill_rect(rect, bg_color);
+    }
+    
+    if style.border_width > 0 {
+        if let Some(border_color) = style.border_color {
+            context.draw_rect_stroke(rect, border_color, style.border_width);
         }
     }
 }

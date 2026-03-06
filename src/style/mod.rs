@@ -1,5 +1,13 @@
 //! Style system primitives.
 
+pub mod animation;
+pub mod gradient;
+pub mod theme_state;
+
+pub use animation::*;
+pub use gradient::*;
+pub use theme_state::*;
+
 use crate::core::{Color, Font};
 
 /// Insets for top/right/bottom/left spacing.

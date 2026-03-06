@@ -15,6 +15,7 @@ use chrono::{Datelike, Timelike};
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
+use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 
@@ -123,6 +124,30 @@ pub enum WidgetKind {
     WebEngineScriptDialog,
     /// Web engine context menu request widget for context menu handling.
     WebEngineContextMenuRequest,
+}
+
+/// Custom drawing trait for widgets that want to render their own content.
+/// Widgets implementing this trait can provide custom drawing logic instead of
+/// relying solely on native platform rendering.
+pub trait Draw {
+    /// Draw the widget's content using the provided render context.
+    /// This method is called when the widget needs to be repainted.
+    fn draw(&mut self, context: &mut RenderContext);
+
+    /// Returns true if this widget uses custom drawing, false for native rendering.
+    /// This allows the rendering system to choose between native and custom paths.
+    fn uses_custom_drawing(&self) -> bool {
+        true
+    }
+
+    /// Optional: Request a redraw of the widget.
+    /// Default implementation calls request_redraw() on the widget.
+    fn request_custom_redraw(&self)
+    where
+        Self: Widget,
+    {
+        self.request_redraw();
+    }
 }
 
 /// Common widget contract implemented by all widget models.
@@ -296,6 +321,10 @@ pub trait Widget: EventHandler {
     /// Requests layout and emits layout signal.
     fn request_layout(&self) {
         self.layout_requested_signal().emit();
+    }
+    /// Returns the preferred size hint for layout calculations.
+    fn size_hint(&self) -> Size {
+        self.size()
     }
 }
 

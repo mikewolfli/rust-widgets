@@ -1,5 +1,15 @@
 //! PDF document abstraction and in-memory implementation.
 
+pub mod annotation;
+pub mod form;
+pub mod hyperlink;
+pub mod security;
+
+pub use annotation::*;
+pub use form::*;
+pub use hyperlink::*;
+pub use security::*;
+
 use crate::core::{Rect, Size, Color};
 use std::collections::HashMap;
 use std::fs;

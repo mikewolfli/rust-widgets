@@ -13,6 +13,8 @@ pub mod control_backend;
 pub mod core;
 /// Event types and dispatch helpers.
 pub mod event;
+/// Embedded system optimizations and support.
+pub mod embedded;
 #[cfg(not(feature = "embedded"))]
 /// Internationalization module for desktop runtime.
 pub mod i18n;
@@ -35,11 +37,19 @@ pub mod style;
 #[cfg(not(feature = "embedded"))]
 /// Theme management for desktop runtime.
 pub mod theme;
+/// Test infrastructure and utilities.
+pub mod test;
 /// Optional WGPU GPU acceleration backend.
 /// Optional WGPU GPU acceleration backend.
 pub mod wgpu_backend;
 /// Widget definitions and widget helpers.
 pub mod widget;
+/// Web view and engine components.
+pub mod web;
+/// Memory management utilities.
+pub mod memory;
+/// Performance monitoring and optimization.
+pub mod performance;
 // Re-export all widget types for convenience
 pub use widget::*;
 #[cfg(not(feature = "embedded"))]

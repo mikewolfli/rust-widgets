@@ -1,5 +1,7 @@
 //! Event queue and dispatch.
 
+pub mod queue;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU32;

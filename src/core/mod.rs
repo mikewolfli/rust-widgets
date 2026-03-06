@@ -118,6 +118,56 @@ impl Rect {
         point.x >= self.x && point.y >= self.y && point.x < max_x && point.y < max_y
     }
 
+    pub fn intersects(&self, other: &Rect) -> bool {
+        let self_max_x = self.x + self.width as i32;
+        let self_max_y = self.y + self.height as i32;
+        let other_max_x = other.x + other.width as i32;
+        let other_max_y = other.y + other.height as i32;
+        
+        self.x < other_max_x && self_max_x > other.x &&
+        self.y < other_max_y && self_max_y > other.y
+    }
+
+    pub fn contains_rect(&self, other: &Rect) -> bool {
+        let self_max_x = self.x + self.width as i32;
+        let self_max_y = self.y + self.height as i32;
+        let other_max_x = other.x + other.width as i32;
+        let other_max_y = other.y + other.height as i32;
+        
+        other.x >= self.x && other.y >= self.y &&
+        other_max_x <= self_max_x && other_max_y <= self_max_y
+    }
+
+    pub fn union(&self, other: &Rect) -> Rect {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let self_max_x = self.x + self.width as i32;
+        let self_max_y = self.y + self.height as i32;
+        let other_max_x = other.x + other.width as i32;
+        let other_max_y = other.y + other.height as i32;
+        let max_x = self_max_x.max(other_max_x);
+        let max_y = self_max_y.max(other_max_y);
+        
+        Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32)
+    }
+
+    pub fn intersection(&self, other: &Rect) -> Option<Rect> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let self_max_x = self.x + self.width as i32;
+        let self_max_y = self.y + self.height as i32;
+        let other_max_x = other.x + other.width as i32;
+        let other_max_y = other.y + other.height as i32;
+        let max_x = self_max_x.min(other_max_x);
+        let max_y = self_max_y.min(other_max_y);
+        
+        if max_x > x && max_y > y {
+            Some(Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32))
+        } else {
+            None
+        }
+    }
+
     /// Decomposes the rectangle into `(position, size)`.
     pub const fn decompose(&self) -> (Point, Size) {
         (self.position(), self.size())
@@ -125,7 +175,7 @@ impl Rect {
 }
 
 /// RGBA color value.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Color {
     /// Red channel.
     pub r: u8,
