@@ -54,6 +54,7 @@ pub mod memory;
 pub mod performance;
 /// Hardware-adaptive GPU management.
 pub mod gpu;
+#[cfg(feature = "advanced-widgets")]
 /// Menu system configuration with hardware-adaptive features.
 pub mod menu_config;
 // Re-export all widget types for convenience
