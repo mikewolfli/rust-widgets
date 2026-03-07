@@ -38,7 +38,7 @@ font8x8 = "0.2.7"
 pollster = "0.3"
 roxmltree = "0.19"
 chrono = "0.4"
-notify = "6.1"
+notify = "8.2"
 dirs = "5.0"
 
 [target.'cfg(windows)'.dependencies]
