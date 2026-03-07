@@ -1,6 +1,6 @@
-use crate::core::{Point, Rect, Size};
+use crate::core::{Rect, Size};
 use crate::widget::Widget;
-use std::collections::HashMap;
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbsolutePosition {
@@ -40,7 +40,7 @@ impl AbsolutePosition {
         self
     }
 
-    pub fn to_rect(&self, parent_size: Size, child_size: Size) -> Rect {
+    pub fn to_rect(&self, _parent_size: Size, child_size: Size) -> Rect {
         let width = self.width.unwrap_or(child_size.width);
         let height = self.height.unwrap_or(child_size.height);
 

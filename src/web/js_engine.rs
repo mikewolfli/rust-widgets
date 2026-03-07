@@ -165,14 +165,7 @@ impl JsContext {
         self.console_messages.clear();
     }
 
-    fn log(&mut self, level: ConsoleLevel, message: String, line: u32, source: &str) {
-        self.console_messages.push(ConsoleMessage {
-            level,
-            message,
-            line,
-            source: source.to_string(),
-        });
-    }
+    // ...existing code...
 }
 
 impl Default for JsContext {

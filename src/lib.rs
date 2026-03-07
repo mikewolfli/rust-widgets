@@ -2,6 +2,8 @@
 
 /// Action/command system.
 pub mod action;
+/// Global shortcut system for keyboard shortcuts.
+pub mod shortcut;
 #[cfg(not(feature = "embedded"))]
 /// C ABI bindings for desktop runtime.
 pub mod bindings;
@@ -50,6 +52,10 @@ pub mod web;
 pub mod memory;
 /// Performance monitoring and optimization.
 pub mod performance;
+/// Hardware-adaptive GPU management.
+pub mod gpu;
+/// Menu system configuration with hardware-adaptive features.
+pub mod menu_config;
 // Re-export all widget types for convenience
 pub use widget::*;
 #[cfg(not(feature = "embedded"))]

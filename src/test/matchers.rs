@@ -1,4 +1,6 @@
+// ...existing code...
 use crate::core::{Color, Rect, Size};
+// ...existing code...
 use std::fmt::Debug;
 
 /// Color matcher
@@ -182,6 +184,7 @@ impl SizeMatcher for Size {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
 
     #[test]
     fn test_color_matcher() {
@@ -200,8 +203,8 @@ mod tests {
     fn test_rect_matcher() {
         let rect = Rect::new(0, 0, 100, 100);
 
-        assert!(rect.contains_point(50, 50));
-        assert!(!rect.contains_point(150, 50));
+        assert!(rect.contains_point(Point::new(50, 50)));
+        assert!(!rect.contains_point(Point::new(150, 50)));
 
         let inner = Rect::new(10, 10, 80, 80);
         assert!(rect.contains_rect(&inner));

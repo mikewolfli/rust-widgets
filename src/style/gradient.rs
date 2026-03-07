@@ -1,4 +1,4 @@
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, Point};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GradientType {
@@ -205,8 +205,8 @@ mod tests {
     #[test]
     fn test_gradient_interpolation() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
-            .add_stop(0.0, Color::new(255, 0, 0, 255))
-            .add_stop(1.0, Color::new(0, 0, 255, 255));
+            .add_stop(0.0, Color { r: 255, g: 0, b: 0, a: 255 })
+            .add_stop(1.0, Color { r: 0, g: 0, b: 255, a: 255 });
 
         let mid_color = gradient.interpolate(0.5);
         assert_eq!(mid_color.r, 127);

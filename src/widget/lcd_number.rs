@@ -1,4 +1,4 @@
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -274,7 +274,7 @@ impl LCDNumber {
         let segments = self.get_segments(ch);
         let hw = (segment_width / 2) as i32;
         
-        let mid_x = x as i32 + width as i32 / 2;
+        // let mid_x = x as i32 + width as i32 / 2;
         let mid_y = y as i32 + height as i32 / 2;
         let top_y = y as i32;
         let bottom_y = y as i32 + height as i32;

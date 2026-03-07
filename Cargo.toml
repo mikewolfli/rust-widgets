@@ -37,6 +37,8 @@ font8x8 = "0.2.7"
 pollster = "0.3"
 roxmltree = "0.19"
 chrono = "0.4"
+notify = "6.1"
+dirs = "5.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "commctrl"] }
@@ -95,3 +97,4 @@ path = "demos/demo_quality.rs"
 
 [dev-dependencies]
 criterion = "0.8.2"
+tempfile = "3.8"

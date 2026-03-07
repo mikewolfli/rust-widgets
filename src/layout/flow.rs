@@ -1,4 +1,4 @@
-use crate::core::{Point, Rect, Size};
+use crate::core::{Rect, Size};
 use crate::widget::Widget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,7 +308,7 @@ impl Default for FlowLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Label;
+
 
     #[test]
     fn test_flow_layout_horizontal() {

@@ -1,4 +1,4 @@
-use crate::core::{Color, Rect};
+use crate::core::Rect;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]

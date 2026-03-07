@@ -532,6 +532,7 @@ impl EventLoop {
     }
 
     /// Perform hit-test to find the widget at the given point.
+    #[cfg(not(feature = "embedded"))]
     pub fn hit_test(&self, point: Point, registry: &crate::xml::WidgetRegistry, root_id: ObjectId) -> Option<ObjectId> {
         fn hit_recursive(point: Point, registry: &crate::xml::WidgetRegistry, widget_id: ObjectId) -> Option<ObjectId> {
             let widget = registry.widget(widget_id)?;

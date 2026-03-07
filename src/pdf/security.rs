@@ -5,8 +5,8 @@ pub enum EncryptionAlgorithm {
     None,
     RC4_40,
     RC4_128,
-    AES_128,
-    AES_256,
+    Aes128,
+    Aes256,
 }
 
 impl Default for EncryptionAlgorithm {
@@ -70,8 +70,8 @@ impl SecuritySettings {
         self.key_length = match algorithm {
             EncryptionAlgorithm::RC4_40 => 40,
             EncryptionAlgorithm::RC4_128 => 128,
-            EncryptionAlgorithm::AES_128 => 128,
-            EncryptionAlgorithm::AES_256 => 256,
+            EncryptionAlgorithm::Aes128 => 128,
+            EncryptionAlgorithm::Aes256 => 256,
             EncryptionAlgorithm::None => 0,
         };
         self
@@ -307,7 +307,7 @@ mod tests {
         let mut settings = SecuritySettings::new()
             .with_user_password("user123".to_string())
             .with_owner_password("owner456".to_string())
-            .with_encryption(EncryptionAlgorithm::AES_256);
+            .with_encryption(EncryptionAlgorithm::Aes256);
 
         assert!(settings.requires_password());
         assert!(settings.is_encrypted());

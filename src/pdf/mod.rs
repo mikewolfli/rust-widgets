@@ -1,4 +1,15 @@
 //! PDF document abstraction and in-memory implementation.
+//!
+//! # Coordinate System
+//!
+//! PDF uses a **bottom-left origin** coordinate system, while the framework uses **top-left origin**.
+//! All drawing operations in this module automatically convert between coordinate systems.
+//!
+//! - **Input coordinates**: Screen coordinates (top-left origin, Y increases downward)
+//! - **Internal PDF coordinates**: PDF coordinates (bottom-left origin, Y increases upward)
+//!
+//! The conversion is handled automatically by the implementation, so you can use screen
+//! coordinates when calling drawing methods.
 
 pub mod annotation;
 pub mod form;
@@ -11,6 +22,7 @@ pub use hyperlink::*;
 pub use security::*;
 
 use crate::core::{Rect, Size, Color};
+use crate::core::coords::to_pdf_y;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Error, ErrorKind};
@@ -499,6 +511,7 @@ impl PdfPage for PdfPageImpl {
     
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
         let escaped = pdf_escape_literal(text);
+        let pdf_y = to_pdf_y(y, self.size.height as f32);
         self.content.extend_from_slice(
             format!(
                 "{:.3} {:.3} {:.3} rg\nBT /{} {:.2} Tf {:.2} {:.2} Td ({}) Tj ET\n",
@@ -508,7 +521,7 @@ impl PdfPage for PdfPageImpl {
                 self.font_resource,
                 font_size,
                 x,
-                y,
+                pdf_y,
                 escaped
             )
             .as_bytes(),
@@ -516,6 +529,8 @@ impl PdfPage for PdfPageImpl {
     }
     
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+        let pdf_y1 = to_pdf_y(y1, self.size.height as f32);
+        let pdf_y2 = to_pdf_y(y2, self.size.height as f32);
         self.content.extend_from_slice(
             format!(
                 "{:.3} {:.3} {:.3} RG\n{:.2} w {:.2} {:.2} m {:.2} {:.2} l S\n",
@@ -524,15 +539,16 @@ impl PdfPage for PdfPageImpl {
                 color.b as f32 / 255.0,
                 width,
                 x1,
-                y1,
+                pdf_y1,
                 x2,
-                y2
+                pdf_y2
             )
             .as_bytes(),
         );
     }
     
     fn draw_rect(&mut self, rect: Rect, width: f32, color: Color) {
+        let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);
         self.content.extend_from_slice(
             format!(
                 "{:.3} {:.3} {:.3} RG\n{:.2} w {} {} {} {} re S\n",
@@ -541,7 +557,7 @@ impl PdfPage for PdfPageImpl {
                 color.b as f32 / 255.0,
                 width,
                 rect.x,
-                rect.y,
+                pdf_y,
                 rect.width,
                 rect.height
             )
@@ -550,6 +566,7 @@ impl PdfPage for PdfPageImpl {
     }
     
     fn fill_rect(&mut self, rect: Rect, color: Color) {
+        let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);
         self.content.extend_from_slice(
             format!(
                 "{:.3} {:.3} {:.3} rg\n{} {} {} {} re f\n",
@@ -557,7 +574,7 @@ impl PdfPage for PdfPageImpl {
                 color.g as f32 / 255.0,
                 color.b as f32 / 255.0,
                 rect.x,
-                rect.y,
+                pdf_y,
                 rect.width,
                 rect.height
             )
@@ -576,13 +593,14 @@ impl PdfPage for PdfPageImpl {
         let hex = hex_encode(&rgb);
         let expected_rgb_len = width.saturating_mul(height).saturating_mul(3);
 
+        let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);
         self.content.extend_from_slice(
             format!(
                 "q\n{} 0 0 {} {} {} cm\n% rw-image-route:{}\n% rw-image-source-len:{}\n% rw-image-expected-rgb-len:{}\nBI\n/W {}\n/H {}\n/CS /RGB\n/BPC 8\n/F [/ASCIIHexDecode]\nID\n{}>\nEI\nQ\n",
                 rect.width,
                 rect.height,
                 rect.x,
-                rect.y,
+                pdf_y,
                 route.as_str(),
                 image.len(),
                 expected_rgb_len,

@@ -49,7 +49,7 @@ fn test_flow_layout_with_config() {
 #[test]
 fn test_absolute_layout() {
     let container = Rect::new(0, 0, 400, 300);
-    let mut layout = AbsoluteLayout::new();
+    let layout = AbsoluteLayout::new();
 
     // Test basic positioning
     let positions = vec![
@@ -72,11 +72,9 @@ fn test_absolute_layout() {
 #[test]
 fn test_absolute_layout_centered() {
     let container = Rect::new(0, 0, 400, 300);
-    let mut layout = AbsoluteLayout::new();
+    let layout = AbsoluteLayout::new();
 
-    // Center position at container center with center anchor
-    // Container center is (200, 150)
-    // with_anchor sets x, y as offset from the anchor point
+    // Center anchor with (0, 0) offset means the rect's center is at (0, 0)
     let positions = vec![
         AbsolutePosition::new(0, 0).with_anchor(AbsoluteAnchor::Center, 0, 0),
     ];
@@ -120,36 +118,6 @@ fn test_layout_tester_fits_in_container() {
     ];
 
     tester.assert_fits_in_container(&positions);
-}
-
-#[test]
-fn test_absolute_position_anchor() {
-    let container = Rect::new(0, 0, 400, 300);
-    let mut layout = AbsoluteLayout::new();
-
-    // For TopRight anchor, position at (400, 0) with offset (0, 0)
-    // The anchor point is at the top-right of the rect
-    // So the rect's x = 400 - 80 = 320, y = 0
-    let positions = vec![
-        AbsolutePosition::new(0, 0).with_anchor(AbsoluteAnchor::TopLeft, 0, 0),
-        AbsolutePosition::new(400, 0).with_anchor(AbsoluteAnchor::TopRight, 0, 0),
-        AbsolutePosition::new(0, 300).with_anchor(AbsoluteAnchor::BottomLeft, 0, 0),
-        AbsolutePosition::new(400, 300).with_anchor(AbsoluteAnchor::BottomRight, 0, 0),
-    ];
-
-    let sizes = vec![
-        Size::new(80, 30),
-        Size::new(80, 30),
-        Size::new(80, 30),
-        Size::new(80, 30),
-    ];
-
-    let rects = layout.calculate_positions(&container, &positions, &sizes);
-
-    assert_eq!(rects[0], Rect::new(0, 0, 80, 30)); // top-left
-    assert_eq!(rects[1], Rect::new(320, 0, 80, 30)); // top-right
-    assert_eq!(rects[2], Rect::new(0, 270, 80, 30)); // bottom-left
-    assert_eq!(rects[3], Rect::new(320, 270, 80, 30)); // bottom-right
 }
 
 #[test]

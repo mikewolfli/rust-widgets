@@ -147,14 +147,14 @@ impl Default for ThemeMode {
     }
 }
 
-pub struct ThemeManager {
+pub struct ThemeStateManager {
     light_theme: StatefulTheme,
     dark_theme: StatefulTheme,
     current_mode: ThemeMode,
     auto_switch_threshold: Option<(u8, u8)>,
 }
 
-impl ThemeManager {
+impl ThemeStateManager {
     pub fn new(light: StatefulTheme, dark: StatefulTheme) -> Self {
         Self {
             light_theme: light,
@@ -212,7 +212,7 @@ impl ThemeManager {
     }
 }
 
-impl Default for ThemeManager {
+impl Default for ThemeStateManager {
     fn default() -> Self {
         let light = StatefulTheme::new("light");
         let dark = StatefulTheme::new("dark");
@@ -254,7 +254,7 @@ mod tests {
         let light = StatefulTheme::new("light");
         let dark = StatefulTheme::new("dark");
 
-        let mut manager = ThemeManager::new(light, dark);
+        let mut manager = ThemeStateManager::new(light, dark);
 
         assert_eq!(manager.current_mode(), ThemeMode::Light);
 

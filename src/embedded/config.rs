@@ -89,7 +89,7 @@ impl Default for ResourceConstraint {
 }
 
 pub struct ResourceManager {
-    constraint: ResourceConstraint,
+    // constraint: ResourceConstraint,
     allocated_memory: usize,
     max_memory: usize,
     widget_count: usize,
@@ -106,7 +106,7 @@ impl ResourceManager {
         };
 
         Self {
-            constraint,
+            // constraint,
             allocated_memory: 0,
             max_memory,
             widget_count: 0,

@@ -10,13 +10,12 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use objc2::runtime::AnyObject;
 use serde::{Deserialize, Serialize};
 
 use crate::core::PlatformFamily;
 
 use super::state::BackendState;
-use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use super::{DropEvent, ObjectId, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum MacObjc2HandleKind {
@@ -130,8 +129,8 @@ impl MacOSObjc2Platform {
     }
 
     fn objc2_runtime_marker(&self) -> usize {
-        // Forces objc2 types into this backend so feature-gated migration paths are exercised.
-        std::mem::size_of::<*const AnyObject>()
+        // Marker for objc2 migration preview backend
+        0
     }
 }
 
@@ -595,6 +594,98 @@ impl Platform for MacOSObjc2Platform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
+
+    fn create_message_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, title, text);
+        self.insert_widget(MacObjc2HandleKind::Panel, "MessageBox", x, y, width, height)
+    }
+
+    fn create_file_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.insert_widget(MacObjc2HandleKind::Panel, "FileDialog", x, y, width, height)
+    }
+
+    fn create_color_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.insert_widget(MacObjc2HandleKind::Panel, "ColorDialog", x, y, width, height)
+    }
+
+    fn create_font_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.insert_widget(MacObjc2HandleKind::Panel, "FontDialog", x, y, width, height)
+    }
+
+    fn create_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::ComboBox, "SpinBox", x, y, width, height)
+    }
+
+    fn create_list_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::ListBox, "ListView", x, y, width, height)
+    }
+
+    fn create_scroll_area(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Panel, "ScrollArea", x, y, width, height)
+    }
 }
 
 #[cfg(test)]
@@ -604,7 +695,7 @@ mod tests {
     #[test]
     fn release_diagnostics_parity() {
         // Assert preview backend selection for warning-clean publish path checks.
-        let backend = new();
+        let backend = MacOSObjc2Platform::new();
         backend.init();
         assert_eq!(backend.backend_name(), "macos-objc2-preview");
     }

@@ -74,6 +74,7 @@ pub enum WidgetKind {
     MdiArea,
     MenuBar,
     Menu,
+    ContextMenu,
     ToolBar,
     StatusBar,
     Canvas,
@@ -4479,17 +4480,770 @@ impl MenuBar {
         self.current_menu_changed.emit(self.current_menu);
         true
     }
+
+    /// Moves selection to the next menu (right arrow).
+    pub fn move_selection_right(&mut self) -> bool {
+        if self.menus.is_empty() {
+            return false;
+        }
+
+        let current = self.current_menu;
+        let next = if let Some(current_id) = current {
+            self.menus
+                .iter()
+                .position(|&id| id == current_id)
+                .and_then(|idx| self.menus.get(idx + 1))
+                .copied()
+                .or_else(|| self.menus.first().copied())
+        } else {
+            self.menus.first().copied()
+        };
+
+        if let Some(next_id) = next {
+            if Some(next_id) != current {
+                self.current_menu = Some(next_id);
+                self.current_menu_changed.emit(self.current_menu);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Moves selection to the previous menu (left arrow).
+    pub fn move_selection_left(&mut self) -> bool {
+        if self.menus.is_empty() {
+            return false;
+        }
+
+        let current = self.current_menu;
+        let prev = if let Some(current_id) = current {
+            self.menus
+                .iter()
+                .position(|&id| id == current_id)
+                .and_then(|idx| idx.checked_sub(1))
+                .and_then(|idx| self.menus.get(idx))
+                .copied()
+                .or_else(|| self.menus.last().copied())
+        } else {
+            self.menus.last().copied()
+        };
+
+        if let Some(prev_id) = prev {
+            if Some(prev_id) != current {
+                self.current_menu = Some(prev_id);
+                self.current_menu_changed.emit(self.current_menu);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the index of the current menu.
+    pub fn current_menu_index(&self) -> Option<usize> {
+        self.current_menu.and_then(|id| {
+            self.menus.iter().position(|&menu_id| menu_id == id)
+        })
+    }
+
+    /// Selects menu by index.
+    pub fn set_current_menu_index(&mut self, index: usize) -> bool {
+        if let Some(&menu_id) = self.menus.get(index) {
+            return self.set_current_menu(menu_id);
+        }
+        false
+    }
+
+    /// Returns the number of menus.
+    pub fn menu_count(&self) -> usize {
+        self.menus.len()
+    }
+
+    /// Returns true if menu bar has any menus.
+    pub fn has_menus(&self) -> bool {
+        !self.menus.is_empty()
+    }
+
+    /// Clears all menus.
+    pub fn clear(&mut self) {
+        self.menus.clear();
+        self.current_menu = None;
+        self.current_menu_changed.emit(None);
+    }
 }
 impl_widget_delegate!(MenuBar, base);
 
-/// Menu widget with action-host contract.
+/// Context menu widget for right-click popup menus.
+/// Reuses MenuItem structure from Menu for consistency.
+pub struct ContextMenu {
+    base: BaseWidget,
+    /// Menu items
+    items: Vec<MenuItem>,
+    /// Currently hovered/selected item index
+    selected_index: Option<usize>,
+    /// Icon size for menu items
+    icon_size: u32,
+    /// Position where context menu was triggered
+    trigger_position: Point,
+    /// Whether menu is currently visible
+    visible: bool,
+    /// Emitted when a menu item is triggered
+    pub item_triggered: Signal1<String>,
+    /// Emitted when context menu is closed
+    pub closed: GenericSignal,
+    /// Emitted when context menu is opened
+    pub opened: GenericSignal,
+}
+
+impl ContextMenu {
+    /// Creates an empty context menu.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Menu, geometry, "ContextMenu"),
+            items: Vec::new(),
+            selected_index: None,
+            icon_size: 16,
+            trigger_position: Point { x: 0, y: 0 },
+            visible: false,
+            item_triggered: Signal1::new(),
+            closed: GenericSignal::new(),
+            opened: GenericSignal::new(),
+        }
+    }
+
+    /// Creates a context menu at a specific position.
+    pub fn at_position(position: Point) -> Self {
+        let mut menu = Self::new(Rect::new(position.x, position.y, 200, 200));
+        menu.trigger_position = position;
+        menu
+    }
+
+    /// Returns all menu items.
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
+    }
+
+    /// Returns mutable reference to menu items.
+    pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
+        &mut self.items
+    }
+
+    /// Get a specific menu item by ID
+    pub fn get_item(&self, id: &str) -> Option<&MenuItem> {
+        self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Get mutable reference to a specific menu item
+    pub fn get_item_mut(&mut self, id: &str) -> Option<&mut MenuItem> {
+        self.items.iter_mut().find(|item| item.id == id)
+    }
+
+    /// Adds a menu item.
+    pub fn add_item(&mut self, item: MenuItem) -> bool {
+        if self.items.iter().any(|i| i.id == item.id) {
+            return false;
+        }
+        self.items.push(item);
+        true
+    }
+
+    /// Adds an action item (convenience method).
+    pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>, action_id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_action(id, text, action_id))
+    }
+
+    /// Adds a separator.
+    pub fn add_separator(&mut self, id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_separator(id))
+    }
+
+    /// Adds a submenu.
+    pub fn add_submenu(&mut self, id: impl Into<String>, text: impl Into<String>, submenu: Menu) -> bool {
+        self.add_item(MenuItem::new_submenu(id, text, submenu))
+    }
+
+    /// Removes a menu item by ID.
+    pub fn remove_item(&mut self, id: &str) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+            return false;
+        };
+        self.items.remove(index);
+        
+        // Update selected index if needed
+        if let Some(selected) = self.selected_index {
+            if selected == index {
+                self.selected_index = None;
+            } else if selected > index {
+                self.selected_index = Some(selected - 1);
+            }
+        }
+        
+        true
+    }
+
+    /// Returns the selected item index.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    /// Sets the selected item index.
+    pub fn set_selected_index(&mut self, index: Option<usize>) {
+        self.selected_index = index;
+    }
+
+    /// Returns the selected menu item.
+    pub fn selected_item(&self) -> Option<&MenuItem> {
+        self.selected_index.and_then(|idx| self.items.get(idx))
+    }
+
+    /// Triggers a menu item by ID.
+    pub fn trigger_item(&mut self, id: &str) -> bool {
+        let item_id = id.to_string();
+        let Some(item) = self.items.iter().find(|i| i.id == item_id) else {
+            return false;
+        };
+        
+        if !item.enabled || item.is_separator() {
+            return false;
+        }
+        
+        let is_checkable = item.checkable;
+        let item_id_clone = item_id.clone();
+        self.item_triggered.emit(item_id_clone);
+        
+        // Toggle checked state for checkable items
+        if is_checkable {
+            if let Some(menu_item) = self.items.iter_mut().find(|i| i.id == item_id) {
+                menu_item.checked = !menu_item.checked;
+            }
+        }
+        
+        true
+    }
+
+    /// Returns icon size.
+    pub fn icon_size(&self) -> u32 {
+        self.icon_size
+    }
+
+    /// Sets icon size.
+    pub fn set_icon_size(&mut self, size: u32) {
+        self.icon_size = size;
+    }
+
+    /// Returns trigger position.
+    pub fn trigger_position(&self) -> Point {
+        self.trigger_position
+    }
+
+    /// Sets trigger position.
+    pub fn set_trigger_position(&mut self, position: Point) {
+        self.trigger_position = position;
+    }
+
+    /// Returns whether menu is visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Shows the context menu.
+    pub fn show(&mut self) {
+        self.visible = true;
+        self.opened.emit();
+    }
+
+    /// Hides the context menu.
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.selected_index = None;
+        self.closed.emit();
+    }
+
+    /// Clears all menu items.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.selected_index = None;
+    }
+
+    /// Returns the number of visible items.
+    pub fn visible_item_count(&self) -> usize {
+        self.items.iter().filter(|item| item.visible).count()
+    }
+
+    /// Returns visible items only.
+    pub fn visible_items(&self) -> impl Iterator<Item = &MenuItem> {
+        self.items.iter().filter(|item| item.visible)
+    }
+
+    /// Returns the number of items.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns the number of enabled items.
+    pub fn enabled_item_count(&self) -> usize {
+        self.items.iter().filter(|item| item.enabled).count()
+    }
+
+    /// Returns enabled items only.
+    pub fn enabled_items(&self) -> impl Iterator<Item = &MenuItem> {
+        self.items.iter().filter(|item| item.enabled)
+    }
+
+    /// Moves selection to the next enabled item.
+    pub fn move_selection_down(&mut self) -> bool {
+        let enabled_indices: Vec<usize> = self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.enabled && !item.is_separator())
+            .map(|(idx, _)| idx)
+            .collect();
+        
+        if enabled_indices.is_empty() {
+            return false;
+        }
+
+        let current = self.selected_index.unwrap_or(usize::MAX);
+        let next = enabled_indices
+            .iter()
+            .find(|&&idx| idx > current)
+            .copied()
+            .or_else(|| enabled_indices.first().copied());
+
+        if let Some(next_idx) = next {
+            self.selected_index = Some(next_idx);
+            return true;
+        }
+        false
+    }
+
+    /// Moves selection to the previous enabled item.
+    pub fn move_selection_up(&mut self) -> bool {
+        let enabled_indices: Vec<usize> = self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.enabled && !item.is_separator())
+            .map(|(idx, _)| idx)
+            .collect();
+        
+        if enabled_indices.is_empty() {
+            return false;
+        }
+
+        let current = self.selected_index.unwrap_or(usize::MAX);
+        let prev = enabled_indices
+            .iter()
+            .rev()
+            .find(|&&idx| idx < current)
+            .copied()
+            .or_else(|| enabled_indices.last().copied());
+
+        if let Some(prev_idx) = prev {
+            self.selected_index = Some(prev_idx);
+            return true;
+        }
+        false
+    }
+
+    /// Triggers the currently selected item.
+    pub fn trigger_selected(&mut self) -> bool {
+        if let Some(idx) = self.selected_index {
+            if let Some(item) = self.items.get(idx) {
+                if item.enabled && !item.is_separator() {
+                    let item_id = item.id.clone();
+                    let is_checkable = item.checkable;
+                    
+                    self.item_triggered.emit(item_id.clone());
+                    
+                    // Toggle checked state for checkable items
+                    if is_checkable {
+                        if let Some(menu_item) = self.items.iter_mut().find(|i| i.id == item_id) {
+                            menu_item.checked = !menu_item.checked;
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+impl_widget_delegate!(ContextMenu, base);
+
+/// Menu item type - action, separator, header, or submenu
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuItemType {
+    /// Normal action item
+    Action,
+    /// Separator line
+    Separator,
+    /// Submenu container
+    SubMenu,
+    /// Header/group title (non-selectable)
+    Header,
+}
+
+impl Default for MenuItemType {
+    fn default() -> Self {
+        Self::Action
+    }
+}
+
+/// Menu item with full feature support
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    /// Unique identifier
+    pub id: String,
+    /// Display text
+    pub text: String,
+    /// Item type
+    pub item_type: MenuItemType,
+    /// Associated action ID (for Action type)
+    pub action_id: Option<String>,
+    /// Submenu (for SubMenu type)
+    pub submenu: Option<Box<Menu>>,
+    /// Icon path or identifier
+    pub icon: Option<String>,
+    /// Keyboard shortcut (e.g., "Ctrl+N", "Cmd+Q")
+    pub shortcut: Option<String>,
+    /// Whether item is enabled
+    pub enabled: bool,
+    /// Whether item is visible
+    pub visible: bool,
+    /// Tooltip text
+    pub tooltip: Option<String>,
+    /// Checkable state
+    pub checkable: bool,
+    /// Checked state (for checkable items)
+    pub checked: bool,
+}
+
+impl MenuItem {
+    /// Create a new action menu item
+    pub fn new_action(id: impl Into<String>, text: impl Into<String>, action_id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+            item_type: MenuItemType::Action,
+            action_id: Some(action_id.into()),
+            submenu: None,
+            icon: None,
+            shortcut: None,
+            enabled: true,
+            visible: true,
+            tooltip: None,
+            checkable: false,
+            checked: false,
+        }
+    }
+
+    /// Create a separator menu item
+    pub fn new_separator(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            text: String::new(),
+            item_type: MenuItemType::Separator,
+            action_id: None,
+            submenu: None,
+            icon: None,
+            shortcut: None,
+            enabled: false,
+            visible: true,
+            tooltip: None,
+            checkable: false,
+            checked: false,
+        }
+    }
+
+    /// Create a submenu menu item
+    pub fn new_submenu(id: impl Into<String>, text: impl Into<String>, submenu: Menu) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+            item_type: MenuItemType::SubMenu,
+            action_id: None,
+            submenu: Some(Box::new(submenu)),
+            icon: None,
+            shortcut: None,
+            enabled: true,
+            visible: true,
+            tooltip: None,
+            checkable: false,
+            checked: false,
+        }
+    }
+
+    /// Set icon for the menu item
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Set shortcut for the menu item
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// Set tooltip for the menu item
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Set checkable state
+    pub fn with_checkable(mut self, checkable: bool) -> Self {
+        self.checkable = checkable;
+        self
+    }
+
+    /// Set checked state
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+
+    /// Set enabled state
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Check if this is a separator
+    pub fn is_separator(&self) -> bool {
+        matches!(self.item_type, MenuItemType::Separator)
+    }
+
+    /// Check if this is a submenu
+    pub fn is_submenu(&self) -> bool {
+        matches!(self.item_type, MenuItemType::SubMenu)
+    }
+
+    /// Check if this is an action item
+    pub fn is_action(&self) -> bool {
+        matches!(self.item_type, MenuItemType::Action)
+    }
+
+    /// Check if this is a header
+    pub fn is_header(&self) -> bool {
+        matches!(self.item_type, MenuItemType::Header)
+    }
+
+    /// Create a header/group title menu item
+    pub fn new_header(id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+            item_type: MenuItemType::Header,
+            action_id: None,
+            submenu: None,
+            icon: None,
+            shortcut: None,
+            enabled: false,
+            visible: true,
+            tooltip: None,
+            checkable: false,
+            checked: false,
+        }
+    }
+}
+
+/// Menu widget with full feature support
 pub struct Menu {
     base: BaseWidget,
     title: String,
-    action_ids: Vec<String>,
-    pub action_added: Signal1<String>,
-    pub action_removed: Signal1<String>,
-    pub action_triggered: Signal1<String>,
+    /// Menu items (replaces action_ids)
+    items: Vec<MenuItem>,
+    /// Currently hovered/selected item index
+    selected_index: Option<usize>,
+    /// Icon size for menu items
+    icon_size: u32,
+    /// Whether menu is currently visible (for popup menus)
+    visible: bool,
+    /// Parent menu item ID (for submenus)
+    parent_item_id: Option<String>,
+    /// Scroll offset for large menus
+    scroll_offset: u32,
+    /// Maximum visible items before scrolling
+    max_visible_items: u32,
+    /// Animation state for menu transitions
+    animation: MenuAnimationState,
+    /// Emitted when menu is shown
+    pub shown: GenericSignal,
+    /// Emitted when menu is hidden
+    pub hidden: GenericSignal,
+    pub item_added: Signal1<String>,
+    pub item_removed: Signal1<String>,
+    pub item_triggered: Signal1<String>,
+    pub item_hovered: Signal1<String>,
+}
+
+/// Animation state for menu transitions
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuAnimationState {
+    /// Current opacity (0.0 - 1.0)
+    pub opacity: f32,
+    /// Target opacity
+    target_opacity: f32,
+    /// Animation progress (0.0 - 1.0)
+    pub progress: f32,
+    /// Whether animation is playing
+    pub is_animating: bool,
+    /// Animation type
+    pub animation_type: MenuAnimationType,
+    /// Animation duration in seconds
+    pub duration_secs: f32,
+}
+
+impl Default for MenuAnimationState {
+    fn default() -> Self {
+        Self {
+            opacity: 0.0,
+            target_opacity: 1.0,
+            progress: 0.0,
+            is_animating: false,
+            animation_type: MenuAnimationType::Fade,
+            duration_secs: 0.15,
+        }
+    }
+}
+
+impl MenuAnimationState {
+    /// Creates a new animation state
+    pub fn new(animation_type: MenuAnimationType, duration_secs: f32) -> Self {
+        Self {
+            opacity: 0.0,
+            target_opacity: 1.0,
+            progress: 0.0,
+            is_animating: false,
+            animation_type,
+            duration_secs,
+        }
+    }
+
+    /// Starts the show animation
+    pub fn start_show(&mut self) {
+        self.target_opacity = 1.0;
+        self.progress = 0.0;
+        self.is_animating = true;
+    }
+
+    /// Starts the hide animation
+    pub fn start_hide(&mut self) {
+        self.target_opacity = 0.0;
+        self.progress = 0.0;
+        self.is_animating = true;
+    }
+
+    /// Updates animation progress (call each frame)
+    pub fn update(&mut self, delta_time_secs: f32) {
+        if !self.is_animating {
+            return;
+        }
+
+        self.progress += delta_time_secs / self.duration_secs;
+        
+        if self.progress >= 1.0 {
+            self.progress = 1.0;
+            self.is_animating = false;
+            self.opacity = self.target_opacity;
+        } else {
+            // Ease out cubic
+            let t = 1.0 - self.progress;
+            let eased = 1.0 - t * t * t;
+            
+            if self.target_opacity > 0.5 {
+                self.opacity = eased;
+            } else {
+                self.opacity = 1.0 - eased;
+            }
+        }
+    }
+
+    /// Returns the current transform offset for slide animation
+    pub fn slide_offset(&self) -> (f32, f32) {
+        if !self.is_animating {
+            return (0.0, 0.0);
+        }
+
+        let t = 1.0 - self.progress;
+        let offset = t * 10.0; // Slide 10 pixels
+
+        match self.animation_type {
+            MenuAnimationType::SlideDown => (0.0, -offset),
+            MenuAnimationType::SlideUp => (0.0, offset),
+            MenuAnimationType::SlideRight => (-offset, 0.0),
+            MenuAnimationType::SlideLeft => (offset, 0.0),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    /// Returns true if animation is complete
+    pub fn is_complete(&self) -> bool {
+        !self.is_animating
+    }
+}
+
+/// Menu animation types
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MenuAnimationType {
+    /// Simple fade in/out
+    Fade,
+    /// Slide down while fading
+    SlideDown,
+    /// Slide up while fading
+    SlideUp,
+    /// Slide right while fading
+    SlideRight,
+    /// Slide left while fading
+    SlideLeft,
+    /// Scale from center
+    Scale,
+}
+
+impl std::fmt::Debug for Menu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Menu")
+            .field("title", &self.title)
+            .field("items", &self.items)
+            .field("selected_index", &self.selected_index)
+            .field("icon_size", &self.icon_size)
+            .finish()
+    }
+}
+
+impl Clone for Menu {
+    fn clone(&self) -> Self {
+        // Create a new Menu with the same data but fresh signals
+        Self::new_with_data(
+            self.title.clone(),
+            self.items.clone(),
+            self.icon_size,
+        )
+    }
+}
+
+impl Menu {
+    /// Create a new Menu with existing data (used by Clone)
+    fn new_with_data(title: String, items: Vec<MenuItem>, icon_size: u32) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Menu, Rect::new(0, 0, 0, 0), "Menu"),
+            title,
+            items,
+            selected_index: None,
+            icon_size,
+            visible: false,
+            parent_item_id: None,
+            scroll_offset: 0,
+            max_visible_items: 20,
+            animation: MenuAnimationState::default(),
+            shown: GenericSignal::new(),
+            hidden: GenericSignal::new(),
+            item_added: Signal1::new(),
+            item_removed: Signal1::new(),
+            item_triggered: Signal1::new(),
+            item_hovered: Signal1::new(),
+        }
+    }
 }
 
 impl Menu {
@@ -4498,10 +5252,20 @@ impl Menu {
         Self {
             base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
             title: String::new(),
-            action_ids: Vec::new(),
-            action_added: Signal1::new(),
-            action_removed: Signal1::new(),
-            action_triggered: Signal1::new(),
+            items: Vec::new(),
+            selected_index: None,
+            icon_size: 16,
+            visible: false,
+            parent_item_id: None,
+            scroll_offset: 0,
+            max_visible_items: 20,
+            animation: MenuAnimationState::default(),
+            shown: GenericSignal::new(),
+            hidden: GenericSignal::new(),
+            item_added: Signal1::new(),
+            item_removed: Signal1::new(),
+            item_triggered: Signal1::new(),
+            item_hovered: Signal1::new(),
         }
     }
 
@@ -4515,50 +5279,511 @@ impl Menu {
         self.title = title;
     }
 
-    /// Returns action ids bound to menu.
-    pub fn actions(&self) -> &[String] {
-        &self.action_ids
+    /// Returns all menu items.
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
     }
 
-    /// Adds one action id.
-    pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
-        let action_id = action_id.into();
-        if self.action_ids.iter().any(|id| id == &action_id) {
+    /// Returns mutable reference to menu items.
+    pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
+        &mut self.items
+    }
+
+    /// Get a specific menu item by ID
+    pub fn get_item(&self, id: &str) -> Option<&MenuItem> {
+        self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Get mutable reference to a specific menu item
+    pub fn get_item_mut(&mut self, id: &str) -> Option<&mut MenuItem> {
+        self.items.iter_mut().find(|item| item.id == id)
+    }
+
+    /// Adds a menu item.
+    pub fn add_item(&mut self, item: MenuItem) -> bool {
+        if self.items.iter().any(|i| i.id == item.id) {
             return false;
         }
-        self.action_ids.push(action_id.clone());
-        self.action_added.emit(action_id);
+        let id = item.id.clone();
+        self.items.push(item);
+        self.item_added.emit(id);
         true
     }
 
-    /// Removes one action id.
-    pub fn remove_action(&mut self, action_id: &str) -> bool {
-        let Some(index) = self.action_ids.iter().position(|id| id == action_id) else {
+    /// Adds an action item (convenience method).
+    pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>, action_id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_action(id, text, action_id))
+    }
+
+    /// Adds a separator.
+    pub fn add_separator(&mut self, id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_separator(id))
+    }
+
+    /// Adds a submenu.
+    pub fn add_submenu(&mut self, id: impl Into<String>, text: impl Into<String>, submenu: Menu) -> bool {
+        self.add_item(MenuItem::new_submenu(id, text, submenu))
+    }
+
+    /// Removes a menu item by ID.
+    pub fn remove_item(&mut self, id: &str) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
             return false;
         };
-        let removed = self.action_ids.remove(index);
-        self.action_removed.emit(removed);
+        let removed = self.items.remove(index);
+        self.item_removed.emit(removed.id);
+        
+        // Update selected index if needed
+        if let Some(selected) = self.selected_index {
+            if selected == index {
+                self.selected_index = None;
+            } else if selected > index {
+                self.selected_index = Some(selected - 1);
+            }
+        }
+        
         true
     }
 
-    /// Emits action-triggered route when action id exists.
-    pub fn trigger_action(&self, action_id: &str) -> bool {
-        if !self.action_ids.iter().any(|id| id == action_id) {
+    /// Returns the selected item index.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    /// Sets the selected item index.
+    pub fn set_selected_index(&mut self, index: Option<usize>) {
+        self.selected_index = index;
+        if let Some(idx) = index {
+            if let Some(item) = self.items.get(idx) {
+                self.item_hovered.emit(item.id.clone());
+            }
+        }
+    }
+
+    /// Returns the selected menu item.
+    pub fn selected_item(&self) -> Option<&MenuItem> {
+        self.selected_index.and_then(|idx| self.items.get(idx))
+    }
+
+    /// Triggers a menu item by ID.
+    pub fn trigger_item(&mut self, id: &str) -> bool {
+        let Some(item) = self.items.iter().find(|i| i.id == id) else {
+            return false;
+        };
+        
+        if !item.enabled || item.is_separator() {
             return false;
         }
-        self.action_triggered.emit(action_id.to_string());
+        
+        self.item_triggered.emit(id.to_string());
+        
+        // Toggle checked state for checkable items
+        if let Some(item) = self.get_item_mut(id) {
+            if item.checkable {
+                item.checked = !item.checked;
+            }
+        }
+        
         true
+    }
+
+    /// Returns icon size.
+    pub fn icon_size(&self) -> u32 {
+        self.icon_size
+    }
+
+    /// Sets icon size.
+    pub fn set_icon_size(&mut self, size: u32) {
+        self.icon_size = size;
+    }
+
+    /// Returns whether menu is visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Shows the menu at a specific position with screen boundary detection.
+    pub fn show_at(&mut self, position: Point) {
+        self.base.set_position(position);
+        self.visible = true;
+        self.shown.emit();
+    }
+
+    /// Shows the menu as a popup relative to a parent rectangle with smart positioning.
+    /// Automatically adjusts position to stay within screen bounds.
+    pub fn popup(&mut self, parent_rect: Rect) {
+        let menu_rect = self.geometry();
+        let screen_rect = self.screen_bounds();
+        
+        // Calculate preferred position (below parent)
+        let mut menu_pos = Point::new(parent_rect.x, parent_rect.y + parent_rect.height as i32);
+        
+        // Adjust if menu would go off-screen to the right
+        if menu_pos.x + menu_rect.width as i32 > screen_rect.x + screen_rect.width as i32 {
+            menu_pos.x = screen_rect.x + screen_rect.width as i32 - menu_rect.width as i32;
+            if menu_pos.x < screen_rect.x {
+                menu_pos.x = screen_rect.x;
+            }
+        }
+        
+        // Adjust if menu would go off-screen at the bottom
+        if menu_pos.y + menu_rect.height as i32 > screen_rect.y + screen_rect.height as i32 {
+            // Try above parent instead
+            menu_pos.y = parent_rect.y - menu_rect.height as i32;
+            if menu_pos.y < screen_rect.y {
+                // If still off-screen, clamp to screen
+                menu_pos.y = screen_rect.y;
+            }
+        }
+        
+        self.base.set_position(menu_pos);
+        self.visible = true;
+        self.shown.emit();
+    }
+
+    /// Hides the menu.
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.selected_index = None;
+        self.hidden.emit();
+    }
+
+    /// Returns parent item ID (for submenus).
+    pub fn parent_item_id(&self) -> Option<&str> {
+        self.parent_item_id.as_deref()
+    }
+
+    /// Sets parent item ID (for submenus).
+    pub fn set_parent_item_id(&mut self, id: Option<String>) {
+        self.parent_item_id = id;
+    }
+
+    /// Shows menu at a specific position with screen boundary detection.
+    pub fn popup_at(&mut self, position: Point) {
+        let menu_rect = self.geometry();
+        let screen_rect = self.screen_bounds();
+        
+        let mut menu_pos = position;
+        
+        // Adjust if menu would go off-screen to the right
+        if menu_pos.x + menu_rect.width as i32 > screen_rect.x + screen_rect.width as i32 {
+            menu_pos.x = screen_rect.x + screen_rect.width as i32 - menu_rect.width as i32;
+            if menu_pos.x < screen_rect.x {
+                menu_pos.x = screen_rect.x;
+            }
+        }
+        
+        // Adjust if menu would go off-screen at the bottom
+        if menu_pos.y + menu_rect.height as i32 > screen_rect.y + screen_rect.height as i32 {
+            menu_pos.y = screen_rect.y + screen_rect.height as i32 - menu_rect.height as i32;
+            if menu_pos.y < screen_rect.y {
+                menu_pos.y = screen_rect.y;
+            }
+        }
+        
+        self.base.set_position(menu_pos);
+        self.visible = true;
+        self.shown.emit();
+    }
+
+    /// Shows submenu relative to a parent menu item with smart positioning.
+    pub fn popup_submenu(&mut self, parent_menu_rect: Rect, item_index: usize) {
+        let menu_rect = self.geometry();
+        let screen_rect = self.screen_bounds();
+        let item_height = 24u32; // Standard menu item height
+        
+        // Calculate position to the right of parent menu, aligned with item
+        let mut menu_pos = Point::new(
+            parent_menu_rect.x + parent_menu_rect.width as i32,
+            parent_menu_rect.y + (item_index as u32 * item_height) as i32
+        );
+        
+        // If submenu would go off-screen to the right, show to the left
+        if menu_pos.x + menu_rect.width as i32 > screen_rect.x + screen_rect.width as i32 {
+            menu_pos.x = parent_menu_rect.x - menu_rect.width as i32;
+        }
+        
+        // Adjust vertical position if needed
+        if menu_pos.y + menu_rect.height as i32 > screen_rect.y + screen_rect.height as i32 {
+            menu_pos.y = screen_rect.y + screen_rect.height as i32 - menu_rect.height as i32;
+            if menu_pos.y < screen_rect.y {
+                menu_pos.y = screen_rect.y;
+            }
+        }
+        
+        self.base.set_position(menu_pos);
+        self.visible = true;
+        self.shown.emit();
+    }
+
+    /// Returns screen bounds for positioning calculations.
+    fn screen_bounds(&self) -> Rect {
+        // Default to a reasonable screen size
+        // In a real implementation, this would query the actual screen size
+        Rect::new(0, 0, 1920, 1080)
+    }
+
+    /// Returns the animation state.
+    pub fn animation(&self) -> &MenuAnimationState {
+        &self.animation
+    }
+
+    /// Returns mutable animation state.
+    pub fn animation_mut(&mut self) -> &mut MenuAnimationState {
+        &mut self.animation
+    }
+
+    /// Sets the animation type.
+    pub fn set_animation_type(&mut self, animation_type: MenuAnimationType) {
+        self.animation.animation_type = animation_type;
+    }
+
+    /// Sets the animation duration.
+    pub fn set_animation_duration(&mut self, duration_secs: f32) {
+        self.animation.duration_secs = duration_secs.max(0.01);
+    }
+
+    /// Updates animation (call each frame with delta time in seconds).
+    pub fn update_animation(&mut self, delta_time_secs: f32) {
+        let was_animating = self.animation.is_animating;
+        self.animation.update(delta_time_secs);
+        
+        // Hide menu when hide animation completes
+        if was_animating && !self.animation.is_animating && self.animation.opacity < 0.1 {
+            self.visible = false;
+        }
+    }
+
+    /// Shows menu with animation.
+    pub fn show_animated(&mut self, position: Point) {
+        self.base.set_position(position);
+        self.visible = true;
+        self.animation.start_show();
+        self.shown.emit();
+    }
+
+    /// Hides menu with animation.
+    pub fn hide_animated(&mut self) {
+        self.animation.start_hide();
+        self.hidden.emit();
+    }
+
+    /// Returns current opacity for rendering.
+    pub fn opacity(&self) -> f32 {
+        if self.visible {
+            self.animation.opacity
+        } else {
+            0.0
+        }
+    }
+
+    /// Returns true if menu is currently animating.
+    pub fn is_animating(&self) -> bool {
+        self.animation.is_animating
+    }
+
+    /// Clears all menu items.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.selected_index = None;
+    }
+
+    /// Returns the number of visible items.
+    pub fn visible_item_count(&self) -> usize {
+        self.items.iter().filter(|item| item.visible).count()
+    }
+
+    /// Returns visible items only.
+    pub fn visible_items(&self) -> impl Iterator<Item = &MenuItem> {
+        self.items.iter().filter(|item| item.visible)
+    }
+
+    /// Returns the scroll offset.
+    pub fn scroll_offset(&self) -> u32 {
+        self.scroll_offset
+    }
+
+    /// Sets the scroll offset.
+    pub fn set_scroll_offset(&mut self, offset: u32) {
+        let max_offset = self.max_scroll_offset();
+        self.scroll_offset = offset.min(max_offset);
+    }
+
+    /// Scrolls down by one item.
+    pub fn scroll_down(&mut self) -> bool {
+        let max_offset = self.max_scroll_offset();
+        if self.scroll_offset < max_offset {
+            self.scroll_offset += 1;
+            return true;
+        }
+        false
+    }
+
+    /// Scrolls up by one item.
+    pub fn scroll_up(&mut self) -> bool {
+        if self.scroll_offset > 0 {
+            self.scroll_offset -= 1;
+            return true;
+        }
+        false
+    }
+
+    /// Returns the maximum scroll offset.
+    fn max_scroll_offset(&self) -> u32 {
+        let visible_count = self.visible_item_count() as u32;
+        if visible_count <= self.max_visible_items {
+            0
+        } else {
+            visible_count - self.max_visible_items
+        }
+    }
+
+    /// Returns whether the menu needs scrolling.
+    pub fn needs_scrolling(&self) -> bool {
+        self.visible_item_count() as u32 > self.max_visible_items
+    }
+
+    /// Returns the maximum number of visible items.
+    pub fn max_visible_items(&self) -> u32 {
+        self.max_visible_items
+    }
+
+    /// Sets the maximum number of visible items.
+    pub fn set_max_visible_items(&mut self, max: u32) {
+        self.max_visible_items = max.max(5); // Minimum 5 items
+        // Adjust scroll offset if needed
+        let max_offset = self.max_scroll_offset();
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
+    }
+
+    /// Returns visible items within the current scroll window.
+    pub fn visible_items_in_window(&self) -> impl Iterator<Item = (usize, &MenuItem)> {
+        let start = self.scroll_offset as usize;
+        let end = (self.scroll_offset + self.max_visible_items) as usize;
+        self.items
+            .iter()
+            .enumerate()
+            .filter(move |(idx, item)| *idx >= start && *idx < end && item.visible)
+    }
+
+    /// Returns true if can scroll up.
+    pub fn can_scroll_up(&self) -> bool {
+        self.scroll_offset > 0
+    }
+
+    /// Returns true if can scroll down.
+    pub fn can_scroll_down(&self) -> bool {
+        self.scroll_offset < self.max_scroll_offset()
+    }
+
+    /// Resets scroll offset to top.
+    pub fn reset_scroll(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    /// Filters items by search text and returns matching items.
+    pub fn filter_items(&self, search_text: &str) -> Vec<&MenuItem> {
+        let search_lower = search_text.to_lowercase();
+        self.items
+            .iter()
+            .filter(|item| {
+                item.text.to_lowercase().contains(&search_lower) ||
+                item.id.to_lowercase().contains(&search_lower)
+            })
+            .collect()
+    }
+
+    /// Finds the first item matching the search text.
+    pub fn find_item(&self, search_text: &str) -> Option<&MenuItem> {
+        let search_lower = search_text.to_lowercase();
+        self.items
+            .iter()
+            .find(|item| {
+                item.text.to_lowercase().contains(&search_lower) ||
+                item.id.to_lowercase().contains(&search_lower)
+            })
+    }
+
+    /// Returns items grouped by their logical sections (using headers as dividers).
+    pub fn grouped_items(&self) -> Vec<(&str, Vec<&MenuItem>)> {
+        let mut groups = Vec::new();
+        let mut current_group = Vec::new();
+        let mut current_header = "";
+
+        for item in &self.items {
+            if item.is_header() {
+                if !current_group.is_empty() {
+                    groups.push((current_header, current_group));
+                    current_group = Vec::new();
+                }
+                current_header = &item.text;
+            } else if item.visible {
+                current_group.push(item);
+            }
+        }
+
+        if !current_group.is_empty() {
+            groups.push((current_header, current_group));
+        }
+
+        groups
+    }
+
+    /// Legacy method: Returns action ids bound to menu (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use items() instead")]
+    pub fn actions(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|item| item.item_type == MenuItemType::Action)
+            .filter_map(|item| item.action_id.clone())
+            .collect()
+    }
+
+    /// Legacy method: Adds one action id (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use add_item() instead")]
+    pub fn add_action_id(&mut self, action_id: impl Into<String>) -> bool {
+        let action_id = action_id.into();
+        self.add_action(action_id.clone(), action_id.clone(), action_id)
+    }
+
+    /// Legacy method: Removes one action id (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use remove_item() instead")]
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        if let Some(index) = self.items.iter().position(|item| {
+            item.action_id.as_ref() == Some(&action_id.to_string())
+        }) {
+            let removed = self.items.remove(index);
+            self.item_removed.emit(removed.id);
+            return true;
+        }
+        false
+    }
+
+    /// Legacy method: Emits action-triggered route (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use trigger_item() instead")]
+    pub fn trigger_action(&self, action_id: &str) -> bool {
+        if let Some(item) = self.items.iter().find(|i| i.action_id.as_deref() == Some(action_id)) {
+            if item.enabled {
+                self.item_triggered.emit(item.id.clone());
+                return true;
+            }
+        }
+        false
     }
 }
 impl_widget_delegate!(Menu, base);
 
-/// Toolbar widget with action-host contract.
+/// Toolbar widget with MenuItem support.
 pub struct ToolBar {
     base: BaseWidget,
-    action_ids: Vec<String>,
-    pub action_added: Signal1<String>,
-    pub action_removed: Signal1<String>,
-    pub action_triggered: Signal1<String>,
+    items: Vec<MenuItem>,
+    selected_index: Option<usize>,
+    icon_size: u32,
+    pub item_added: Signal1<String>,
+    pub item_removed: Signal1<String>,
+    pub item_triggered: Signal1<String>,
 }
 
 impl ToolBar {
@@ -4566,46 +5791,187 @@ impl ToolBar {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ToolBar, geometry, "ToolBar"),
-            action_ids: Vec::new(),
-            action_added: Signal1::new(),
-            action_removed: Signal1::new(),
-            action_triggered: Signal1::new(),
+            items: Vec::new(),
+            selected_index: None,
+            icon_size: 24,
+            item_added: Signal1::new(),
+            item_removed: Signal1::new(),
+            item_triggered: Signal1::new(),
         }
     }
 
-    /// Returns action ids bound to toolbar.
-    pub fn actions(&self) -> &[String] {
-        &self.action_ids
+    /// Returns toolbar items.
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
     }
 
-    /// Adds one action id.
-    pub fn add_action(&mut self, action_id: impl Into<String>) -> bool {
-        let action_id = action_id.into();
-        if self.action_ids.iter().any(|id| id == &action_id) {
+    /// Returns mutable reference to toolbar items.
+    pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
+        &mut self.items
+    }
+
+    /// Get a specific toolbar item by ID
+    pub fn get_item(&self, id: &str) -> Option<&MenuItem> {
+        self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Get mutable reference to a specific toolbar item
+    pub fn get_item_mut(&mut self, id: &str) -> Option<&mut MenuItem> {
+        self.items.iter_mut().find(|item| item.id == id)
+    }
+
+    /// Adds a toolbar item.
+    pub fn add_item(&mut self, item: MenuItem) -> bool {
+        if self.items.iter().any(|i| i.id == item.id) {
             return false;
         }
-        self.action_ids.push(action_id.clone());
-        self.action_added.emit(action_id);
+        let id = item.id.clone();
+        self.items.push(item);
+        self.item_added.emit(id);
         true
     }
 
-    /// Removes one action id.
-    pub fn remove_action(&mut self, action_id: &str) -> bool {
-        let Some(index) = self.action_ids.iter().position(|id| id == action_id) else {
+    /// Adds an action item (convenience method).
+    pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>, action_id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_action(id, text, action_id))
+    }
+
+    /// Adds a separator.
+    pub fn add_separator(&mut self, id: impl Into<String>) -> bool {
+        self.add_item(MenuItem::new_separator(id))
+    }
+
+    /// Removes a toolbar item by ID.
+    pub fn remove_item(&mut self, id: &str) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
             return false;
         };
-        let removed = self.action_ids.remove(index);
-        self.action_removed.emit(removed);
+        let removed = self.items.remove(index);
+        self.item_removed.emit(removed.id);
+        
+        // Update selected index if needed
+        if let Some(selected) = self.selected_index {
+            if selected == index {
+                self.selected_index = None;
+            } else if selected > index {
+                self.selected_index = Some(selected - 1);
+            }
+        }
+        
         true
     }
 
-    /// Emits action-triggered route when action id exists.
-    pub fn trigger_action(&self, action_id: &str) -> bool {
-        if !self.action_ids.iter().any(|id| id == action_id) {
+    /// Returns the selected item index.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    /// Sets the selected item index.
+    pub fn set_selected_index(&mut self, index: Option<usize>) {
+        self.selected_index = index;
+    }
+
+    /// Returns the selected toolbar item.
+    pub fn selected_item(&self) -> Option<&MenuItem> {
+        self.selected_index.and_then(|idx| self.items.get(idx))
+    }
+
+    /// Triggers a toolbar item by ID.
+    pub fn trigger_item(&mut self, id: &str) -> bool {
+        let item_id = id.to_string();
+        let Some(item) = self.items.iter().find(|i| i.id == item_id) else {
+            return false;
+        };
+        
+        if !item.enabled || item.is_separator() {
             return false;
         }
-        self.action_triggered.emit(action_id.to_string());
+        
+        let is_checkable = item.checkable;
+        let item_id_clone = item_id.clone();
+        self.item_triggered.emit(item_id_clone);
+        
+        // Toggle checked state for checkable items
+        if is_checkable {
+            if let Some(toolbar_item) = self.items.iter_mut().find(|i| i.id == item_id) {
+                toolbar_item.checked = !toolbar_item.checked;
+            }
+        }
+        
         true
+    }
+
+    /// Returns icon size.
+    pub fn icon_size(&self) -> u32 {
+        self.icon_size
+    }
+
+    /// Sets icon size.
+    pub fn set_icon_size(&mut self, size: u32) {
+        self.icon_size = size;
+    }
+
+    /// Clears all toolbar items.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.selected_index = None;
+    }
+
+    /// Returns the number of items.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns the number of enabled items.
+    pub fn enabled_item_count(&self) -> usize {
+        self.items.iter().filter(|item| item.enabled).count()
+    }
+
+    /// Returns enabled items only.
+    pub fn enabled_items(&self) -> impl Iterator<Item = &MenuItem> {
+        self.items.iter().filter(|item| item.enabled)
+    }
+
+    /// Legacy method: Returns action ids bound to toolbar (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use items() instead")]
+    pub fn actions(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|item| item.item_type == MenuItemType::Action)
+            .filter_map(|item| item.action_id.clone())
+            .collect()
+    }
+
+    /// Legacy method: Adds one action id (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use add_item() instead")]
+    pub fn add_action_id(&mut self, action_id: impl Into<String>) -> bool {
+        let action_id = action_id.into();
+        self.add_action(action_id.clone(), action_id.clone(), action_id)
+    }
+
+    /// Legacy method: Removes one action id (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use remove_item() instead")]
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        if let Some(index) = self.items.iter().position(|item| {
+            item.action_id.as_ref() == Some(&action_id.to_string())
+        }) {
+            let removed = self.items.remove(index);
+            self.item_removed.emit(removed.id);
+            return true;
+        }
+        false
+    }
+
+    /// Legacy method: Emits action-triggered route (for backward compatibility).
+    #[deprecated(since = "0.7.0", note = "Use trigger_item() instead")]
+    pub fn trigger_action(&self, action_id: &str) -> bool {
+        if let Some(item) = self.items.iter().find(|i| i.action_id.as_deref() == Some(action_id)) {
+            if item.enabled {
+                self.item_triggered.emit(item.id.clone());
+                return true;
+            }
+        }
+        false
     }
 }
 impl_widget_delegate!(ToolBar, base);
@@ -14079,28 +15445,28 @@ mod tests {
         let menu_trigger_hits = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&menu_trigger_hits);
-            menu.action_triggered.connect(move |_| {
+            menu.item_triggered.connect(move |_| {
                 hits.fetch_add(1, Ordering::SeqCst);
             });
         }
 
-        assert!(menu.add_action("open"));
-        assert!(!menu.add_action("open"));
-        assert!(menu.trigger_action("open"));
-        assert!(!menu.trigger_action("save"));
+        assert!(menu.add_action("open", "Open", "action_open"));
+        assert!(!menu.add_action("open", "Open", "action_open"));
+        assert!(menu.trigger_item("open"));
+        assert!(!menu.trigger_item("save"));
         assert_eq!(menu_trigger_hits.load(Ordering::SeqCst), 1);
 
         let toolbar_trigger_hits = Arc::new(AtomicUsize::new(0));
         {
             let hits = Arc::clone(&toolbar_trigger_hits);
-            toolbar.action_triggered.connect(move |_| {
+            toolbar.item_triggered.connect(move |_| {
                 hits.fetch_add(1, Ordering::SeqCst);
             });
         }
 
-        assert!(toolbar.add_action("build"));
-        assert!(toolbar.trigger_action("build"));
-        assert!(toolbar.remove_action("build"));
+        assert!(toolbar.add_action("build", "Build", "action_build"));
+        assert!(toolbar.trigger_item("build"));
+        assert!(toolbar.remove_item("build"));
         assert_eq!(toolbar_trigger_hits.load(Ordering::SeqCst), 1);
 
         let status_hits = Arc::new(AtomicUsize::new(0));
@@ -14190,5 +15556,830 @@ mod tests {
         assert_eq!(font_dialog.font().family, "Sans");
         assert_eq!(font_dialog.font().weight, 700);
         assert_eq!(font_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn menu_item_full_features_work_correctly() {
+        use super::{MenuItem, MenuItemType};
+
+        // Test action item creation
+        let action_item = MenuItem::new_action("open", "Open", "action_open")
+            .with_icon("open.png")
+            .with_shortcut("Ctrl+O")
+            .with_tooltip("Open a file")
+            .with_checkable(true)
+            .with_checked(true);
+
+        assert_eq!(action_item.id, "open");
+        assert_eq!(action_item.text, "Open");
+        assert_eq!(action_item.action_id, Some("action_open".to_string()));
+        assert_eq!(action_item.icon, Some("open.png".to_string()));
+        assert_eq!(action_item.shortcut, Some("Ctrl+O".to_string()));
+        assert_eq!(action_item.tooltip, Some("Open a file".to_string()));
+        assert!(action_item.checkable);
+        assert!(action_item.checked);
+        assert!(action_item.enabled);
+        assert!(action_item.visible);
+        assert!(!action_item.is_separator());
+        assert!(!action_item.is_submenu());
+        assert_eq!(action_item.item_type, MenuItemType::Action);
+
+        // Test separator item
+        let separator = MenuItem::new_separator("sep1");
+        assert_eq!(separator.id, "sep1");
+        assert!(separator.is_separator());
+        assert!(!separator.enabled);
+        assert_eq!(separator.item_type, MenuItemType::Separator);
+
+        // Test disabled action
+        let disabled_item = MenuItem::new_action("save", "Save", "action_save")
+            .with_enabled(false);
+        assert!(!disabled_item.enabled);
+
+        // Test invisible item
+        let invisible_item = MenuItem::new_action("hide", "Hide", "action_hide")
+            .with_enabled(false);
+        assert!(!invisible_item.enabled);
+    }
+
+    #[test]
+    fn menu_with_advanced_features_works_correctly() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 300));
+
+        // Test adding different item types
+        assert!(menu.add_action("new", "New", "action_new"));
+        assert!(menu.add_action("open", "Open", "action_open"));
+        assert!(menu.add_separator("sep1"));
+        assert!(menu.add_action("save", "Save", "action_save"));
+
+        // Test adding submenu
+        let mut submenu = Menu::new(Rect::new(0, 0, 150, 100));
+        submenu.set_title("Recent".to_string());
+        submenu.add_action("file1", "file1.txt", "action_file1");
+        submenu.add_action("file2", "file2.txt", "action_file2");
+        assert!(menu.add_submenu("recent", "Recent Files", submenu));
+
+        // Test item counts
+        assert_eq!(menu.items().len(), 5);
+        assert_eq!(menu.visible_item_count(), 5);
+
+        // Test getting items
+        let open_item = menu.get_item("open").unwrap();
+        assert_eq!(open_item.text, "Open");
+        assert_eq!(open_item.action_id, Some("action_open".to_string()));
+
+        let sep_item = menu.get_item("sep1").unwrap();
+        assert!(sep_item.is_separator());
+
+        let submenu_item = menu.get_item("recent").unwrap();
+        assert!(submenu_item.is_submenu());
+        assert!(submenu_item.submenu.is_some());
+
+        // Test selection
+        assert!(menu.selected_index().is_none());
+        menu.set_selected_index(Some(1));
+        assert_eq!(menu.selected_index(), Some(1));
+        assert_eq!(menu.selected_item().unwrap().id, "open");
+
+        // Test icon size
+        assert_eq!(menu.icon_size(), 16);
+        menu.set_icon_size(24);
+        assert_eq!(menu.icon_size(), 24);
+
+        // Test removal
+        assert!(menu.remove_item("sep1"));
+        assert_eq!(menu.items().len(), 4);
+        assert!(menu.get_item("sep1").is_none());
+
+        // Test clear
+        menu.clear();
+        assert!(menu.items().is_empty());
+        assert!(menu.selected_index().is_none());
+    }
+
+    #[test]
+    fn menu_item_trigger_and_checkable_works() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 200));
+
+        // Add checkable item
+        let checkable_item = MenuItem::new_action("toggle", "Toggle View", "action_toggle")
+            .with_checkable(true);
+        menu.add_item(checkable_item);
+
+        // Add regular item
+        menu.add_action("normal", "Normal Action", "action_normal");
+
+        // Track triggers
+        let trigger_count = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&trigger_count);
+        menu.item_triggered.connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Test triggering checkable item
+        let item = menu.get_item_mut("toggle").unwrap();
+        assert!(!item.checked);
+        assert!(menu.trigger_item("toggle"));
+        let item = menu.get_item("toggle").unwrap();
+        assert!(item.checked);
+        assert_eq!(trigger_count.load(Ordering::SeqCst), 1);
+
+        // Toggle again
+        assert!(menu.trigger_item("toggle"));
+        let item = menu.get_item("toggle").unwrap();
+        assert!(!item.checked);
+        assert_eq!(trigger_count.load(Ordering::SeqCst), 2);
+
+        // Test triggering normal item
+        assert!(menu.trigger_item("normal"));
+        assert_eq!(trigger_count.load(Ordering::SeqCst), 3);
+
+        // Test triggering non-existent item
+        assert!(!menu.trigger_item("nonexistent"));
+
+        // Test triggering separator (should fail)
+        menu.add_separator("sep");
+        assert!(!menu.trigger_item("sep"));
+    }
+
+    #[test]
+    fn menu_item_signals_emit_correctly() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 200));
+
+        let added_count = Arc::new(AtomicUsize::new(0));
+        let removed_count = Arc::new(AtomicUsize::new(0));
+        let hovered_count = Arc::new(AtomicUsize::new(0));
+
+        let added = Arc::clone(&added_count);
+        menu.item_added.connect(move |_| {
+            added.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let removed = Arc::clone(&removed_count);
+        menu.item_removed.connect(move |_| {
+            removed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let hovered = Arc::clone(&hovered_count);
+        menu.item_hovered.connect(move |_| {
+            hovered.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Add items
+        menu.add_action("item1", "Item 1", "action1");
+        menu.add_action("item2", "Item 2", "action2");
+        assert_eq!(added_count.load(Ordering::SeqCst), 2);
+
+        // Hover items
+        menu.set_selected_index(Some(0));
+        menu.set_selected_index(Some(1));
+        assert_eq!(hovered_count.load(Ordering::SeqCst), 2);
+
+        // Remove item
+        menu.remove_item("item1");
+        assert_eq!(removed_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn menu_backward_compatibility_methods_work() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 200));
+
+        // Test legacy add_action_id
+        #[allow(deprecated)]
+        {
+            assert!(menu.add_action_id("legacy1"));
+            assert!(!menu.add_action_id("legacy1")); // Duplicate should fail
+
+            // Test legacy actions() method
+            let actions = menu.actions();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(actions[0], "legacy1");
+
+            // Test legacy trigger_action
+            assert!(menu.trigger_action("legacy1"));
+            assert!(!menu.trigger_action("nonexistent"));
+
+            // Test legacy remove_action
+            assert!(menu.remove_action("legacy1"));
+            assert!(!menu.remove_action("legacy1")); // Already removed
+        }
+    }
+
+    #[test]
+    fn context_menu_creates_empty_menu() {
+        let menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(menu.item_count(), 0);
+        assert_eq!(menu.visible_item_count(), 0);
+        assert_eq!(menu.selected_index(), None);
+        assert!(!menu.is_visible());
+        assert_eq!(menu.icon_size(), 16);
+    }
+
+    #[test]
+    fn context_menu_creates_at_position() {
+        let menu = ContextMenu::at_position(Point::new(100, 50));
+        assert_eq!(menu.trigger_position(), Point::new(100, 50));
+        assert_eq!(menu.geometry(), Rect::new(100, 50, 200, 200));
+    }
+
+    #[test]
+    fn context_menu_adds_action_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        assert_eq!(menu.item_count(), 2);
+        assert_eq!(menu.visible_item_count(), 2);
+    }
+
+    #[test]
+    fn context_menu_prevents_duplicate_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(!menu.add_action("item1", "Duplicate", "duplicate"));
+        assert_eq!(menu.item_count(), 1);
+    }
+
+    #[test]
+    fn context_menu_adds_separators() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_separator("sep1"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        assert_eq!(menu.item_count(), 3);
+        
+        let items: Vec<_> = menu.items().into_iter().collect();
+        assert!(items[0].is_action());
+        assert!(items[1].is_separator());
+        assert!(items[2].is_action());
+    }
+
+    #[test]
+    fn context_menu_adds_submenus() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        let submenu = Menu::new(Rect::new(0, 0, 150, 150));
+        assert!(menu.add_submenu("sub1", "Recent Files", submenu));
+        
+        let items: Vec<_> = menu.items().into_iter().collect();
+        assert!(items[0].is_submenu());
+    }
+
+    #[test]
+    fn context_menu_removes_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        assert_eq!(menu.item_count(), 2);
+        
+        assert!(menu.remove_item("item1"));
+        assert_eq!(menu.item_count(), 1);
+        assert!(!menu.remove_item("nonexistent"));
+    }
+
+    #[test]
+    fn context_menu_selection_updates_correctly() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        
+        assert_eq!(menu.selected_index(), None);
+        menu.set_selected_index(Some(1));
+        assert_eq!(menu.selected_index(), Some(1));
+        assert_eq!(menu.selected_item().unwrap().text, "Save");
+    }
+
+    #[test]
+    fn context_menu_visibility_control() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(!menu.is_visible());
+        
+        menu.show();
+        assert!(menu.is_visible());
+        
+        menu.hide();
+        assert!(!menu.is_visible());
+        assert_eq!(menu.selected_index(), None);
+    }
+
+    #[test]
+    fn context_menu_position_management() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(menu.trigger_position(), Point::new(0, 0));
+        
+        menu.set_trigger_position(Point::new(150, 75));
+        assert_eq!(menu.trigger_position(), Point::new(150, 75));
+    }
+
+    #[test]
+    fn context_menu_icon_size_configuration() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(menu.icon_size(), 16);
+        
+        menu.set_icon_size(24);
+        assert_eq!(menu.icon_size(), 24);
+    }
+
+    #[test]
+    fn context_menu_triggers_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let triggered_ref = Arc::clone(&triggered);
+        menu.item_triggered.connect(move |_| {
+            triggered_ref.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        assert!(menu.trigger_item("item1"));
+        assert_eq!(triggered.load(Ordering::SeqCst), 1);
+        assert!(!menu.trigger_item("nonexistent"));
+    }
+
+    #[test]
+    fn context_menu_keyboard_navigation() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_separator("sep1"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        assert!(menu.add_action("item3", "Exit", "exit"));
+        
+        // Move down
+        assert!(menu.move_selection_down());
+        assert_eq!(menu.selected_index(), Some(0));
+        assert!(menu.move_selection_down());
+        assert_eq!(menu.selected_index(), Some(2)); // Skips separator
+        
+        // Move up
+        assert!(menu.move_selection_up());
+        assert_eq!(menu.selected_index(), Some(0));
+        assert!(menu.move_selection_up());
+        assert_eq!(menu.selected_index(), Some(3)); // Wraps to last enabled item
+    }
+
+    #[test]
+    fn context_menu_trigger_selected() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        
+        menu.set_selected_index(Some(1));
+        
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let triggered_ref = Arc::clone(&triggered);
+        menu.item_triggered.connect(move |_| {
+            triggered_ref.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        assert!(menu.trigger_selected());
+        assert_eq!(triggered.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn context_menu_checkable_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        let mut item = MenuItem::new_action("item1", "Show Toolbar", "show_toolbar");
+        item.checkable = true;
+        item.checked = false;
+        assert!(menu.add_item(item));
+        
+        let items: Vec<_> = menu.items().into_iter().collect();
+        assert!(items[0].checkable);
+        assert!(!items[0].checked);
+        
+        // Trigger should toggle checked state
+        menu.trigger_item("item1");
+        let items: Vec<_> = menu.items().into_iter().collect();
+        assert!(items[0].checked);
+    }
+
+    #[test]
+    fn context_menu_emits_opened_and_closed_signals() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        
+        let opened_hits = Arc::new(AtomicUsize::new(0));
+        let closed_hits = Arc::new(AtomicUsize::new(0));
+        
+        {
+            let hits = Arc::clone(&opened_hits);
+            menu.opened.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let hits = Arc::clone(&closed_hits);
+            menu.closed.connect(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        
+        menu.show();
+        assert_eq!(opened_hits.load(Ordering::SeqCst), 1);
+        
+        menu.hide();
+        assert_eq!(closed_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn context_menu_clears_all_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        assert!(menu.add_separator("sep1"));
+        assert!(menu.add_action("item2", "Save", "save"));
+        
+        menu.set_selected_index(Some(1));
+        assert_eq!(menu.item_count(), 3);
+        
+        menu.clear();
+        assert_eq!(menu.item_count(), 0);
+        assert_eq!(menu.selected_index(), None);
+    }
+
+    #[test]
+    fn context_menu_enabled_and_visible_items() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        let mut item1 = MenuItem::new_action("item1", "Open", "open");
+        item1.enabled = true;
+        item1.visible = true;
+        
+        let mut item2 = MenuItem::new_action("item2", "Save", "save");
+        item2.enabled = false;
+        item2.visible = true;
+        
+        let mut item3 = MenuItem::new_action("item3", "Exit", "exit");
+        item3.enabled = true;
+        item3.visible = false;
+        
+        assert!(menu.add_item(item1));
+        assert!(menu.add_item(item2));
+        assert!(menu.add_item(item3));
+        
+        assert_eq!(menu.item_count(), 3);
+        assert_eq!(menu.visible_item_count(), 2);
+        assert_eq!(menu.enabled_item_count(), 2);
+    }
+
+    #[test]
+    fn context_menu_get_item_by_id() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        
+        let item = menu.get_item("item1");
+        assert!(item.is_some());
+        assert_eq!(item.unwrap().text, "Open");
+        
+        assert!(menu.get_item("nonexistent").is_none());
+    }
+
+    #[test]
+    fn context_menu_get_item_mut_by_id() {
+        let mut menu = ContextMenu::new(Rect::new(0, 0, 200, 200));
+        assert!(menu.add_action("item1", "Open", "open"));
+        
+        if let Some(item) = menu.get_item_mut("item1") {
+            item.text = "New Text".to_string();
+            item.enabled = false;
+        }
+        
+        let item = menu.get_item("item1");
+        assert!(item.is_some());
+        assert_eq!(item.unwrap().text, "New Text");
+        assert!(!item.unwrap().enabled);
+    }
+
+    #[test]
+    fn menubar_keyboard_navigation_works() {
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 400, 24));
+        
+        // Add menus
+        assert!(menu_bar.add_menu(1001));
+        assert!(menu_bar.add_menu(1002));
+        assert!(menu_bar.add_menu(1003));
+        
+        assert_eq!(menu_bar.current_menu(), Some(1001));
+        
+        // Move right
+        assert!(menu_bar.move_selection_right());
+        assert_eq!(menu_bar.current_menu(), Some(1002));
+        
+        assert!(menu_bar.move_selection_right());
+        assert_eq!(menu_bar.current_menu(), Some(1003));
+        
+        // Wrap around
+        assert!(menu_bar.move_selection_right());
+        assert_eq!(menu_bar.current_menu(), Some(1001));
+        
+        // Move left
+        assert!(menu_bar.move_selection_left());
+        assert_eq!(menu_bar.current_menu(), Some(1003));
+        
+        assert!(menu_bar.move_selection_left());
+        assert_eq!(menu_bar.current_menu(), Some(1002));
+        
+        // Test index methods
+        assert_eq!(menu_bar.current_menu_index(), Some(1));
+        assert!(menu_bar.set_current_menu_index(0));
+        assert_eq!(menu_bar.current_menu(), Some(1001));
+        
+        // Test count methods
+        assert_eq!(menu_bar.menu_count(), 3);
+        assert!(menu_bar.has_menus());
+        
+        // Test clear
+        menu_bar.clear();
+        assert_eq!(menu_bar.menu_count(), 0);
+        assert!(!menu_bar.has_menus());
+        assert_eq!(menu_bar.current_menu(), None);
+    }
+
+    #[test]
+    fn menu_scrolling_works() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 300));
+        
+        // Add many items
+        for i in 0..30 {
+            menu.add_action(format!("item{}", i), format!("Item {}", i), format!("action{}", i));
+        }
+        
+        // Default max visible items is 20
+        assert_eq!(menu.max_visible_items(), 20);
+        assert!(menu.needs_scrolling());
+        
+        // Test scroll offset
+        assert_eq!(menu.scroll_offset(), 0);
+        assert!(menu.can_scroll_down());
+        assert!(!menu.can_scroll_up());
+        
+        // Scroll down
+        assert!(menu.scroll_down());
+        assert_eq!(menu.scroll_offset(), 1);
+        assert!(menu.can_scroll_up());
+        
+        // Scroll multiple times
+        for _ in 0..5 {
+            menu.scroll_down();
+        }
+        assert_eq!(menu.scroll_offset(), 6);
+        
+        // Scroll up
+        assert!(menu.scroll_up());
+        assert_eq!(menu.scroll_offset(), 5);
+        
+        // Test set_scroll_offset
+        menu.set_scroll_offset(10);
+        assert_eq!(menu.scroll_offset(), 10);
+        
+        // Test reset_scroll
+        menu.reset_scroll();
+        assert_eq!(menu.scroll_offset(), 0);
+        
+        // Test visible_items_in_window
+        let window_items: Vec<_> = menu.visible_items_in_window().collect();
+        assert_eq!(window_items.len(), 20);
+        
+        // Change max visible items
+        menu.set_max_visible_items(10);
+        assert_eq!(menu.max_visible_items(), 10);
+        let window_items: Vec<_> = menu.visible_items_in_window().collect();
+        assert_eq!(window_items.len(), 10);
+    }
+
+    #[test]
+    fn menu_filter_and_search_works() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 300));
+        
+        menu.add_action("file_open", "Open", "action_open");
+        menu.add_action("file_save", "Save", "action_save");
+        menu.add_action("edit_cut", "Cut", "action_cut");
+        menu.add_action("edit_copy", "Copy", "action_copy");
+        menu.add_separator("sep1");
+        menu.add_action("help_about", "About", "action_about");
+        
+        // Test filter_items
+        let filtered = menu.filter_items("open");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "file_open");
+        
+        let filtered = menu.filter_items("file");
+        assert_eq!(filtered.len(), 2);
+        
+        let filtered = menu.filter_items("edit");
+        assert_eq!(filtered.len(), 2);
+        
+        // Test find_item
+        let found = menu.find_item("save");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, "file_save");
+        
+        let found = menu.find_item("nonexistent");
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn menu_grouped_items_works() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 300));
+        
+        // Add header and items
+        menu.add_item(MenuItem::new_header("header_file", "File"));
+        menu.add_action("open", "Open", "action_open");
+        menu.add_action("save", "Save", "action_save");
+        
+        menu.add_item(MenuItem::new_header("header_edit", "Edit"));
+        menu.add_action("cut", "Cut", "action_cut");
+        menu.add_action("copy", "Copy", "action_copy");
+        
+        // Test grouped_items
+        let groups = menu.grouped_items();
+        assert_eq!(groups.len(), 2);
+        
+        assert_eq!(groups[0].0, "File");
+        assert_eq!(groups[0].1.len(), 2);
+        
+        assert_eq!(groups[1].0, "Edit");
+        assert_eq!(groups[1].1.len(), 2);
+    }
+
+    #[test]
+    fn menu_header_items_work() {
+        let header = MenuItem::new_header("header1", "Section Title");
+        
+        assert_eq!(header.id, "header1");
+        assert_eq!(header.text, "Section Title");
+        assert!(header.is_header());
+        assert!(!header.is_action());
+        assert!(!header.is_separator());
+        assert!(!header.is_submenu());
+        assert!(!header.enabled); // Headers are not selectable
+    }
+
+    #[test]
+    fn menu_animation_works() {
+        let mut menu = Menu::new(Rect::new(0, 0, 200, 300));
+        
+        // Test default animation state
+        assert_eq!(menu.animation().opacity, 0.0);
+        assert!(!menu.animation().is_animating);
+        assert_eq!(menu.opacity(), 0.0);
+        
+        // Test show_animated
+        menu.show_animated(Point::new(100, 100));
+        assert!(menu.is_visible());
+        assert!(menu.is_animating());
+        assert_eq!(menu.animation().target_opacity, 1.0);
+        
+        // Simulate animation frames
+        menu.update_animation(0.05); // 50ms
+        assert!(menu.opacity() > 0.0);
+        assert!(menu.opacity() < 1.0);
+        
+        // Complete animation
+        menu.update_animation(0.2);
+        assert!(!menu.is_animating());
+        assert_eq!(menu.opacity(), 1.0);
+        
+        // Test hide_animated
+        menu.hide_animated();
+        assert!(menu.is_animating());
+        assert_eq!(menu.animation().target_opacity, 0.0);
+        
+        // Complete hide animation
+        menu.update_animation(0.2);
+        assert!(!menu.is_visible());
+        
+        // Test animation type setting
+        menu.set_animation_type(MenuAnimationType::SlideDown);
+        assert_eq!(menu.animation().animation_type, MenuAnimationType::SlideDown);
+        
+        // Test animation duration setting
+        menu.set_animation_duration(0.3);
+        assert_eq!(menu.animation().duration_secs, 0.3);
+        
+        // Test slide offset
+        menu.show_animated(Point::new(0, 0));
+        let (_, y) = menu.animation().slide_offset();
+        assert!(y < 0.0); // Should be negative for SlideDown
+        
+        // Complete animation
+        menu.update_animation(0.3);
+        let (x, y) = menu.animation().slide_offset();
+        assert_eq!(x, 0.0);
+        assert_eq!(y, 0.0);
+    }
+
+    #[test]
+    fn toolbar_with_menuitem_works() {
+        let mut toolbar = ToolBar::new(Rect::new(0, 0, 400, 32));
+        
+        // Test add_action (convenience method)
+        assert!(toolbar.add_action("cut", "Cut", "action_cut"));
+        assert!(toolbar.add_action("copy", "Copy", "action_copy"));
+        assert!(toolbar.add_action("paste", "Paste", "action_paste"));
+        
+        // Test add_separator
+        assert!(toolbar.add_separator("sep1"));
+        
+        assert_eq!(toolbar.item_count(), 4);
+        
+        // Test items access
+        let items = toolbar.items();
+        assert_eq!(items.len(), 4);
+        assert!(items[0].is_action());
+        assert!(items[3].is_separator());
+        
+        // Test get_item
+        let item = toolbar.get_item("copy");
+        assert!(item.is_some());
+        assert_eq!(item.unwrap().text, "Copy");
+        
+        // Test selection
+        assert_eq!(toolbar.selected_index(), None);
+        toolbar.set_selected_index(Some(1));
+        assert_eq!(toolbar.selected_index(), Some(1));
+        assert_eq!(toolbar.selected_item().unwrap().id, "copy");
+        
+        // Test icon size
+        assert_eq!(toolbar.icon_size(), 24);
+        toolbar.set_icon_size(32);
+        assert_eq!(toolbar.icon_size(), 32);
+        
+        // Test trigger_item
+        assert!(toolbar.trigger_item("cut"));
+        assert!(!toolbar.trigger_item("sep1")); // Can't trigger separator
+        assert!(!toolbar.trigger_item("nonexistent"));
+        
+        // Test remove_item
+        assert!(toolbar.remove_item("sep1"));
+        assert_eq!(toolbar.item_count(), 3);
+        
+        // Test clear
+        toolbar.clear();
+        assert_eq!(toolbar.item_count(), 0);
+        assert_eq!(toolbar.selected_index(), None);
+    }
+
+    #[test]
+    fn toolbar_checkable_items_work() {
+        let mut toolbar = ToolBar::new(Rect::new(0, 0, 400, 32));
+        
+        let item = MenuItem::new_action("bold", "Bold", "action_bold")
+            .with_checkable(true)
+            .with_checked(false);
+        assert!(toolbar.add_item(item));
+        
+        // Initial state
+        let item = toolbar.get_item("bold").unwrap();
+        assert!(item.checkable);
+        assert!(!item.checked);
+        
+        // Trigger should toggle
+        toolbar.trigger_item("bold");
+        let item = toolbar.get_item("bold").unwrap();
+        assert!(item.checked);
+        
+        // Trigger again should untoggle
+        toolbar.trigger_item("bold");
+        let item = toolbar.get_item("bold").unwrap();
+        assert!(!item.checked);
+    }
+
+    #[test]
+    fn toolbar_signals_emit_correctly() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        
+        let mut toolbar = ToolBar::new(Rect::new(0, 0, 400, 32));
+        
+        let added_count = Arc::new(AtomicUsize::new(0));
+        let removed_count = Arc::new(AtomicUsize::new(0));
+        let triggered_count = Arc::new(AtomicUsize::new(0));
+        
+        let added = Arc::clone(&added_count);
+        toolbar.item_added.connect(move |_| {
+            added.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        let removed = Arc::clone(&removed_count);
+        toolbar.item_removed.connect(move |_| {
+            removed.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        let triggered = Arc::clone(&triggered_count);
+        toolbar.item_triggered.connect(move |_| {
+            triggered.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        // Add items
+        toolbar.add_action("item1", "Item 1", "action1");
+        toolbar.add_action("item2", "Item 2", "action2");
+        assert_eq!(added_count.load(Ordering::SeqCst), 2);
+        
+        // Trigger item
+        toolbar.trigger_item("item1");
+        assert_eq!(triggered_count.load(Ordering::SeqCst), 1);
+        
+        // Remove item
+        toolbar.remove_item("item1");
+        assert_eq!(removed_count.load(Ordering::SeqCst), 1);
     }
 }

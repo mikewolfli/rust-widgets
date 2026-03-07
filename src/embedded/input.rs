@@ -1,4 +1,4 @@
-use crate::core::{Point, Size};
+use crate::core::Point;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -82,7 +82,7 @@ pub struct HardwareInputManager {
     last_touch_position: Option<Point>,
     tap_threshold: Duration,
     long_press_threshold: Duration,
-    double_tap_threshold: Duration,
+    // double_tap_threshold: Duration,
     swipe_threshold: i32,
 }
 
@@ -97,7 +97,7 @@ impl HardwareInputManager {
             last_touch_position: None,
             tap_threshold: Duration::from_millis(200),
             long_press_threshold: Duration::from_millis(500),
-            double_tap_threshold: Duration::from_millis(300),
+            // double_tap_threshold: Duration::from_millis(300),
             swipe_threshold: 50,
         }
     }

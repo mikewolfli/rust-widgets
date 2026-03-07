@@ -1,8 +1,26 @@
-/// Returns true if the given rect is empty (width == 0 or height == 0).
-fn is_empty_rect(rect: &crate::core::Rect) -> bool {
-    rect.width == 0 || rect.height == 0
-}
-/// Rendering primitives and software surface baseline.
+//! Rendering primitives and software surface baseline.
+//!
+//! # Coordinate System
+//!
+//! This module uses the framework's standard **screen coordinate system** with origin at **top-left**:
+//!
+//! - **X axis**: Increases from left to right (0 → width)
+//! - **Y axis**: Increases from top to bottom (0 → height)
+//!
+//! All rendering operations (drawing text, shapes, images) expect coordinates in this system.
+//! The rendering context automatically handles any necessary transformations when working with
+//! widgets or other components that may use different coordinate systems internally.
+//!
+//! ## Drawing Operations
+//!
+//! - `draw_text()`: Draws text at the specified (x, y) position
+//! - `draw_line()`: Draws a line from (x1, y1) to (x2, y2)
+//! - `draw_rect()`: Draws a rectangle outline
+//! - `fill_rect()`: Fills a rectangle with a solid color
+//! - `draw_image()`: Draws an image at the specified position
+//!
+//! All coordinates are in logical pixels and use the screen coordinate system.
+
 pub mod batch;
 pub mod text_cache;
 pub mod command_link;
@@ -14,7 +32,7 @@ pub mod web_view;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
     ActivityIndicator, Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog,
-    ComboBox, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox,
+    ComboBox, ContextMenu, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox,
     Label, LineEdit, ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar,
     RadioButton, RichEdit, ScrollBar, Slider, Splitter, StatusBar, TabWidget, TableWidget,
     TextEdit, ToolBar, TreeView, Widget,
@@ -24,6 +42,11 @@ use font8x8::{UnicodeFonts, BASIC_FONTS};
 // use rayon::prelude::*;
 // use std::simd::{u8x4, Simd};
 use std::sync::{Mutex, OnceLock};
+
+/// Returns true if given rect is empty (width == 0 or height == 0).
+fn is_empty_rect(rect: &crate::core::Rect) -> bool {
+    rect.width == 0 || rect.height == 0
+}
 
 #[cfg(feature = "gpu-wgpu")]
 use crate::wgpu_backend::WgpuRenderer;
@@ -1449,6 +1472,8 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
         return;
     }
 
+    // Draw title if present
+    let mut content_offset = 0i32;
     if !menu.title().is_empty() {
         layer.push(RenderCommand::DrawText {
             origin: Point {
@@ -1461,24 +1486,251 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
                 .foreground_color()
                 .unwrap_or(Color::rgba(22, 24, 30, 255)),
         });
+        content_offset = 20;
     }
 
-    let row_height = 18u32;
-    for (index, action) in menu.actions().iter().take(5).enumerate() {
+    let row_height = 24u32;
+    let icon_width = menu.icon_size() as i32 + 8;
+    let shortcut_width = 60;
+
+    for (index, item) in menu.visible_items().enumerate() {
+        let row_y = rect.y + content_offset + (index as u32 * row_height) as i32;
         let row_rect = Rect {
-            x: rect.x + 4,
-            y: rect.y + 6 + (index as u32 * row_height) as i32,
-            width: rect.width.saturating_sub(8),
+            x: rect.x + 2,
+            y: row_y,
+            width: rect.width.saturating_sub(4),
             height: row_height,
         };
-        layer.push(RenderCommand::DrawText {
-            origin: centered_text_origin(row_rect),
-            text: action.clone(),
-            font: menu.font().cloned().unwrap_or_default(),
-            color: menu
-                .foreground_color()
-                .unwrap_or(Color::rgba(32, 34, 38, 255)),
-        });
+
+        // Draw selection highlight
+        if Some(index) == menu.selected_index() {
+            layer.push(RenderCommand::FillRect {
+                rect: row_rect,
+                color: Color::rgba(208, 224, 249, 255),
+            });
+        }
+
+        // Handle different item types
+        if item.is_separator() {
+            // Draw separator line
+            layer.push(RenderCommand::DrawLine {
+                from: Point {
+                    x: rect.x + 8,
+                    y: row_y + (row_height / 2) as i32,
+                },
+                to: Point {
+                    x: rect.x + rect.width as i32 - 8,
+                    y: row_y + (row_height / 2) as i32,
+                },
+                color: Color::rgba(180, 186, 196, 255),
+            });
+        } else {
+            // Draw checkmark for checkable items
+            let mut text_offset_x = rect.x + 8;
+            if item.checkable {
+                if item.checked {
+                    layer.push(RenderCommand::DrawText {
+                        origin: Point {
+                            x: text_offset_x,
+                            y: row_y + 4,
+                        },
+                        text: "✓".to_string(),
+                        font: menu.font().cloned().unwrap_or_default(),
+                        color: Color::rgba(32, 34, 38, 255),
+                    });
+                }
+                text_offset_x += 16;
+            }
+
+            // Draw icon placeholder if icon is set
+            if item.icon.is_some() {
+                let icon_rect = Rect {
+                    x: text_offset_x,
+                    y: row_y + 4,
+                    width: menu.icon_size(),
+                    height: menu.icon_size(),
+                };
+                layer.push(RenderCommand::FillRect {
+                    rect: icon_rect,
+                    color: Color::rgba(200, 200, 200, 255),
+                });
+                text_offset_x += icon_width;
+            }
+
+            // Draw item text
+            let text_color = if item.enabled {
+                menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
+            } else {
+                Color::rgba(128, 128, 128, 255)
+            };
+
+            layer.push(RenderCommand::DrawText {
+                origin: Point {
+                    x: text_offset_x,
+                    y: row_y + 4,
+                },
+                text: item.text.clone(),
+                font: menu.font().cloned().unwrap_or_default(),
+                color: text_color,
+            });
+
+            // Draw shortcut if present
+            if let Some(ref shortcut) = item.shortcut {
+                layer.push(RenderCommand::DrawText {
+                    origin: Point {
+                        x: rect.x + rect.width as i32 - shortcut_width,
+                        y: row_y + 4,
+                    },
+                    text: shortcut.clone(),
+                    font: menu.font().cloned().unwrap_or_default(),
+                    color: Color::rgba(100, 100, 100, 255),
+                });
+            }
+
+            // Draw submenu arrow
+            if item.is_submenu() {
+                layer.push(RenderCommand::DrawText {
+                    origin: Point {
+                        x: rect.x + rect.width as i32 - 16,
+                        y: row_y + 4,
+                    },
+                    text: "▶".to_string(),
+                    font: menu.font().cloned().unwrap_or_default(),
+                    color: Color::rgba(100, 100, 100, 255),
+                });
+            }
+        }
+    }
+}
+
+/// Append visual commands for a `ContextMenu` host representation.
+/// Reuses the same rendering logic as Menu for consistency.
+pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu: &ContextMenu) {
+    push_widget_fill_and_border(
+        layer,
+        context_menu,
+        Some(Color::rgba(250, 250, 251, 255)),
+        Some((Color::rgba(124, 130, 140, 255), 1)),
+    );
+
+    let rect = context_menu.geometry();
+    if is_empty_rect(&rect) {
+        return;
+    }
+
+    let row_height = 24u32;
+    let icon_width = context_menu.icon_size() as i32 + 8;
+    let shortcut_width = 60;
+
+    for (index, item) in context_menu.visible_items().enumerate() {
+        let row_y = rect.y + (index as u32 * row_height) as i32;
+        let row_rect = Rect {
+            x: rect.x + 2,
+            y: row_y,
+            width: rect.width.saturating_sub(4),
+            height: row_height,
+        };
+
+        // Draw selection highlight
+        if let Some(selected_idx) = context_menu.selected_index() {
+            if selected_idx == index {
+                layer.push(RenderCommand::FillRect {
+                    rect: row_rect,
+                    color: Color::rgba(208, 224, 249, 255),
+                });
+            }
+        }
+
+        // Handle different item types
+        if item.is_separator() {
+            // Draw separator line
+            layer.push(RenderCommand::DrawLine {
+                from: Point {
+                    x: rect.x + 8,
+                    y: row_y + (row_height / 2) as i32,
+                },
+                to: Point {
+                    x: rect.x + rect.width as i32 - 8,
+                    y: row_y + (row_height / 2) as i32,
+                },
+                color: Color::rgba(180, 186, 196, 255),
+            });
+        } else {
+            // Draw checkmark for checkable items
+            let mut text_offset_x = rect.x + 8;
+            if item.checkable {
+                if item.checked {
+                    layer.push(RenderCommand::DrawText {
+                        origin: Point {
+                            x: text_offset_x,
+                            y: row_y + 4,
+                        },
+                        text: "✓".to_string(),
+                        font: context_menu.font().cloned().unwrap_or_default(),
+                        color: Color::rgba(32, 34, 38, 255),
+                    });
+                }
+                text_offset_x += 16;
+            }
+
+            // Draw icon placeholder if icon is set
+            if item.icon.is_some() {
+                let icon_rect = Rect {
+                    x: text_offset_x,
+                    y: row_y + 4,
+                    width: context_menu.icon_size(),
+                    height: context_menu.icon_size(),
+                };
+                layer.push(RenderCommand::FillRect {
+                    rect: icon_rect,
+                    color: Color::rgba(200, 200, 200, 255),
+                });
+                text_offset_x += icon_width;
+            }
+
+            // Draw item text
+            let text_color = if item.enabled {
+                context_menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
+            } else {
+                Color::rgba(128, 128, 128, 255)
+            };
+
+            layer.push(RenderCommand::DrawText {
+                origin: Point {
+                    x: text_offset_x,
+                    y: row_y + 4,
+                },
+                text: item.text.clone(),
+                font: context_menu.font().cloned().unwrap_or_default(),
+                color: text_color,
+            });
+
+            // Draw shortcut if present
+            if let Some(ref shortcut) = item.shortcut {
+                layer.push(RenderCommand::DrawText {
+                    origin: Point {
+                        x: rect.x + rect.width as i32 - shortcut_width,
+                        y: row_y + 4,
+                    },
+                    text: shortcut.clone(),
+                    font: context_menu.font().cloned().unwrap_or_default(),
+                    color: Color::rgba(100, 100, 100, 255),
+                });
+            }
+
+            // Draw submenu arrow
+            if item.is_submenu() {
+                layer.push(RenderCommand::DrawText {
+                    origin: Point {
+                        x: rect.x + rect.width as i32 - 16,
+                        y: row_y + 4,
+                    },
+                    text: "▶".to_string(),
+                    font: context_menu.font().cloned().unwrap_or_default(),
+                    color: Color::rgba(100, 100, 100, 255),
+                });
+            }
+        }
     }
 }
 
@@ -1497,27 +1749,81 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     }
 
     let mut cursor_x = rect.x + 4;
-    let button_width = 26u32;
-    for action in tool_bar.actions().iter().take(6) {
+    let button_width = 32u32;
+    let separator_width = 4u32;
+    
+    for (index, item) in tool_bar.items().iter().enumerate() {
+        // Draw separator
+        if item.is_separator() {
+            let separator_rect = Rect {
+                x: cursor_x,
+                y: rect.y + 4,
+                width: separator_width,
+                height: rect.height.saturating_sub(8),
+            };
+            layer.push(RenderCommand::FillRect {
+                rect: separator_rect,
+                color: Color::rgba(180, 186, 196, 255),
+            });
+            cursor_x += separator_width as i32 + 4;
+            continue;
+        }
+        
+        // Draw action item
         let action_rect = Rect {
             x: cursor_x,
             y: rect.y + 2,
             width: button_width,
             height: rect.height.saturating_sub(4),
         };
+        
+        // Draw selection highlight
+        if Some(index) == tool_bar.selected_index() {
+            layer.push(RenderCommand::FillRoundedRect {
+                rect: action_rect,
+                radius: 3,
+                color: Color::rgba(208, 224, 249, 255),
+            });
+        }
+        
+        // Draw button background
         layer.push(RenderCommand::FillRoundedRect {
             rect: action_rect,
             radius: 3,
             color: Color::rgba(216, 225, 238, 255),
         });
-        layer.push(RenderCommand::DrawText {
-            origin: centered_text_origin(action_rect),
-            text: action.chars().take(3).collect::<String>(),
-            font: tool_bar.font().cloned().unwrap_or_default(),
-            color: tool_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(30, 32, 36, 255)),
-        });
+        
+        // Draw icon placeholder if icon is set
+        if item.icon.is_some() {
+            let icon_rect = Rect {
+                x: cursor_x + 4,
+                y: rect.y + 4,
+                width: tool_bar.icon_size(),
+                height: tool_bar.icon_size(),
+            };
+            layer.push(RenderCommand::FillRect {
+                rect: icon_rect,
+                color: Color::rgba(200, 200, 200, 255),
+            });
+        }
+        
+        // Draw item text (if no icon or as tooltip)
+        let text_color = if item.enabled {
+            tool_bar.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255))
+        } else {
+            Color::rgba(128, 128, 128, 255)
+        };
+        
+        // Show first character as button text if no icon
+        if item.icon.is_none() && !item.text.is_empty() {
+            layer.push(RenderCommand::DrawText {
+                origin: centered_text_origin(action_rect),
+                text: item.text.chars().take(1).collect::<String>(),
+                font: tool_bar.font().cloned().unwrap_or_default(),
+                color: text_color,
+            });
+        }
+        
         cursor_x += button_width as i32 + 4;
         if cursor_x >= rect.x + rect.width as i32 {
             break;
@@ -5052,13 +5358,13 @@ mod tests {
 
         let mut menu = Menu::new(Rect::new(0, 24, 160, 100));
         menu.set_title("File".to_string());
-        menu.add_action("Open");
-        menu.add_action("Save");
+        menu.add_action("open", "Open", "action_open");
+        menu.add_action("save", "Save", "action_save");
 
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
-        tool_bar.add_action("Cut");
-        tool_bar.add_action("Copy");
-        tool_bar.add_action("Paste");
+        tool_bar.add_action("cut", "Cut", "action_cut");
+        tool_bar.add_action("copy", "Copy", "action_copy");
+        tool_bar.add_action("paste", "Paste", "action_paste");
 
         let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
         status_bar.set_message("Ready".to_string());
@@ -5104,12 +5410,12 @@ mod tests {
 
         let mut menu = Menu::new(Rect::new(0, 24, 160, 100));
         menu.set_title("File".to_string());
-        menu.add_action("Open");
-        menu.add_action("Save");
+        menu.add_action("open", "Open", "action_open");
+        menu.add_action("save", "Save", "action_save");
 
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
-        tool_bar.add_action("Cut");
-        tool_bar.add_action("Copy");
+        tool_bar.add_action("cut", "Cut", "action_cut");
+        tool_bar.add_action("copy", "Copy", "action_copy");
 
         let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
         status_bar.set_message("Ready".to_string());
@@ -5227,12 +5533,12 @@ mod tests {
 
         let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
         menu.set_title("File".to_string());
-        menu.add_action("Open");
-        menu.add_action("Save");
+        menu.add_action("open", "Open", "action_open");
+        menu.add_action("save", "Save", "action_save");
 
         let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-        tool_bar.add_action("Cut");
-        tool_bar.add_action("Copy");
+        tool_bar.add_action("cut", "Cut", "action_cut");
+        tool_bar.add_action("copy", "Copy", "action_copy");
 
         let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
         status_bar.set_message("Ready".to_string());
@@ -5320,12 +5626,12 @@ mod tests {
 
         let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
         menu.set_title("File".to_string());
-        menu.add_action("Open");
-        menu.add_action("Save");
+        menu.add_action("open", "Open", "action_open");
+        menu.add_action("save", "Save", "action_save");
 
         let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-        tool_bar.add_action("Cut");
-        tool_bar.add_action("Copy");
+        tool_bar.add_action("cut", "Cut", "action_cut");
+        tool_bar.add_action("copy", "Copy", "action_copy");
 
         let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
         status_bar.set_message("Ready".to_string());
@@ -5685,7 +5991,7 @@ pub fn append_activity_indicator_visual_commands(
         layer.push(RenderCommand::DrawCircle {
             center: Point { x, y },
             radius: 3,
-            color: color,
+            color,
         });
     }
 }
@@ -5881,7 +6187,7 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
     // Draw dial background
     layer.push(RenderCommand::DrawCircleStroke {
         center,
-        radius: radius,
+        radius,
         color: Color::rgba(160, 168, 180, 255),
         width: 2,
     });
@@ -6061,7 +6367,7 @@ pub fn route_widget_drawing<W>(
     widget: &mut W,
     context: &mut RenderContext,
     custom_renderer: impl FnOnce(&mut W, &mut RenderContext),
-    native_renderer: impl FnOnce(&mut W, &mut RenderContext),
+    _native_renderer: impl FnOnce(&mut W, &mut RenderContext),
 ) where
     W: Widget + ?Sized,
 {

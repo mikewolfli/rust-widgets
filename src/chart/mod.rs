@@ -1,4 +1,23 @@
 //! Chart widgets and drawing contracts.
+//!
+//! # Coordinate System
+//!
+//! Charts use a **Cartesian coordinate system** for data (bottom-left origin, Y increases upward),
+//! which is automatically converted to **screen coordinates** (top-left origin, Y increases downward)
+//! when rendering.
+//!
+//! ## Data Coordinates (Cartesian)
+//! - Origin: Bottom-left of the plot area
+//! - X axis: Increases from left to right
+//! - Y axis: Increases from bottom to top
+//!
+//! ## Screen Coordinates (Output)
+//! - Origin: Top-left of the widget
+//! - X axis: Increases from left to right
+//! - Y axis: Increases from top to bottom
+//!
+//! The conversion is handled automatically by the chart rendering code, so you can work with
+//! natural data coordinates when creating charts.
 
 use crate::core::{Point, Rect, Color};
 use std::fs;

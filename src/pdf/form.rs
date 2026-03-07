@@ -367,7 +367,7 @@ mod tests {
             Rect::new(100, 100, 200, 30),
         )
         .with_value("John Doe".to_string())
-        .with_tooltip("Enter your username");
+        .with_tooltip("Enter your username".to_string());
 
         assert_eq!(field.id, "field-1");
         assert_eq!(field.name, "username");
