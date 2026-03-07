@@ -57,7 +57,7 @@ gtk = { version = "0.18", optional = true }
 # dependency for Huawei HarmonyOS, if applicable. Placeholder for now since HarmonyOS support is in early stages and may require custom bindings or FFI.
 
 [dependencies.wgpu]
-version = "0.16"
+version = "23.0"
 optional = true
 
 [[example]]
