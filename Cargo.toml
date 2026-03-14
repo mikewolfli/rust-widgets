@@ -98,4 +98,4 @@ path = "demos/demo_quality.rs"
 
 [dev-dependencies]
 criterion = "0.8.2"
-tempfile = "3.8"
+tempfile = "3.27"
