@@ -1,7 +1,7 @@
 //! Demo of adaptive rendering quality management.
 
 use rust_widgets::quality::{
-    QualityConfig, QualityLevel, QualityManager, GpuCapability, FrameTimeMonitor,
+    FrameTimeMonitor, GpuCapability, QualityConfig, QualityLevel, QualityManager,
 };
 use std::time::Duration;
 
@@ -59,9 +59,18 @@ fn demo_quality_config() {
     };
 
     println!("Target frame rate: {} FPS", config.target_frame_rate);
-    println!("Target frame duration: {:.4} seconds", config.target_frame_duration());
-    println!("Degrade threshold: {:.4} seconds", config.degrade_frame_duration());
-    println!("Upgrade threshold: {:.4} seconds", config.upgrade_frame_duration());
+    println!(
+        "Target frame duration: {:.4} seconds",
+        config.target_frame_duration()
+    );
+    println!(
+        "Degrade threshold: {:.4} seconds",
+        config.degrade_frame_duration()
+    );
+    println!(
+        "Upgrade threshold: {:.4} seconds",
+        config.upgrade_frame_duration()
+    );
     println!("Degrade frame count: {}", config.degrade_frame_count);
     println!("Upgrade frame count: {}", config.upgrade_frame_count);
 
@@ -79,16 +88,27 @@ fn demo_frame_time_monitor() {
 
     let mut monitor = FrameTimeMonitor::new(60.0);
 
-    println!("Target frame time: {:.4} seconds", monitor.target_frame_time());
+    println!(
+        "Target frame time: {:.4} seconds",
+        monitor.target_frame_time()
+    );
 
     println!("\nRecording 10 frames at 60 FPS:");
     for i in 0..10 {
         let frame_time = 1.0 / 60.0;
         monitor.record_frame(frame_time);
-        println!("Frame {}: {:.4}s, Avg FPS: {:.1}", i + 1, frame_time, monitor.current_fps());
+        println!(
+            "Frame {}: {:.4}s, Avg FPS: {:.1}",
+            i + 1,
+            frame_time,
+            monitor.current_fps()
+        );
     }
 
-    println!("\nAverage frame time: {:.4} seconds", monitor.average_frame_time());
+    println!(
+        "\nAverage frame time: {:.4} seconds",
+        monitor.average_frame_time()
+    );
     println!("Current FPS: {:.1}", monitor.current_fps());
 
     println!("\nRecording 10 slow frames (30 FPS):");
@@ -101,7 +121,10 @@ fn demo_frame_time_monitor() {
     }
 
     let should_degrade = monitor.should_degrade(0.020, 5);
-    println!("Should degrade (threshold 0.020s, 5 frames): {}", should_degrade);
+    println!(
+        "Should degrade (threshold 0.020s, 5 frames): {}",
+        should_degrade
+    );
 
     println!("\nRecording 10 fast frames (120 FPS):");
     for _ in 0..10 {
@@ -110,7 +133,10 @@ fn demo_frame_time_monitor() {
     }
 
     let should_upgrade = monitor.should_upgrade(0.020, 5);
-    println!("Should upgrade (threshold 0.020s, 5 frames): {}", should_upgrade);
+    println!(
+        "Should upgrade (threshold 0.020s, 5 frames): {}",
+        should_upgrade
+    );
 
     println!();
 }
@@ -138,8 +164,12 @@ fn demo_quality_manager() {
     for i in 0..5 {
         let frame_duration = Duration::from_secs_f32(1.0 / 30.0);
         manager.finish_frame(frame_duration);
-        println!("Frame {}: Quality = {:?}, FPS = {:.1}",
-                 i + 1, manager.quality_level(), manager.current_fps());
+        println!(
+            "Frame {}: Quality = {:?}, FPS = {:.1}",
+            i + 1,
+            manager.quality_level(),
+            manager.current_fps()
+        );
     }
 
     println!("\nSimulating fast rendering (120 FPS):");
@@ -147,8 +177,12 @@ fn demo_quality_manager() {
         let frame_duration = Duration::from_secs_f32(1.0 / 120.0);
         manager.finish_frame(frame_duration);
         if i >= 5 {
-            println!("Frame {}: Quality = {:?}, FPS = {:.1}",
-                     i + 1, manager.quality_level(), manager.current_fps());
+            println!(
+                "Frame {}: Quality = {:?}, FPS = {:.1}",
+                i + 1,
+                manager.quality_level(),
+                manager.current_fps()
+            );
         }
     }
 
@@ -189,29 +223,50 @@ fn demo_gpu_capability() {
     };
 
     println!("Discrete GPU:");
-    println!("  Supports high quality: {}", discrete_gpu.supports_high_quality);
+    println!(
+        "  Supports high quality: {}",
+        discrete_gpu.supports_high_quality
+    );
     println!("  Is integrated: {}", discrete_gpu.is_integrated);
     println!("  Performance tier: {}", discrete_gpu.performance_tier);
-    println!("  Recommended quality: {:?}", discrete_gpu.recommended_initial_quality());
+    println!(
+        "  Recommended quality: {:?}",
+        discrete_gpu.recommended_initial_quality()
+    );
 
     println!("\nIntegrated GPU:");
-    println!("  Supports high quality: {}", integrated_gpu.supports_high_quality);
+    println!(
+        "  Supports high quality: {}",
+        integrated_gpu.supports_high_quality
+    );
     println!("  Is integrated: {}", integrated_gpu.is_integrated);
     println!("  Performance tier: {}", integrated_gpu.performance_tier);
-    println!("  Recommended quality: {:?}", integrated_gpu.recommended_initial_quality());
+    println!(
+        "  Recommended quality: {:?}",
+        integrated_gpu.recommended_initial_quality()
+    );
 
     println!("\nLow-end GPU:");
-    println!("  Supports high quality: {}", low_end_gpu.supports_high_quality);
+    println!(
+        "  Supports high quality: {}",
+        low_end_gpu.supports_high_quality
+    );
     println!("  Is integrated: {}", low_end_gpu.is_integrated);
     println!("  Performance tier: {}", low_end_gpu.performance_tier);
-    println!("  Recommended quality: {:?}", low_end_gpu.recommended_initial_quality());
+    println!(
+        "  Recommended quality: {:?}",
+        low_end_gpu.recommended_initial_quality()
+    );
 
     println!("\nDefault capability:");
     let default = GpuCapability::default();
     println!("  Supports high quality: {}", default.supports_high_quality);
     println!("  Is integrated: {}", default.is_integrated);
     println!("  Performance tier: {}", default.performance_tier);
-    println!("  Recommended quality: {:?}", default.recommended_initial_quality());
+    println!(
+        "  Recommended quality: {:?}",
+        default.recommended_initial_quality()
+    );
 
     println!();
 }

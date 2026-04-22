@@ -8,8 +8,8 @@ use rust_widgets::i18n::{self, InitOptions};
 use rust_widgets::{runtime_gui_mode, RuntimeGuiMode};
 // ...existing code...
 use rust_widgets::{
-    attach_menu_bar_to_window, create_button, create_line_edit, create_menu_bar,
-    create_panel, create_status_bar, create_window, init, menu_add_item, run, show_widget,
+    attach_menu_bar_to_window, create_button, create_line_edit, create_menu_bar, create_panel,
+    create_status_bar, create_window, init, menu_add_item, run, show_widget,
 };
 
 thread_local! {

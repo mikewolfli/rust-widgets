@@ -138,7 +138,10 @@ fn test_widget_tester() {
     let button = Button::new("Test".to_string(), Rect::new(0, 0, 100, 40));
     let tester = WidgetTester::new(button);
 
-    tester.assert_visible().assert_enabled().assert_geometry(Rect::new(0, 0, 100, 40));
+    tester
+        .assert_visible()
+        .assert_enabled()
+        .assert_geometry(Rect::new(0, 0, 100, 40));
 }
 
 #[test]

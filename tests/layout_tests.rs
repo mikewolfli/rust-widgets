@@ -2,8 +2,8 @@
 
 use rust_widgets::core::{Rect, Size};
 use rust_widgets::layout::{
-    FlowLayout, FlowDirection, FlowAlignment, FlowLayoutConfig,
-    AbsolutePosition, AbsoluteLayout, AbsoluteAnchor
+    AbsoluteAnchor, AbsoluteLayout, AbsolutePosition, FlowAlignment, FlowDirection, FlowLayout,
+    FlowLayoutConfig,
 };
 use rust_widgets::test::LayoutTester;
 
@@ -57,10 +57,7 @@ fn test_absolute_layout() {
         AbsolutePosition::new(100, 50),
     ];
 
-    let sizes = vec![
-        Size::new(80, 30),
-        Size::new(80, 30),
-    ];
+    let sizes = vec![Size::new(80, 30), Size::new(80, 30)];
 
     let rects = layout.calculate_positions(&container, &positions, &sizes);
 
@@ -75,13 +72,9 @@ fn test_absolute_layout_centered() {
     let layout = AbsoluteLayout::new();
 
     // Center anchor with (0, 0) offset means the rect's center is at (0, 0)
-    let positions = vec![
-        AbsolutePosition::new(0, 0).with_anchor(AbsoluteAnchor::Center, 0, 0),
-    ];
+    let positions = vec![AbsolutePosition::new(0, 0).with_anchor(AbsoluteAnchor::Center, 0, 0)];
 
-    let sizes = vec![
-        Size::new(100, 50),
-    ];
+    let sizes = vec![Size::new(100, 50)];
 
     let rects = layout.calculate_positions(&container, &positions, &sizes);
 

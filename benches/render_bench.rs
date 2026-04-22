@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use rust_widgets::render::*;
 use rust_widgets::core::*;
+use rust_widgets::render::*;
 
 fn bench_fill_pixels(c: &mut Criterion) {
     let mut pixels = vec![0u8; 1920 * 1080 * 4];

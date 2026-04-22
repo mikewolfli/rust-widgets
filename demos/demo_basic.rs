@@ -1,7 +1,7 @@
 //! Basic Widgets Demo - All basic controls in one dialog with event logging.
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 // ...existing code...
@@ -45,7 +45,13 @@ fn format_timestamp() -> String {
 }
 
 fn log_event(widget_type: &str, widget_id: ObjectId, event: &str) {
-    eprintln!("[demo_basic] log_event called: {} {}(id={}) {}", format_timestamp(), widget_type, widget_id, event);
+    eprintln!(
+        "[demo_basic] log_event called: {} {}(id={}) {}",
+        format_timestamp(),
+        widget_type,
+        widget_id,
+        event
+    );
     let entry = format!(
         "{} {}(id={}) {}\n",
         format_timestamp(),
