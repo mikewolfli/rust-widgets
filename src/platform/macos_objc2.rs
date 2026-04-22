@@ -630,7 +630,14 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(MacObjc2HandleKind::Panel, "ColorDialog", x, y, width, height)
+        self.insert_widget(
+            MacObjc2HandleKind::Panel,
+            "ColorDialog",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn create_font_dialog(

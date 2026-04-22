@@ -239,72 +239,145 @@ impl Draw for LCDNumber {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-        
+
         let bg_color = style.background_color.unwrap_or(Color::BLACK);
         let fg_color = style.text_color.unwrap_or(Color::rgb(255, 0, 0));
-        
+
         context.fill_rect(rect, bg_color);
-        
+
         let display_text = self.display_text();
         let digit_width = rect.width / (self.num_digits as f64).max(1.0) as u32;
         let digit_height = rect.height * 7 / 10;
         let segment_width = digit_width / 8;
-        let start_x = rect.x + ((rect.width as i32 - digit_width as i32 * display_text.len() as i32) / 2);
+        let start_x =
+            rect.x + ((rect.width as i32 - digit_width as i32 * display_text.len() as i32) / 2);
         let start_y = rect.y + ((rect.height as i32 - digit_height as i32) / 2);
-        
+
         for (i, ch) in display_text.chars().enumerate() {
             let digit_x = (start_x + i as i32 * digit_width as i32) as u32;
             let digit_y = start_y as u32;
-            self.draw_digit(context, ch, digit_x, digit_y, digit_width, digit_height, segment_width, fg_color);
+            self.draw_digit(
+                context,
+                ch,
+                digit_x,
+                digit_y,
+                digit_width,
+                digit_height,
+                segment_width,
+                fg_color,
+            );
         }
-        
+
         if self.check_overflow() {
             let overflow_color = Color::rgb(255, 255, 0);
-            context.fill_circle(
-                Point::new(rect.x + 10, rect.y + 10),
-                5,
-                overflow_color
-            );
+            context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);
         }
     }
 }
 
 impl LCDNumber {
-    fn draw_digit(&self, context: &mut RenderContext, ch: char, x: u32, y: u32, width: u32, height: u32, segment_width: u32, color: Color) {
+    fn draw_digit(
+        &self,
+        context: &mut RenderContext,
+        ch: char,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        segment_width: u32,
+        color: Color,
+    ) {
         let segments = self.get_segments(ch);
         let hw = (segment_width / 2) as i32;
-        
+
         // let mid_x = x as i32 + width as i32 / 2;
         let mid_y = y as i32 + height as i32 / 2;
         let top_y = y as i32;
         let bottom_y = y as i32 + height as i32;
         let left_x = x as i32;
         let right_x = x as i32 + width as i32;
-        
+
         if segments[0] {
-            self.draw_horizontal_segment(context, left_x + hw, top_y, right_x - hw, top_y + segment_width as i32, color);
+            self.draw_horizontal_segment(
+                context,
+                left_x + hw,
+                top_y,
+                right_x - hw,
+                top_y + segment_width as i32,
+                color,
+            );
         }
         if segments[1] {
-            self.draw_vertical_segment(context, right_x - segment_width as i32, top_y + hw, right_x, mid_y - hw, color);
+            self.draw_vertical_segment(
+                context,
+                right_x - segment_width as i32,
+                top_y + hw,
+                right_x,
+                mid_y - hw,
+                color,
+            );
         }
         if segments[2] {
-            self.draw_vertical_segment(context, right_x - segment_width as i32, mid_y + hw, right_x, bottom_y - hw, color);
+            self.draw_vertical_segment(
+                context,
+                right_x - segment_width as i32,
+                mid_y + hw,
+                right_x,
+                bottom_y - hw,
+                color,
+            );
         }
         if segments[3] {
-            self.draw_horizontal_segment(context, left_x + hw, bottom_y - segment_width as i32, right_x - hw, bottom_y, color);
+            self.draw_horizontal_segment(
+                context,
+                left_x + hw,
+                bottom_y - segment_width as i32,
+                right_x - hw,
+                bottom_y,
+                color,
+            );
         }
         if segments[4] {
-            self.draw_vertical_segment(context, left_x, mid_y + hw, left_x + segment_width as i32, bottom_y - hw, color);
+            self.draw_vertical_segment(
+                context,
+                left_x,
+                mid_y + hw,
+                left_x + segment_width as i32,
+                bottom_y - hw,
+                color,
+            );
         }
         if segments[5] {
-            self.draw_vertical_segment(context, left_x, top_y + hw, left_x + segment_width as i32, mid_y - hw, color);
+            self.draw_vertical_segment(
+                context,
+                left_x,
+                top_y + hw,
+                left_x + segment_width as i32,
+                mid_y - hw,
+                color,
+            );
         }
         if segments[6] {
-            self.draw_horizontal_segment(context, left_x + hw, mid_y - hw / 2, right_x - hw, mid_y + hw / 2, color);
+            self.draw_horizontal_segment(
+                context,
+                left_x + hw,
+                mid_y - hw / 2,
+                right_x - hw,
+                mid_y + hw / 2,
+                color,
+            );
         }
     }
-    
-    fn draw_horizontal_segment(&self, context: &mut RenderContext, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
+
+    fn draw_horizontal_segment(
+        &self,
+        context: &mut RenderContext,
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        color: Color,
+    ) {
         let width = (x2 - x1).max(1) as u32;
         let height = (y2 - y1).max(1) as u32;
         match self.segment_style {
@@ -319,8 +392,16 @@ impl LCDNumber {
             }
         }
     }
-    
-    fn draw_vertical_segment(&self, context: &mut RenderContext, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
+
+    fn draw_vertical_segment(
+        &self,
+        context: &mut RenderContext,
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        color: Color,
+    ) {
         let width = (x2 - x1).max(1) as u32;
         let height = (y2 - y1).max(1) as u32;
         match self.segment_style {
@@ -335,7 +416,7 @@ impl LCDNumber {
             }
         }
     }
-    
+
     fn get_segments(&self, ch: char) -> [bool; 7] {
         match ch.to_ascii_uppercase() {
             '0' => [true, true, true, true, true, true, false],

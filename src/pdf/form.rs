@@ -254,7 +254,7 @@ impl Form {
 
     pub fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        
+
         for field in &self.fields {
             if field.is_required && field.value.is_empty() {
                 errors.push(ValidationError {
@@ -264,7 +264,7 @@ impl Form {
                 });
             }
         }
-        
+
         errors
     }
 }
@@ -317,12 +317,12 @@ impl FormManager {
     }
 
     pub fn get_current_form(&self) -> Option<&Form> {
-        self.current_form.as_ref()
-            .and_then(|id| self.forms.get(id))
+        self.current_form.as_ref().and_then(|id| self.forms.get(id))
     }
 
     pub fn get_current_form_mut(&mut self) -> Option<&mut Form> {
-        self.current_form.as_ref()
+        self.current_form
+            .as_ref()
             .and_then(|id| self.forms.get_mut(id))
     }
 
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_form_creation() {
         let mut form = Form::new("form-1".to_string(), "Login Form".to_string());
-        
+
         let field = FormField::new(
             "field-1".to_string(),
             "username".to_string(),
@@ -401,9 +401,9 @@ mod tests {
             1,
             Rect::new(100, 100, 200, 30),
         );
-        
+
         form.add_field(field);
-        
+
         assert_eq!(form.field_count(), 1);
         assert!(form.get_field("field-1").is_some());
     }
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_form_validation() {
         let mut form = Form::new("form-1".to_string(), "Login Form".to_string());
-        
+
         let field = FormField::new(
             "field-1".to_string(),
             "username".to_string(),
@@ -420,9 +420,9 @@ mod tests {
             Rect::new(100, 100, 200, 30),
         )
         .required();
-        
+
         form.add_field(field);
-        
+
         let errors = form.validate();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("required"));
@@ -431,12 +431,12 @@ mod tests {
     #[test]
     fn test_form_manager() {
         let mut manager = FormManager::new();
-        
+
         let form = Form::new("form-1".to_string(), "Test Form".to_string());
         manager.add_form(form);
-        
+
         manager.set_current_form(Some("form-1".to_string()));
-        
+
         assert_eq!(manager.form_count(), 1);
         assert!(manager.get_current_form().is_some());
     }

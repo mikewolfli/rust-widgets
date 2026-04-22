@@ -1,7 +1,6 @@
 use crate::core::{Rect, Size};
 use crate::widget::Widget;
 
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbsolutePosition {
     pub x: i32,
@@ -297,7 +296,9 @@ impl AbsoluteLayout {
     }
 
     pub fn get_constraint(&self, index: usize) -> Option<&Constraint> {
-        self.children.get(index).and_then(|(_, _, cons)| cons.as_ref())
+        self.children
+            .get(index)
+            .and_then(|(_, _, cons)| cons.as_ref())
     }
 }
 
@@ -343,8 +344,7 @@ mod tests {
 
     #[test]
     fn test_aspect_ratio() {
-        let constraint = Constraint::new()
-            .with_aspect_ratio(2.0);
+        let constraint = Constraint::new().with_aspect_ratio(2.0);
 
         let size = constraint.apply(Size::new(200, 100));
         assert_eq!(size.width, 200);

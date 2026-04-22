@@ -59,13 +59,27 @@ impl DateTimeEdit {
         }
     }
 
-    pub fn datetime(&self) -> DateTime { self.datetime }
-    pub fn date(&self) -> Date { self.datetime.date }
-    pub fn time(&self) -> Time { self.datetime.time }
-    pub fn minimum_datetime(&self) -> DateTime { self.minimum }
-    pub fn maximum_datetime(&self) -> DateTime { self.maximum }
-    pub fn display_format(&self) -> &str { &self.display_format }
-    pub fn calendar_popup(&self) -> bool { self.calendar_popup }
+    pub fn datetime(&self) -> DateTime {
+        self.datetime
+    }
+    pub fn date(&self) -> Date {
+        self.datetime.date
+    }
+    pub fn time(&self) -> Time {
+        self.datetime.time
+    }
+    pub fn minimum_datetime(&self) -> DateTime {
+        self.minimum
+    }
+    pub fn maximum_datetime(&self) -> DateTime {
+        self.maximum
+    }
+    pub fn display_format(&self) -> &str {
+        &self.display_format
+    }
+    pub fn calendar_popup(&self) -> bool {
+        self.calendar_popup
+    }
 
     pub fn set_datetime(&mut self, dt: DateTime) {
         if dt.is_valid() && dt >= self.minimum && dt <= self.maximum && self.datetime != dt {
@@ -82,24 +96,42 @@ impl DateTimeEdit {
         self.set_datetime(DateTime::new(self.datetime.date, time));
     }
 
-    pub fn set_minimum_datetime(&mut self, dt: DateTime) { self.minimum = dt; }
-    pub fn set_maximum_datetime(&mut self, dt: DateTime) { self.maximum = dt; }
-    pub fn set_display_format(&mut self, fmt: String) { self.display_format = fmt; }
-    pub fn set_calendar_popup(&mut self, popup: bool) { self.calendar_popup = popup; }
+    pub fn set_minimum_datetime(&mut self, dt: DateTime) {
+        self.minimum = dt;
+    }
+    pub fn set_maximum_datetime(&mut self, dt: DateTime) {
+        self.maximum = dt;
+    }
+    pub fn set_display_format(&mut self, fmt: String) {
+        self.display_format = fmt;
+    }
+    pub fn set_calendar_popup(&mut self, popup: bool) {
+        self.calendar_popup = popup;
+    }
 
     pub fn step_up(&mut self) {
         let mut t = self.datetime.time;
         t.second += 1;
-        if t.second >= 60 { t.second = 0; t.minute += 1; }
+        if t.second >= 60 {
+            t.second = 0;
+            t.minute += 1;
+        }
         if t.minute >= 60 {
             t.minute = 0;
-            if t.hour < 23 { t.hour += 1; }
-            else {
+            if t.hour < 23 {
+                t.hour += 1;
+            } else {
                 t.hour = 0;
                 let mut d = self.datetime.date;
                 d.day += 1;
-                if d.day > d.days_in_month() { d.day = 1; d.month += 1; }
-                if d.month > 12 { d.month = 1; d.year += 1; }
+                if d.day > d.days_in_month() {
+                    d.day = 1;
+                    d.month += 1;
+                }
+                if d.month > 12 {
+                    d.month = 1;
+                    d.year += 1;
+                }
                 self.set_datetime(DateTime::new(d, t));
                 return;
             }
@@ -109,15 +141,28 @@ impl DateTimeEdit {
 
     pub fn step_down(&mut self) {
         let mut t = self.datetime.time;
-        if t.second > 0 { t.second -= 1; } else {
+        if t.second > 0 {
+            t.second -= 1;
+        } else {
             t.second = 59;
-            if t.minute > 0 { t.minute -= 1; } else {
+            if t.minute > 0 {
+                t.minute -= 1;
+            } else {
                 t.minute = 59;
-                if t.hour > 0 { t.hour -= 1; } else {
+                if t.hour > 0 {
+                    t.hour -= 1;
+                } else {
                     t.hour = 23;
                     let mut d = self.datetime.date;
-                    if d.day > 1 { d.day -= 1; } else {
-                        if d.month > 1 { d.month -= 1; } else { d.month = 12; d.year -= 1; }
+                    if d.day > 1 {
+                        d.day -= 1;
+                    } else {
+                        if d.month > 1 {
+                            d.month -= 1;
+                        } else {
+                            d.month = 12;
+                            d.year -= 1;
+                        }
                         d.day = d.days_in_month();
                     }
                     self.set_datetime(DateTime::new(d, t));
@@ -130,44 +175,110 @@ impl DateTimeEdit {
 }
 
 impl Widget for DateTimeEdit {
-    fn id(&self) -> ObjectId { self.base.id() }
-    fn kind(&self) -> WidgetKind { self.base.kind() }
-    fn geometry(&self) -> Rect { self.base.geometry() }
-    fn set_geometry(&mut self, g: Rect) { self.base.set_geometry(g); }
-    fn min_size(&self) -> Option<Size> { self.base.min_size() }
-    fn max_size(&self) -> Option<Size> { self.base.max_size() }
-    fn set_min_size(&mut self, s: Option<Size>) { self.base.set_min_size(s); }
-    fn set_max_size(&mut self, s: Option<Size>) { self.base.set_max_size(s); }
-    fn parent(&self) -> Option<ObjectId> { self.base.parent() }
-    fn set_parent(&mut self, p: Option<ObjectId>) { self.base.set_parent(p); }
-    fn add_child(&mut self, c: ObjectId) { self.base.add_child(c); }
-    fn remove_child(&mut self, c: ObjectId) { self.base.remove_child(c); }
-    fn children(&self) -> &[ObjectId] { self.base.children() }
-    fn show(&mut self) { self.base.show(); }
-    fn hide(&mut self) { self.base.hide(); }
-    fn is_visible(&self) -> bool { self.base.is_visible() }
-    fn set_enabled(&mut self, e: bool) { self.base.set_enabled(e); }
-    fn is_enabled(&self) -> bool { self.base.is_enabled() }
-    fn set_tooltip(&mut self, t: String) { self.base.set_tooltip(t); }
-    fn tooltip(&self) -> &str { self.base.tooltip() }
-    fn style(&self) -> &WidgetStyle { self.base.style() }
-    fn set_style(&mut self, s: WidgetStyle) { self.base.set_style(s); }
-    fn connection_scope(&self) -> &ConnectionScope { self.base.connection_scope() }
-    fn hover_signal(&self) -> &Signal1<Point> { self.base.hover_signal() }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_down_signal() }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> { self.base.mouse_up_signal() }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_down_signal() }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> { self.base.key_up_signal() }
-    fn focus_gained_signal(&self) -> &GenericSignal { self.base.focus_gained_signal() }
-    fn focus_lost_signal(&self) -> &GenericSignal { self.base.focus_lost_signal() }
-    fn redraw_requested_signal(&self) -> &GenericSignal { self.base.redraw_requested_signal() }
-    fn layout_requested_signal(&self) -> &GenericSignal { self.base.layout_requested_signal() }
+    fn id(&self) -> ObjectId {
+        self.base.id()
+    }
+    fn kind(&self) -> WidgetKind {
+        self.base.kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+    fn set_geometry(&mut self, g: Rect) {
+        self.base.set_geometry(g);
+    }
+    fn min_size(&self) -> Option<Size> {
+        self.base.min_size()
+    }
+    fn max_size(&self) -> Option<Size> {
+        self.base.max_size()
+    }
+    fn set_min_size(&mut self, s: Option<Size>) {
+        self.base.set_min_size(s);
+    }
+    fn set_max_size(&mut self, s: Option<Size>) {
+        self.base.set_max_size(s);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base.parent()
+    }
+    fn set_parent(&mut self, p: Option<ObjectId>) {
+        self.base.set_parent(p);
+    }
+    fn add_child(&mut self, c: ObjectId) {
+        self.base.add_child(c);
+    }
+    fn remove_child(&mut self, c: ObjectId) {
+        self.base.remove_child(c);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base.children()
+    }
+    fn show(&mut self) {
+        self.base.show();
+    }
+    fn hide(&mut self) {
+        self.base.hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.base.set_enabled(e);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+    fn set_tooltip(&mut self, t: String) {
+        self.base.set_tooltip(t);
+    }
+    fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base.style()
+    }
+    fn set_style(&mut self, s: WidgetStyle) {
+        self.base.set_style(s);
+    }
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base.connection_scope()
+    }
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base.hover_signal()
+    }
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_down_signal()
+    }
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base.mouse_up_signal()
+    }
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_down_signal()
+    }
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base.key_up_signal()
+    }
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base.focus_gained_signal()
+    }
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base.focus_lost_signal()
+    }
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base.redraw_requested_signal()
+    }
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base.layout_requested_signal()
+    }
 }
 
 impl EventHandler for DateTimeEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if !self.base.is_enabled() { return; }
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::KeyPress { key, .. } => match *key {
                 38 => self.step_up(),
@@ -185,22 +296,75 @@ impl Draw for DateTimeEdit {
         let rect = self.geometry();
         let spin_width = 16.0;
 
-        context.fill_rect(rect.x, rect.y, rect.width - spin_width, rect.height, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect.x, rect.y, rect.width, rect.height, Color::from_rgb(150, 150, 150));
+        context.fill_rect(
+            rect.x,
+            rect.y,
+            rect.width - spin_width,
+            rect.height,
+            Color::from_rgb(255, 255, 255),
+        );
+        context.draw_rect(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            Color::from_rgb(150, 150, 150),
+        );
         context.draw_text(
-            rect.x + 4.0, rect.y + rect.height / 2.0,
+            rect.x + 4.0,
+            rect.y + rect.height / 2.0,
             &self.datetime.to_string(),
-            &Font::default(), Color::from_rgb(0, 0, 0), Alignment::Left,
+            &Font::default(),
+            Color::from_rgb(0, 0, 0),
+            Alignment::Left,
         );
 
         let btn_x = rect.x + rect.width - spin_width;
         let btn_h = rect.height / 2.0;
-        context.fill_rect(btn_x, rect.y, spin_width, btn_h, Color::from_rgb(240, 240, 240));
-        context.fill_rect(btn_x, rect.y + btn_h, spin_width, btn_h, Color::from_rgb(240, 240, 240));
-        context.draw_line(btn_x, rect.y, btn_x, rect.y + rect.height, Color::from_rgb(150, 150, 150));
-        context.draw_line(btn_x, rect.y + btn_h, rect.x + rect.width, rect.y + btn_h, Color::from_rgb(150, 150, 150));
+        context.fill_rect(
+            btn_x,
+            rect.y,
+            spin_width,
+            btn_h,
+            Color::from_rgb(240, 240, 240),
+        );
+        context.fill_rect(
+            btn_x,
+            rect.y + btn_h,
+            spin_width,
+            btn_h,
+            Color::from_rgb(240, 240, 240),
+        );
+        context.draw_line(
+            btn_x,
+            rect.y,
+            btn_x,
+            rect.y + rect.height,
+            Color::from_rgb(150, 150, 150),
+        );
+        context.draw_line(
+            btn_x,
+            rect.y + btn_h,
+            rect.x + rect.width,
+            rect.y + btn_h,
+            Color::from_rgb(150, 150, 150),
+        );
         let mid_x = btn_x + spin_width / 2.0;
-        context.draw_text(mid_x, rect.y + btn_h / 2.0, "▲", &Font::default(), Color::from_rgb(80, 80, 80), Alignment::Center);
-        context.draw_text(mid_x, rect.y + btn_h + btn_h / 2.0, "▼", &Font::default(), Color::from_rgb(80, 80, 80), Alignment::Center);
+        context.draw_text(
+            mid_x,
+            rect.y + btn_h / 2.0,
+            "▲",
+            &Font::default(),
+            Color::from_rgb(80, 80, 80),
+            Alignment::Center,
+        );
+        context.draw_text(
+            mid_x,
+            rect.y + btn_h + btn_h / 2.0,
+            "▼",
+            &Font::default(),
+            Color::from_rgb(80, 80, 80),
+            Alignment::Center,
+        );
     }
 }

@@ -36,17 +36,19 @@ pub mod performance;
 
 // Re-export main types
 pub use adapter::{
-    AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector,
-    GpuAdapter, GpuDeviceType, GpuType,
+    AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector, GpuAdapter,
+    GpuDeviceType, GpuType,
 };
 pub use buffer_pool::{
     GpuBufferAllocation, GpuBufferPoolStats, GpuMemoryProfile, GpuStagingBufferPool,
     GpuUploadBatcher, MappingStrategy, StagingBufferPoolConfig,
 };
-pub use manager::{GpuManager, GpuManagerAction, GpuManagerBuilder, GpuManagerError, GpuOperationMode};
+pub use manager::{
+    GpuManager, GpuManagerAction, GpuManagerBuilder, GpuManagerError, GpuOperationMode,
+};
 pub use performance::{
-    AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceSample,
-    PerformanceStats, PerformanceTrap, PerformanceTrapDetector, PerformanceMonitorStrategy,
+    AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceMonitorStrategy,
+    PerformanceSample, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
 
 /// Initialize the GPU subsystem with automatic hardware detection
@@ -74,8 +76,15 @@ pub fn subsystem_summary() -> String {
     summary.push_str("GPU Subsystem Summary\n");
     summary.push_str("====================\n\n");
 
-    summary.push_str(&format!("GPU support: {}\n", if is_gpu_available() { "enabled" } else { "disabled" }));
-    
+    summary.push_str(&format!(
+        "GPU support: {}\n",
+        if is_gpu_available() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+
     summary.push_str("\nSupported features:\n");
     summary.push_str("  - Automatic GPU adapter selection\n");
     summary.push_str("  - Hardware-adaptive buffer pools\n");

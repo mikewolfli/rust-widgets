@@ -11,8 +11,10 @@
 use std::sync::Mutex;
 
 use super::adapter::{AdapterInfo, AdapterSelectionStrategy, AdapterSelector};
-use super::buffer_pool::{GpuStagingBufferPool, GpuBufferPoolStats};
-use super::performance::{AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector};
+use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
+use super::performance::{
+    AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
+};
 use crate::quality::{QualityLevel, QualityManager};
 
 /// GPU operation mode
@@ -53,9 +55,11 @@ impl GpuManager {
     }
 
     /// Creates a new GPU manager with specific selection strategy
-    pub async fn with_strategy(strategy: AdapterSelectionStrategy) -> Result<Self, GpuManagerError> {
+    pub async fn with_strategy(
+        strategy: AdapterSelectionStrategy,
+    ) -> Result<Self, GpuManagerError> {
         let selector = AdapterSelector::with_strategy(strategy);
-        
+
         // Try to select adapter
         let adapter_info = selector
             .select_adapter_with_fallback(None)
@@ -77,7 +81,8 @@ impl GpuManager {
         let buffer_pool = GpuStagingBufferPool::for_gpu_type(adapter_info.device_type);
 
         // Create performance monitor
-        let performance_monitor = AdaptivePerformanceMonitor::for_device_type(adapter_info.device_type);
+        let performance_monitor =
+            AdaptivePerformanceMonitor::for_device_type(adapter_info.device_type);
 
         // Create quality manager with hardware-aware initial quality
         let gpu_capability = crate::quality::GpuCapability {
@@ -117,7 +122,7 @@ impl GpuManager {
         // Check for browser forced iGPU
         if is_browser && manager.adapter_info.device_type.is_integrated() {
             manager.add_warning(
-                "Browser is forcing integrated GPU. For best performance, run outside browser."
+                "Browser is forcing integrated GPU. For best performance, run outside browser.",
             );
         }
 
@@ -484,7 +489,13 @@ mod tests {
 
     #[test]
     fn test_operation_mode() {
-        assert!(matches!(GpuOperationMode::Hardware, GpuOperationMode::Hardware));
-        assert!(matches!(GpuOperationMode::Software, GpuOperationMode::Software));
+        assert!(matches!(
+            GpuOperationMode::Hardware,
+            GpuOperationMode::Hardware
+        ));
+        assert!(matches!(
+            GpuOperationMode::Software,
+            GpuOperationMode::Software
+        ));
     }
 }

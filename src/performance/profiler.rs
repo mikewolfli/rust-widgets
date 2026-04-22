@@ -49,7 +49,7 @@ impl Profiler {
         if !self.enabled {
             return;
         }
-        
+
         self.current = Some((name.to_string(), Instant::now()));
     }
 
@@ -57,7 +57,7 @@ impl Profiler {
         if !self.enabled {
             return;
         }
-        
+
         if let Some((name, start)) = self.current.take() {
             let duration = start.elapsed();
             let entry = self.entries.entry(name).or_default();
@@ -129,9 +129,9 @@ impl Profiler {
                 },
             })
             .collect();
-        
+
         entries.sort_by(|a, b| b.total_duration.cmp(&a.total_duration));
-        
+
         ProfileReport {
             entries,
             total_duration: self.get_total_duration(),
@@ -163,17 +163,14 @@ impl ProfileReport {
     pub fn to_string_summary(&self) -> String {
         let mut result = String::new();
         result.push_str(&format!("Total: {:?}\n\n", self.total_duration));
-        
+
         for entry in &self.entries {
             result.push_str(&format!(
                 "{}: {:?} ({} calls, avg {:?})\n",
-                entry.name,
-                entry.total_duration,
-                entry.call_count,
-                entry.average_duration
+                entry.name, entry.total_duration, entry.call_count, entry.average_duration
             ));
         }
-        
+
         result
     }
 }
@@ -205,11 +202,11 @@ impl FrameProfiler {
     pub fn end_frame(&mut self) {
         if let Some(start) = self.current_frame_start.take() {
             let duration = start.elapsed();
-            
+
             if self.frame_times.len() >= self.max_frames {
                 self.frame_times.remove(0);
             }
-            
+
             self.frame_times.push(duration);
         }
     }
@@ -229,7 +226,7 @@ impl FrameProfiler {
         if self.frame_times.is_empty() {
             return Duration::ZERO;
         }
-        
+
         let total: Duration = self.frame_times.iter().sum();
         total / self.frame_times.len() as u32
     }
@@ -239,16 +236,24 @@ impl FrameProfiler {
         if avg.is_zero() {
             return 0.0;
         }
-        
+
         1_000_000_000.0 / avg.as_nanos() as f32
     }
 
     pub fn min_frame_time(&self) -> Duration {
-        self.frame_times.iter().min().copied().unwrap_or(Duration::ZERO)
+        self.frame_times
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(Duration::ZERO)
     }
 
     pub fn max_frame_time(&self) -> Duration {
-        self.frame_times.iter().max().copied().unwrap_or(Duration::ZERO)
+        self.frame_times
+            .iter()
+            .max()
+            .copied()
+            .unwrap_or(Duration::ZERO)
     }
 
     pub fn frame_count(&self) -> usize {
@@ -407,11 +412,11 @@ mod tests {
     #[test]
     fn test_profiler() {
         let mut profiler = Profiler::new();
-        
+
         profiler.begin("test");
         sleep(Duration::from_millis(1));
         profiler.end();
-        
+
         let stats = profiler.get_stats("test").unwrap();
         assert_eq!(stats.call_count, 1);
         assert!(stats.duration > Duration::ZERO);
@@ -420,13 +425,13 @@ mod tests {
     #[test]
     fn test_frame_profiler() {
         let mut profiler = FrameProfiler::new(10);
-        
+
         for _ in 0..5 {
             profiler.begin_frame();
             sleep(Duration::from_millis(1));
             profiler.end_frame();
         }
-        
+
         assert_eq!(profiler.frame_count(), 5);
         assert!(profiler.fps() > 0.0);
     }

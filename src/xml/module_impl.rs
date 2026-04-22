@@ -855,4 +855,3 @@ mod tests {
         assert_eq!(resolve_model_name(&properties), Some("fallback"));
     }
 }
-

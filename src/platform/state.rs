@@ -359,14 +359,15 @@ where
     }
 
     /// Inject widget trigger event.
-    pub fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
+    pub fn inject_widget_trigger_event(
+        &self,
+        widget_id: ObjectId,
+        kind: WidgetTriggerKind,
+    ) -> bool {
         if !self.contains_widget(widget_id) {
             return false;
         }
-        self.push_widget_event(WidgetTriggerEvent {
-            widget_id,
-            kind,
-        });
+        self.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
 }

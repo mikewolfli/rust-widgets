@@ -182,20 +182,20 @@ impl Draw for CommandLink {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-        
+
         let bg_color = style.background_color.unwrap_or(Color::TRANSPARENT);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 102, 204));
         let hover_color = Color::rgb(0, 0, 255);
         let disabled_color = Color::GRAY;
-        
+
         let is_hovered = self.hovered.slot_count() > 0;
         let is_enabled = self.enabled && self.base.is_enabled();
-        
+
         // Draw background (transparent by default)
         if bg_color != Color::TRANSPARENT {
             context.fill_rect(rect, bg_color);
         }
-        
+
         // Determine text color based on state
         let current_text_color = if !is_enabled {
             disabled_color
@@ -204,21 +204,21 @@ impl Draw for CommandLink {
         } else {
             text_color
         };
-        
+
         // Draw main text
         let padding = &style.padding;
         let text_font = Font::new("Arial", 12.0, false, true);
-        
+
         let text_x = rect.x + padding.left as i32;
         let text_y = rect.y + padding.top as i32 + 12;
-        
+
         context.draw_text(
             Point::new(text_x, text_y),
             &self.text,
             &text_font,
-            current_text_color
+            current_text_color,
         );
-        
+
         // Draw description if present
         if !self.description.is_empty() {
             let desc_font = Font::new("Arial", 10.0, false, false);
@@ -227,18 +227,18 @@ impl Draw for CommandLink {
             } else {
                 Color::GRAY
             };
-            
+
             let desc_x = text_x;
             let desc_y = text_y + 16;
-            
+
             context.draw_text(
                 Point::new(desc_x, desc_y),
                 &self.description,
                 &desc_font,
-                desc_color
+                desc_color,
             );
         }
-        
+
         // Draw underline for hover state
         if is_hovered && is_enabled {
             let text_metrics = context.measure_text(&self.text, &text_font);
@@ -246,7 +246,7 @@ impl Draw for CommandLink {
             context.draw_line(
                 Point::new(text_x, underline_y),
                 Point::new(text_x + text_metrics.width as i32, underline_y),
-                current_text_color
+                current_text_color,
             );
         }
     }

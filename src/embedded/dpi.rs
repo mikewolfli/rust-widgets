@@ -30,7 +30,8 @@ pub fn is_fixed_dpi() -> bool {
 
 /// Calculate scale factor based on DPI
 pub fn scale_factor() -> f32 {
-    get_fixed_dpi().map(|dpi| dpi as f32 / BASE_DPI as f32)
+    get_fixed_dpi()
+        .map(|dpi| dpi as f32 / BASE_DPI as f32)
         .unwrap_or(1.0)
 }
 

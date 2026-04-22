@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::core::ObjectId;
 
-use super::{Action, ActionBinding, ActionHostKind, normalize_shortcut};
+use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
 
 /// Registry for actions, shortcuts, and menu/toolbar bindings.
 pub struct ActionManager {
@@ -51,7 +51,11 @@ impl ActionManager {
     }
 
     /// Binds a keyboard shortcut to an existing action id.
-    pub fn bind_shortcut(&mut self, shortcut: impl Into<String>, action_id: impl Into<String>) -> bool {
+    pub fn bind_shortcut(
+        &mut self,
+        shortcut: impl Into<String>,
+        action_id: impl Into<String>,
+    ) -> bool {
         let action_id = action_id.into();
         if !self.actions.contains_key(&action_id) {
             return false;
@@ -95,7 +99,11 @@ impl ActionManager {
     }
 
     /// Binds an action to a button host.
-    pub fn bind_action_to_button(&mut self, action_id: impl Into<String>, button_id: ObjectId) -> bool {
+    pub fn bind_action_to_button(
+        &mut self,
+        action_id: impl Into<String>,
+        button_id: ObjectId,
+    ) -> bool {
         self.bind_action(action_id.into(), button_id, ActionHostKind::Button)
     }
 

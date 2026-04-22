@@ -155,12 +155,9 @@ impl HyperlinkManager {
     pub fn add_link(&mut self, link: Hyperlink) {
         let id = link.id.clone();
         let page = link.page;
-        
+
         self.links.insert(id.clone(), link);
-        self.page_links
-            .entry(page)
-            .or_default()
-            .push(id);
+        self.page_links.entry(page).or_default().push(id);
     }
 
     pub fn remove_link(&mut self, id: &str) -> Option<Hyperlink> {
@@ -179,31 +176,23 @@ impl HyperlinkManager {
     }
 
     pub fn get_link_at_point(&self, page: u32, x: i32, y: i32) -> Option<&Hyperlink> {
-        self.page_links
-            .get(&page)
-            .and_then(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.links.get(id))
-                    .find(|link| link.contains_point(x, y))
-            })
+        self.page_links.get(&page).and_then(|ids| {
+            ids.iter()
+                .filter_map(|id| self.links.get(id))
+                .find(|link| link.contains_point(x, y))
+        })
     }
 
     pub fn get_page_links(&self, page: u32) -> Vec<&Hyperlink> {
         self.page_links
             .get(&page)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.links.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.links.get(id)).collect())
             .unwrap_or_default()
     }
 
     pub fn add_named_destination(&mut self, destination: NamedDestination) {
-        self.named_destinations.insert(
-            destination.name.clone(),
-            destination,
-        );
+        self.named_destinations
+            .insert(destination.name.clone(), destination);
     }
 
     pub fn get_named_destination(&self, name: &str) -> Option<&NamedDestination> {
@@ -257,21 +246,25 @@ mod tests {
     #[test]
     fn test_hyperlink_manager() {
         let mut manager = HyperlinkManager::new();
-        
+
         let link = Hyperlink::new(
             "link-1".to_string(),
             1,
             Rect::new(100, 100, 200, 50),
-            LinkAction::GoToPage { page: 2, x: 0.0, y: 0.0 },
+            LinkAction::GoToPage {
+                page: 2,
+                x: 0.0,
+                y: 0.0,
+            },
         );
-        
+
         manager.add_link(link);
-        
+
         assert_eq!(manager.link_count(), 1);
-        
+
         let found = manager.get_link_at_point(1, 150, 125);
         assert!(found.is_some());
-        
+
         let not_found = manager.get_link_at_point(1, 50, 50);
         assert!(not_found.is_none());
     }
@@ -279,12 +272,11 @@ mod tests {
     #[test]
     fn test_named_destination() {
         let mut manager = HyperlinkManager::new();
-        
-        let dest = NamedDestination::new("intro".to_string(), 1, 0.0, 0.0)
-            .with_zoom(1.0);
-        
+
+        let dest = NamedDestination::new("intro".to_string(), 1, 0.0, 0.0).with_zoom(1.0);
+
         manager.add_named_destination(dest);
-        
+
         let found = manager.get_named_destination("intro");
         assert!(found.is_some());
         assert_eq!(found.unwrap().page, 1);

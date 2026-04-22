@@ -77,7 +77,10 @@ impl ThemeManager {
         };
 
         let (background_color, text_color) = if class_name == "button" {
-            (Some(theme.colors.primary), Some(Color::rgba(255, 255, 255, 255)))
+            (
+                Some(theme.colors.primary),
+                Some(Color::rgba(255, 255, 255, 255)),
+            )
         } else {
             (Some(theme.colors.background), Some(theme.colors.foreground))
         };

@@ -81,7 +81,12 @@ struct BoxLayoutItem {
 impl BoxLayout {
     /// Create a box layout with orientation, spacing and margin.
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
-        Self { orientation, spacing, margin, items: Vec::new() }
+        Self {
+            orientation,
+            spacing,
+            margin,
+            items: Vec::new(),
+        }
     }
 
     /// Returns layout orientation.
@@ -151,7 +156,12 @@ impl BoxLayout {
             return Vec::new();
         }
 
-        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
+        let total_stretch: u32 = self
+            .items
+            .iter()
+            .map(|item| item.stretch)
+            .sum::<u32>()
+            .max(1);
         let mut assigned = Vec::with_capacity(self.items.len());
 
         for item in &self.items {
@@ -176,7 +186,11 @@ impl BoxLayout {
                 if total_assigned >= primary {
                     break;
                 }
-                let max_allowed = item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
+                let max_allowed = item
+                    .constraints
+                    .max
+                    .unwrap_or(u32::MAX)
+                    .max(item.constraints.min);
                 if assigned[index] < max_allowed {
                     assigned[index] = assigned[index].saturating_add(1);
                     total_assigned = total_assigned.saturating_add(1);
@@ -243,12 +257,18 @@ impl Layout for BoxLayout {
             let major = majors.get(index).copied().unwrap_or(0);
 
             let child_rect = match self.orientation {
-                Orientation::Horizontal => {
-                    Rect::new(cursor_x, cursor_y, major, rect.height.saturating_sub(self.margin * 2))
-                }
-                Orientation::Vertical => {
-                    Rect::new(cursor_x, cursor_y, rect.width.saturating_sub(self.margin * 2), major)
-                }
+                Orientation::Horizontal => Rect::new(
+                    cursor_x,
+                    cursor_y,
+                    major,
+                    rect.height.saturating_sub(self.margin * 2),
+                ),
+                Orientation::Vertical => Rect::new(
+                    cursor_x,
+                    cursor_y,
+                    rect.width.saturating_sub(self.margin * 2),
+                    major,
+                ),
             };
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
@@ -442,8 +462,10 @@ impl Layout for GridLayout {
         for row in 0..self.rows {
             for col in 0..self.cols {
                 if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
-                    let x = rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
-                    let y = rect.y + self.margin as i32 + (row * (cell_height + self.spacing)) as i32;
+                    let x =
+                        rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
+                    let y =
+                        rect.y + self.margin as i32 + (row * (cell_height + self.spacing)) as i32;
                     widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
                 }
             }
@@ -461,7 +483,11 @@ pub struct FormLayout {
 impl FormLayout {
     /// Create a two-column form layout.
     pub fn new(spacing: u32, margin: u32) -> Self {
-        Self { spacing, margin, rows: Vec::new() }
+        Self {
+            spacing,
+            margin,
+            rows: Vec::new(),
+        }
     }
 
     /// Add one form row as `(label, field)` pair.
@@ -474,7 +500,8 @@ impl Layout for FormLayout {
     fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {}
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.rows.retain(|(label, field)| *label != widget_id && *field != widget_id);
+        self.rows
+            .retain(|(label, field)| *label != widget_id && *field != widget_id);
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -487,7 +514,9 @@ impl Layout for FormLayout {
             .saturating_sub((self.rows.len() as u32 - 1) * self.spacing)
             / self.rows.len() as u32;
         let label_width = rect.width / 3;
-        let field_width = rect.width.saturating_sub(self.margin * 2 + label_width + self.spacing);
+        let field_width = rect
+            .width
+            .saturating_sub(self.margin * 2 + label_width + self.spacing);
 
         for (index, (label, field)) in self.rows.iter().enumerate() {
             let y = rect.y + self.margin as i32 + index as i32 * (row_height + self.spacing) as i32;
@@ -517,7 +546,10 @@ pub struct StackLayout {
 impl StackLayout {
     /// Create stack layout with no pages.
     pub fn new() -> Self {
-        Self { items: Vec::new(), current: 0 }
+        Self {
+            items: Vec::new(),
+            current: 0,
+        }
     }
 
     /// Select visible page by index.
@@ -636,12 +668,9 @@ mod tests {
         layout.set_size_policy(1, SizePolicy::Fixed);
 
         let mut rects = std::collections::HashMap::new();
-        layout.update(
-            Rect::new(0, 0, 200, 40),
-            &mut |id, rect| {
-                rects.insert(id, rect);
-            },
-        );
+        layout.update(Rect::new(0, 0, 200, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
 
         assert_eq!(rects.get(&1).map(|rect| rect.width), Some(80));
     }
@@ -653,12 +682,9 @@ mod tests {
         splitter.add_widget(2, 3);
 
         let mut rects = std::collections::HashMap::new();
-        splitter.update(
-            Rect::new(0, 0, 400, 40),
-            &mut |id, rect| {
-                rects.insert(id, rect);
-            },
-        );
+        splitter.update(Rect::new(0, 0, 400, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
 
         let left = rects.get(&1).map(|rect| rect.width).unwrap_or(0);
         let right = rects.get(&2).map(|rect| rect.width).unwrap_or(0);
@@ -671,15 +697,11 @@ mod tests {
         layout.add_widget(42, 1);
 
         let mut out = None;
-        layout.update_from_position_size(
-            Point::new(9, 11),
-            Size::new(30, 12),
-            &mut |id, rect| {
-                if id == 42 {
-                    out = Some(rect);
-                }
-            },
-        );
+        layout.update_from_position_size(Point::new(9, 11), Size::new(30, 12), &mut |id, rect| {
+            if id == 42 {
+                out = Some(rect);
+            }
+        });
 
         assert_eq!(out, Some(Rect::new(9, 11, 30, 12)));
     }
@@ -708,7 +730,10 @@ mod tests {
             out.insert(id, rect);
         });
         assert_eq!(out.len(), 2);
-        assert!(out.get(&11).map(|r| r.y).unwrap_or_default() > out.get(&10).map(|r| r.y).unwrap_or_default());
+        assert!(
+            out.get(&11).map(|r| r.y).unwrap_or_default()
+                > out.get(&10).map(|r| r.y).unwrap_or_default()
+        );
     }
 
     #[test]

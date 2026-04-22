@@ -119,7 +119,7 @@ impl HardwareInputManager {
             TouchEvent::Up => {
                 self.detect_gesture(point.position);
                 self.touch_points.retain(|p| p.id != point.id);
-                
+
                 if self.touch_points.is_empty() {
                     self.touch_start_time = None;
                     self.touch_start_position = None;
@@ -133,8 +133,9 @@ impl HardwareInputManager {
     }
 
     fn detect_gesture(&mut self, end_position: Point) {
-        if let (Some(start_time), Some(start_pos)) = 
-            (self.touch_start_time, self.touch_start_position) {
+        if let (Some(start_time), Some(start_pos)) =
+            (self.touch_start_time, self.touch_start_position)
+        {
             let duration = start_time.elapsed();
             let dx = end_position.x - start_pos.x;
             let dy = end_position.y - start_pos.y;
@@ -148,7 +149,9 @@ impl HardwareInputManager {
                     rotation: 0.0,
                     velocity: (0.0, 0.0),
                 });
-            } else if duration >= self.long_press_threshold && distance < self.swipe_threshold as f32 {
+            } else if duration >= self.long_press_threshold
+                && distance < self.swipe_threshold as f32
+            {
                 self.gesture_buffer.push_back(GestureEvent {
                     gesture_type: GestureType::LongPress,
                     center: end_position,
@@ -176,8 +179,10 @@ impl HardwareInputManager {
                     center: end_position,
                     scale: 1.0,
                     rotation: 0.0,
-                    velocity: (dx as f32 / duration.as_secs_f32(),
-                              dy as f32 / duration.as_secs_f32()),
+                    velocity: (
+                        dx as f32 / duration.as_secs_f32(),
+                        dy as f32 / duration.as_secs_f32(),
+                    ),
                 });
             }
         }
@@ -257,7 +262,7 @@ impl InputFilter {
         let filtered_position = if let Some(last) = self.last_position {
             let dx = point.position.x - last.x;
             let dy = point.position.y - last.y;
-            
+
             if dx.abs() < self.dead_zone && dy.abs() < self.dead_zone {
                 return None;
             }
@@ -297,8 +302,7 @@ mod tests {
 
     #[test]
     fn test_touch_point() {
-        let point = TouchPoint::new(1, 100, 200)
-            .with_pressure(0.8);
+        let point = TouchPoint::new(1, 100, 200).with_pressure(0.8);
 
         assert_eq!(point.id, 1);
         assert_eq!(point.position.x, 100);

@@ -2,8 +2,6 @@
 
 /// Action/command system.
 pub mod action;
-/// Global shortcut system for keyboard shortcuts.
-pub mod shortcut;
 #[cfg(not(feature = "embedded"))]
 /// C ABI bindings for desktop runtime.
 pub mod bindings;
@@ -13,17 +11,26 @@ pub mod clipboard;
 pub mod control_backend;
 /// Core types and shared contracts.
 pub mod core;
-/// Event types and dispatch helpers.
-pub mod event;
 /// Embedded system optimizations and support.
 pub mod embedded;
+/// Event types and dispatch helpers.
+pub mod event;
+/// Hardware-adaptive GPU management.
+pub mod gpu;
 #[cfg(not(feature = "embedded"))]
 /// Internationalization module for desktop runtime.
 pub mod i18n;
 /// Layout managers.
 pub mod layout;
+/// Memory management utilities.
+pub mod memory;
+#[cfg(feature = "advanced-widgets")]
+/// Menu system configuration with hardware-adaptive features.
+pub mod menu_config;
 /// Object tree and object utilities.
 pub mod object;
+/// Performance monitoring and optimization.
+pub mod performance;
 /// Platform abstraction and backend adapters.
 pub mod platform;
 /// Quality management for adaptive rendering.
@@ -32,31 +39,24 @@ pub mod quality;
 pub mod render;
 /// Runtime render-engine abstraction.
 pub mod render_engine;
+/// Global shortcut system for keyboard shortcuts.
+pub mod shortcut;
 /// Signal-slot utilities.
 pub mod signal;
 /// Style system primitives.
 pub mod style;
+/// Test infrastructure and utilities.
+pub mod test;
 #[cfg(not(feature = "embedded"))]
 /// Theme management for desktop runtime.
 pub mod theme;
-/// Test infrastructure and utilities.
-pub mod test;
+/// Web view and engine components.
+pub mod web;
 /// Optional WGPU GPU acceleration backend.
 /// Optional WGPU GPU acceleration backend.
 pub mod wgpu_backend;
 /// Widget definitions and widget helpers.
 pub mod widget;
-/// Web view and engine components.
-pub mod web;
-/// Memory management utilities.
-pub mod memory;
-/// Performance monitoring and optimization.
-pub mod performance;
-/// Hardware-adaptive GPU management.
-pub mod gpu;
-#[cfg(feature = "advanced-widgets")]
-/// Menu system configuration with hardware-adaptive features.
-pub mod menu_config;
 // Re-export all widget types for convenience
 pub use widget::*;
 #[cfg(not(feature = "embedded"))]

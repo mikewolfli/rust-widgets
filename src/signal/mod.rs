@@ -24,14 +24,14 @@ mod tests {
         let sum = Arc::new(AtomicUsize::new(0));
 
         let sum_a = Arc::clone(&sum);
-            signal.connect(move |value: Arc<u32>| {
-                sum_a.fetch_add(*value as usize, Ordering::SeqCst);
-            });
+        signal.connect(move |value: Arc<u32>| {
+            sum_a.fetch_add(*value as usize, Ordering::SeqCst);
+        });
 
         let sum_b = Arc::clone(&sum);
-            signal.connect(move |value: Arc<u32>| {
-                sum_b.fetch_add((*value as usize) * 2, Ordering::SeqCst);
-            });
+        signal.connect(move |value: Arc<u32>| {
+            sum_b.fetch_add((*value as usize) * 2, Ordering::SeqCst);
+        });
 
         signal.emit(3);
         assert_eq!(sum.load(Ordering::SeqCst), 9);

@@ -546,7 +546,14 @@ impl Platform for HarmonyPlatform {
         0
     }
 
-    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
+    fn create_color_dialog(
+        &self,
+        _parent: u64,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> u64 {
         eprintln!("[rust_widgets][harmony] create_color_dialog unsupported in preview backend");
         0
     }

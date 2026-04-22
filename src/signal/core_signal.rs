@@ -144,7 +144,11 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
-        self.inner.slots.write().expect("signal lock poisoned").clear();
+        self.inner
+            .slots
+            .write()
+            .expect("signal lock poisoned")
+            .clear();
     }
 
     /// Emit a cloned value to all connected slots.

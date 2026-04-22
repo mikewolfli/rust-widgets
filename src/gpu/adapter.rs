@@ -462,11 +462,11 @@ pub fn detect_browser_forced_integrated_gpu() -> bool {
 #[cfg(target_os = "windows")]
 pub fn detect_windows_browser_forced_igpu() -> Option<String> {
     use std::env;
-    
+
     // Check if we're in a browser environment on Windows
     // Common browser executables that force iGPU
     let browser_processes = ["chrome.exe", "firefox.exe", "msedge.exe", "opera.exe"];
-    
+
     if let Ok(parent) = env::var("RW_PARENT_PROCESS") {
         for browser in &browser_processes {
             if parent.to_lowercase().contains(browser) {
@@ -474,14 +474,14 @@ pub fn detect_windows_browser_forced_igpu() -> Option<String> {
             }
         }
     }
-    
+
     // Check for Electron apps
     if let Ok(electron) = env::var("RW_ELECTRON_APP") {
         if !electron.is_empty() {
             return Some(format!("Detected Electron app: {}", electron));
         }
     }
-    
+
     None
 }
 

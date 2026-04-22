@@ -554,7 +554,14 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(MobileHandleKind::Window, "color_dialog", x, y, width, height)
+        self.insert_widget(
+            MobileHandleKind::Window,
+            "color_dialog",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn create_font_dialog(
@@ -576,7 +583,15 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::LineEdit, "spin_box", x, y, width, height)
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::LineEdit,
+            "spin_box",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn create_list_view(
@@ -587,7 +602,15 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::ListBox, "list_view", x, y, width, height)
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::ListBox,
+            "list_view",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn create_scroll_area(
@@ -598,7 +621,15 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Panel, "scroll_area", x, y, width, height)
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::Panel,
+            "scroll_area",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 }
 

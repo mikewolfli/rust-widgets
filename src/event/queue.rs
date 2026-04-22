@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Mutex, Condvar};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
@@ -32,7 +32,7 @@ impl<T, const N: usize> FixedSizeQueue<T, N> {
         if self.len >= N {
             return Err(QueueError::Full);
         }
-        
+
         self.buffer[self.tail] = Some(item);
         self.tail = (self.tail + 1) % N;
         self.len += 1;
@@ -43,7 +43,7 @@ impl<T, const N: usize> FixedSizeQueue<T, N> {
         if self.len == 0 {
             return None;
         }
-        
+
         let item = self.buffer[self.head].take();
         self.head = (self.head + 1) % N;
         self.len -= 1;
@@ -115,7 +115,7 @@ impl<T> RingBuffer<T> {
         if self.len >= self.buffer.len() {
             return Err(QueueError::Full);
         }
-        
+
         self.buffer[self.tail] = Some(item);
         self.tail = (self.tail + 1) % self.buffer.len();
         self.len += 1;
@@ -131,7 +131,7 @@ impl<T> RingBuffer<T> {
             self.len += 1;
             None
         };
-        
+
         self.buffer[self.tail] = Some(item);
         self.tail = (self.tail + 1) % self.buffer.len();
         overwritten
@@ -141,7 +141,7 @@ impl<T> RingBuffer<T> {
         if self.len == 0 {
             return None;
         }
-        
+
         let item = self.buffer[self.head].take();
         self.head = (self.head + 1) % self.buffer.len();
         self.len -= 1;
@@ -291,7 +291,7 @@ impl<T> BlockingQueue<T> {
         if *self.closed.lock().unwrap() {
             return Err(QueueError::Closed);
         }
-        
+
         let mut queue = self.queue.lock().unwrap();
         queue.push_back(item);
         self.condvar.notify_one();
@@ -300,16 +300,16 @@ impl<T> BlockingQueue<T> {
 
     pub fn pop(&self) -> Result<T, QueueError> {
         let mut queue = self.queue.lock().unwrap();
-        
+
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            
+
             if *self.closed.lock().unwrap() {
                 return Err(QueueError::Closed);
             }
-            
+
             queue = self.condvar.wait(queue).unwrap();
         }
     }
@@ -317,21 +317,21 @@ impl<T> BlockingQueue<T> {
     pub fn pop_timeout(&self, timeout: Duration) -> Result<T, QueueError> {
         let start = Instant::now();
         let mut queue = self.queue.lock().unwrap();
-        
+
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            
+
             if *self.closed.lock().unwrap() {
                 return Err(QueueError::Closed);
             }
-            
+
             let elapsed = start.elapsed();
             if elapsed >= timeout {
                 return Err(QueueError::Empty);
             }
-            
+
             let remaining = timeout - elapsed;
             let result = self.condvar.wait_timeout(queue, remaining).unwrap();
             queue = result.0;
@@ -392,14 +392,14 @@ impl<T> BoundedQueue<T> {
 
     pub fn push(&self, item: T) -> Result<(), QueueError> {
         let mut queue = self.queue.lock().unwrap();
-        
+
         while queue.len() >= self.capacity {
             if *self.closed.lock().unwrap() {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar_not_full.wait(queue).unwrap();
         }
-        
+
         queue.push_back(item);
         self.condvar_not_empty.notify_one();
         Ok(())
@@ -409,13 +409,13 @@ impl<T> BoundedQueue<T> {
         if *self.closed.lock().unwrap() {
             return Err(QueueError::Closed);
         }
-        
+
         let mut queue = self.queue.lock().unwrap();
-        
+
         if queue.len() >= self.capacity {
             return Err(QueueError::Full);
         }
-        
+
         queue.push_back(item);
         self.condvar_not_empty.notify_one();
         Ok(())
@@ -423,17 +423,17 @@ impl<T> BoundedQueue<T> {
 
     pub fn pop(&self) -> Result<T, QueueError> {
         let mut queue = self.queue.lock().unwrap();
-        
+
         loop {
             if let Some(item) = queue.pop_front() {
                 self.condvar_not_full.notify_one();
                 return Ok(item);
             }
-            
+
             if *self.closed.lock().unwrap() {
                 return Err(QueueError::Closed);
             }
-            
+
             queue = self.condvar_not_empty.wait(queue).unwrap();
         }
     }
@@ -487,16 +487,16 @@ mod tests {
     #[test]
     fn test_fixed_size_queue() {
         let mut queue: FixedSizeQueue<i32, 4> = FixedSizeQueue::new();
-        
+
         assert!(queue.is_empty());
         assert_eq!(queue.capacity(), 4);
-        
+
         queue.push(1).unwrap();
         queue.push(2).unwrap();
         queue.push(3).unwrap();
-        
+
         assert_eq!(queue.len(), 3);
-        
+
         assert_eq!(queue.pop(), Some(1));
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));
@@ -506,13 +506,13 @@ mod tests {
     #[test]
     fn test_ring_buffer() {
         let mut buffer = RingBuffer::new(3);
-        
+
         buffer.push(1).unwrap();
         buffer.push(2).unwrap();
         buffer.push(3).unwrap();
-        
+
         assert!(buffer.push(4).is_err());
-        
+
         let overwritten = buffer.push_overwrite(4);
         assert_eq!(overwritten, Some(1));
         assert_eq!(buffer.pop(), Some(2));
@@ -521,11 +521,11 @@ mod tests {
     #[test]
     fn test_priority_queue() {
         let mut queue: PriorityQueue<&str> = PriorityQueue::new();
-        
+
         queue.push("low", 7);
         queue.push("high", 0);
         queue.push("medium", 4);
-        
+
         assert_eq!(queue.pop(), Some("high"));
         assert_eq!(queue.pop(), Some("medium"));
         assert_eq!(queue.pop(), Some("low"));

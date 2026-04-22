@@ -695,4 +695,3 @@ mod tests {
         assert_eq!(pages, vec![1, 3, 5]);
     }
 }
-

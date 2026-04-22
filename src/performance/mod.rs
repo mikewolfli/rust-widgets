@@ -175,10 +175,7 @@ impl DirtyRegionTracker {
     }
 
     pub fn get_regions_for_rect(&self, rect: &Rect) -> Vec<&DirtyRegion> {
-        self.regions
-            .iter()
-            .filter(|r| r.intersects(rect))
-            .collect()
+        self.regions.iter().filter(|r| r.intersects(rect)).collect()
     }
 
     pub fn clip_to(&mut self, clip_rect: &Rect) {
@@ -191,7 +188,7 @@ impl DirtyRegionTracker {
     pub fn optimize(&mut self) {
         if self.regions.len() > self.max_regions {
             self.merge();
-            
+
             if self.regions.len() > self.max_regions {
                 self.regions.sort_by(|a, b| b.priority.cmp(&a.priority));
                 self.regions.truncate(self.max_regions);
@@ -252,7 +249,7 @@ impl UpdateBatcher {
         tracker.merge();
 
         self.last_batch = Some(std::time::Instant::now());
-        
+
         tracker.regions.into_iter().map(|r| r.rect).collect()
     }
 
@@ -342,15 +339,15 @@ mod tests {
     #[test]
     fn test_dirty_region_tracker() {
         let mut tracker = DirtyRegionTracker::new();
-        
+
         tracker.add(Rect::new(0, 0, 100, 100));
         tracker.add(Rect::new(50, 50, 100, 100));
-        
+
         assert_eq!(tracker.len(), 2);
-        
+
         tracker.merge();
         assert_eq!(tracker.len(), 1);
-        
+
         let bounding = tracker.get_bounding_rect().unwrap();
         assert_eq!(bounding.x, 0);
         assert_eq!(bounding.y, 0);
@@ -361,12 +358,12 @@ mod tests {
     #[test]
     fn test_update_batcher() {
         let mut batcher = UpdateBatcher::new(100);
-        
+
         batcher.add(Rect::new(0, 0, 10, 10));
         batcher.add(Rect::new(20, 20, 10, 10));
-        
+
         assert_eq!(batcher.len(), 2);
-        
+
         let rects = batcher.flush();
         assert!(!rects.is_empty());
         assert!(batcher.is_empty());

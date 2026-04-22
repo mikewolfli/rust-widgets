@@ -93,8 +93,12 @@ impl FlowLayout {
         let content_rect = Rect::new(
             available_rect.x + self.config.padding,
             available_rect.y + self.config.padding,
-            available_rect.width.saturating_sub(2 * self.config.padding as u32),
-            available_rect.height.saturating_sub(2 * self.config.padding as u32),
+            available_rect
+                .width
+                .saturating_sub(2 * self.config.padding as u32),
+            available_rect
+                .height
+                .saturating_sub(2 * self.config.padding as u32),
         );
 
         match self.config.direction {
@@ -114,7 +118,9 @@ impl FlowLayout {
             let child_width = size.width as i32;
             let child_height = size.height as i32;
 
-            if self.config.wrap && current_x + child_width > content_rect.x + content_rect.width as i32 {
+            if self.config.wrap
+                && current_x + child_width > content_rect.x + content_rect.width as i32
+            {
                 current_x = content_rect.x;
                 current_y += row_height + self.config.spacing;
                 row_height = 0;
@@ -150,7 +156,9 @@ impl FlowLayout {
             let child_width = size.width as i32;
             let child_height = size.height as i32;
 
-            if self.config.wrap && current_y + child_height > content_rect.y + content_rect.height as i32 {
+            if self.config.wrap
+                && current_y + child_height > content_rect.y + content_rect.height as i32
+            {
                 current_y = content_rect.y;
                 current_x += column_width + self.config.spacing;
                 column_width = 0;
@@ -308,7 +316,6 @@ impl Default for FlowLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn test_flow_layout_horizontal() {

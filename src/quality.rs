@@ -319,12 +319,14 @@ impl QualityManager {
     }
 
     /// Creates a new quality manager with the specified configuration and GPU capability.
-    pub fn with_config_and_capability(config: QualityConfig, gpu_capability: GpuCapability) -> Self {
+    pub fn with_config_and_capability(
+        config: QualityConfig,
+        gpu_capability: GpuCapability,
+    ) -> Self {
         let config = config.normalized();
-        let initial_quality = gpu_capability.recommended_initial_quality().clamp(
-            config.min_quality,
-            config.max_quality,
-        );
+        let initial_quality = gpu_capability
+            .recommended_initial_quality()
+            .clamp(config.min_quality, config.max_quality);
 
         let frame_monitor = FrameTimeMonitor::new(config.target_frame_rate);
 
@@ -417,7 +419,8 @@ impl QualityManager {
     /// Updates the quality configuration.
     pub fn set_config(&mut self, config: QualityConfig) {
         self.config = config.normalized();
-        self.frame_monitor.set_target_frame_rate(self.config.target_frame_rate);
+        self.frame_monitor
+            .set_target_frame_rate(self.config.target_frame_rate);
     }
 
     /// Returns the GPU capability.
@@ -469,12 +472,24 @@ mod tests {
     #[test]
     fn quality_level_clamp() {
         // Test clamp behavior with valid min <= max
-        assert_eq!(QualityLevel::High.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::High);
-        assert_eq!(QualityLevel::Medium.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::Medium);
-        assert_eq!(QualityLevel::Low.clamp(QualityLevel::Low, QualityLevel::High), QualityLevel::Low);
-        
+        assert_eq!(
+            QualityLevel::High.clamp(QualityLevel::Low, QualityLevel::High),
+            QualityLevel::High
+        );
+        assert_eq!(
+            QualityLevel::Medium.clamp(QualityLevel::Low, QualityLevel::High),
+            QualityLevel::Medium
+        );
+        assert_eq!(
+            QualityLevel::Low.clamp(QualityLevel::Low, QualityLevel::High),
+            QualityLevel::Low
+        );
+
         // Test clamp with same min and max
-        assert_eq!(QualityLevel::Medium.clamp(QualityLevel::Medium, QualityLevel::Medium), QualityLevel::Medium);
+        assert_eq!(
+            QualityLevel::Medium.clamp(QualityLevel::Medium, QualityLevel::Medium),
+            QualityLevel::Medium
+        );
     }
 
     #[test]
@@ -615,7 +630,10 @@ mod tests {
             is_integrated: true,
             performance_tier: 3,
         };
-        assert_eq!(medium_tier.recommended_initial_quality(), QualityLevel::Medium);
+        assert_eq!(
+            medium_tier.recommended_initial_quality(),
+            QualityLevel::Medium
+        );
 
         let low_tier = GpuCapability {
             supports_high_quality: false,

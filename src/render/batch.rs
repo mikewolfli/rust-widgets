@@ -87,11 +87,13 @@ impl RenderBatch {
     }
 
     pub fn add_rect(&mut self, rect: Rect, color: Color) {
-        self.items.push(RenderItem::new(RenderCommand::FillRect, rect, color));
+        self.items
+            .push(RenderItem::new(RenderCommand::FillRect, rect, color));
     }
 
     pub fn add_stroke_rect(&mut self, rect: Rect, color: Color) {
-        self.items.push(RenderItem::new(RenderCommand::StrokeRect, rect, color));
+        self.items
+            .push(RenderItem::new(RenderCommand::StrokeRect, rect, color));
     }
 
     pub fn add_line(&mut self, start: Point, end: Point, color: Color) {
@@ -101,7 +103,8 @@ impl RenderBatch {
             (end.x - start.x).abs() as u32 + 1,
             (end.y - start.y).abs() as u32 + 1,
         );
-        self.items.push(RenderItem::new(RenderCommand::DrawLine, rect, color));
+        self.items
+            .push(RenderItem::new(RenderCommand::DrawLine, rect, color));
     }
 
     pub fn set_clip(&mut self, rect: Rect) {
@@ -139,12 +142,13 @@ impl RenderBatch {
 
         for item in self.items.drain(..) {
             if let Some(ref mut curr) = current {
-                if curr.command == item.command 
-                    && curr.color == item.color 
-                    && curr.layer == item.layer 
-                    && curr.z_index == item.z_index 
-                    && curr.command == RenderCommand::FillRect 
-                    && curr.rect.intersects(&item.rect) {
+                if curr.command == item.command
+                    && curr.color == item.color
+                    && curr.layer == item.layer
+                    && curr.z_index == item.z_index
+                    && curr.command == RenderCommand::FillRect
+                    && curr.rect.intersects(&item.rect)
+                {
                     curr.rect = curr.rect.union(&item.rect);
                 } else {
                     merged.push(curr.clone());
@@ -227,7 +231,7 @@ impl BatchBuilder {
 
     pub fn add(&mut self, item: RenderItem) {
         let layer = item.layer;
-        
+
         if self.current_batch.is_none() {
             self.begin_batch(layer);
         }
@@ -253,11 +257,11 @@ impl BatchBuilder {
 
     pub fn build(mut self) -> Vec<RenderBatch> {
         self.end_batch();
-        
+
         for batch in &mut self.batches {
             batch.optimize();
         }
-        
+
         self.batches.sort_by_key(|b| b.layer);
         self.batches
     }
@@ -365,10 +369,10 @@ mod tests {
     #[test]
     fn test_batch_builder() {
         let mut builder = BatchBuilder::new();
-        
+
         builder.add_rect(Rect::new(0, 0, 100, 100), Color::RED, 0);
         builder.add_rect(Rect::new(50, 50, 100, 100), Color::BLUE, 0);
-        
+
         let batches = builder.build();
         assert!(!batches.is_empty());
     }
@@ -376,12 +380,12 @@ mod tests {
     #[test]
     fn test_render_batch() {
         let mut batch = RenderBatch::new(0);
-        
+
         batch.add_rect(Rect::new(0, 0, 50, 50), Color::RED);
         batch.add_rect(Rect::new(60, 60, 50, 50), Color::BLUE);
-        
+
         assert_eq!(batch.len(), 2);
-        
+
         batch.optimize();
         assert_eq!(batch.len(), 2);
     }

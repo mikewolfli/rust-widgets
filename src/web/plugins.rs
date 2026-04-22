@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::any::Any;
+use std::collections::HashMap;
 
 pub type PluginId = u64;
 
@@ -55,12 +55,12 @@ impl PluginPermission {
 pub trait Plugin: Send + Sync {
     fn info(&self) -> &PluginInfo;
     fn info_mut(&mut self) -> &mut PluginInfo;
-    
+
     fn on_load(&mut self) -> Result<(), PluginError>;
     fn on_unload(&mut self);
     fn on_enable(&mut self) -> Result<(), PluginError>;
     fn on_disable(&mut self);
-    
+
     fn handle_message(&mut self, message: &str) -> Option<String>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -74,7 +74,10 @@ pub struct PluginError {
 
 impl PluginError {
     pub fn new(message: String) -> Self {
-        Self { message, code: None }
+        Self {
+            message,
+            code: None,
+        }
     }
 
     pub fn with_code(message: String, code: u32) -> Self {
@@ -115,12 +118,12 @@ impl PluginManager {
     pub fn register(&mut self, mut plugin: Box<dyn Plugin>) -> Result<PluginId, PluginError> {
         let id = self.next_id;
         self.next_id += 1;
-        
+
         plugin.info_mut().id = id;
         plugin.info_mut().state = PluginState::Installed;
-        
+
         plugin.on_load()?;
-        
+
         self.plugins.insert(id, plugin);
         Ok(id)
     }
@@ -140,7 +143,9 @@ impl PluginManager {
 
     pub fn enable(&mut self, id: PluginId) -> Result<(), PluginError> {
         if let Some(plugin) = self.plugins.get_mut(&id) {
-            if plugin.info().state == PluginState::Disabled || plugin.info().state == PluginState::Installed {
+            if plugin.info().state == PluginState::Disabled
+                || plugin.info().state == PluginState::Installed
+            {
                 plugin.on_enable()?;
                 plugin.info_mut().state = PluginState::Enabled;
                 Ok(())

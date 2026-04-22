@@ -179,7 +179,6 @@ impl LightweightStyle {
             font_size: 10,
         }
     }
-
 }
 
 impl Default for LightweightStyle {
@@ -294,19 +293,21 @@ mod tests {
     #[test]
     fn test_widget_factory() {
         use crate::core::Rect;
-        
-        let mut factory = LightweightWidgetFactory::new()
-            .with_max_widgets(2);
+
+        let mut factory = LightweightWidgetFactory::new().with_max_widgets(2);
 
         assert!(factory.can_create());
 
-        let widget1 = factory.create(|| crate::widget::Label::new("Test 1".to_string(), Rect::new(0, 0, 100, 30)));
+        let widget1 = factory
+            .create(|| crate::widget::Label::new("Test 1".to_string(), Rect::new(0, 0, 100, 30)));
         assert!(widget1.is_some());
 
-        let widget2 = factory.create(|| crate::widget::Label::new("Test 2".to_string(), Rect::new(0, 0, 100, 30)));
+        let widget2 = factory
+            .create(|| crate::widget::Label::new("Test 2".to_string(), Rect::new(0, 0, 100, 30)));
         assert!(widget2.is_some());
 
-        let widget3 = factory.create(|| crate::widget::Label::new("Test 3".to_string(), Rect::new(0, 0, 100, 30)));
+        let widget3 = factory
+            .create(|| crate::widget::Label::new("Test 3".to_string(), Rect::new(0, 0, 100, 30)));
         assert!(widget3.is_none());
 
         assert_eq!(factory.widget_count(), 2);

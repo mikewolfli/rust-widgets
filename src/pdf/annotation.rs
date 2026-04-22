@@ -222,12 +222,9 @@ impl AnnotationManager {
     pub fn add_annotation(&mut self, annotation: Annotation) {
         let id = annotation.id.clone();
         let page = annotation.page;
-        
+
         self.annotations.insert(id.clone(), annotation);
-        self.page_annotations
-            .entry(page)
-            .or_default()
-            .push(id);
+        self.page_annotations.entry(page).or_default().push(id);
     }
 
     pub fn remove_annotation(&mut self, id: &str) -> Option<Annotation> {
@@ -313,19 +310,19 @@ mod tests {
     #[test]
     fn test_annotation_manager() {
         let mut manager = AnnotationManager::new();
-        
+
         let annotation = Annotation::new(
             "test-1".to_string(),
             1,
             AnnotationType::Highlight,
             Rect::new(100, 100, 200, 50),
         );
-        
+
         manager.add_annotation(annotation);
-        
+
         assert_eq!(manager.annotation_count(), 1);
         assert!(manager.get_annotation("test-1").is_some());
-        
+
         let page_annotations = manager.get_page_annotations(1);
         assert_eq!(page_annotations.len(), 1);
     }

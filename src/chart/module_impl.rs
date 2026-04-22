@@ -19,7 +19,7 @@
 //! The conversion is handled automatically by the chart rendering code, so you can work with
 //! natural data coordinates when creating charts.
 
-use crate::core::{Point, Rect, Color};
+use crate::core::{Color, Point, Rect};
 use std::fs;
 
 /// Chart data point
@@ -166,19 +166,25 @@ pub fn render_chart_to_svg_file(
 
 impl ChartContext for MemoryChartContext {
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, _color: Color) {
-        self.commands.push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
+        self.commands
+            .push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
     }
 
     fn draw_rect(&mut self, rect: Rect, _color: Color) {
-        self.commands.push(format!("rect:{},{},{},{}", rect.x, rect.y, rect.width, rect.height));
+        self.commands.push(format!(
+            "rect:{},{},{},{}",
+            rect.x, rect.y, rect.width, rect.height
+        ));
     }
 
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, _color: Color) {
-        self.commands.push(format!("text:{text}@{x},{y}:{font_size}"));
+        self.commands
+            .push(format!("text:{text}@{x},{y}:{font_size}"));
     }
 
     fn draw_circle(&mut self, center: Point, radius: f32, _color: Color) {
-        self.commands.push(format!("circle:{},{}:{radius}", center.x, center.y));
+        self.commands
+            .push(format!("circle:{},{}:{radius}", center.x, center.y));
     }
 }
 
@@ -186,22 +192,22 @@ impl ChartContext for MemoryChartContext {
 pub trait Chart {
     /// Add a series
     fn add_series(&mut self, series: ChartSeries);
-    
+
     /// Remove a series
     fn remove_series(&mut self, name: &str);
-    
+
     /// Clear all series
     fn clear_series(&mut self);
-    
+
     /// Set chart title
     fn set_title(&mut self, title: String);
-    
+
     /// Set x-axis label
     fn set_x_axis_label(&mut self, label: String);
-    
+
     /// Set y-axis label
     fn set_y_axis_label(&mut self, label: String);
-    
+
     /// Draw the chart
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext);
 }
@@ -210,13 +216,13 @@ pub trait Chart {
 pub trait ChartContext {
     /// Draw line
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color);
-    
+
     /// Draw rectangle
     fn draw_rect(&mut self, rect: Rect, color: Color);
-    
+
     /// Draw text
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color);
-    
+
     /// Draw circle
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
 }
@@ -242,7 +248,12 @@ struct CartesianLayout {
     legend_y: f32,
 }
 
-fn compute_cartesian_layout(rect: Rect, has_x_label: bool, has_y_label: bool, legend_items: usize) -> CartesianLayout {
+fn compute_cartesian_layout(
+    rect: Rect,
+    has_x_label: bool,
+    has_y_label: bool,
+    legend_items: usize,
+) -> CartesianLayout {
     let left_margin = if has_y_label { 64.0 } else { 48.0 };
     let top_margin = 32.0;
     let bottom_margin = if has_x_label { 52.0 } else { 36.0 };
@@ -264,7 +275,12 @@ fn compute_cartesian_layout(rect: Rect, has_x_label: bool, has_y_label: bool, le
 }
 
 fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
-    let axis_color = Color { r: 90, g: 90, b: 90, a: 255 };
+    let axis_color = Color {
+        r: 90,
+        g: 90,
+        b: 90,
+        a: 255,
+    };
     context.draw_line(
         layout.plot_x,
         layout.plot_y + layout.plot_h,
@@ -292,14 +308,36 @@ fn draw_y_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
-    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
-    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    let axis_color = Color {
+        r: 150,
+        g: 150,
+        b: 150,
+        a: 255,
+    };
+    let label_color = Color {
+        r: 80,
+        g: 80,
+        b: 80,
+        a: 255,
+    };
+    let grid_color = Color {
+        r: 210,
+        g: 210,
+        b: 210,
+        a: 255,
+    };
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
         if draw_grid {
-            context.draw_line(layout.plot_x, y, layout.plot_x + layout.plot_w, y, 1.0, grid_color);
+            context.draw_line(
+                layout.plot_x,
+                y,
+                layout.plot_x + layout.plot_w,
+                y,
+                1.0,
+                grid_color,
+            );
         }
         context.draw_line(layout.plot_x - 4.0, y, layout.plot_x, y, 1.0, axis_color);
         let value = min_y + (max_y - min_y) * t as f64;
@@ -322,14 +360,36 @@ fn draw_x_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
-    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
-    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    let axis_color = Color {
+        r: 150,
+        g: 150,
+        b: 150,
+        a: 255,
+    };
+    let label_color = Color {
+        r: 80,
+        g: 80,
+        b: 80,
+        a: 255,
+    };
+    let grid_color = Color {
+        r: 210,
+        g: 210,
+        b: 210,
+        a: 255,
+    };
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
         if draw_grid {
-            context.draw_line(x, layout.plot_y, x, layout.plot_y + layout.plot_h, 1.0, grid_color);
+            context.draw_line(
+                x,
+                layout.plot_y,
+                x,
+                layout.plot_y + layout.plot_h,
+                1.0,
+                grid_color,
+            );
         }
         context.draw_line(
             x,
@@ -362,13 +422,25 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
 
     let mut cursor_y = layout.legend_y;
     for item in series.iter().take(max_items) {
-        context.draw_line(layout.legend_x, cursor_y, layout.legend_x + 20.0, cursor_y, 3.0, item.color);
+        context.draw_line(
+            layout.legend_x,
+            cursor_y,
+            layout.legend_x + 20.0,
+            cursor_y,
+            3.0,
+            item.color,
+        );
         context.draw_text(
             &truncate_legend_label(&item.name, max_label_chars),
             layout.legend_x + 26.0,
             cursor_y + 4.0,
             11.0,
-            Color { r: 40, g: 40, b: 40, a: 255 },
+            Color {
+                r: 40,
+                g: 40,
+                b: 40,
+                a: 255,
+            },
         );
         cursor_y += 18.0;
     }
@@ -380,7 +452,12 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
             layout.legend_x + 26.0,
             cursor_y + 4.0,
             10.0,
-            Color { r: 90, g: 90, b: 90, a: 255 },
+            Color {
+                r: 90,
+                g: 90,
+                b: 90,
+                a: 255,
+            },
         );
     }
 }
@@ -438,36 +515,52 @@ impl Chart for LineChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-    
+
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-    
+
     fn clear_series(&mut self) {
         self.series.clear();
     }
-    
+
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-    
+
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
-    
+
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-    
-    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 230, g: 230, b: 230, a: 255 });
-        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
 
-        let visible_series: Vec<&ChartSeries> = self
-            .series
-            .iter()
-            .filter(|series| series.visible)
-            .collect();
+    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
+        context.draw_rect(
+            rect,
+            Color {
+                r: 230,
+                g: 230,
+                b: 230,
+                a: 255,
+            },
+        );
+        context.draw_text(
+            &self.title,
+            rect.x as f32 + 8.0,
+            rect.y as f32 + 16.0,
+            14.0,
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+                a: 255,
+            },
+        );
+
+        let visible_series: Vec<&ChartSeries> =
+            self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
@@ -494,8 +587,22 @@ impl Chart for LineChart {
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
 
-        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
-        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+        draw_x_ticks(
+            context,
+            &layout,
+            min_x,
+            max_x,
+            self.x_tick_count,
+            self.show_grid,
+        );
+        draw_y_ticks(
+            context,
+            &layout,
+            min_y,
+            max_y,
+            self.y_tick_count,
+            self.show_grid,
+        );
 
         if !self.x_axis_label.is_empty() {
             context.draw_text(
@@ -503,7 +610,12 @@ impl Chart for LineChart {
                 layout.plot_x + layout.plot_w * 0.5 - 28.0,
                 layout.plot_y + layout.plot_h + 36.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -513,7 +625,12 @@ impl Chart for LineChart {
                 layout.plot_x - 56.0,
                 layout.plot_y - 10.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -525,17 +642,12 @@ impl Chart for LineChart {
                 let p1 = &series.data[i - 1];
                 let p2 = &series.data[i];
                 let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y1 = layout.plot_y + layout.plot_h - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
+                let y1 = layout.plot_y + layout.plot_h
+                    - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y2 = layout.plot_y + layout.plot_h - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    2.0,
-                    series.color,
-                );
+                let y2 = layout.plot_y + layout.plot_h
+                    - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
+                context.draw_line(x1, y1, x2, y2, 2.0, series.color);
             }
         }
 
@@ -594,35 +706,51 @@ impl Chart for BarChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-    
+
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-    
+
     fn clear_series(&mut self) {
         self.series.clear();
     }
-    
+
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-    
+
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-    
-    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
-        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
 
-        let visible_series: Vec<&ChartSeries> = self
-            .series
-            .iter()
-            .filter(|series| series.visible)
-            .collect();
+    fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
+        context.draw_rect(
+            rect,
+            Color {
+                r: 240,
+                g: 240,
+                b: 240,
+                a: 255,
+            },
+        );
+        context.draw_text(
+            &self.title,
+            rect.x as f32 + 8.0,
+            rect.y as f32 + 16.0,
+            14.0,
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+                a: 255,
+            },
+        );
+
+        let visible_series: Vec<&ChartSeries> =
+            self.series.iter().filter(|series| series.visible).collect();
         if visible_series.is_empty() {
             return;
         }
@@ -651,8 +779,22 @@ impl Chart for BarChart {
         }
         let span_x = (max_x - min_x).max(1.0);
 
-        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
-        draw_y_ticks(context, &layout, 0.0, max_y, self.y_tick_count, self.show_grid);
+        draw_x_ticks(
+            context,
+            &layout,
+            min_x,
+            max_x,
+            self.x_tick_count,
+            self.show_grid,
+        );
+        draw_y_ticks(
+            context,
+            &layout,
+            0.0,
+            max_y,
+            self.y_tick_count,
+            self.show_grid,
+        );
 
         if !self.x_axis_label.is_empty() {
             context.draw_text(
@@ -660,7 +802,12 @@ impl Chart for BarChart {
                 layout.plot_x + layout.plot_w * 0.5 - 28.0,
                 layout.plot_y + layout.plot_h + 36.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -670,7 +817,12 @@ impl Chart for BarChart {
                 layout.plot_x - 56.0,
                 layout.plot_y - 10.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -679,7 +831,8 @@ impl Chart for BarChart {
 
         for (series_index, series) in visible_series.iter().enumerate() {
             for point in &series.data {
-                let base_x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * (layout.plot_w - bar_width);
+                let base_x = layout.plot_x
+                    + (((point.x - min_x) / span_x) as f32) * (layout.plot_w - bar_width);
                 let x = base_x + series_index as f32 * bar_width;
                 let bar_h = ((point.y / max_y) * layout.plot_h as f64) as u32;
                 let bar = Rect {
@@ -722,29 +875,40 @@ impl Chart for PieChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-    
+
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-    
+
     fn clear_series(&mut self) {
         self.series.clear();
     }
-    
+
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-    
+
     fn set_x_axis_label(&mut self, _label: String) {
         // Not used in pie chart
     }
-    
+
     fn set_y_axis_label(&mut self, _label: String) {
         // Not used in pie chart
     }
-    
+
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
+        context.draw_text(
+            &self.title,
+            rect.x as f32 + 8.0,
+            rect.y as f32 + 16.0,
+            14.0,
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+                a: 255,
+            },
+        );
         let center = Point {
             x: rect.x + rect.width as i32 / 2,
             y: rect.y + rect.height as i32 / 2,
@@ -839,14 +1003,30 @@ impl Chart for ScatterChart {
     }
 
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
-        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
+        context.draw_rect(
+            rect,
+            Color {
+                r: 240,
+                g: 240,
+                b: 240,
+                a: 255,
+            },
+        );
+        context.draw_text(
+            &self.title,
+            rect.x as f32 + 8.0,
+            rect.y as f32 + 16.0,
+            14.0,
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+                a: 255,
+            },
+        );
 
-        let visible_series: Vec<&ChartSeries> = self
-            .series
-            .iter()
-            .filter(|series| series.visible)
-            .collect();
+        let visible_series: Vec<&ChartSeries> =
+            self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
@@ -873,8 +1053,22 @@ impl Chart for ScatterChart {
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
 
-        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
-        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+        draw_x_ticks(
+            context,
+            &layout,
+            min_x,
+            max_x,
+            self.x_tick_count,
+            self.show_grid,
+        );
+        draw_y_ticks(
+            context,
+            &layout,
+            min_y,
+            max_y,
+            self.y_tick_count,
+            self.show_grid,
+        );
 
         if !self.x_axis_label.is_empty() {
             context.draw_text(
@@ -882,7 +1076,12 @@ impl Chart for ScatterChart {
                 layout.plot_x + layout.plot_w * 0.5 - 28.0,
                 layout.plot_y + layout.plot_h + 36.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -892,16 +1091,25 @@ impl Chart for ScatterChart {
                 layout.plot_x - 56.0,
                 layout.plot_y - 10.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
         for series in &visible_series {
             for point in &series.data {
                 let x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y = layout.plot_y + layout.plot_h - (((point.y - min_y) / span_y) as f32) * layout.plot_h;
+                let y = layout.plot_y + layout.plot_h
+                    - (((point.y - min_y) / span_y) as f32) * layout.plot_h;
                 context.draw_circle(
-                    Point { x: x as i32, y: y as i32 },
+                    Point {
+                        x: x as i32,
+                        y: y as i32,
+                    },
                     self.point_radius,
                     series.color,
                 );
@@ -992,14 +1200,30 @@ impl Chart for AreaChart {
     }
 
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
-        context.draw_text(&self.title, rect.x as f32 + 8.0, rect.y as f32 + 16.0, 14.0, Color { r: 20, g: 20, b: 20, a: 255 });
+        context.draw_rect(
+            rect,
+            Color {
+                r: 240,
+                g: 240,
+                b: 240,
+                a: 255,
+            },
+        );
+        context.draw_text(
+            &self.title,
+            rect.x as f32 + 8.0,
+            rect.y as f32 + 16.0,
+            14.0,
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+                a: 255,
+            },
+        );
 
-        let visible_series: Vec<&ChartSeries> = self
-            .series
-            .iter()
-            .filter(|series| series.visible)
-            .collect();
+        let visible_series: Vec<&ChartSeries> =
+            self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
@@ -1026,8 +1250,22 @@ impl Chart for AreaChart {
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
 
-        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
-        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
+        draw_x_ticks(
+            context,
+            &layout,
+            min_x,
+            max_x,
+            self.x_tick_count,
+            self.show_grid,
+        );
+        draw_y_ticks(
+            context,
+            &layout,
+            min_y,
+            max_y,
+            self.y_tick_count,
+            self.show_grid,
+        );
 
         if !self.x_axis_label.is_empty() {
             context.draw_text(
@@ -1035,7 +1273,12 @@ impl Chart for AreaChart {
                 layout.plot_x + layout.plot_w * 0.5 - 28.0,
                 layout.plot_y + layout.plot_h + 36.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -1045,7 +1288,12 @@ impl Chart for AreaChart {
                 layout.plot_x - 56.0,
                 layout.plot_y - 10.0,
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                Color {
+                    r: 40,
+                    g: 40,
+                    b: 40,
+                    a: 255,
+                },
             );
         }
 
@@ -1057,17 +1305,12 @@ impl Chart for AreaChart {
                 let p1 = &series.data[i - 1];
                 let p2 = &series.data[i];
                 let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y1 = layout.plot_y + layout.plot_h - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
+                let y1 = layout.plot_y + layout.plot_h
+                    - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y2 = layout.plot_y + layout.plot_h - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    2.0,
-                    series.color,
-                );
+                let y2 = layout.plot_y + layout.plot_h
+                    - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
+                context.draw_line(x1, y1, x2, y2, 2.0, series.color);
             }
         }
 
@@ -1136,12 +1379,22 @@ mod tests {
         chart.set_y_axis_label("ms".to_string());
         chart.add_series(sample_series(
             "p50",
-            Color { r: 0, g: 120, b: 255, a: 255 },
+            Color {
+                r: 0,
+                g: 120,
+                b: 255,
+                a: 255,
+            },
             &[(0.0, 10.0), (1.0, 20.0), (2.0, 16.0)],
         ));
         chart.add_series(sample_series(
             "p95",
-            Color { r: 255, g: 128, b: 0, a: 255 },
+            Color {
+                r: 255,
+                g: 128,
+                b: 0,
+                a: 255,
+            },
             &[(0.0, 15.0), (1.0, 30.0), (2.0, 24.0)],
         ));
 
@@ -1156,7 +1409,10 @@ mod tests {
             &mut context,
         );
 
-        assert!(context.commands.iter().any(|cmd| cmd.contains("text:Time@")));
+        assert!(context
+            .commands
+            .iter()
+            .any(|cmd| cmd.contains("text:Time@")));
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:ms@")));
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:p50@")));
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:p95@")));
@@ -1170,7 +1426,12 @@ mod tests {
         chart.set_y_axis_label("req/s".to_string());
         chart.add_series(sample_series(
             "region-a",
-            Color { r: 40, g: 180, b: 99, a: 255 },
+            Color {
+                r: 40,
+                g: 180,
+                b: 99,
+                a: 255,
+            },
             &[(0.0, 20.0), (1.0, 40.0), (2.0, 30.0)],
         ));
 
@@ -1185,9 +1446,18 @@ mod tests {
             &mut context,
         );
 
-        assert!(context.commands.iter().any(|cmd| cmd.contains("text:Bucket@")));
-        assert!(context.commands.iter().any(|cmd| cmd.contains("text:req/s@")));
-        assert!(context.commands.iter().any(|cmd| cmd.contains("text:region-a@")));
+        assert!(context
+            .commands
+            .iter()
+            .any(|cmd| cmd.contains("text:Bucket@")));
+        assert!(context
+            .commands
+            .iter()
+            .any(|cmd| cmd.contains("text:req/s@")));
+        assert!(context
+            .commands
+            .iter()
+            .any(|cmd| cmd.contains("text:region-a@")));
         assert!(context.commands.iter().any(|cmd| cmd.starts_with("line:")));
     }
 
@@ -1197,7 +1467,12 @@ mod tests {
         chart.set_title("Legend".to_string());
         chart.add_series(sample_series(
             "this-is-a-very-long-legend-label-that-should-truncate",
-            Color { r: 0, g: 100, b: 220, a: 255 },
+            Color {
+                r: 0,
+                g: 100,
+                b: 220,
+                a: 255,
+            },
             &[(0.0, 1.0), (1.0, 2.0)],
         ));
 
@@ -1217,10 +1492,13 @@ mod tests {
             .iter()
             .find(|cmd| cmd.starts_with("text:this-is-a-very-") && cmd.contains("...@"));
         assert!(truncated_entry.is_some());
-        assert!(!context
-            .commands
-            .iter()
-            .any(|cmd| cmd.contains("text:this-is-a-very-long-legend-label-that-should-truncate@")));
+        assert!(
+            !context
+                .commands
+                .iter()
+                .any(|cmd| cmd
+                    .contains("text:this-is-a-very-long-legend-label-that-should-truncate@"))
+        );
     }
 
     #[test]
@@ -1230,7 +1508,12 @@ mod tests {
         for index in 0..10 {
             chart.add_series(sample_series(
                 &format!("s{index}"),
-                Color { r: 20, g: 120, b: 200, a: 255 },
+                Color {
+                    r: 20,
+                    g: 120,
+                    b: 200,
+                    a: 255,
+                },
                 &[(0.0, index as f64 + 1.0), (1.0, index as f64 + 2.0)],
             ));
         }
@@ -1258,7 +1541,12 @@ mod tests {
         chart.set_y_tick_count(4);
         chart.add_series(sample_series(
             "s1",
-            Color { r: 0, g: 120, b: 255, a: 255 },
+            Color {
+                r: 0,
+                g: 120,
+                b: 255,
+                a: 255,
+            },
             &[(0.0, 0.0), (1.0, 10.0), (2.0, 20.0)],
         ));
 
@@ -1285,7 +1573,12 @@ mod tests {
         chart.set_y_tick_count(2);
         chart.add_series(sample_series(
             "s1",
-            Color { r: 20, g: 160, b: 100, a: 255 },
+            Color {
+                r: 20,
+                g: 160,
+                b: 100,
+                a: 255,
+            },
             &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
         ));
 
@@ -1312,7 +1605,12 @@ mod tests {
         chart.set_y_tick_count(3);
         chart.add_series(sample_series(
             "s1",
-            Color { r: 0, g: 120, b: 255, a: 255 },
+            Color {
+                r: 0,
+                g: 120,
+                b: 255,
+                a: 255,
+            },
             &[(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)],
         ));
 
@@ -1360,7 +1658,12 @@ mod tests {
         chart.set_y_tick_count(2);
         chart.add_series(sample_series(
             "s1",
-            Color { r: 20, g: 160, b: 100, a: 255 },
+            Color {
+                r: 20,
+                g: 160,
+                b: 100,
+                a: 255,
+            },
             &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
         ));
 
@@ -1411,7 +1714,12 @@ mod tests {
         chart.set_y_tick_count(3);
         chart.add_series(sample_series(
             "line-a",
-            Color { r: 15, g: 120, b: 240, a: 255 },
+            Color {
+                r: 15,
+                g: 120,
+                b: 240,
+                a: 255,
+            },
             &[(0.0, 1.0), (1.0, 4.0), (2.0, 2.0), (3.0, 5.0)],
         ));
 
@@ -1442,7 +1750,12 @@ mod tests {
         chart.set_y_tick_count(4);
         chart.add_series(sample_series(
             "bar-a",
-            Color { r: 20, g: 170, b: 100, a: 255 },
+            Color {
+                r: 20,
+                g: 170,
+                b: 100,
+                a: 255,
+            },
             &[(0.0, 2.0), (1.0, 5.0), (2.0, 3.0)],
         ));
 
@@ -1462,4 +1775,3 @@ mod tests {
         assert_eq!(got, expected, "bar snapshot hash changed: {got}");
     }
 }
-

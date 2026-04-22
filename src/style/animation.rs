@@ -56,7 +56,8 @@ impl EasingFunction {
                 } else if t == 1.0 {
                     1.0
                 } else {
-                    -(2.0_f32.powf(10.0 * (t - 1.0))) * ((t - 1.1) * 5.0 * std::f32::consts::PI).sin()
+                    -(2.0_f32.powf(10.0 * (t - 1.0)))
+                        * ((t - 1.1) * 5.0 * std::f32::consts::PI).sin()
                 }
             }
             Self::ElasticOut => {

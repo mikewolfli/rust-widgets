@@ -174,7 +174,7 @@ impl SpinBox {
                 return special.clone();
             }
         }
-        
+
         let mut text = format!("{}{}{}", self.prefix, self.value, self.suffix);
         text
     }
@@ -286,12 +286,12 @@ impl EventHandler for SpinBox {
         if !self.base.is_enabled() {
             return;
         }
-        
+
         match event {
             Event::MousePress { pos, button } => {
                 let rect = self.geometry();
                 let button_width = 20.0;
-                
+
                 if *button == 1 {
                     // Check if click is on up/down buttons
                     if pos.x >= rect.x + rect.width - button_width * 2.0 {
@@ -339,48 +339,120 @@ impl Draw for SpinBox {
     fn draw(&self, context: &mut RenderContext) {
         // Draw base widget
         self.base.draw(context);
-        
+
         let rect = self.geometry();
         let padding = 4.0;
         let button_width = 20.0;
         let text_x = rect.x + padding;
         let text_y = rect.y + rect.height / 2.0;
-        
+
         // Draw background
-        context.fill_rect(rect.x, rect.y, rect.width, rect.height, Color::from_rgb(255, 255, 255));
-        
+        context.fill_rect(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            Color::from_rgb(255, 255, 255),
+        );
+
         // Draw border
-        context.draw_rect(rect.x, rect.y, rect.width, rect.height, Color::from_rgb(200, 200, 200));
-        
+        context.draw_rect(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            Color::from_rgb(200, 200, 200),
+        );
+
         // Draw up/down buttons
         let down_button_x = rect.x + rect.width - button_width * 2.0;
         let up_button_x = rect.x + rect.width - button_width;
-        
+
         // Down button
-        context.fill_rect(down_button_x, rect.y, button_width, rect.height, Color::from_rgb(240, 240, 240));
-        context.draw_rect(down_button_x, rect.y, button_width, rect.height, Color::from_rgb(200, 200, 200));
-        
+        context.fill_rect(
+            down_button_x,
+            rect.y,
+            button_width,
+            rect.height,
+            Color::from_rgb(240, 240, 240),
+        );
+        context.draw_rect(
+            down_button_x,
+            rect.y,
+            button_width,
+            rect.height,
+            Color::from_rgb(200, 200, 200),
+        );
+
         // Down arrow
         let down_arrow_x = down_button_x + button_width / 2.0;
         let down_arrow_y = rect.y + rect.height / 2.0;
         let arrow_size = 4.0;
-        
-        context.draw_line(down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2.0, down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        context.draw_line(down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2.0, down_arrow_x, down_arrow_y + arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        context.draw_line(down_arrow_x, down_arrow_y + arrow_size / 2.0, down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        
+
+        context.draw_line(
+            down_arrow_x - arrow_size,
+            down_arrow_y - arrow_size / 2.0,
+            down_arrow_x + arrow_size,
+            down_arrow_y - arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+        context.draw_line(
+            down_arrow_x + arrow_size,
+            down_arrow_y - arrow_size / 2.0,
+            down_arrow_x,
+            down_arrow_y + arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+        context.draw_line(
+            down_arrow_x,
+            down_arrow_y + arrow_size / 2.0,
+            down_arrow_x - arrow_size,
+            down_arrow_y - arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+
         // Up button
-        context.fill_rect(up_button_x, rect.y, button_width, rect.height, Color::from_rgb(240, 240, 240));
-        context.draw_rect(up_button_x, rect.y, button_width, rect.height, Color::from_rgb(200, 200, 200));
-        
+        context.fill_rect(
+            up_button_x,
+            rect.y,
+            button_width,
+            rect.height,
+            Color::from_rgb(240, 240, 240),
+        );
+        context.draw_rect(
+            up_button_x,
+            rect.y,
+            button_width,
+            rect.height,
+            Color::from_rgb(200, 200, 200),
+        );
+
         // Up arrow
         let up_arrow_x = up_button_x + button_width / 2.0;
         let up_arrow_y = rect.y + rect.height / 2.0;
-        
-        context.draw_line(up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2.0, up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        context.draw_line(up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2.0, up_arrow_x, up_arrow_y - arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        context.draw_line(up_arrow_x, up_arrow_y - arrow_size / 2.0, up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2.0, Color::from_rgb(100, 100, 100));
-        
+
+        context.draw_line(
+            up_arrow_x - arrow_size,
+            up_arrow_y + arrow_size / 2.0,
+            up_arrow_x + arrow_size,
+            up_arrow_y + arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+        context.draw_line(
+            up_arrow_x + arrow_size,
+            up_arrow_y + arrow_size / 2.0,
+            up_arrow_x,
+            up_arrow_y - arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+        context.draw_line(
+            up_arrow_x,
+            up_arrow_y - arrow_size / 2.0,
+            up_arrow_x - arrow_size,
+            up_arrow_y + arrow_size / 2.0,
+            Color::from_rgb(100, 100, 100),
+        );
+
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {

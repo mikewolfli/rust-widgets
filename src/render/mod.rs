@@ -22,19 +22,31 @@
 //! All coordinates are in logical pixels and use the screen coordinate system.
 
 pub mod batch;
+#[path = "controls/basic/button.rs"]
 pub mod button;
+#[path = "controls/basic/checkbox.rs"]
 pub mod checkbox;
+#[path = "controls/input/combobox.rs"]
 pub mod combobox;
+#[path = "controls/special/command_link.rs"]
 pub mod command_link;
+#[path = "controls/special/font_combo_box.rs"]
 pub mod font_combo_box;
+#[path = "controls/basic/label.rs"]
 pub mod label;
+#[path = "controls/special/lcd_number.rs"]
 pub mod lcd_number;
+#[path = "controls/input/lineedit.rs"]
 pub mod lineedit;
+#[path = "controls/input/listbox.rs"]
 pub mod listbox;
 pub mod quality;
+#[path = "controls/basic/radiobutton.rs"]
 pub mod radiobutton;
+#[path = "controls/input/spinbox.rs"]
 pub mod spinbox;
 pub mod text_cache;
+#[path = "controls/input/textedit.rs"]
 pub mod textedit;
 pub mod web_engine;
 pub mod web_view;

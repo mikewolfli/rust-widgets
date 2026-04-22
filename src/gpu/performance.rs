@@ -56,10 +56,10 @@ impl AdaptivePerformanceThresholds {
     pub fn discrete() -> Self {
         Self {
             target_fps: 60.0,
-            degrade_threshold: 1.5,      // Degrade when frame time > 1.5x target
-            upgrade_threshold: 0.7,      // Upgrade when frame time < 0.7x target
-            degrade_frame_count: 5,      // Need 5 bad frames
-            upgrade_frame_count: 10,     // Need 10 good frames
+            degrade_threshold: 1.5,  // Degrade when frame time > 1.5x target
+            upgrade_threshold: 0.7,  // Upgrade when frame time < 0.7x target
+            degrade_frame_count: 5,  // Need 5 bad frames
+            upgrade_frame_count: 10, // Need 10 good frames
             memory_pressure_threshold: 0.9,
             cpu_utilization_threshold: 0.8,
         }
@@ -69,10 +69,10 @@ impl AdaptivePerformanceThresholds {
     pub fn integrated() -> Self {
         Self {
             target_fps: 60.0,
-            degrade_threshold: 1.3,      // More aggressive degrade for iGPU
+            degrade_threshold: 1.3, // More aggressive degrade for iGPU
             upgrade_threshold: 0.75,
-            degrade_frame_count: 3,      // Faster degrade response
-            upgrade_frame_count: 15,     // Slower upgrade (conservative)
+            degrade_frame_count: 3,          // Faster degrade response
+            upgrade_frame_count: 15,         // Slower upgrade (conservative)
             memory_pressure_threshold: 0.75, // iGPU shares memory with CPU
             cpu_utilization_threshold: 0.7,
         }
@@ -81,11 +81,11 @@ impl AdaptivePerformanceThresholds {
     /// Creates thresholds for CPU software rendering
     pub fn cpu() -> Self {
         Self {
-            target_fps: 30.0,            // Lower target for CPU
-            degrade_threshold: 1.2,      // Very aggressive degrade
+            target_fps: 30.0,       // Lower target for CPU
+            degrade_threshold: 1.2, // Very aggressive degrade
             upgrade_threshold: 0.8,
-            degrade_frame_count: 2,      // Very fast degrade
-            upgrade_frame_count: 20,     // Very slow upgrade
+            degrade_frame_count: 2,  // Very fast degrade
+            upgrade_frame_count: 20, // Very slow upgrade
             memory_pressure_threshold: 0.6,
             cpu_utilization_threshold: 0.5, // Lower CPU threshold
         }
@@ -122,7 +122,7 @@ impl AdaptivePerformanceThresholds {
             self.degrade_threshold = self.degrade_threshold * 0.9;
             self.upgrade_threshold = self.upgrade_threshold * 1.1;
         }
-        
+
         // If consistently missing target, lower expectations
         let avg_fps = 1.0 / avg_frame_time.as_secs_f32();
         if avg_fps < self.target_fps * 0.5 {
@@ -168,12 +168,15 @@ impl AdaptivePerformanceMonitor {
     pub fn for_device_type(device_type: GpuDeviceType) -> Self {
         let strategy = PerformanceMonitorStrategy::for_device_type(device_type);
         let thresholds = AdaptivePerformanceThresholds::for_device_type(device_type);
-        
+
         Self::new(strategy, thresholds)
     }
 
     /// Creates a new monitor with specific strategy and thresholds
-    pub fn new(strategy: PerformanceMonitorStrategy, thresholds: AdaptivePerformanceThresholds) -> Self {
+    pub fn new(
+        strategy: PerformanceMonitorStrategy,
+        thresholds: AdaptivePerformanceThresholds,
+    ) -> Self {
         Self {
             strategy,
             thresholds,
@@ -196,7 +199,7 @@ impl AdaptivePerformanceMonitor {
     /// Ends the current frame and records performance
     pub fn end_frame(&mut self) -> PerformanceSample {
         let frame_duration = self.frame_start.elapsed();
-        
+
         let sample = PerformanceSample {
             frame_index: self.current_frame,
             frame_duration,
@@ -206,7 +209,7 @@ impl AdaptivePerformanceMonitor {
             cpu_utilization: self.measure_cpu_utilization(),
             timestamp: Instant::now(),
         };
-        
+
         self.record_sample(sample);
         sample
     }
@@ -242,7 +245,7 @@ impl AdaptivePerformanceMonitor {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
-        
+
         // Update consecutive frame counters
         if self.is_frame_bad(&sample) {
             self.consecutive_bad_frames += 1;
@@ -292,7 +295,7 @@ impl AdaptivePerformanceMonitor {
         if self.samples.is_empty() {
             return Duration::from_secs(0);
         }
-        
+
         let total: Duration = self.samples.iter().map(|s| s.frame_duration).sum();
         total / self.samples.len() as u32
     }
@@ -312,7 +315,7 @@ impl AdaptivePerformanceMonitor {
         if self.samples.len() < 10 {
             return 1.0;
         }
-        
+
         let avg = self.average_frame_time();
         let variance: f32 = self
             .samples
@@ -323,7 +326,7 @@ impl AdaptivePerformanceMonitor {
             })
             .sum::<f32>()
             / self.samples.len() as f32;
-        
+
         let std_dev = variance.sqrt();
         let stability = 1.0 - (std_dev / avg.as_secs_f32()).min(1.0);
         stability.max(0.0)
@@ -365,10 +368,10 @@ impl AdaptivePerformanceMonitor {
         if self.samples.len() < 60 {
             return; // Need more data
         }
-        
+
         let avg = self.average_frame_time();
         let stability = self.stability();
-        
+
         self.thresholds.adjust_based_on_performance(avg, stability);
     }
 
@@ -425,7 +428,7 @@ impl PerformanceTrapDetector {
     pub fn check(&mut self, fps: f32) -> Option<PerformanceTrap> {
         if fps < self.low_fps_threshold {
             self.low_fps_counter += 1;
-            
+
             if self.low_fps_counter >= self.sustained_low_fps_frames {
                 if self.last_warning.elapsed() > Duration::from_secs(30) {
                     self.last_warning = Instant::now();
@@ -438,7 +441,7 @@ impl PerformanceTrapDetector {
         } else {
             self.low_fps_counter = 0;
         }
-        
+
         None
     }
 }
@@ -447,18 +450,11 @@ impl PerformanceTrapDetector {
 #[derive(Debug, Clone)]
 pub enum PerformanceTrap {
     /// Sustained low frame rate
-    LowFrameRate {
-        current_fps: f32,
-        threshold: f32,
-    },
+    LowFrameRate { current_fps: f32, threshold: f32 },
     /// Memory pressure
-    MemoryPressure {
-        utilization: f32,
-    },
+    MemoryPressure { utilization: f32 },
     /// CPU overload (for CPU rendering)
-    CpuOverload {
-        utilization: f32,
-    },
+    CpuOverload { utilization: f32 },
     /// Browser forcing integrated GPU
     BrowserForcedIntegratedGpu,
 }
@@ -498,7 +494,10 @@ impl PerformanceTrap {
 
     /// Returns true if this trap suggests restarting
     pub fn suggests_restart(&self) -> bool {
-        matches!(self, Self::BrowserForcedIntegratedGpu | Self::CpuOverload { .. })
+        matches!(
+            self,
+            Self::BrowserForcedIntegratedGpu | Self::CpuOverload { .. }
+        )
     }
 }
 
@@ -509,12 +508,13 @@ mod tests {
     #[test]
     fn test_thresholds_for_device_type() {
         let discrete = AdaptivePerformanceThresholds::for_device_type(GpuDeviceType::DiscreteGpu);
-        let integrated = AdaptivePerformanceThresholds::for_device_type(GpuDeviceType::IntegratedGpu);
+        let integrated =
+            AdaptivePerformanceThresholds::for_device_type(GpuDeviceType::IntegratedGpu);
         let cpu = AdaptivePerformanceThresholds::for_device_type(GpuDeviceType::Cpu);
-        
+
         assert!(discrete.degrade_threshold > integrated.degrade_threshold);
         assert!(integrated.degrade_threshold > cpu.degrade_threshold);
-        
+
         assert_eq!(discrete.target_fps, 60.0);
         assert_eq!(cpu.target_fps, 30.0);
     }
@@ -522,11 +522,11 @@ mod tests {
     #[test]
     fn test_performance_monitor() {
         let mut monitor = AdaptivePerformanceMonitor::for_device_type(GpuDeviceType::DiscreteGpu);
-        
+
         monitor.begin_frame();
         std::thread::sleep(Duration::from_millis(10));
         let sample = monitor.end_frame();
-        
+
         assert_eq!(sample.frame_index, 1);
         assert!(sample.frame_duration >= Duration::from_millis(10));
     }
@@ -534,16 +534,16 @@ mod tests {
     #[test]
     fn test_trap_detector() {
         let mut detector = PerformanceTrapDetector::new(30.0, 5);
-        
+
         // Simulate low FPS
         for _ in 0..4 {
             assert!(detector.check(20.0).is_none());
         }
-        
+
         // 5th low FPS should trigger
         let trap = detector.check(20.0);
         assert!(trap.is_some());
-        
+
         if let Some(PerformanceTrap::LowFrameRate { current_fps, .. }) = trap {
             assert_eq!(current_fps, 20.0);
         }
@@ -555,7 +555,7 @@ mod tests {
             current_fps: 15.0,
             threshold: 30.0,
         };
-        
+
         let msg = trap.message();
         assert!(msg.contains("15.0"));
         assert!(msg.contains("30.0"));

@@ -83,13 +83,15 @@ impl Gradient {
 
     pub fn add_stop(mut self, position: f32, color: Color) -> Self {
         self.stops.push(GradientStop::new(position, color));
-        self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.stops
+            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         self
     }
 
     pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
         self.stops = stops;
-        self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.stops
+            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         self
     }
 
@@ -183,7 +185,9 @@ impl GradientBuilder {
     }
 
     pub fn build(mut self) -> Gradient {
-        self.gradient.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.gradient
+            .stops
+            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         self.gradient
     }
 }
@@ -205,8 +209,24 @@ mod tests {
     #[test]
     fn test_gradient_interpolation() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
-            .add_stop(0.0, Color { r: 255, g: 0, b: 0, a: 255 })
-            .add_stop(1.0, Color { r: 0, g: 0, b: 255, a: 255 });
+            .add_stop(
+                0.0,
+                Color {
+                    r: 255,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                },
+            )
+            .add_stop(
+                1.0,
+                Color {
+                    r: 0,
+                    g: 0,
+                    b: 255,
+                    a: 255,
+                },
+            );
 
         let mid_color = gradient.interpolate(0.5);
         assert_eq!(mid_color.r, 127);

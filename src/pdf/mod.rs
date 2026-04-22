@@ -21,8 +21,8 @@ pub use form::*;
 pub use hyperlink::*;
 pub use security::*;
 
-use crate::core::{Rect, Size, Color};
 use crate::core::coords::to_pdf_y;
+use crate::core::{Color, Rect, Size};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Error, ErrorKind};
@@ -32,34 +32,34 @@ use std::path::Path;
 pub trait PdfPage {
     /// Get page size
     fn size(&self) -> Size;
-    
+
     /// Set page size
     fn set_size(&mut self, size: Size);
-    
+
     /// Draw text
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color);
-    
+
     /// Draw line
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color);
-    
+
     /// Draw rectangle
     fn draw_rect(&mut self, rect: Rect, width: f32, color: Color);
-    
+
     /// Draw filled rectangle
     fn fill_rect(&mut self, rect: Rect, color: Color);
-    
+
     /// Draw image
     fn draw_image(&mut self, image: &[u8], rect: Rect);
-    
+
     /// Add text field
     fn add_text_field(&mut self, name: &str, rect: Rect, default_text: &str);
-    
+
     /// Add checkbox
     fn add_checkbox(&mut self, name: &str, rect: Rect, checked: bool);
-    
+
     /// Add button
     fn add_button(&mut self, name: &str, rect: Rect, text: &str);
-    
+
     /// Get page content as bytes
     fn content(&self) -> Vec<u8>;
 
@@ -71,31 +71,31 @@ pub trait PdfPage {
 pub trait PdfDocument {
     /// Get number of pages
     fn page_count(&self) -> u32;
-    
+
     /// Get page by index
     fn get_page(&mut self, index: u32) -> Option<&mut dyn PdfPage>;
-    
+
     /// Add a new page
     fn add_page(&mut self, size: Size) -> u32;
-    
+
     /// Insert a page at specified position
     fn insert_page(&mut self, index: u32, size: Size) -> u32;
-    
+
     /// Remove a page
     fn remove_page(&mut self, index: u32) -> bool;
-    
+
     /// Reorder pages
     fn reorder_pages(&mut self, new_order: &[u32]) -> bool;
-    
+
     /// Get document metadata
     fn metadata(&self) -> &PdfMetadata;
-    
+
     /// Set document metadata
     fn set_metadata(&mut self, metadata: PdfMetadata);
-    
+
     /// Get document security settings
     fn security(&self) -> &PdfSecurity;
-    
+
     /// Set document security settings
     fn set_security(&mut self, security: PdfSecurity);
 
@@ -109,10 +109,10 @@ pub trait PdfDocument {
 
     /// Configure page-number footer layout.
     fn set_page_numbering_layout(&mut self, right_margin: f32, bottom_margin: f32, font_size: f32);
-    
+
     /// Save to file
     fn save(&self, path: &str) -> Result<(), std::io::Error>;
-    
+
     /// Save to bytes
     fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error>;
 }
@@ -196,7 +196,7 @@ impl PdfWriter {
             backend_name: "pdf-minimal-v1",
         }
     }
-    
+
     /// Create a new document
     pub fn create_document(&self, page_size: Size) -> Box<dyn PdfDocument> {
         Box::new(PdfDocumentImpl::new(page_size))
@@ -238,13 +238,13 @@ impl PdfReader {
             backend_name: "pdf-minimal-v1",
         }
     }
-    
+
     /// Load PDF from file
     pub fn load(&self, path: &str) -> Result<Box<dyn PdfDocument>, std::io::Error> {
         let bytes = fs::read(path)?;
         self.load_from_bytes(&bytes)
     }
-    
+
     /// Load PDF from bytes
     pub fn load_from_bytes(&self, data: &[u8]) -> Result<Box<dyn PdfDocument>, std::io::Error> {
         let text = String::from_utf8_lossy(data);
@@ -261,10 +261,7 @@ impl PdfReader {
 
         // Parse real PDF `/Count N` tokens and use the largest value found.
         for token in text.split("/Count ").skip(1) {
-            let digits: String = token
-                .chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect();
+            let digits: String = token.chars().take_while(|ch| ch.is_ascii_digit()).collect();
             if let Ok(parsed) = digits.parse::<usize>() {
                 page_count = page_count.max(parsed.max(1));
             }
@@ -286,7 +283,10 @@ impl PdfReader {
 
         if parsed_pages.is_empty() {
             for _ in 0..page_count {
-                doc.add_page(Size { width: 595, height: 842 });
+                doc.add_page(Size {
+                    width: 595,
+                    height: 842,
+                });
             }
         } else {
             for page in parsed_pages {
@@ -379,7 +379,7 @@ impl PdfDocument for PdfDocumentImpl {
     fn page_count(&self) -> u32 {
         self.pages.len() as u32
     }
-    
+
     fn get_page(&mut self, index: u32) -> Option<&mut dyn PdfPage> {
         if index < self.pages.len() as u32 {
             Some(&mut *self.pages[index as usize])
@@ -387,13 +387,13 @@ impl PdfDocument for PdfDocumentImpl {
             None
         }
     }
-    
+
     fn add_page(&mut self, size: Size) -> u32 {
         let page = Box::new(PdfPageImpl::new(size, self.default_font_resource()));
         self.pages.push(page);
         (self.pages.len() - 1) as u32
     }
-    
+
     fn insert_page(&mut self, index: u32, size: Size) -> u32 {
         if index <= self.pages.len() as u32 {
             let page = Box::new(PdfPageImpl::new(size, self.default_font_resource()));
@@ -403,7 +403,7 @@ impl PdfDocument for PdfDocumentImpl {
             self.add_page(size)
         }
     }
-    
+
     fn remove_page(&mut self, index: u32) -> bool {
         if index < self.pages.len() as u32 && self.pages.len() > 1 {
             self.pages.remove(index as usize);
@@ -412,7 +412,7 @@ impl PdfDocument for PdfDocumentImpl {
             false
         }
     }
-    
+
     fn reorder_pages(&mut self, new_order: &[u32]) -> bool {
         if new_order.len() != self.pages.len() {
             return false;
@@ -431,19 +431,19 @@ impl PdfDocument for PdfDocumentImpl {
         self.pages = reordered;
         true
     }
-    
+
     fn metadata(&self) -> &PdfMetadata {
         &self.metadata
     }
-    
+
     fn set_metadata(&mut self, metadata: PdfMetadata) {
         self.metadata = metadata;
     }
-    
+
     fn security(&self) -> &PdfSecurity {
         &self.security
     }
-    
+
     fn set_security(&mut self, security: PdfSecurity) {
         self.security = security;
     }
@@ -466,12 +466,12 @@ impl PdfDocument for PdfDocumentImpl {
         self.pagination.bottom_margin = bottom_margin.max(0.0);
         self.pagination.font_size = font_size.max(6.0);
     }
-    
+
     fn save(&self, path: &str) -> Result<(), std::io::Error> {
         fs::write(path, self.to_bytes()?)?;
         Ok(())
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error> {
         build_minimal_pdf_bytes(self)
     }
@@ -504,11 +504,11 @@ impl PdfPage for PdfPageImpl {
     fn size(&self) -> Size {
         self.size
     }
-    
+
     fn set_size(&mut self, size: Size) {
         self.size = size;
     }
-    
+
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
         let escaped = pdf_escape_literal(text);
         let pdf_y = to_pdf_y(y, self.size.height as f32);
@@ -527,7 +527,7 @@ impl PdfPage for PdfPageImpl {
             .as_bytes(),
         );
     }
-    
+
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
         let pdf_y1 = to_pdf_y(y1, self.size.height as f32);
         let pdf_y2 = to_pdf_y(y2, self.size.height as f32);
@@ -546,7 +546,7 @@ impl PdfPage for PdfPageImpl {
             .as_bytes(),
         );
     }
-    
+
     fn draw_rect(&mut self, rect: Rect, width: f32, color: Color) {
         let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);
         self.content.extend_from_slice(
@@ -564,7 +564,7 @@ impl PdfPage for PdfPageImpl {
             .as_bytes(),
         );
     }
-    
+
     fn fill_rect(&mut self, rect: Rect, color: Color) {
         let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);
         self.content.extend_from_slice(
@@ -581,7 +581,7 @@ impl PdfPage for PdfPageImpl {
             .as_bytes(),
         );
     }
-    
+
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
         if image.is_empty() || rect.width == 0 || rect.height == 0 {
             return;
@@ -611,7 +611,7 @@ impl PdfPage for PdfPageImpl {
             .as_bytes(),
         );
     }
-    
+
     fn add_text_field(&mut self, name: &str, rect: Rect, default_text: &str) {
         let field = PdfFormField::TextField {
             name: name.to_string(),
@@ -620,7 +620,7 @@ impl PdfPage for PdfPageImpl {
         };
         self.form_fields.insert(name.to_string(), field);
     }
-    
+
     fn add_checkbox(&mut self, name: &str, rect: Rect, checked: bool) {
         let field = PdfFormField::CheckBox {
             name: name.to_string(),
@@ -629,7 +629,7 @@ impl PdfPage for PdfPageImpl {
         };
         self.form_fields.insert(name.to_string(), field);
     }
-    
+
     fn add_button(&mut self, name: &str, rect: Rect, text: &str) {
         let field = PdfFormField::Button {
             name: name.to_string(),
@@ -638,7 +638,7 @@ impl PdfPage for PdfPageImpl {
         };
         self.form_fields.insert(name.to_string(), field);
     }
-    
+
     fn content(&self) -> Vec<u8> {
         self.content.clone()
     }
@@ -842,7 +842,13 @@ fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Er
         let content_obj_id = (objects.len() + 1) as u32;
         let mut stream = page.content();
         if doc.pagination.enabled {
-            append_page_number_footer(&mut stream, page.size(), index, doc.pages.len(), &doc.pagination);
+            append_page_number_footer(
+                &mut stream,
+                page.size(),
+                index,
+                doc.pages.len(),
+                &doc.pagination,
+            );
         }
         let stream_text = String::from_utf8_lossy(&stream);
         objects.push(format!(
@@ -911,10 +917,7 @@ fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Er
             .map(|field_id| format!("{field_id} 0 R"))
             .collect::<Vec<_>>()
             .join(" ");
-        objects.push(format!(
-            "<< /Fields [{}] /NeedAppearances true >>",
-            refs
-        ));
+        objects.push(format!("<< /Fields [{}] /NeedAppearances true >>", refs));
         Some(id)
     };
 
@@ -979,10 +982,7 @@ fn append_page_number_footer(
     let y = pagination.bottom_margin.max(8.0);
     let footer = format!(
         "0 0 0 rg\nBT /F1 {:.2} Tf {:.2} {:.2} Td ({}) Tj ET\n",
-        pagination.font_size,
-        x,
-        y,
-        escaped
+        pagination.font_size, x, y, escaped
     );
     stream.extend_from_slice(footer.as_bytes());
 }
@@ -1103,7 +1103,8 @@ fn parse_security_diagnostics(text: &str) -> Option<PdfSecurity> {
     }
 
     let user_password = parse_pdf_literal_by_key(text, "/RWUserPassword").filter(|v| !v.is_empty());
-    let owner_password = parse_pdf_literal_by_key(text, "/RWOwnerPassword").filter(|v| !v.is_empty());
+    let owner_password =
+        parse_pdf_literal_by_key(text, "/RWOwnerPassword").filter(|v| !v.is_empty());
 
     Some(PdfSecurity {
         user_password,
@@ -1182,7 +1183,9 @@ fn parse_pdf_objects(text: &str) -> HashMap<u32, String> {
     for line in text.lines() {
         if current_id.is_none() {
             let mut parts = line.split_whitespace();
-            if let (Some(id), Some(generation), Some(obj_kw)) = (parts.next(), parts.next(), parts.next()) {
+            if let (Some(id), Some(generation), Some(obj_kw)) =
+                (parts.next(), parts.next(), parts.next())
+            {
                 if generation == "0" && obj_kw == "obj" {
                     if let Ok(parsed_id) = id.parse::<u32>() {
                         current_id = Some(parsed_id);
@@ -1266,7 +1269,11 @@ impl ImageEncodingRoute {
     }
 }
 
-fn normalize_image_payload_to_rgb(image: &[u8], width: usize, height: usize) -> (Vec<u8>, ImageEncodingRoute) {
+fn normalize_image_payload_to_rgb(
+    image: &[u8],
+    width: usize,
+    height: usize,
+) -> (Vec<u8>, ImageEncodingRoute) {
     let pixel_count = width.saturating_mul(height);
     let expected_rgb_len = pixel_count.saturating_mul(3);
     let expected_rgba_len = pixel_count.saturating_mul(4);
@@ -1378,8 +1385,14 @@ mod tests {
     #[test]
     fn writer_stamps_page_number_footer_when_enabled() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 595, height: 842 });
-        doc.add_page(Size { width: 595, height: 842 });
+        let mut doc = writer.create_document(Size {
+            width: 595,
+            height: 842,
+        });
+        doc.add_page(Size {
+            width: 595,
+            height: 842,
+        });
         doc.set_page_numbering_enabled(true);
         doc.set_page_numbering_format("Page", 1);
 
@@ -1392,7 +1405,10 @@ mod tests {
     #[test]
     fn writer_applies_custom_page_number_layout() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 600, height: 840 });
+        let mut doc = writer.create_document(Size {
+            width: 600,
+            height: 840,
+        });
         doc.set_page_numbering_enabled(true);
         doc.set_page_numbering_layout(100.0, 36.0, 12.0);
 
@@ -1404,7 +1420,10 @@ mod tests {
     #[test]
     fn reader_roundtrip_preserves_page_stream_and_media_box() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 612, height: 792 });
+        let mut doc = writer.create_document(Size {
+            width: 612,
+            height: 792,
+        });
 
         {
             let page = doc.get_page(0).expect("page exists");
@@ -1462,7 +1481,15 @@ mod tests {
                     a: 255,
                 },
             );
-            page.draw_image(&[0xAB, 0xCD, 0xEF], Rect { x: 5, y: 5, width: 2, height: 2 });
+            page.draw_image(
+                &[0xAB, 0xCD, 0xEF],
+                Rect {
+                    x: 5,
+                    y: 5,
+                    width: 2,
+                    height: 2,
+                },
+            );
         }
 
         let bytes = doc.to_bytes().expect("serialize");
@@ -1486,7 +1513,10 @@ mod tests {
     #[test]
     fn writer_serializes_acroform_and_widget_annotations() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 595, height: 842 });
+        let mut doc = writer.create_document(Size {
+            width: 595,
+            height: 842,
+        });
 
         {
             let page = doc.get_page(0).expect("page exists");
@@ -1539,7 +1569,10 @@ mod tests {
     #[test]
     fn writer_serializes_security_diagnostics_when_security_is_set() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 595, height: 842 });
+        let mut doc = writer.create_document(Size {
+            width: 595,
+            height: 842,
+        });
         doc.set_security(PdfSecurity {
             user_password: Some("user-secret".to_string()),
             owner_password: Some("owner-secret".to_string()),
@@ -1563,7 +1596,10 @@ mod tests {
     #[test]
     fn reader_roundtrip_restores_security_diagnostics() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 595, height: 842 });
+        let mut doc = writer.create_document(Size {
+            width: 595,
+            height: 842,
+        });
         doc.set_security(PdfSecurity {
             user_password: Some("u".to_string()),
             owner_password: Some("o".to_string()),
@@ -1589,7 +1625,10 @@ mod tests {
     #[test]
     fn writer_combined_pipeline_emits_form_security_and_image_markers() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 595, height: 842 });
+        let mut doc = writer.create_document(Size {
+            width: 595,
+            height: 842,
+        });
         doc.set_security(PdfSecurity {
             user_password: Some("combo-user".to_string()),
             owner_password: Some("combo-owner".to_string()),
@@ -1621,7 +1660,15 @@ mod tests {
                 },
                 false,
             );
-            page.draw_image(&[0x7F], Rect { x: 16, y: 16, width: 2, height: 1 });
+            page.draw_image(
+                &[0x7F],
+                Rect {
+                    x: 16,
+                    y: 16,
+                    width: 2,
+                    height: 1,
+                },
+            );
         }
 
         let bytes = doc.to_bytes().expect("serialize document");
@@ -1641,7 +1688,10 @@ mod tests {
     #[test]
     fn reader_roundtrip_preserves_security_and_image_route_markers() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 300, height: 200 });
+        let mut doc = writer.create_document(Size {
+            width: 300,
+            height: 200,
+        });
         doc.set_security(PdfSecurity {
             user_password: Some("round-u".to_string()),
             owner_password: Some("round-o".to_string()),
@@ -1653,7 +1703,15 @@ mod tests {
 
         {
             let page = doc.get_page(0).expect("page exists");
-            page.draw_image(&[0x11, 0x22, 0x33], Rect { x: 2, y: 2, width: 2, height: 2 });
+            page.draw_image(
+                &[0x11, 0x22, 0x33],
+                Rect {
+                    x: 2,
+                    y: 2,
+                    width: 2,
+                    height: 2,
+                },
+            );
             page.draw_text(
                 "ok",
                 10.0,
@@ -1692,11 +1750,22 @@ mod tests {
     #[test]
     fn writer_image_with_short_payload_uses_truncate_pad_not_tiling() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 100, height: 100 });
+        let mut doc = writer.create_document(Size {
+            width: 100,
+            height: 100,
+        });
 
         {
             let page = doc.get_page(0).expect("page exists");
-            page.draw_image(&[0x01, 0x02, 0x03], Rect { x: 0, y: 0, width: 2, height: 2 });
+            page.draw_image(
+                &[0x01, 0x02, 0x03],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                },
+            );
         }
 
         let bytes = doc.to_bytes().expect("serialize document");
@@ -1712,7 +1781,10 @@ mod tests {
     #[test]
     fn writer_image_with_rgba_payload_drops_alpha_deterministically() {
         let writer = PdfWriter::new();
-        let mut doc = writer.create_document(Size { width: 100, height: 100 });
+        let mut doc = writer.create_document(Size {
+            width: 100,
+            height: 100,
+        });
 
         {
             let page = doc.get_page(0).expect("page exists");

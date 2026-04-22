@@ -1,12 +1,12 @@
+use super::history::{BrowserHistory, SessionHistory};
+use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
+use super::plugins::PluginManager;
+use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
-use super::history::{BrowserHistory, SessionHistory};
-use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
-use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
-use super::plugins::PluginManager;
 
 pub struct WebViewEnhanced {
     base: BaseWidget,
@@ -145,7 +145,7 @@ impl WebViewEnhanced {
         self.url = url.clone();
         self.loading = true;
         self.load_progress = 0;
-        
+
         self.url_changed.emit(url.clone());
         self.loading_started.emit(url.clone());
         self.history.navigate(url.clone());
@@ -157,8 +157,9 @@ impl WebViewEnhanced {
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
         self.update_navigation_state();
-        
-        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+
+        self.browser_history
+            .add_entry(self.url.clone(), self.title.clone());
         self.base.request_redraw();
     }
 
@@ -167,11 +168,11 @@ impl WebViewEnhanced {
         self.title = "HTML Content".to_string();
         self.loading = true;
         self.load_progress = 0;
-        
+
         self.loading_started.emit(self.url.clone());
-        
+
         let _ = html;
-        
+
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -186,11 +187,11 @@ impl WebViewEnhanced {
         self.title = format!("Data: {}", mime_type);
         self.loading = true;
         self.load_progress = 0;
-        
+
         self.loading_started.emit(self.url.clone());
-        
+
         let _ = data;
-        
+
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -257,15 +258,15 @@ impl WebViewEnhanced {
                 "JavaScript is disabled".to_string(),
             ));
         }
-        
+
         let result = self.js_engine.evaluate(script, &mut self.js_context)?;
-        
+
         for msg in self.js_context.console_messages() {
             let level = format!("{:?}", msg.level);
             self.console_message
                 .emit((level, msg.line, msg.message.clone()));
         }
-        
+
         Ok(result)
     }
 
@@ -395,29 +396,27 @@ impl EventHandler for WebViewEnhanced {
             return;
         }
         match event {
-            Event::KeyPress { key, modifiers } => {
-                match *key {
-                    37 => {
-                        if *modifiers == 0 {
-                            self.go_back();
-                        }
+            Event::KeyPress { key, modifiers } => match *key {
+                37 => {
+                    if *modifiers == 0 {
+                        self.go_back();
                     }
-                    39 => {
-                        if *modifiers == 0 {
-                            self.go_forward();
-                        }
+                }
+                39 => {
+                    if *modifiers == 0 {
+                        self.go_forward();
                     }
-                    116 => {
+                }
+                116 => {
+                    self.reload();
+                }
+                82 => {
+                    if *modifiers == 1 {
                         self.reload();
                     }
-                    82 => {
-                        if *modifiers == 1 {
-                            self.reload();
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }

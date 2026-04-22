@@ -33,7 +33,7 @@ impl PrivacySettings {
         let mut block_tracking_types = HashSet::new();
         block_tracking_types.insert(TrackingType::WebBeacon);
         block_tracking_types.insert(TrackingType::Fingerprinting);
-        
+
         Self {
             block_third_party_cookies: true,
             block_tracking_cookies: true,
@@ -52,9 +52,15 @@ impl PrivacySettings {
         settings.block_all_cookies = true;
         settings.clear_cookies_on_exit = true;
         settings.block_tracking_types.insert(TrackingType::Cookies);
-        settings.block_tracking_types.insert(TrackingType::LocalStorage);
-        settings.block_tracking_types.insert(TrackingType::SessionStorage);
-        settings.block_tracking_types.insert(TrackingType::ThirdPartyScripts);
+        settings
+            .block_tracking_types
+            .insert(TrackingType::LocalStorage);
+        settings
+            .block_tracking_types
+            .insert(TrackingType::SessionStorage);
+        settings
+            .block_tracking_types
+            .insert(TrackingType::ThirdPartyScripts);
         settings
     }
 
@@ -245,12 +251,7 @@ impl TrackingProtection {
         &mut self.settings
     }
 
-    pub fn check_tracking(
-        &mut self,
-        tracking_type: TrackingType,
-        domain: &str,
-        url: &str,
-    ) -> bool {
+    pub fn check_tracking(&mut self, tracking_type: TrackingType, domain: &str, url: &str) -> bool {
         let blocked = self.settings.should_block_tracking_type(tracking_type)
             || !self.settings.is_domain_allowed(domain);
 

@@ -1,16 +1,16 @@
 mod history;
 mod js_engine;
-mod privacy;
 mod plugins;
-mod web_view;
+mod privacy;
 mod web_engine;
+mod web_view;
 
 pub use history::*;
 pub use js_engine::*;
-pub use privacy::*;
 pub use plugins::*;
-pub use web_view::*;
+pub use privacy::*;
 pub use web_engine::*;
+pub use web_view::*;
 
 use std::collections::VecDeque;
 
@@ -61,14 +61,14 @@ impl NavigationHistory {
                 self.entries.truncate(idx + 1);
             }
         }
-        
+
         if self.entries.len() >= self.max_size {
             self.entries.pop_front();
             if let Some(ref mut idx) = self.current_index {
                 *idx = idx.saturating_sub(1);
             }
         }
-        
+
         self.entries.push_back(entry);
         self.current_index = Some(self.entries.len() - 1);
     }
@@ -82,7 +82,8 @@ impl NavigationHistory {
     }
 
     pub fn can_go_forward(&self) -> bool {
-        self.current_index.map_or(false, |idx| idx < self.entries.len() - 1)
+        self.current_index
+            .map_or(false, |idx| idx < self.entries.len() - 1)
     }
 
     pub fn go_back(&mut self) -> Option<&NavigationEntry> {
@@ -142,7 +143,11 @@ pub struct WebResource {
 
 impl WebResource {
     pub fn new(url: String, mime_type: String, data: Vec<u8>) -> Self {
-        Self { url, mime_type, data }
+        Self {
+            url,
+            mime_type,
+            data,
+        }
     }
 
     pub fn from_text(url: &str, text: &str) -> Self {

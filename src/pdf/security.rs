@@ -44,7 +44,7 @@ impl SecuritySettings {
         permissions.insert(Permission::Copy);
         permissions.insert(Permission::Annotate);
         permissions.insert(Permission::FillForms);
-        
+
         Self {
             user_password: String::new(),
             owner_password: String::new(),
@@ -322,8 +322,7 @@ mod tests {
 
     #[test]
     fn test_security_manager_authentication() {
-        let settings = SecuritySettings::new()
-            .with_user_password("testpass".to_string());
+        let settings = SecuritySettings::new().with_user_password("testpass".to_string());
 
         let mut manager = SecurityManager::with_settings(settings);
 
@@ -365,8 +364,7 @@ mod tests {
     fn test_signature_management() {
         let mut manager = SecurityManager::new();
 
-        let signature = DigitalSignature::new()
-            .with_name("Test".to_string());
+        let signature = DigitalSignature::new().with_name("Test".to_string());
 
         manager.add_signature(signature);
 

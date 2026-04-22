@@ -86,7 +86,7 @@ impl ArenaAllocator {
         let layout = Layout::from_size_align(capacity, 8).expect("Invalid layout");
         let ptr = unsafe { alloc(layout) };
         let buffer = NonNull::new(ptr).expect("Allocation failed");
-        
+
         Self {
             buffer,
             layout,
@@ -97,21 +97,21 @@ impl ArenaAllocator {
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
-        
+
         let aligned_offset = (self.offset + align - 1) & !(align - 1);
         let new_offset = aligned_offset + size;
-        
+
         if new_offset > self.layout.size() {
             return None;
         }
-        
+
         self.offset = new_offset;
-        
+
         let ptr = unsafe {
             let base = self.buffer.as_ptr() as *mut u8;
             NonNull::new_unchecked(base.add(aligned_offset) as *mut T)
         };
-        
+
         Some(ptr)
     }
 
@@ -160,11 +160,11 @@ impl StackAllocator {
     pub fn allocate(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         let aligned_offset = (self.offset + align - 1) & !(align - 1);
         let new_offset = aligned_offset + size;
-        
+
         if new_offset > self.buffer.len() {
             return None;
         }
-        
+
         self.offset = new_offset;
         Some(unsafe { self.buffer.as_mut_ptr().add(aligned_offset) })
     }
@@ -221,7 +221,7 @@ impl Default for MemoryPressure {
 impl MemoryPressure {
     pub fn from_usage(used: usize, total: usize) -> Self {
         let ratio = used as f32 / total as f32;
-        
+
         if ratio < 0.5 {
             Self::None
         } else if ratio < 0.7 {
@@ -273,7 +273,7 @@ impl MemoryMonitor {
 
     pub fn update(&mut self, current_usage: usize) {
         self.stats.current_usage = current_usage;
-        
+
         let new_pressure = if current_usage >= self.critical_threshold {
             MemoryPressure::Critical
         } else if current_usage >= self.warning_threshold {
@@ -281,7 +281,7 @@ impl MemoryMonitor {
         } else {
             MemoryPressure::None
         };
-        
+
         if new_pressure != self.pressure {
             self.pressure = new_pressure;
             for handler in &mut self.handlers {
@@ -312,11 +312,11 @@ mod tests {
     #[test]
     fn test_memory_stats() {
         let mut stats = MemoryStats::default();
-        
+
         stats.record_allocation(100);
         assert_eq!(stats.current_usage, 100);
         assert_eq!(stats.peak_usage, 100);
-        
+
         stats.record_deallocation(50);
         assert_eq!(stats.current_usage, 50);
     }
@@ -324,11 +324,11 @@ mod tests {
     #[test]
     fn test_stack_allocator() {
         let mut allocator = StackAllocator::new(1024);
-        
+
         allocator.push_marker();
         let ptr1 = allocator.allocate(100, 8);
         assert!(ptr1.is_some());
-        
+
         allocator.pop_to_marker();
         assert_eq!(allocator.used(), 0);
     }
@@ -339,6 +339,9 @@ mod tests {
         assert_eq!(MemoryPressure::from_usage(60, 100), MemoryPressure::Low);
         assert_eq!(MemoryPressure::from_usage(80, 100), MemoryPressure::Medium);
         assert_eq!(MemoryPressure::from_usage(90, 100), MemoryPressure::High);
-        assert_eq!(MemoryPressure::from_usage(98, 100), MemoryPressure::Critical);
+        assert_eq!(
+            MemoryPressure::from_usage(98, 100),
+            MemoryPressure::Critical
+        );
     }
 }

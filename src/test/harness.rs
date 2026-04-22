@@ -37,7 +37,9 @@ impl TestHarness {
     }
 
     pub fn send_mouse_move(&mut self, x: i32, y: i32) {
-        self.send_event(Event::MouseMove { pos: Point::new(x, y) });
+        self.send_event(Event::MouseMove {
+            pos: Point::new(x, y),
+        });
     }
 
     pub fn send_key_press(&mut self, key: u32, modifiers: u32) {
@@ -144,11 +146,7 @@ impl<W: Widget> WidgetTester<W> {
     }
 
     pub fn assert_geometry(&self, expected: Rect) -> &Self {
-        assert_eq!(
-            self.widget.geometry(),
-            expected,
-            "Widget geometry mismatch"
-        );
+        assert_eq!(self.widget.geometry(), expected, "Widget geometry mismatch");
         self
     }
 
@@ -158,11 +156,7 @@ impl<W: Widget> WidgetTester<W> {
     }
 
     pub fn assert_position(&self, expected: Point) -> &Self {
-        assert_eq!(
-            self.widget.position(),
-            expected,
-            "Widget position mismatch"
-        );
+        assert_eq!(self.widget.position(), expected, "Widget position mismatch");
         self
     }
 }

@@ -33,7 +33,7 @@ impl<T: Poolable> ObjectPool<T> {
         for _ in 0..config.initial_size {
             pool.push(T::default());
         }
-        
+
         Self {
             pool,
             config,
@@ -147,9 +147,7 @@ pub struct PoolManager {
 
 impl PoolManager {
     pub fn new() -> Self {
-        Self {
-            pools: Vec::new(),
-        }
+        Self { pools: Vec::new() }
     }
 
     pub fn register<T: Poolable + Send + 'static>(&mut self, config: PoolConfig) -> SharedPool<T> {
@@ -181,7 +179,7 @@ impl BufferPool {
         for _ in 0..initial_count {
             buffers.push(vec![0u8; buffer_size]);
         }
-        
+
         Self {
             buffers,
             buffer_size,
@@ -190,7 +188,9 @@ impl BufferPool {
     }
 
     pub fn acquire(&mut self) -> Vec<u8> {
-        self.buffers.pop().unwrap_or_else(|| vec![0u8; self.buffer_size])
+        self.buffers
+            .pop()
+            .unwrap_or_else(|| vec![0u8; self.buffer_size])
     }
 
     pub fn acquire_sized(&mut self, size: usize) -> Vec<u8> {
@@ -242,7 +242,7 @@ impl StringPool {
         for _ in 0..initial_count {
             strings.push(String::with_capacity(default_capacity));
         }
-        
+
         Self {
             strings,
             default_capacity,
@@ -251,7 +251,9 @@ impl StringPool {
     }
 
     pub fn acquire(&mut self) -> String {
-        self.strings.pop().unwrap_or_else(|| String::with_capacity(self.default_capacity))
+        self.strings
+            .pop()
+            .unwrap_or_else(|| String::with_capacity(self.default_capacity))
     }
 
     pub fn release(&mut self, mut s: String) {
@@ -288,7 +290,7 @@ impl<T> VecPool<T> {
         for _ in 0..initial_count {
             vecs.push(Vec::with_capacity(default_capacity));
         }
-        
+
         Self {
             vecs,
             default_capacity,
@@ -297,7 +299,9 @@ impl<T> VecPool<T> {
     }
 
     pub fn acquire(&mut self) -> Vec<T> {
-        self.vecs.pop().unwrap_or_else(|| Vec::with_capacity(self.default_capacity))
+        self.vecs
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.default_capacity))
     }
 
     pub fn release(&mut self, mut v: Vec<T>) {
@@ -346,12 +350,12 @@ mod tests {
             max_size: 8,
             growth_factor: 1.5,
         });
-        
+
         assert_eq!(pool.available(), 4);
-        
+
         let obj1 = pool.acquire();
         assert_eq!(pool.allocated(), 1);
-        
+
         pool.release(obj1);
         assert_eq!(pool.available(), 4);
     }
@@ -359,10 +363,10 @@ mod tests {
     #[test]
     fn test_buffer_pool() {
         let mut pool = BufferPool::new(1024, 2, 4);
-        
+
         let buf1 = pool.acquire();
         assert_eq!(buf1.len(), 1024);
-        
+
         pool.release(buf1);
         assert_eq!(pool.available(), 2);
     }

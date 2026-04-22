@@ -158,7 +158,10 @@ fn test_performance_level_enum() {
     assert_ne!(PerformanceLevel::Low, PerformanceLevel::Medium);
     assert_ne!(PerformanceLevel::Medium, PerformanceLevel::High);
 
-    assert!(matches!(PerformanceLevel::default(), PerformanceLevel::Medium));
+    assert!(matches!(
+        PerformanceLevel::default(),
+        PerformanceLevel::Medium
+    ));
 }
 
 #[test]

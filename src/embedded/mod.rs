@@ -76,7 +76,7 @@ pub fn event_queue_size() -> usize {
 pub fn init_embedded(config: EmbeddedConfig) {
     set_embedded_mode(true);
     set_low_memory_mode(config.low_memory_mode);
-    
+
     if let Some(dpi) = config.fixed_dpi {
         set_fixed_dpi(dpi);
     }
@@ -97,7 +97,7 @@ mod tests {
     fn test_embedded_mode() {
         set_embedded_mode(true);
         assert!(is_embedded_mode());
-        
+
         set_embedded_mode(false);
         assert!(!is_embedded_mode());
     }
@@ -106,7 +106,7 @@ mod tests {
     fn test_low_memory_mode() {
         set_low_memory_mode(true);
         assert!(is_low_memory_mode());
-        
+
         set_low_memory_mode(false);
         assert!(!is_low_memory_mode());
     }
@@ -116,7 +116,7 @@ mod tests {
         set_low_memory_mode(true);
         let low_mem_size = recommended_buffer_size();
         assert_eq!(low_mem_size.width, 800);
-        
+
         set_low_memory_mode(false);
         let normal_size = recommended_buffer_size();
         assert_eq!(normal_size.width, 1920);

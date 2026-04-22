@@ -118,14 +118,7 @@ pub extern "C" fn rust_widgets_create_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_button(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_button(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -137,14 +130,7 @@ pub extern "C" fn rust_widgets_create_checkbox(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_checkbox(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_checkbox(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -156,14 +142,7 @@ pub extern "C" fn rust_widgets_create_line_edit(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_line_edit(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_line_edit(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -175,14 +154,7 @@ pub extern "C" fn rust_widgets_create_label(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_label(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_label(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -194,14 +166,7 @@ pub extern "C" fn rust_widgets_create_radio_button(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_radio_button(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_radio_button(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -279,14 +244,7 @@ pub extern "C" fn rust_widgets_create_menu(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_menu(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_menu(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -361,13 +319,15 @@ pub extern "C" fn rust_widgets_harmony_on_menu_item(menu_item_id: u64) -> CBool 
 /// Harmony callback alias: direct click trigger by widget id.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_click(widget_id: u64) -> CBool {
-    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+    get_control_backend()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
 }
 
 /// Harmony callback alias: direct value-changed trigger by widget id.
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool {
-    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+    get_control_backend()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
 }
 
 /// Harmony callback alias: direct typed trigger by widget id and kind code.
@@ -432,7 +392,8 @@ pub extern "C" fn rust_widgets_harmony_on_node_click(node_handle: u64) -> CBool 
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+    get_control_backend()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
 }
 
 /// Harmony callback alias: value-changed trigger by node handle.
@@ -441,7 +402,8 @@ pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -
     let Some(widget_id) = harmony_lookup_widget(node_handle) else {
         return false;
     };
-    get_control_backend().inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
+    get_control_backend()
+        .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::ValueChanged)
 }
 
 /// Harmony callback alias: typed trigger by node handle and kind code.
@@ -476,14 +438,7 @@ pub extern "C" fn rust_widgets_create_status_bar(
     width: c_uint,
     height: c_uint,
 ) -> u64 {
-    get_control_backend().create_status_bar(
-        parent,
-        &c_str_or_default(text),
-        x,
-        y,
-        width,
-        height,
-    )
+    get_control_backend().create_status_bar(parent, &c_str_or_default(text), x, y, width, height)
 }
 
 #[no_mangle]
@@ -800,4 +755,3 @@ mod tests {
         );
     }
 }
-

@@ -77,9 +77,7 @@ impl Snapshot {
         };
 
         if diff_percentage <= tolerance {
-            SnapshotComparison::Similar {
-                diff_percentage,
-            }
+            SnapshotComparison::Similar { diff_percentage }
         } else {
             SnapshotComparison::Different {
                 reason: format!("Difference: {:.2}%", diff_percentage),
@@ -92,8 +90,13 @@ impl Snapshot {
 #[derive(Debug, Clone)]
 pub enum SnapshotComparison {
     Identical,
-    Similar { diff_percentage: f32 },
-    Different { reason: String, diff_percentage: f32 },
+    Similar {
+        diff_percentage: f32,
+    },
+    Different {
+        reason: String,
+        diff_percentage: f32,
+    },
 }
 
 impl SnapshotComparison {
@@ -105,7 +108,9 @@ impl SnapshotComparison {
         match self {
             Self::Identical => 0.0,
             Self::Similar { diff_percentage } => *diff_percentage,
-            Self::Different { diff_percentage, .. } => *diff_percentage,
+            Self::Different {
+                diff_percentage, ..
+            } => *diff_percentage,
         }
     }
 }

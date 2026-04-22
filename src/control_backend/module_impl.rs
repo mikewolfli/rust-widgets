@@ -2552,4 +2552,3 @@ pub fn active_control_policy() -> &'static str {
 pub fn active_control_policy() -> &'static str {
     "native-strict"
 }
-

@@ -1291,7 +1291,10 @@ impl Platform for StubPlatform {
 
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new("embedded-runtime-stub", PlatformFamily::Embedded))
+    Box::new(StubPlatform::new(
+        "embedded-runtime-stub",
+        PlatformFamily::Embedded,
+    ))
 }
 
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
@@ -1329,7 +1332,10 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new("unknown-runtime-stub", PlatformFamily::Desktop))
+    Box::new(StubPlatform::new(
+        "unknown-runtime-stub",
+        PlatformFamily::Desktop,
+    ))
 }
 
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();

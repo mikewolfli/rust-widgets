@@ -124,7 +124,7 @@ impl TextCache {
 
     pub fn get(&mut self, key: &TextKey) -> Option<&CachedText> {
         self.current_timestamp += 1;
-        
+
         if let Some(cached) = self.cache.get(key) {
             if self.is_expired(cached) {
                 self.cache.remove(key);
@@ -141,7 +141,7 @@ impl TextCache {
 
     pub fn get_mut(&mut self, key: &TextKey) -> Option<&mut CachedText> {
         self.current_timestamp += 1;
-        
+
         if let Some(cached) = self.cache.get(key) {
             if self.is_expired(cached) {
                 self.cache.remove(key);
@@ -159,18 +159,19 @@ impl TextCache {
     pub fn insert(&mut self, cached: CachedText) {
         let size = cached.data.len();
         let key = cached.key.clone();
-        
+
         if size > self.config.max_memory_bytes {
             return;
         }
-        
-        while self.cache.len() >= self.config.max_entries 
-            || self.current_memory + size > self.config.max_memory_bytes {
+
+        while self.cache.len() >= self.config.max_entries
+            || self.current_memory + size > self.config.max_memory_bytes
+        {
             if !self.evict_lru() {
                 break;
             }
         }
-        
+
         self.current_memory += size;
         let cached = cached.with_timestamp(self.current_timestamp);
         self.cache.insert(key, cached);
@@ -229,7 +230,7 @@ impl TextCache {
         if self.config.ttl_seconds == 0 {
             return false;
         }
-        
+
         let age = self.current_timestamp.saturating_sub(cached.timestamp);
         age > self.config.ttl_seconds * 60
     }
@@ -238,18 +239,18 @@ impl TextCache {
         if self.cache.is_empty() {
             return false;
         }
-        
+
         let oldest_key = self
             .cache
             .iter()
             .min_by_key(|(_, v)| v.timestamp)
             .map(|(k, _)| k.clone());
-        
+
         if let Some(key) = oldest_key {
             self.remove(&key);
             return true;
         }
-        
+
         false
     }
 
@@ -260,7 +261,7 @@ impl TextCache {
             .filter(|(_, v)| self.is_expired(v))
             .map(|(k, _)| k.clone())
             .collect();
-        
+
         for key in expired {
             self.remove(&key);
         }
@@ -320,7 +321,7 @@ impl GlyphCache {
                 break;
             }
         }
-        
+
         let key = (glyph.char, glyph.size, glyph.font_family.clone());
         self.glyphs.insert(key, glyph);
     }
@@ -355,16 +356,13 @@ mod tests {
             max_memory_bytes: 1024 * 1024,
             ttl_seconds: 0,
         });
-        
+
         let key = TextKey::new("Hello", "Arial", 12, Color::BLACK);
-        let cached = CachedText::new(
-            key.clone(),
-            Size::new(50, 20),
-            Rect::new(0, 0, 50, 20),
-        ).with_data(vec![0u8; 100]);
-        
+        let cached = CachedText::new(key.clone(), Size::new(50, 20), Rect::new(0, 0, 50, 20))
+            .with_data(vec![0u8; 100]);
+
         cache.insert(cached);
-        
+
         assert!(cache.contains(&key));
         assert_eq!(cache.len(), 1);
     }
@@ -372,7 +370,7 @@ mod tests {
     #[test]
     fn test_glyph_cache() {
         let mut cache = GlyphCache::new(100);
-        
+
         let glyph = GlyphInfo {
             char: 'A',
             size: 12,
@@ -384,9 +382,9 @@ mod tests {
             bearing_y: 10.0,
             data: vec![0u8; 120],
         };
-        
+
         cache.insert(glyph);
-        
+
         assert!(cache.get('A', 12, "Arial").is_some());
     }
 }

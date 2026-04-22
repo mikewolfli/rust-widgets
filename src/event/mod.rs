@@ -9,19 +9,19 @@
 //! - Generic queue utilities (`queue.rs`)
 
 // Submodules
-pub mod types;
+pub mod capture;
 pub mod event_queue;
 pub mod focus;
-pub mod capture;
 pub mod r#loop;
 pub mod queue;
+pub mod types;
 
 // Re-export public types
-pub use types::{Event, EventHandler, EventPriority};
+pub use capture::PointerCaptureManager;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
-pub use capture::PointerCaptureManager;
 pub use r#loop::EventLoop;
+pub use types::{Event, EventHandler, EventPriority};
 
 // Re-export queue utilities
 pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};

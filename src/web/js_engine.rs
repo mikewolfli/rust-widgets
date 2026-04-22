@@ -58,7 +58,13 @@ impl JsValue {
         match self {
             JsValue::Undefined => f64::NAN,
             JsValue::Null => 0.0,
-            JsValue::Boolean(b) => if *b { 1.0 } else { 0.0 },
+            JsValue::Boolean(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             JsValue::Number(n) => *n,
             JsValue::String(s) => s.parse().unwrap_or(f64::NAN),
             JsValue::Array(_) | JsValue::Object(_) | JsValue::Function(_) => f64::NAN,
@@ -138,11 +144,11 @@ pub enum ConsoleLevel {
 impl JsContext {
     pub fn new() -> Self {
         let mut global = HashMap::new();
-        
+
         global.insert("undefined".to_string(), JsValue::Undefined);
         global.insert("NaN".to_string(), JsValue::Number(f64::NAN));
         global.insert("Infinity".to_string(), JsValue::Number(f64::INFINITY));
-        
+
         Self {
             global,
             console_messages: Vec::new(),
@@ -199,7 +205,7 @@ impl SimpleJsEngine {
 
     fn parse_value(&self, s: &str) -> JsValue {
         let s = s.trim();
-        
+
         if s == "undefined" {
             return JsValue::Undefined;
         }
@@ -213,19 +219,19 @@ impl SimpleJsEngine {
             return JsValue::Boolean(false);
         }
         if s.starts_with('"') && s.ends_with('"') {
-            return JsValue::String(s[1..s.len()-1].to_string());
+            return JsValue::String(s[1..s.len() - 1].to_string());
         }
         if s.starts_with('\'') && s.ends_with('\'') {
-            return JsValue::String(s[1..s.len()-1].to_string());
+            return JsValue::String(s[1..s.len() - 1].to_string());
         }
         if let Ok(n) = s.parse::<f64>() {
             return JsValue::Number(n);
         }
-        
+
         if let Some(v) = self.variables.get(s) {
             return v.clone();
         }
-        
+
         JsValue::Undefined
     }
 }
@@ -239,7 +245,7 @@ impl Default for SimpleJsEngine {
 impl JsEngine for SimpleJsEngine {
     fn evaluate(&mut self, script: &str, _context: &mut JsContext) -> JsResult<JsValue> {
         let script = script.trim();
-        
+
         if script.is_empty() {
             return Ok(JsValue::Undefined);
         }
@@ -372,10 +378,10 @@ mod tests {
     fn test_simple_engine_evaluate() {
         let mut engine = SimpleJsEngine::new();
         let mut context = JsContext::new();
-        
+
         let result = engine.evaluate("var x = 42;", &mut context).unwrap();
         assert_eq!(result, JsValue::Number(42.0));
-        
+
         let result = engine.evaluate("x", &mut context).unwrap();
         assert_eq!(result, JsValue::Number(42.0));
     }

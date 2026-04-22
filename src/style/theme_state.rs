@@ -38,11 +38,7 @@ pub struct StateTheme {
 }
 
 impl StateTheme {
-    pub fn new(
-        background: Color,
-        foreground: Color,
-        text: Color,
-    ) -> Self {
+    pub fn new(background: Color, foreground: Color, text: Color) -> Self {
         Self {
             background_color: background,
             foreground_color: foreground,
@@ -76,18 +72,15 @@ impl StateTheme {
     }
 
     pub fn with_property(mut self, key: &str, value: &str) -> Self {
-        self.custom_properties.insert(key.to_string(), value.to_string());
+        self.custom_properties
+            .insert(key.to_string(), value.to_string());
         self
     }
 }
 
 impl Default for StateTheme {
     fn default() -> Self {
-        Self::new(
-            Color::WHITE,
-            Color::BLACK,
-            Color::BLACK,
-        )
+        Self::new(Color::WHITE, Color::BLACK, Color::BLACK)
     }
 }
 

@@ -165,7 +165,8 @@ impl ResourceManager {
     }
 
     pub fn is_under_pressure(&self) -> bool {
-        self.memory_percentage() > 80.0 || (self.widget_count as f32 / self.max_widgets as f32) > 0.9
+        self.memory_percentage() > 80.0
+            || (self.widget_count as f32 / self.max_widgets as f32) > 0.9
     }
 }
 

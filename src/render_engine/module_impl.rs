@@ -582,4 +582,3 @@ mod tests {
         assert!(after.button_count > before.button_count);
     }
 }
-

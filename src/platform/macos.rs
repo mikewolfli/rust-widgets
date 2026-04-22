@@ -6,8 +6,8 @@ use std::sync::{Mutex, OnceLock};
 
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
-    NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
 use cocoa::base::{id, nil, NO, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
@@ -22,24 +22,24 @@ use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum HandleKind {
-        /// Top-level NSWindow.
-        Window,
-        Button,
-        CheckBox,
+    /// Top-level NSWindow.
+    Window,
+    Button,
+    CheckBox,
     RadioButton,
     Label,
-        LineEdit,
+    LineEdit,
     Slider,
     ProgressBar,
     ComboBox,
     ListBox,
     Panel,
-        MenuBar,
-        Menu,
-        /// NSMenuItem instance that represents a selectable action.
-        MenuItem,
-        ToolBar,
-        StatusBar,
+    MenuBar,
+    Menu,
+    /// NSMenuItem instance that represents a selectable action.
+    MenuItem,
+    ToolBar,
+    StatusBar,
     MessageBox,
     FileDialog,
     ColorDialog,
@@ -91,24 +91,22 @@ fn widget_events() -> &'static Mutex<Vec<WidgetTriggerEvent>> {
 
 extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSMenuItem actions.
-    let result = std::panic::catch_unwind(|| {
-        unsafe {
-            if sender == nil {
-                return;
-            }
-            let represented: id = msg_send![sender, representedObject];
-            if represented == nil {
-                return;
-            }
-            let item_id: u64 = msg_send![represented, unsignedLongLongValue];
-            if item_id != 0 {
-                if let Ok(mut events) = menu_events().lock() {
-                    events.push(item_id);
-                }
+    let result = std::panic::catch_unwind(|| unsafe {
+        if sender == nil {
+            return;
+        }
+        let represented: id = msg_send![sender, representedObject];
+        if represented == nil {
+            return;
+        }
+        let item_id: u64 = msg_send![represented, unsignedLongLongValue];
+        if item_id != 0 {
+            if let Ok(mut events) = menu_events().lock() {
+                events.push(item_id);
             }
         }
     });
-    
+
     if result.is_err() {
         eprintln!("[rust_widgets] Panic in on_menu_item handler");
     }
@@ -116,8 +114,11 @@ extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
 
 extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSButton actions.
-    eprintln!("[rust_widgets] on_button_clicked: CALLED! sender={:?}", sender);
-    
+    eprintln!(
+        "[rust_widgets] on_button_clicked: CALLED! sender={:?}",
+        sender
+    );
+
     // Use catch_unwind to prevent panics from crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         unsafe {
@@ -126,13 +127,19 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
                 return;
             }
             let represented: id = msg_send![sender, representedObject];
-            eprintln!("[rust_widgets] on_button_clicked: represented={:?}", represented);
+            eprintln!(
+                "[rust_widgets] on_button_clicked: represented={:?}",
+                represented
+            );
             if represented == nil {
                 eprintln!("[rust_widgets] on_button_clicked: representedObject is nil");
                 return;
             }
             let widget_id: u64 = msg_send![represented, unsignedLongLongValue];
-            eprintln!("[rust_widgets] on_button_clicked: widget_id = {}", widget_id);
+            eprintln!(
+                "[rust_widgets] on_button_clicked: widget_id = {}",
+                widget_id
+            );
             if widget_id != 0 {
                 // Push the event first (radio button handling is secondary)
                 if let Ok(mut events) = widget_events().lock() {
@@ -140,14 +147,17 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
                         widget_id,
                         kind: WidgetTriggerKind::Clicked,
                     });
-                    eprintln!("[rust_widgets] on_button_clicked: event pushed, queue size = {}", events.len());
+                    eprintln!(
+                        "[rust_widgets] on_button_clicked: event pushed, queue size = {}",
+                        events.len()
+                    );
                 } else {
                     eprintln!("[rust_widgets] on_button_clicked: failed to lock widget_events");
                 }
             }
         }
     });
-    
+
     if result.is_err() {
         eprintln!("[rust_widgets] Panic in on_button_clicked handler");
     }
@@ -164,7 +174,10 @@ fn menu_target_class() -> *const Class {
         let mut decl = ClassDecl::new("RustWidgetsMenuTarget", superclass)
             .expect("failed to declare RustWidgetsMenuTarget");
         unsafe {
-            decl.add_method(sel!(onMenuItem:), on_menu_item as extern "C" fn(&Object, Sel, id));
+            decl.add_method(
+                sel!(onMenuItem:),
+                on_menu_item as extern "C" fn(&Object, Sel, id),
+            );
         }
         (decl.register() as *const Class) as usize
     })) as *const Class
@@ -188,11 +201,20 @@ fn button_target_class() -> *const Class {
         let mut decl = ClassDecl::new("RustWidgetsButtonTarget", superclass)
             .expect("failed to declare RustWidgetsButtonTarget");
         unsafe {
-            decl.add_method(sel!(onButtonClicked:), on_button_clicked as extern "C" fn(&Object, Sel, id));
+            decl.add_method(
+                sel!(onButtonClicked:),
+                on_button_clicked as extern "C" fn(&Object, Sel, id),
+            );
             // Also add the method with a different selector name for testing
-            decl.add_method(sel!(buttonClicked:), on_button_clicked as extern "C" fn(&Object, Sel, id));
+            decl.add_method(
+                sel!(buttonClicked:),
+                on_button_clicked as extern "C" fn(&Object, Sel, id),
+            );
             // Add a simple selector without colon
-            decl.add_method(sel!(buttonClick), on_button_clicked_simple as extern "C" fn(&Object, Sel));
+            decl.add_method(
+                sel!(buttonClick),
+                on_button_clicked_simple as extern "C" fn(&Object, Sel),
+            );
         }
         (decl.register() as *const Class) as usize
     })) as *const Class
@@ -201,14 +223,20 @@ fn button_target_class() -> *const Class {
 fn shared_button_target() -> id {
     let ptr = *BUTTON_TARGET.get_or_init(|| unsafe {
         let class = button_target_class();
-        eprintln!("[rust_widgets] shared_button_target: creating target with class {:?}", class);
+        eprintln!(
+            "[rust_widgets] shared_button_target: creating target with class {:?}",
+            class
+        );
         let obj: id = msg_send![class, new];
         eprintln!("[rust_widgets] shared_button_target: created obj {:?}", obj);
         // Retain the object to keep it alive
         let _: () = msg_send![obj, retain];
         obj as usize
     });
-    eprintln!("[rust_widgets] shared_button_target: returning target {:?}", ptr as id);
+    eprintln!(
+        "[rust_widgets] shared_button_target: returning target {:?}",
+        ptr as id
+    );
     ptr as id
 }
 
@@ -414,39 +442,62 @@ impl Platform for MacOSPlatform {
                 NSBackingStoreBuffered,
                 NO,
             );
-            let content_view = NSView::initWithFrame_(
-                NSView::alloc(nil),
-                Self::make_rect(0, 0, width, height),
-            );
+            let content_view =
+                NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(0, 0, width, height));
             let _: () = msg_send![window, setContentView: content_view];
             window.cascadeTopLeftFromPoint_(NSPoint::new(20.0, 20.0));
             NSWindow::setTitle_(window, NSString::alloc(nil).init_str(title));
             window.makeKeyAndOrderFront_(nil);
             let _: () = msg_send![window, display];
 
-            let id = self.register_handle(HandleKind::Window, title, x, y, width, height, window as usize);
+            let id = self.register_handle(
+                HandleKind::Window,
+                title,
+                x,
+                y,
+                width,
+                height,
+                window as usize,
+            );
 
             pool.drain();
             id
         }
     }
 
-    fn create_button(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        eprintln!("[rust_widgets] MacOSPlatform::create_button called: parent={}, text='{}'", parent, text);
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        eprintln!(
+            "[rust_widgets] MacOSPlatform::create_button called: parent={}, text='{}'",
+            parent, text
+        );
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let button = NSButton::initWithFrame_(NSButton::alloc(nil), Self::make_rect(x, y, width, height));
-            eprintln!("[rust_widgets] MacOSPlatform::create_button: button created {:?}", button);
+            let button = NSButton::initWithFrame_(
+                NSButton::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
+            eprintln!(
+                "[rust_widgets] MacOSPlatform::create_button: button created {:?}",
+                button
+            );
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
             NSButton::setBezelStyle_(button, NSBezelStyle::NSRoundedBezelStyle);
-            
+
             // Set button type to momentary push button
             let _: () = msg_send![button, setButtonType: 0u64]; // NSMomentaryPushInButton
-            
+
             // Enable the button
             let _: () = msg_send![button, setEnabled: YES];
-            
+
             // Set button to send action on mouse up and mouse down
             let _: () = msg_send![button, sendActionOn: 2u64]; // NSLeftMouseDownMask
 
@@ -457,8 +508,19 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::Button, text, x, y, width, height, button as usize);
-            eprintln!("[rust_widgets] create_button: created button with id {}", id);
+            let id = self.register_handle(
+                HandleKind::Button,
+                text,
+                x,
+                y,
+                width,
+                height,
+                button as usize,
+            );
+            eprintln!(
+                "[rust_widgets] create_button: created button with id {}",
+                id
+            );
 
             // Set up button click handler using NSButton methods
             let target = shared_button_target();
@@ -466,18 +528,24 @@ impl Platform for MacOSPlatform {
             NSButton::setTarget_(button, target);
             eprintln!("[rust_widgets] create_button: setting action");
             let action_sel = sel!(onButtonClicked:);
-            eprintln!("[rust_widgets] create_button: action selector = {:?}", action_sel);
+            eprintln!(
+                "[rust_widgets] create_button: action selector = {:?}",
+                action_sel
+            );
             NSButton::setAction_(button, action_sel);
-            
+
             // Test the button action
             let _: () = msg_send![button, performClick: nil];
             eprintln!("[rust_widgets] create_button: performed test click");
-            
+
             // Verify the target and action are set correctly
             let current_target: id = msg_send![button, target];
             let current_action: Sel = msg_send![button, action];
-            eprintln!("[rust_widgets] create_button: current target = {:?}, current action = {:?}", current_target, current_action);
-              
+            eprintln!(
+                "[rust_widgets] create_button: current target = {:?}, current action = {:?}",
+                current_target, current_action
+            );
+
             // Create NSNumber to store widget id - use numberWithUnsignedLongLong
             eprintln!("[rust_widgets] create_button: creating token for id {}", id);
             let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id];
@@ -491,11 +559,22 @@ impl Platform for MacOSPlatform {
         }
     }
 
-    fn create_checkbox(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_checkbox(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let button = NSButton::initWithFrame_(NSButton::alloc(nil), Self::make_rect(x, y, width, height));
+            let button = NSButton::initWithFrame_(
+                NSButton::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
             let _: () = msg_send![button, setButtonType: 3usize];
 
@@ -506,7 +585,15 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::CheckBox, text, x, y, width, height, button as usize);
+            let id = self.register_handle(
+                HandleKind::CheckBox,
+                text,
+                x,
+                y,
+                width,
+                height,
+                button as usize,
+            );
 
             // Set up checkbox click handler
             let target = shared_button_target();
@@ -565,31 +652,41 @@ impl Platform for MacOSPlatform {
         }
     }
 
-    fn create_line_edit(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_line_edit(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
             // Create scroll view first
             let scroll_view: id = msg_send![class!(NSScrollView), alloc];
-            let scroll_view: id = msg_send![scroll_view, initWithFrame: Self::make_rect(x, y, width, height)];
-            
+            let scroll_view: id =
+                msg_send![scroll_view, initWithFrame: Self::make_rect(x, y, width, height)];
+
             // Create text view with frame
             let text_view: id = msg_send![class!(NSTextView), alloc];
-            let text_view: id = msg_send![text_view, initWithFrame: Self::make_rect(0, 0, width, height)];
-            
+            let text_view: id =
+                msg_send![text_view, initWithFrame: Self::make_rect(0, 0, width, height)];
+
             // Configure text view
             let _: () = msg_send![text_view, setEditable: NO];
             let _: () = msg_send![text_view, setSelectable: YES];
             let _: () = msg_send![text_view, setAutoresizingMask: 18u64]; // NSViewWidthSizable | NSViewHeightSizable
-            
+
             // Set font
             let font: id = msg_send![class!(NSFont), systemFontOfSize: 10.0f64];
             let _: () = msg_send![text_view, setFont: font];
-            
+
             // Set initial text
             let ns_text = NSString::alloc(nil).init_str(text);
             let _: () = msg_send![text_view, setString: ns_text];
-            
+
             // Configure scroll view
             let _: () = msg_send![scroll_view, setDocumentView: text_view];
             let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
@@ -603,7 +700,15 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::LineEdit, text, x, y, width, height, text_view as usize);
+            let id = self.register_handle(
+                HandleKind::LineEdit,
+                text,
+                x,
+                y,
+                width,
+                height,
+                text_view as usize,
+            );
 
             pool.drain();
             id
@@ -634,14 +739,7 @@ impl Platform for MacOSPlatform {
         }
     }
 
-    fn create_progress_bar(
-        &self,
-        parent: u64,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
+    fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
@@ -670,11 +768,22 @@ impl Platform for MacOSPlatform {
         }
     }
 
-    fn create_label(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_label(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
+            let field = NSTextField::initWithFrame_(
+                NSTextField::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
             NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
             let _: () = msg_send![field, setEditable: NO];
             let _: () = msg_send![field, setSelectable: NO];
@@ -688,7 +797,8 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::Label, text, x, y, width, height, field as usize);
+            let id =
+                self.register_handle(HandleKind::Label, text, x, y, width, height, field as usize);
 
             pool.drain();
             id
@@ -700,7 +810,8 @@ impl Platform for MacOSPlatform {
             let pool = NSAutoreleasePool::new(nil);
 
             let menu_bar: id = msg_send![class!(NSMenu), alloc];
-            let menu_bar: id = msg_send![menu_bar, initWithTitle: NSString::alloc(nil).init_str("MainMenu")];
+            let menu_bar: id =
+                msg_send![menu_bar, initWithTitle: NSString::alloc(nil).init_str("MainMenu")];
             let _: () = msg_send![menu_bar, setAutoenablesItems: NO];
 
             let app_menu_item: id = msg_send![class!(NSMenuItem), alloc];
@@ -713,7 +824,8 @@ impl Platform for MacOSPlatform {
             let _: () = msg_send![menu_bar, addItem: app_menu_item];
 
             let app_menu: id = msg_send![class!(NSMenu), alloc];
-            let app_menu: id = msg_send![app_menu, initWithTitle: NSString::alloc(nil).init_str("Application")];
+            let app_menu: id =
+                msg_send![app_menu, initWithTitle: NSString::alloc(nil).init_str("Application")];
             let _: () = msg_send![app_menu, setAutoenablesItems: NO];
             let _: () = msg_send![menu_bar, setSubmenu: app_menu forItem: app_menu_item];
 
@@ -727,7 +839,15 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::MenuBar, "MenuBar", x, y, width, height, menu_bar as usize);
+            let id = self.register_handle(
+                HandleKind::MenuBar,
+                "MenuBar",
+                x,
+                y,
+                width,
+                height,
+                menu_bar as usize,
+            );
 
             pool.drain();
             id
@@ -747,7 +867,8 @@ impl Platform for MacOSPlatform {
                 keyEquivalent: empty
             ];
             let submenu: id = msg_send![class!(NSMenu), alloc];
-            let submenu: id = msg_send![submenu, initWithTitle: NSString::alloc(nil).init_str(text)];
+            let submenu: id =
+                msg_send![submenu, initWithTitle: NSString::alloc(nil).init_str(text)];
             let _: () = msg_send![submenu, setAutoenablesItems: NO];
             let _: () = msg_send![menu_item, setSubmenu: submenu];
 
@@ -756,13 +877,15 @@ impl Platform for MacOSPlatform {
                 match parent_handle.kind {
                     HandleKind::MenuBar => {
                         let _: () = msg_send![native_parent, addItem: menu_item];
-                        let _: () = msg_send![native_parent, setSubmenu: submenu forItem: menu_item];
+                        let _: () =
+                            msg_send![native_parent, setSubmenu: submenu forItem: menu_item];
                     }
                     HandleKind::Menu => {
                         let parent_submenu: id = msg_send![native_parent, submenu];
                         if parent_submenu != nil {
                             let _: () = msg_send![parent_submenu, addItem: menu_item];
-                            let _: () = msg_send![parent_submenu, setSubmenu: submenu forItem: menu_item];
+                            let _: () =
+                                msg_send![parent_submenu, setSubmenu: submenu forItem: menu_item];
                         }
                     }
                     HandleKind::Window => {}
@@ -772,7 +895,15 @@ impl Platform for MacOSPlatform {
 
             let _ = (x, y, width, height);
 
-            let id = self.register_handle(HandleKind::Menu, text, x, y, width, height, menu_item as usize);
+            let id = self.register_handle(
+                HandleKind::Menu,
+                text,
+                x,
+                y,
+                width,
+                height,
+                menu_item as usize,
+            );
 
             pool.drain();
             id
@@ -783,7 +914,8 @@ impl Platform for MacOSPlatform {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let view = NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
+            let view =
+                NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
             if let Some(parent_handle) = self.get_handle(parent) {
                 if let HandleKind::Window = parent_handle.kind {
                     let content_view = NSWindow::contentView(Self::as_id(parent_handle));
@@ -791,18 +923,37 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::ToolBar, "ToolBar", x, y, width, height, view as usize);
+            let id = self.register_handle(
+                HandleKind::ToolBar,
+                "ToolBar",
+                x,
+                y,
+                width,
+                height,
+                view as usize,
+            );
 
             pool.drain();
             id
         }
     }
 
-    fn create_status_bar(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+    fn create_status_bar(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let field = NSTextField::initWithFrame_(NSTextField::alloc(nil), Self::make_rect(x, y, width, height));
+            let field = NSTextField::initWithFrame_(
+                NSTextField::alloc(nil),
+                Self::make_rect(x, y, width, height),
+            );
             NSTextField::setStringValue_(field, NSString::alloc(nil).init_str(text));
             let _: () = msg_send![field, setEditable: NO];
             let _: () = msg_send![field, setBordered: NO];
@@ -814,7 +965,15 @@ impl Platform for MacOSPlatform {
                 }
             }
 
-            let id = self.register_handle(HandleKind::StatusBar, text, x, y, width, height, field as usize);
+            let id = self.register_handle(
+                HandleKind::StatusBar,
+                text,
+                x,
+                y,
+                width,
+                height,
+                field as usize,
+            );
 
             pool.drain();
             id
@@ -826,7 +985,8 @@ impl Platform for MacOSPlatform {
             let pool = NSAutoreleasePool::new(nil);
 
             let combo: id = msg_send![class!(NSPopUpButton), alloc];
-            let combo: id = msg_send![combo, initWithFrame: Self::make_rect(x, y, width, height) pullsDown: NO];
+            let combo: id =
+                msg_send![combo, initWithFrame: Self::make_rect(x, y, width, height) pullsDown: NO];
 
             if let Some(parent_handle) = self.get_handle(parent) {
                 if let HandleKind::Window = parent_handle.kind {
@@ -1019,7 +1179,8 @@ impl Platform for MacOSPlatform {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
-            let view = NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
+            let view =
+                NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(x, y, width, height));
             self.add_to_parent_window(parent, view);
 
             let id = self.register_handle(
@@ -1165,7 +1326,9 @@ impl Platform for MacOSPlatform {
 
             let _: () = msg_send![container, setAutoenablesItems: NO];
 
-            let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
+            let item_id = self
+                .state
+                .create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
             let (key, modifier_mask) = parse_shortcut(shortcut);
             let item: id = msg_send![class!(NSMenuItem), alloc];
             let item: id = msg_send![
@@ -1189,7 +1352,13 @@ impl Platform for MacOSPlatform {
             self.handles
                 .lock()
                 .expect("macos handle lock poisoned")
-                .insert(item_id, CocoaHandle { ptr: item as usize, kind: HandleKind::MenuItem });
+                .insert(
+                    item_id,
+                    CocoaHandle {
+                        ptr: item as usize,
+                        kind: HandleKind::MenuItem,
+                    },
+                );
 
             item_id
         }
@@ -1243,11 +1412,16 @@ impl Platform for MacOSPlatform {
                 let native = Self::as_id(handle);
                 match handle.kind {
                     HandleKind::Window => {
-                        NSWindow::setFrame_display_(native, Self::make_rect(x, y, width, height), YES);
+                        NSWindow::setFrame_display_(
+                            native,
+                            Self::make_rect(x, y, width, height),
+                            YES,
+                        );
                     }
                     HandleKind::MenuBar | HandleKind::Menu | HandleKind::MenuItem => {}
                     _ => {
-                        let _: () = msg_send![native, setFrame: Self::make_rect(x, y, width, height)];
+                        let _: () =
+                            msg_send![native, setFrame: Self::make_rect(x, y, width, height)];
                     }
                 }
             }
@@ -1260,21 +1434,24 @@ impl Platform for MacOSPlatform {
             if let Some(handle) = self.get_handle(widget_id) {
                 let ns_text = NSString::alloc(nil).init_str(text);
                 let native = Self::as_id(handle);
-                
+
                 // Check if we're on the main thread
                 let is_main_thread: bool = msg_send![class!(NSThread), isMainThread];
-                
+
                 if !is_main_thread {
                     // For non-main thread, we need to dispatch to main thread
                     // Use performSelectorOnMainThread with the control itself
                     let _: () = msg_send![ns_text, retain];
                     eprintln!("[rust_widgets] set_widget_text: dispatching to main thread, native={:?}, ns_text={:?}", native, ns_text);
-                    
+
                     // For NSTextField, use setStringValue: selector
                     let selector = sel!(setStringValue:);
                     let result: bool = msg_send![native, respondsToSelector:selector];
-                    eprintln!("[rust_widgets] set_widget_text: native responds to setStringValue: ? {}", result);
-                    
+                    eprintln!(
+                        "[rust_widgets] set_widget_text: native responds to setStringValue: ? {}",
+                        result
+                    );
+
                     if result {
                         let _: () = msg_send![native, performSelectorOnMainThread:selector withObject:ns_text waitUntilDone:YES];
                         eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setStringValue:");
@@ -1282,7 +1459,10 @@ impl Platform for MacOSPlatform {
                         // Fallback: try setString: selector (NSTextView)
                         let selector2 = sel!(setString:);
                         let result2: bool = msg_send![native, respondsToSelector:selector2];
-                        eprintln!("[rust_widgets] set_widget_text: native responds to setString: ? {}", result2);
+                        eprintln!(
+                            "[rust_widgets] set_widget_text: native responds to setString: ? {}",
+                            result2
+                        );
                         if result2 {
                             let _: () = msg_send![native, performSelectorOnMainThread:selector2 withObject:ns_text waitUntilDone:YES];
                             eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setString:");
@@ -1295,7 +1475,9 @@ impl Platform for MacOSPlatform {
                             // NSTextField uses setStringValue: selector
                             let _: () = msg_send![native, setStringValue: ns_text];
                         }
-                        HandleKind::Label | HandleKind::StatusBar => NSTextField::setStringValue_(native, ns_text),
+                        HandleKind::Label | HandleKind::StatusBar => {
+                            NSTextField::setStringValue_(native, ns_text)
+                        }
                         HandleKind::ComboBox => {}
                         HandleKind::ListBox => {
                             let _: () = msg_send![native, setStringValue: ns_text];
@@ -1412,10 +1594,16 @@ impl Platform for MacOSPlatform {
         if let Ok(mut events) = widget_events().lock() {
             let len = events.len();
             if len > 0 {
-                eprintln!("[rust_widgets] poll_widget_trigger_event: queue has {} events", len);
+                eprintln!(
+                    "[rust_widgets] poll_widget_trigger_event: queue has {} events",
+                    len
+                );
             }
             if let Some(event) = events.pop() {
-                eprintln!("[rust_widgets] poll_widget_trigger_event: returning event for widget {}", event.widget_id);
+                eprintln!(
+                    "[rust_widgets] poll_widget_trigger_event: returning event for widget {}",
+                    event.widget_id
+                );
                 return Some(event);
             }
         }
@@ -1437,14 +1625,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::MessageBox,
-            title,
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::MessageBox, title, x, y, width, height)
     }
 
     fn create_file_dialog(
@@ -1455,14 +1637,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::FileDialog,
-            "file_dialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::FileDialog, "file_dialog", x, y, width, height)
     }
 
     fn create_color_dialog(
@@ -1473,14 +1649,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::ColorDialog,
-            "color_dialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::ColorDialog, "color_dialog", x, y, width, height)
     }
 
     fn create_font_dialog(
@@ -1491,14 +1661,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::FontDialog,
-            "font_dialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::FontDialog, "font_dialog", x, y, width, height)
     }
 
     fn create_spin_box(
@@ -1509,14 +1673,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::SpinBox,
-            "spin_box",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::SpinBox, "spin_box", x, y, width, height)
     }
 
     fn create_list_view(
@@ -1527,14 +1685,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::ListView,
-            "list_view",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::ListView, "list_view", x, y, width, height)
     }
 
     fn create_scroll_area(
@@ -1545,14 +1697,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            HandleKind::ScrollArea,
-            "scroll_area",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state
+            .create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
     }
 }
 
@@ -1593,7 +1739,12 @@ mod tests {
         assert!(Platform::set_clipboard_text(&platform, "hello"));
         assert_eq!(Platform::get_clipboard_text(&platform), "hello".to_string());
 
-        assert!(Platform::begin_drag(&platform, widget_id, "text/plain", b"abc"));
+        assert!(Platform::begin_drag(
+            &platform,
+            widget_id,
+            "text/plain",
+            b"abc"
+        ));
         let event = Platform::poll_drop_event(&platform).expect("drop event should exist");
         assert_eq!(event.source_widget_id, widget_id);
         assert_eq!(event.mime, "text/plain");
@@ -1608,5 +1759,4 @@ mod tests {
         assert!(Platform::inject_drop_event(&platform, injected.clone()));
         assert_eq!(Platform::poll_drop_event(&platform), Some(injected));
     }
-
 }
