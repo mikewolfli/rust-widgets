@@ -1,0 +1,233 @@
+//! Table widget.
+
+use crate::core::Rect;
+use crate::object::Object;
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::base_widgets::frame::Frame;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Table model abstraction for table-like views.
+pub trait TableModel: Send + Sync {
+    /// Number of rows exposed by model.
+    fn row_count(&self) -> usize;
+    /// Number of columns exposed by model.
+    fn column_count(&self) -> usize;
+    /// Data for row and column index, if present.
+    fn data(&self, row: usize, column: usize) -> Option<String>;
+
+    /// Optional signal emitted when model data projection changes.
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+}
+
+/// Item delegate for custom display/editing.
+pub trait ItemDelegate: Send + Sync {
+    /// Creates editor for given cell.
+    fn create_editor(
+        &self,
+        parent: &mut BaseWidget,
+        row: usize,
+        column: usize,
+    ) -> Option<Box<dyn Widget>>;
+    /// Sets editor data.
+    fn set_editor_data(&self, editor: &mut dyn Widget, row: usize, column: usize);
+    /// Gets editor data.
+    fn get_editor_data(&self, editor: &dyn Widget, row: usize, column: usize) -> Option<String>;
+}
+
+/// Table widget with model/view helpers and selection state.
+pub struct TableWidget {
+    base: BaseWidget,
+    /// Optional bound data model.
+    model: Option<Arc<dyn TableModel>>,
+    /// Scoped model-to-view signal subscriptions.
+    model_connection_scope: ConnectionScope,
+    /// View-side selection state.
+    selection: crate::widget::view_widgets::list_view::SelectionModel,
+    /// View-side focused row.
+    focused_row: Option<usize>,
+    /// Explicit column width overrides in logical pixels.
+    column_widths: HashMap<usize, u32>,
+    /// Explicit row height overrides in logical pixels.
+    row_heights: HashMap<usize, u32>,
+    /// Optional display/editor delegate.
+    delegate: Option<Arc<dyn ItemDelegate>>,
+    /// Emitted when selected row changes.
+    pub selection_changed: Signal1<usize>,
+    /// Emitted when focused row changes.
+    pub focused_row_changed: Signal1<Option<usize>>,
+}
+
+impl TableWidget {
+    /// Creates an empty table widget.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Table, geometry, "TableWidget"),
+            model: None,
+            model_connection_scope: ConnectionScope::new(),
+            selection: crate::widget::view_widgets::list_view::SelectionModel::new(),
+            focused_row: None,
+            column_widths: HashMap::new(),
+            row_heights: HashMap::new(),
+            delegate: None,
+            selection_changed: Signal1::new(),
+            focused_row_changed: Signal1::new(),
+        }
+    }
+
+    /// Binds an external table model.
+    pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
+        self.model_connection_scope = ConnectionScope::new();
+        if let Some(data_changed) = model.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            data_changed.connect_scoped(&self.model_connection_scope, move || {
+                redraw.emit();
+                layout.emit();
+            });
+        }
+        self.model = Some(model);
+        self.normalize_projection_state();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns visible row count.
+    pub fn row_count(&self) -> usize {
+        self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
+    }
+
+    /// Returns visible column count.
+    pub fn column_count(&self) -> usize {
+        self.model.as_ref().map(|m| m.column_count()).unwrap_or(0)
+    }
+
+    /// Returns item text by row and column index.
+    pub fn item(&self, row: usize, column: usize) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.data(row, column))
+    }
+
+    /// Select one row in the current view projection.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        if row < self.row_count() {
+            self.selection.select_row(row);
+            self.selection_changed.emit(row);
+            self.set_focused_row(row);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear current row selection.
+    pub fn clear_selection(&mut self) {
+        self.selection.clear();
+    }
+
+    /// Sets focused row in current projection.
+    pub fn set_focused_row(&mut self, row: usize) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        if self.focused_row == Some(row) {
+            return true;
+        }
+        self.focused_row = Some(row);
+        self.focused_row_changed.emit(self.focused_row);
+        true
+    }
+
+    /// Clears focused row.
+    pub fn clear_focused_row(&mut self) {
+        if self.focused_row.is_none() {
+            return;
+        }
+        self.focused_row = None;
+        self.focused_row_changed.emit(None);
+    }
+
+    /// Returns focused row when still visible in projection.
+    pub fn focused_row(&self) -> Option<usize> {
+        self.focused_row.filter(|row| *row < self.row_count())
+    }
+
+    /// Current selected row index.
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selection
+            .current_row()
+            .filter(|row| *row < self.row_count())
+    }
+
+    /// All selected rows in stable order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selection
+            .rows()
+            .into_iter()
+            .filter(|row| *row < self.row_count())
+            .collect()
+    }
+
+    /// Sets row selection mode.
+    pub fn set_selection_mode(
+        &mut self,
+        mode: crate::widget::view_widgets::list_view::SelectionMode,
+    ) {
+        self.selection.set_mode(mode);
+    }
+
+    /// Returns current selection mode.
+    pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
+        self.selection.mode()
+    }
+
+    /// Sets column width.
+    pub fn set_column_width(&mut self, column: usize, width: u32) {
+        self.column_widths.insert(column, width);
+        self.base.request_layout();
+    }
+
+    /// Sets row height.
+    pub fn set_row_height(&mut self, row: usize, height: u32) {
+        self.row_heights.insert(row, height);
+        self.base.request_layout();
+    }
+
+    /// Sets item delegate.
+    pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
+        self.delegate = Some(delegate);
+    }
+
+    fn normalize_projection_state(&mut self) {
+        let row_count = self.row_count();
+        self.selection.selected_rows.retain(|row| *row < row_count);
+        self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
+        self.focused_row = self.focused_row.filter(|row| *row < row_count);
+    }
+}
+
+impl Widget for TableWidget {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+}
+
+impl crate::widget::base::Draw for TableWidget {
+    fn draw(&self, canvas: &mut dyn crate::render::Canvas) {
+        // Default drawing implementation
+        Frame::draw_frame(canvas, self.base().geometry());
+    }
+}
+
+impl crate::event::EventHandler for TableWidget {
+    fn handle_event(&mut self, event: &crate::event::Event) -> bool {
+        // Default event handling
+        false
+    }
+}

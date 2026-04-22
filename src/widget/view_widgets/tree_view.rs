@@ -1,0 +1,222 @@
+//! Tree view widget.
+
+use crate::core::Rect;
+use crate::object::Object;
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::base_widgets::frame::Frame;
+use std::sync::Arc;
+
+/// Tree model abstraction for tree-like views.
+pub trait TreeModel: Send + Sync {
+    /// Number of nodes exposed by model.
+    fn node_count(&self) -> usize;
+    /// Node path by visible index, if present.
+    fn node_path(&self, index: usize) -> Option<String>;
+
+    /// Optional signal emitted when model data projection changes.
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+}
+
+/// In-memory tree model backed by a vector of strings.
+pub struct VecTreeModel {
+    nodes: Vec<String>,
+    data_changed: GenericSignal,
+}
+
+impl VecTreeModel {
+    /// Creates a new vector tree model.
+    pub fn new(nodes: Vec<String>) -> Self {
+        Self {
+            nodes,
+            data_changed: GenericSignal::new(),
+        }
+    }
+
+    /// Appends a node to the model.
+    pub fn append(&mut self, node: String) {
+        self.nodes.push(node);
+        self.data_changed.emit();
+    }
+
+    /// Removes a node at given index.
+    pub fn remove(&mut self, index: usize) -> Option<String> {
+        if index < self.nodes.len() {
+            let node = self.nodes.remove(index);
+            self.data_changed.emit();
+            Some(node)
+        } else {
+            None
+        }
+    }
+
+    /// Clears all nodes.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.data_changed.emit();
+    }
+}
+
+impl TreeModel for VecTreeModel {
+    fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn node_path(&self, index: usize) -> Option<String> {
+        self.nodes.get(index).cloned()
+    }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        Some(&self.data_changed)
+    }
+}
+
+/// Tree view widget with optional external model binding.
+pub struct TreeView {
+    base: BaseWidget,
+    /// Optional bound tree model.
+    model: Option<Arc<dyn TreeModel>>,
+    /// Scoped model-to-view signal subscriptions.
+    model_connection_scope: ConnectionScope,
+    /// View-side selected node index.
+    selected_node: Option<usize>,
+    /// View-side focused node index.
+    focused_node: Option<usize>,
+    /// Emitted when selected node changes.
+    pub selection_changed: Signal1<usize>,
+    /// Emitted when focused node changes.
+    pub focused_node_changed: Signal1<Option<usize>>,
+}
+
+impl TreeView {
+    /// Creates an empty tree view.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
+            model: None,
+            model_connection_scope: ConnectionScope::new(),
+            selected_node: None,
+            focused_node: None,
+            selection_changed: Signal1::new(),
+            focused_node_changed: Signal1::new(),
+        }
+    }
+
+    /// Binds an external tree model.
+    pub fn set_model(&mut self, model: Arc<dyn TreeModel>) {
+        self.model_connection_scope = ConnectionScope::new();
+        if let Some(data_changed) = model.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            data_changed.connect_scoped(&self.model_connection_scope, move || {
+                redraw.emit();
+                layout.emit();
+            });
+        }
+        self.model = Some(model);
+        self.normalize_projection_state();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Deprecated: add_node is no longer supported. TreeView requires a bound model.
+    #[deprecated(note = "Imperative add_node is removed. Use set_model with a TreeModel.")]
+    pub fn add_node(&mut self, _node: impl Into<String>) {
+        panic!("TreeView::add_node is deprecated. Use set_model with a TreeModel.");
+    }
+
+    /// Returns current visible node count.
+    pub fn node_count(&self) -> usize {
+        self.model
+            .as_ref()
+            .map(|model| model.node_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns node path by visible index.
+    pub fn node_path(&self, index: usize) -> Option<String> {
+        self.model.as_ref().and_then(|model| model.node_path(index))
+    }
+
+    /// Selects a node by visible index.
+    pub fn select_node(&mut self, index: usize) -> bool {
+        if index < self.node_count() {
+            self.selected_node = Some(index);
+            self.selection_changed.emit(index);
+            self.set_focused_node(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clears node selection.
+    pub fn clear_selection(&mut self) {
+        self.selected_node = None;
+    }
+
+    /// Sets focused node by visible index.
+    pub fn set_focused_node(&mut self, index: usize) -> bool {
+        if index >= self.node_count() {
+            return false;
+        }
+        if self.focused_node == Some(index) {
+            return true;
+        }
+        self.focused_node = Some(index);
+        self.focused_node_changed.emit(self.focused_node);
+        true
+    }
+
+    /// Clears node focus.
+    pub fn clear_focused_node(&mut self) {
+        if self.focused_node.is_none() {
+            return;
+        }
+        self.focused_node = None;
+        self.focused_node_changed.emit(None);
+    }
+
+    /// Returns focused node index when present.
+    pub fn focused_node(&self) -> Option<usize> {
+        self.focused_node.filter(|index| *index < self.node_count())
+    }
+
+    /// Returns selected node index if present.
+    pub fn selected_node(&self) -> Option<usize> {
+        self.selected_node
+            .filter(|index| *index < self.node_count())
+    }
+
+    fn normalize_projection_state(&mut self) {
+        let node_count = self.node_count();
+        self.selected_node = self.selected_node.filter(|index| *index < node_count);
+        self.focused_node = self.focused_node.filter(|index| *index < node_count);
+    }
+}
+
+impl Widget for TreeView {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+}
+
+impl crate::widget::base::Draw for TreeView {
+    fn draw(&self, canvas: &mut dyn crate::render::Canvas) {
+        // Default drawing implementation
+        Frame::draw_frame(canvas, self.base().geometry());
+    }
+}
+
+impl crate::event::EventHandler for TreeView {
+    fn handle_event(&mut self, event: &crate::event::Event) -> bool {
+        // Default event handling
+        false
+    }
+}

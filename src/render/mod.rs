@@ -22,20 +22,41 @@
 //! All coordinates are in logical pixels and use the screen coordinate system.
 
 pub mod batch;
-pub mod text_cache;
+pub mod button;
+pub mod checkbox;
+pub mod combobox;
 pub mod command_link;
 pub mod font_combo_box;
+pub mod label;
 pub mod lcd_number;
+pub mod lineedit;
+pub mod listbox;
+pub mod quality;
+pub mod radiobutton;
+pub mod spinbox;
+pub mod text_cache;
+pub mod textedit;
 pub mod web_engine;
 pub mod web_view;
+
+// Re-export renderers
+pub use button::ButtonRenderer;
+pub use checkbox::CheckBoxRenderer;
+pub use combobox::ComboBoxRenderer;
+pub use label::LabelRenderer;
+pub use lineedit::LineEditRenderer;
+pub use listbox::ListBoxRenderer;
+pub use radiobutton::RadioButtonRenderer;
+pub use spinbox::SpinBoxRenderer;
+pub use textedit::TextEditRenderer;
 
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::widget::{
     ActivityIndicator, Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog,
-    ComboBox, ContextMenu, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget, GroupBox,
-    Label, LineEdit, ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow, ProgressBar,
-    RadioButton, RichEdit, ScrollBar, Slider, Splitter, StatusBar, TabWidget, TableWidget,
-    TextEdit, ToolBar, TreeView, Widget,
+    ComboBox, ContextMenu, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget,
+    GroupBox, Label, LineEdit, ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow,
+    ProgressBar, RadioButton, RichEdit, ScrollBar, Slider, Splitter, StatusBar, TabWidget,
+    TableWidget, TextEdit, ToolBar, TreeView, Widget,
 };
 use crate::window::Window;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
@@ -232,63 +253,126 @@ impl<'a> RenderContext<'a> {
     }
 
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillRect { rect, color });
+        self.backend
+            .execute_command(&RenderCommand::FillRect { rect, color });
     }
 
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
+        self.backend
+            .execute_command(&RenderCommand::DrawRect { rect, color });
     }
 
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
+        self.backend
+            .execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
     }
 
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
+        self.backend
+            .execute_command(&RenderCommand::FillRoundedRect {
+                rect,
+                radius,
+                color,
+            });
     }
 
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
+        self.backend
+            .execute_command(&RenderCommand::FillRoundedRectAA {
+                rect,
+                radius,
+                color,
+            });
     }
 
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
+        self.backend
+            .execute_command(&RenderCommand::DrawRoundedRectStroke {
+                rect,
+                radius,
+                color,
+                width,
+            });
     }
 
-    pub fn draw_rounded_rect_stroke_aa(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
+    pub fn draw_rounded_rect_stroke_aa(
+        &mut self,
+        rect: Rect,
+        radius: u32,
+        color: Color,
+        width: u32,
+    ) {
+        self.backend
+            .execute_command(&RenderCommand::DrawRoundedRectStrokeAA {
+                rect,
+                radius,
+                color,
+                width,
+            });
     }
 
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
-        self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
+        self.backend
+            .execute_command(&RenderCommand::DrawLine { from, to, color });
     }
 
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
-        self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
+        self.backend
+            .execute_command(&RenderCommand::DrawLineAA { from, to, color });
     }
 
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
+        self.backend
+            .execute_command(&RenderCommand::DrawLineStroke {
+                from,
+                to,
+                color,
+                width,
+            });
     }
 
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
+        self.backend
+            .execute_command(&RenderCommand::DrawLineStrokeAA {
+                from,
+                to,
+                color,
+                width,
+            });
     }
 
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
+        self.backend.execute_command(&RenderCommand::FillCircle {
+            center,
+            radius,
+            color,
+        });
     }
 
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
+        self.backend.execute_command(&RenderCommand::FillCircleAA {
+            center,
+            radius,
+            color,
+        });
     }
 
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
+        self.backend.execute_command(&RenderCommand::DrawCircle {
+            center,
+            radius,
+            color,
+        });
     }
 
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
-        self.backend.execute_command(&RenderCommand::DrawCircleStroke { center, radius, color, width });
+        self.backend
+            .execute_command(&RenderCommand::DrawCircleStroke {
+                center,
+                radius,
+                color,
+                width,
+            });
     }
 
     pub fn draw_text(&mut self, origin: Point, text: &str, font: &Font, color: Color) {
@@ -1559,7 +1643,8 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
 
             // Draw item text
             let text_color = if item.enabled {
-                menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
+                menu.foreground_color()
+                    .unwrap_or(Color::rgba(32, 34, 38, 255))
             } else {
                 Color::rgba(128, 128, 128, 255)
             };
@@ -1690,7 +1775,9 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
 
             // Draw item text
             let text_color = if item.enabled {
-                context_menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
+                context_menu
+                    .foreground_color()
+                    .unwrap_or(Color::rgba(32, 34, 38, 255))
             } else {
                 Color::rgba(128, 128, 128, 255)
             };
@@ -1751,7 +1838,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     let mut cursor_x = rect.x + 4;
     let button_width = 32u32;
     let separator_width = 4u32;
-    
+
     for (index, item) in tool_bar.items().iter().enumerate() {
         // Draw separator
         if item.is_separator() {
@@ -1768,7 +1855,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             cursor_x += separator_width as i32 + 4;
             continue;
         }
-        
+
         // Draw action item
         let action_rect = Rect {
             x: cursor_x,
@@ -1776,7 +1863,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             width: button_width,
             height: rect.height.saturating_sub(4),
         };
-        
+
         // Draw selection highlight
         if Some(index) == tool_bar.selected_index() {
             layer.push(RenderCommand::FillRoundedRect {
@@ -1785,14 +1872,14 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
                 color: Color::rgba(208, 224, 249, 255),
             });
         }
-        
+
         // Draw button background
         layer.push(RenderCommand::FillRoundedRect {
             rect: action_rect,
             radius: 3,
             color: Color::rgba(216, 225, 238, 255),
         });
-        
+
         // Draw icon placeholder if icon is set
         if item.icon.is_some() {
             let icon_rect = Rect {
@@ -1806,14 +1893,16 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
                 color: Color::rgba(200, 200, 200, 255),
             });
         }
-        
+
         // Draw item text (if no icon or as tooltip)
         let text_color = if item.enabled {
-            tool_bar.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255))
+            tool_bar
+                .foreground_color()
+                .unwrap_or(Color::rgba(30, 32, 36, 255))
         } else {
             Color::rgba(128, 128, 128, 255)
         };
-        
+
         // Show first character as button text if no icon
         if item.icon.is_none() && !item.text.is_empty() {
             layer.push(RenderCommand::DrawText {
@@ -1823,7 +1912,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
                 color: text_color,
             });
         }
-        
+
         cursor_x += button_width as i32 + 4;
         if cursor_x >= rect.x + rect.width as i32 {
             break;
@@ -6418,12 +6507,12 @@ where
     // This function is a placeholder for future native rendering integration
     let rect = widget.geometry();
     let style = widget.style();
-    
+
     // Draw basic widget background and border as fallback
     if let Some(bg_color) = style.background_color {
         context.fill_rect(rect, bg_color);
     }
-    
+
     if style.border_width > 0 {
         if let Some(border_color) = style.border_color {
             context.draw_rect_stroke(rect, border_color, style.border_width);
