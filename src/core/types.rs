@@ -121,7 +121,7 @@ impl Version {
     }
 }
 /// Platform capabilities descriptor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlatformCapabilities {
     pub has_gpu: bool,
     pub has_touch: bool,

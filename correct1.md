@@ -180,9 +180,9 @@ fill_circle(center: Point, radius: u32, color: Color)     // 3个参数
    - 统一所有类型转换规则
    - 统一所有API调用规范
 
-### ✅ CORE模块修复完成
+### ✅ CORE模块修复完成（完全补全）
 
-**CORE模块状态**：✅ 所有错误和警告已修复
+**CORE模块状态**：✅ 所有错误和警告已修复 ✅ 测试覆盖已添加
 
 #### 核心类型增强（新增构造函数）：
 1. **Point** - 新增多种构造函数：
@@ -193,6 +193,10 @@ fill_circle(center: Point, radius: u32, color: Color)     // 3个参数
    - `Point::from_i32_tuple((x, y): (i32, i32)) -> Point`
    - `Point::from_f32_tuple((x, y): (f32, f32)) -> Point`
    - `Point::from_u32_tuple((x, y): (u32, u32)) -> Point`
+   - `Point::from_f64(x: f64, y: f64) -> Point` (四舍五入)
+   - `Point::from_f64_trunc(x: f64, y: f64) -> Point` (截断)
+   - `Point::from_usize(x: usize, y: usize) -> Point` (带范围检查)
+   - `Point::from_isize(x: isize, y: isize) -> Point` (带范围检查)
 
 2. **Size** - 新增多种构造函数：
    - `Size::from_f32(width: f32, height: f32) -> Size` (四舍五入)
@@ -202,6 +206,10 @@ fill_circle(center: Point, radius: u32, color: Color)     // 3个参数
    - `Size::from_u32_tuple((width, height): (u32, u32)) -> Size`
    - `Size::from_f32_tuple((width, height): (f32, f32)) -> Size`
    - `Size::from_i32_tuple((width, height): (i32, i32)) -> Size`
+   - `Size::from_f64(width: f64, height: f64) -> Size` (四舍五入)
+   - `Size::from_f64_trunc(width: f64, height: f64) -> Size` (截断)
+   - `Size::from_usize(width: usize, height: usize) -> Size` (带范围检查)
+   - `Size::from_isize(width: isize, height: isize) -> Size` (带范围检查)
 
 3. **Rect** - 新增多种构造函数：
    - `Rect::from_f32(x: f32, y: f32, width: f32, height: f32) -> Rect` (四舍五入)
@@ -211,22 +219,50 @@ fill_circle(center: Point, radius: u32, color: Color)     // 3个参数
    - `Rect::from_tuple((x, y, width, height): (i32, i32, u32, u32)) -> Rect`
    - `Rect::from_f32_tuple((x, y, width, height): (f32, f32, f32, f32)) -> Rect`
    - `Rect::from_u32_tuple((x, y, width, height): (u32, u32, u32, u32)) -> Rect`
+   - `Rect::from_f64(x: f64, y: f64, width: f64, height: f64) -> Rect` (四舍五入)
+   - `Rect::from_f64_trunc(x: f64, y: f64, width: f64, height: f64) -> Rect` (截断)
+   - `Rect::from_usize(x: usize, y: usize, width: usize, height: usize) -> Rect` (带范围检查)
+   - `Rect::from_isize(x: isize, y: isize, width: isize, height: isize) -> Rect` (带范围检查)
 
 4. **Color** - 新增构造函数：
    - `Color::from_u32(rgba: u32) -> Color`
    - `Color::from_f32(r: f32, g: f32, b: f32, a: f32) -> Color`
    - `Color::from_f32_tuple((r, g, b, a): (f32, f32, f32, f32)) -> Color`
+   - `Color::from_f64(r: f64, g: f64, b: f64, a: f64) -> Color`
+   - `Color::from_f64_tuple((r, g, b, a): (f64, f64, f64, f64)) -> Color`
+   - `Color::from_hex(hex: &str) -> Option<Color>`
+   - `Color::from_css(css: &str) -> Option<Color>`
+   - `Color::from_hsv(h: f32, s: f32, v: f32) -> Color`
+   - `Color::from_hsva(h: f32, s: f32, v: f32, a: f32) -> Color`
 
 5. **Font** - 新增构造函数：
    - `Font::with_weight(family: impl Into<String>, size: f32, weight: u16, italic: bool) -> Font`
+   - `Font::from_f64(family: impl Into<String>, size: f64, bold: bool, italic: bool) -> Font`
+   - `Font::from_size(family: impl Into<String>, size: f32) -> Font`
+   - `Font::from_size_bold(family: impl Into<String>, size: f32, bold: bool) -> Font`
+   - `Font::from_size_italic(family: impl Into<String>, size: f32, italic: bool) -> Font`
 
 6. **Alignment** - 新增转换方法：
    - `HorizontalAlignment::from_alignment(alignment: Alignment) -> Option<HorizontalAlignment>`
    - `VerticalAlignment::from_alignment(alignment: Alignment) -> Option<VerticalAlignment>`
+   - `Alignment::from_horizontal(horizontal: HorizontalAlignment) -> Alignment`
+   - `Alignment::from_vertical(vertical: VerticalAlignment) -> Alignment`
+   - `Alignment::from_hv(horizontal: HorizontalAlignment, vertical: VerticalAlignment) -> Alignment`
 
-#### 测试代码修复：
+7. **Types** - 新增类型和方法：
+   - `Version` - 版本管理类型，支持创建、转换、比较
+   - `PlatformCapabilities` - 平台能力描述
+   - `CoreConfig` - 核心配置类型
+   - `CoreError` - 核心错误类型
+   - 完整的测试覆盖
+
+#### 测试代码修复和添加：
 - ✅ 修复了geometry.rs测试中的类型错误
 - ✅ 修复了coords.rs测试中的类型错误
+- ✅ 为types.rs添加了完整的测试覆盖
+- ✅ 为color.rs添加了完整的测试覆盖
+- ✅ 为font.rs添加了完整的测试覆盖
+- ✅ 为alignment.rs添加了完整的测试覆盖
 - ✅ 所有CORE模块测试通过
 
 ### 当前修复进展
@@ -236,6 +272,7 @@ fill_circle(center: Point, radius: u32, color: Color)     // 3个参数
 | 初始状态 | 726 | - | 开始修复 |
 | 批量脚本修复后 | 810 | +84 | 批量脚本引入新错误 |
 | CORE模块修复完成 | **768** | **-42** | **CORE模块所有错误和警告已修复** |
+| **CORE模块测试覆盖完成** | **768** | **0** | **✅ 所有CORE模块已补全，测试覆盖已添加** |
 
 ### 下一步修复计划
 
