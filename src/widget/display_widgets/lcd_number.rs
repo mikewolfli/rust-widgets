@@ -45,9 +45,9 @@ impl LCDNumber {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::LCDNumber, geometry, "LCDNumber"),
-            value: 0,
-            min_value: -999999,
-            max_value: 999999,
+            value: 0.0,
+            min_value: -999999.0,
+            max_value: 999999.0,
             num_digits: 6,
             small_decimal_point: false,
             mode: LCDNumberMode::Dec,
@@ -232,7 +232,7 @@ impl Draw for LCDNumber {
         let fg_color = style.text_color.unwrap_or(Color::rgb(255, 0, 0));
         context.fill_rect(rect, bg_color);
         let display_text = self.display_text();
-        let digit_width = rect.width / (self.num_digits as f64).max(1) as u32;
+        let digit_width = rect.width / (self.num_digits as f64).max(1.0) as u32;
         let digit_height = rect.height * 7 / 10;
         let segment_width = digit_width / 8;
         let start_x =
@@ -254,7 +254,7 @@ impl Draw for LCDNumber {
         }
         if self.check_overflow() {
             let overflow_color = Color::rgb(255, 255, 0);
-            context.fill_circle(Point::new(Point::new(rect.x + 10 as f32, rect.y + 10 as f32)), 5 as u32, overflow_color);
+            context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);
         }
     }
 }
@@ -362,13 +362,13 @@ impl LCDNumber {
         let height = (y2 - y1).max(1) as u32;
         match self.segment_style {
             SegmentStyle::Outline => {
-                context.draw_rect_stroke(Rect::new(x1, y1, width, height), color, 1);
+                context.draw_rect(Rect::new(x1, y1, width, height), color);
             }
             SegmentStyle::Filled => {
-                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
+                context.fill_rect(Rect::new(x1, y1, width, height), color);
             }
             SegmentStyle::Flat => {
-                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
+                context.fill_rect(Rect::new(x1, y1, width, height), color);
             }
         }
     }
@@ -385,13 +385,13 @@ impl LCDNumber {
         let height = (y2 - y1).max(1) as u32;
         match self.segment_style {
             SegmentStyle::Outline => {
-                context.draw_rect_stroke(Rect::new(x1, y1, width, height), color, 1);
+                context.draw_rect(Rect::new(x1, y1, width, height), color);
             }
             SegmentStyle::Filled => {
-                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
+                context.fill_rect(Rect::new(x1, y1, width, height), color);
             }
             SegmentStyle::Flat => {
-                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
+                context.fill_rect(Rect::new(x1, y1, width, height), color);
             }
         }
     }

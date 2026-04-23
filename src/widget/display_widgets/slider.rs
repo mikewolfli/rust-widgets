@@ -1,11 +1,10 @@
 //! Slider widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -19,6 +18,7 @@ pub struct Slider {
     tick_interval: i32,
     tracking: bool,
     slider_position: i32,
+    mouse_pressed: bool,
     pub value_changed: Signal1<i32>,
     pub slider_moved: Signal1<i32>,
     pub slider_pressed: GenericSignal,
@@ -69,6 +69,7 @@ impl Slider {
             tick_interval: 0,
             tracking: true,
             slider_position: 0,
+            mouse_pressed: false,
             value_changed: Signal1::new(),
             slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
@@ -211,13 +212,13 @@ impl Slider {
         let range = (self.maximum - self.minimum) as f32;
         match self.orientation {
             Orientation::Horizontal => {
-                let relative = (pos - rect.x) / rect.width;
-                let value = self.minimum as f32 + range * relative.clamp(0, 1);
+                let relative = (pos - rect.x as f32) / rect.width as f32;
+                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
                 value.round() as i32
             }
             Orientation::Vertical => {
-                let relative = 1 - (pos - rect.y) / rect.height; // Invert Y axis
-                let value = self.minimum as f32 + range * relative.clamp(0, 1);
+                let relative = 1.0 - (pos - rect.y as f32) / rect.height as f32; // Invert Y axis
+                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
                 value.round() as i32
             }
         }
@@ -227,16 +228,16 @@ impl Slider {
         let rect = self.geometry();
         let clamped = value.clamp(self.minimum, self.maximum);
         let range = (self.maximum - self.minimum) as f32;
-        if range == 0 {
+        if range == 0.0 {
             return match self.orientation {
-                Orientation::Horizontal => rect.x,
-                Orientation::Vertical => rect.y + rect.height as f32 / 2,
+                Orientation::Horizontal => rect.x as f32,
+                Orientation::Vertical => rect.y as f32 + rect.height as f32 / 2.0,
             };
         }
         let relative = (clamped - self.minimum) as f32 / range;
         match self.orientation {
-            Orientation::Horizontal => rect.x + rect.width as f32 * relative,
-            Orientation::Vertical => rect.y + rect.height as f32 * (1 - relative), // Invert Y axis
+            Orientation::Horizontal => rect.x as f32 + rect.width as f32 * relative,
+            Orientation::Vertical => rect.y as f32 + rect.height as f32 * (1.0 - relative), // Invert Y axis
         }
     }
 }
@@ -366,13 +367,15 @@ impl EventHandler for Slider {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
+                    self.mouse_pressed = true;
                     self.slider_pressed.emit();
-                    let value = self.pixel_pos_to_value(pos.x);
+                    let value = self.pixel_pos_to_value(pos.x as f32);
                     self.set_slider_position(value);
                 }
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
+                    self.mouse_pressed = false;
                     self.slider_released.emit();
                     if !self.tracking {
                         self.set_value(self.slider_position);
@@ -380,8 +383,8 @@ impl EventHandler for Slider {
                 }
             }
             Event::MouseMove { pos } => {
-                if self.base.is_mouse_pressed() {
-                    let value = self.pixel_pos_to_value(pos.x);
+                if self.mouse_pressed {
+                    let value = self.pixel_pos_to_value(pos.x as f32);
                     self.set_slider_position(value);
                 }
             }
@@ -443,22 +446,16 @@ impl Draw for Slider {
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
-                let groove_y = rect.y + rect.height as f32 / 2;
+                let groove_y = rect.y as f32 + rect.height as f32 / 2.0;
                 let groove_height = 4;
                 // Draw groove
                 context.fill_rect(
-                    rect.x,
-                    groove_y - groove_height / 2,
-                    rect.width,
-                    groove_height,
+                    Rect::from_f32(rect.x as f32, groove_y - groove_height as f32 / 2.0, rect.width as f32, groove_height as f32),
                     Color::from_rgb(200, 200, 200),
                 );
                 // Draw slider handle
                 context.fill_rect(
-                    slider_pos - slider_size / 2,
-                    rect.y,
-                    slider_size,
-                    rect.height,
+                    Rect::from_f32(slider_pos - slider_size as f32 / 2.0, rect.y as f32, slider_size as f32, rect.height as f32),
                     Color::from_rgb(0, 120, 215),
                 );
                 // Draw ticks if enabled
@@ -470,35 +467,29 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(tick_x as f32, rect.y as f32), Point::new(tick_x as f32, rect.y + tick_height as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::from_f32(tick_x, rect.y as f32), Point::from_f32(tick_x, rect.y as f32 + tick_height as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(tick_x as f32, rect.y + rect.height as f32 - tick_height as f32), Point::new(tick_x as f32, rect.y + rect.height as f32 as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::from_f32(tick_x, rect.y as f32 + rect.height as f32 - tick_height as f32), Point::from_f32(tick_x, rect.y as f32 + rect.height as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }
                 }
             }
             Orientation::Vertical => {
-                let groove_x = rect.x + rect.width as f32 / 2;
+                let groove_x = rect.x as f32 + rect.width as f32 / 2.0;
                 let groove_width = 4;
                 // Draw groove
                 context.fill_rect(
-                    groove_x - groove_width / 2,
-                    rect.y,
-                    groove_width,
-                    rect.height,
+                    Rect::from_f32(groove_x - groove_width as f32 / 2.0, rect.y as f32, groove_width as f32, rect.height as f32),
                     Color::from_rgb(200, 200, 200),
                 );
                 // Draw slider handle
                 context.fill_rect(
-                    rect.x,
-                    slider_pos - slider_size / 2,
-                    rect.width,
-                    slider_size,
+                    Rect::from_f32(rect.x as f32, slider_pos - slider_size as f32 / 2.0, rect.width as f32, slider_size as f32),
                     Color::from_rgb(0, 120, 215),
                 );
                 // Draw ticks if enabled
@@ -510,13 +501,13 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(rect.x as f32, tick_y as f32), Point::new(rect.x + tick_width as f32, tick_y as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::from_f32(rect.x as f32, tick_y), Point::from_f32(rect.x as f32 + tick_width as f32, tick_y), Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(rect.x + rect.width as f32 - tick_width as f32, tick_y as f32), Point::new(rect.x + rect.width as f32 as f32, tick_y as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::from_f32(rect.x as f32 + rect.width as f32 - tick_width as f32, tick_y), Point::from_f32(rect.x as f32 + rect.width as f32, tick_y), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }

@@ -174,8 +174,8 @@ mod tests {
     #[test]
     fn test_rect_matcher() {
         let rect = Rect::new(0, 0, 100, 100);
-        assert!(rect.contains_point(Point::new(50 as f32, 50 as f32)));
-        assert!(!rect.contains_point(Point::new(150 as f32, 50 as f32)));
+        assert!(rect.contains_point(Point::new(50, 50)));
+        assert!(!rect.contains_point(Point::new(150, 50)));
         let inner = Rect::new(10, 10, 80, 80);
         assert!(rect.contains_rect(&inner));
         let overlapping = Rect::new(50, 50, 100, 100);

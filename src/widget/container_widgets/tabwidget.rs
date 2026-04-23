@@ -1,5 +1,6 @@
 //! Tab widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::widget::Image;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -232,28 +233,28 @@ impl TabWidget {
         match self.tab_position {
             TabPosition::North => {
                 let x = rect.x + (tab_width + spacing) as i32 * index as i32;
-                Some(Rect::new(x, rect.y, tab_width, tab_height))
+                Some(Rect::new(x, rect.y, tab_width, tab_height as u32))
             }
             TabPosition::South => {
                 let x = rect.x + (tab_width + spacing) as i32 * index as i32;
                 Some(Rect::new(
                     x,
-                    rect.y + rect.height as f32 - tab_height,
+                    rect.y + rect.height as i32 - tab_height,
                     tab_width,
-                    tab_height,
+                    tab_height as u32,
                 ))
             }
             TabPosition::West => {
-                let y = rect.y + (tab_height + spacing) as i32 * index as i32;
-                Some(Rect::new(rect.x, y, tab_width, tab_height))
+                let y = rect.y + (tab_height as i32 + spacing as i32) * index as i32;
+                Some(Rect::new(rect.x, y, tab_width, tab_height as u32))
             }
             TabPosition::East => {
-                let y = rect.y + (tab_height + spacing) as i32 * index as i32;
+                let y = rect.y + (tab_height as i32 + spacing as i32) * index as i32;
                 Some(Rect::new(
-                    rect.x + rect.width as i32 - tab_width,
+                    rect.x + rect.width as i32 - tab_width as i32,
                     y,
                     tab_width,
-                    tab_height,
+                    tab_height as u32,
                 ))
             }
         }
@@ -267,16 +268,16 @@ impl TabWidget {
                 rect.x,
                 rect.y + tab_height,
                 rect.width,
-                rect.height - tab_height,
+                rect.height - tab_height as u32,
             ),
-            TabPosition::South => Rect::new(rect.x, rect.y, rect.width, rect.height - tab_height),
+            TabPosition::South => Rect::new(rect.x, rect.y, rect.width, rect.height - tab_height as u32),
             TabPosition::West => Rect::new(
                 rect.x + tab_height,
                 rect.y,
-                rect.width - tab_height,
+                rect.width - tab_height as u32,
                 rect.height,
             ),
-            TabPosition::East => Rect::new(rect.x, rect.y, rect.width - tab_height, rect.height),
+            TabPosition::East => Rect::new(rect.x, rect.y, rect.width - tab_height as u32, rect.height),
         }
     }
     /// Returns index of tab at position.
@@ -409,7 +410,7 @@ impl EventHandler for TabWidget {
             _ => {}
         }
         // Forward events to current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Forward event to current widget
         }
     }
@@ -417,7 +418,7 @@ impl EventHandler for TabWidget {
 impl Draw for TabWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        let rect = self.geometry();
+        let _rect = self.geometry();
         let content_rect = self.content_rect();
         // Draw content background
         context.fill_rect(content_rect, Color::from_rgb(255, 255, 255));
@@ -465,17 +466,17 @@ impl Draw for TabWidget {
                 // Draw close button if closable
                 if self.closable {
                     let close_size = 12;
-                    let close_x = tab_rect.x + tab_rect.width - close_size - 5;
-                    let close_y = tab_rect.y + (tab_rect.height - close_size) / 2;
-                    context.draw_line(Point::new(Point::new(close_x as f32, close_y as f32)), Point::new(Point::new(close_x + close_size as f32, close_y + close_size as f32)), Color::from_rgb(100, 100, 100),
+                    let close_x = tab_rect.x + tab_rect.width as i32 - close_size - 5;
+                    let close_y = tab_rect.y + (tab_rect.height as i32 - close_size) / 2;
+                    context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), Color::from_rgb(100, 100, 100),
                     );
-                    context.draw_line(Point::new(Point::new(close_x + close_size as f32, close_y as f32)), Point::new(Point::new(close_x as f32, close_y + close_size as f32)), Color::from_rgb(100, 100, 100),
+                    context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), Color::from_rgb(100, 100, 100),
                     );
                 }
             }
         }
         // Draw current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Draw current widget in content area
         }
     }

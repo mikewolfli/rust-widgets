@@ -1,8 +1,6 @@
 //! Base widget types and traits.
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use chrono::{Datelike, Timelike};
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
 use crate::render::RenderContext;
@@ -111,6 +109,12 @@ pub enum WidgetKind {
     WebEngineScriptDialog,
     /// Web engine context menu request widget for context menu handling.
     WebEngineContextMenuRequest,
+    /// Action widget for menu and toolbar actions.
+    Action,
+    /// Tool button widget.
+    ToolButton,
+    /// Tool box widget (alias with capital B).
+    ToolBox,
 }
 /// Custom drawing trait for widgets that want to render their own content.
 /// Widgets implementing this trait can provide custom drawing logic instead of
@@ -408,6 +412,7 @@ pub struct BaseWidget {
     pub(crate) children: Vec<ObjectId>,
     pub(crate) visible: bool,
     pub(crate) enabled: bool,
+    pub(crate) mouse_pressed: bool,
     pub(crate) tooltip: String,
     pub(crate) style: WidgetStyle,
     pub(crate) connection_scope: ConnectionScope,
@@ -447,6 +452,7 @@ impl BaseWidget {
             children: Vec::new(),
             visible: true,
             enabled: true,
+            mouse_pressed: false,
             tooltip: String::new(),
             style: WidgetStyle::default(),
             connection_scope: ConnectionScope::new(),
@@ -559,6 +565,16 @@ impl BaseWidget {
     }
     pub fn layout_requested_signal(&self) -> &GenericSignal {
         &self.layout_requested
+    }
+    pub fn is_mouse_pressed(&self) -> bool {
+        self.mouse_pressed
+    }
+    pub fn set_mouse_pressed(&mut self, pressed: bool) {
+        self.mouse_pressed = pressed;
+    }
+    pub fn paint(&mut self, context: &mut RenderContext) {
+        // Default paint implementation - subclasses should override
+        let _ = context;
     }
     pub fn request_redraw(&self) {
         self.redraw_requested.emit();

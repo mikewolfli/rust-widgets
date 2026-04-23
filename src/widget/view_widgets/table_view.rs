@@ -1,7 +1,7 @@
 //! Table view widget.
 use crate::core::Rect;
 use crate::render::RenderContext;
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::base::{BaseWidget, Widget};
 use crate::widget::view_widgets::table_widget::{ItemDelegate, TableModel, TableWidget};
 use std::sync::Arc;
 /// Dedicated table-view widget contract with table model projection parity.

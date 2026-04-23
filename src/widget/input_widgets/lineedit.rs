@@ -1,11 +1,10 @@
 //! Single-line text edit widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Single-line text edit widget.
 pub struct LineEdit {
     base: BaseWidget,
@@ -149,7 +148,7 @@ impl LineEdit {
             if available == 0 {
                 return;
             }
-            let text = if text.len() > available {
+            let _text = if text.len() > available {
                 &text[..available]
             } else {
                 text
@@ -157,8 +156,8 @@ impl LineEdit {
         }
         // Handle selection
         let mut new_text = self.text.clone();
-        if let Some(start) = self.selection_start {
-            let start = start.min(new_text.len());
+        if self.selection_start.is_some() {
+            let start = self.selection_start.unwrap().min(new_text.len());
             let end = self.cursor_position.min(new_text.len());
             let (start, end) = if start < end {
                 (start, end)
@@ -200,7 +199,7 @@ impl LineEdit {
     }
     /// Deletes selected text or character after cursor.
     pub fn delete(&mut self) {
-        if let Some(start) = self.selection_start {
+        if let Some(_start) = self.selection_start {
             // Delete selection
             self.backspace(); // Same logic
         } else if self.cursor_position < self.text.len() {
@@ -355,7 +354,7 @@ impl EventHandler for LineEdit {
                     37 => {
                         // Left arrow
                         if self.cursor_position > 0 {
-                            if modifiers.shift {
+                            if modifiers & 1 != 0 {
                                 if self.selection_start.is_none() {
                                     self.selection_start = Some(self.cursor_position);
                                 }
@@ -368,7 +367,7 @@ impl EventHandler for LineEdit {
                     39 => {
                         // Right arrow
                         if self.cursor_position < self.text.len() {
-                            if modifiers.shift {
+                            if modifiers & 1 != 0 {
                                 if self.selection_start.is_none() {
                                     self.selection_start = Some(self.cursor_position);
                                 }
@@ -380,7 +379,7 @@ impl EventHandler for LineEdit {
                     }
                     36 => {
                         // Home
-                        if modifiers.shift {
+                        if modifiers & 1 != 0 {
                             if self.selection_start.is_none() {
                                 self.selection_start = Some(self.cursor_position);
                             }
@@ -391,7 +390,7 @@ impl EventHandler for LineEdit {
                     }
                     35 => {
                         // End
-                        if modifiers.shift {
+                        if modifiers & 1 != 0 {
                             if self.selection_start.is_none() {
                                 self.selection_start = Some(self.cursor_position);
                             }
@@ -400,20 +399,20 @@ impl EventHandler for LineEdit {
                         }
                         self.cursor_position = self.text.len();
                     }
-                    65 if modifiers.ctrl => {
+                    65 if modifiers & 2 != 0 => {
                         // Ctrl+A: Select all
                         self.select_all();
                     }
-                    86 if modifiers.ctrl => {
+                    86 if modifiers & 2 != 0 => {
                         // Ctrl+V: Paste (would need clipboard integration)
                         // For now, just emit signal
                         self.base.redraw_requested.emit();
                     }
-                    67 if modifiers.ctrl => {
+                    67 if modifiers & 2 != 0 => {
                         // Ctrl+C: Copy (would need clipboard integration)
                         // For now, just emit signal
                     }
-                    88 if modifiers.ctrl => {
+                    88 if modifiers & 2 != 0 => {
                         // Ctrl+X: Cut (would need clipboard integration)
                         // For now, just emit signal
                         self.base.redraw_requested.emit();
@@ -441,21 +440,15 @@ impl Draw for LineEdit {
         let rect = self.geometry();
         let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as f32 / 2;
+        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw text or placeholder
@@ -466,12 +459,10 @@ impl Draw for LineEdit {
         };
         if !display_text.is_empty() {
             context.draw_text(
-                text_x,
-                text_y,
+                Point::new(text_x as i32, text_y as i32),
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Left,
             );
         }
         // Draw cursor if focused

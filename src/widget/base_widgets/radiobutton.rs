@@ -1,11 +1,10 @@
 //! Radio button widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Radio button widget.
 pub struct RadioButton {
     base: BaseWidget,
@@ -202,7 +201,7 @@ impl Draw for RadioButton {
         context.draw_circle(
             center,
             radius,
-            Color::from_rgb(100 as u32, 100, 100),
+            Color::from_rgb(100u8, 100, 100),
         );
         // Draw inner circle if checked
         if self.checked {
@@ -210,7 +209,7 @@ impl Draw for RadioButton {
             context.fill_circle(
                 center,
                 inner_radius,
-                Color::from_rgb(0 as u32, 120, 215),
+                Color::from_rgb(0u8, 120, 215),
             );
         }
     }

@@ -164,7 +164,7 @@ impl Draw for Window {
         let title_x = rect.x + 10;
         let title_y = rect.y + title_bar_height as i32 / 2;
         context.draw_text(
-            Point::new(title_x as f32, title_y as f32),
+            Point::new(title_x, title_y),
             &self.title,
             &title_font,
             title_text_color,
@@ -182,7 +182,7 @@ impl Draw for Window {
             close_button_size,
         );
         // Draw close button background
-        context.fill_rect(Rect::new(close_button_rect, Color::rgba(232, 17, 35), 255));
+        context.fill_rect(close_button_rect, Color::rgba(232, 17, 35, 255));
         // Draw close button X
         let padding = 3;
         let x1 = Point::new(
@@ -205,17 +205,17 @@ impl Draw for Window {
         context.draw_line(x3, x4, Color::WHITE);
         // Draw minimize button
         let minimize_button_rect = Rect::new(
-            rect.x + rect.width as f32 - close_button_size as i32 - 100,
+            rect.x + rect.width as i32 - close_button_size as i32 - 100,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
         );
-        context.fill_rect(Rect::new(minimize_button_rect, Color::rgba(255, 255, 255), 50));
+        context.fill_rect(minimize_button_rect, Color::rgba(255, 255, 255, 50));
         // Draw minimize line
         let minimize_y = minimize_button_rect.y + minimize_button_rect.height as i32 / 2;
         context.draw_line(
-            Point::new(minimize_button_rect.x + 2 as f32, minimize_y as f32),
-            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2 as f32, minimize_y as f32),
+            Point::new(minimize_button_rect.x + 2, minimize_y),
+            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2, minimize_y),
             Color::WHITE,
         );
         // Draw maximize button
@@ -225,7 +225,7 @@ impl Draw for Window {
             close_button_size,
             close_button_size,
         );
-        context.fill_rect(Rect::new(maximize_button_rect, Color::rgba(255, 255, 255), 50));
+        context.fill_rect(maximize_button_rect, Color::rgba(255, 255, 255, 50));
         // Draw maximize square
         let max_padding = 3;
         context.draw_rect_stroke(

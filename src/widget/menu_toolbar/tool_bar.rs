@@ -1,7 +1,6 @@
 //! Tool bar widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -60,7 +59,7 @@ impl ToolBar {
         Self {
             base: BaseWidget::new(WidgetKind::ToolBar, geometry, "ToolBar"),
             orientation: ToolBarOrientation::Horizontal,
-            icon_size: 24,
+            icon_size: 24.0,
             movable: true,
             floatable: true,
             items: Vec::new(),
@@ -95,7 +94,7 @@ impl ToolBar {
         }
     }
     pub fn set_icon_size(&mut self, size: f32) {
-        self.icon_size = size.max(8);
+        self.icon_size = size.max(8.0);
     }
     pub fn set_movable(&mut self, v: bool) {
         self.movable = v;
@@ -127,7 +126,7 @@ impl ToolBar {
         }
     }
     fn button_size(&self) -> f32 {
-        self.icon_size as u32 + 8
+        self.icon_size + 8.0
     }
     fn item_rect(&self, index: usize) -> Rect {
         let rect = self.geometry();
@@ -303,19 +302,15 @@ impl EventHandler for ToolBar {
 impl Draw for ToolBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let btn_sz = self.button_size();
+        let _btn_sz = self.button_size();
         // Background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(245, 245, 245),
         );
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
-        context.draw_line(Point::new(Point::new(rect.x as f32, y as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 as f32, y as f32)), Color::from_rgb(200, 200, 200),
-        );
+        context.draw_line(Point::new(rect.x, y), Point::new(rect.x + rect.width as i32, y), Color::from_rgb(200, 200, 200));
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
             let item = &self.items[i];
@@ -323,13 +318,11 @@ impl Draw for ToolBar {
                 match self.orientation {
                     ToolBarOrientation::Horizontal => {
                         let mid_x = item_r.x + (item_r.width as i32) / 2;
-                        context.draw_line(Point::new(Point::new(mid_x as f32, rect.y + 4 as f32)), Point::new(Point::new(mid_x as f32, rect.y + rect.height as f32 as i32 - 4 as f32)), Color::from_rgb(200, 200, 200),
-                        );
+                        context.draw_line(Point::new(mid_x, rect.y + 4), Point::new(mid_x, rect.y + rect.height as i32 - 4), Color::from_rgb(200, 200, 200));
                     }
                     ToolBarOrientation::Vertical => {
                         let mid_y = item_r.y + item_r.height as i32 / 2;
-                        context.draw_line(Point::new(rect.x + 4 as f32, mid_y as f32), Point::new(rect.x + rect.width as f32 - 4 as f32, mid_y as f32), Color::from_rgb(200, 200, 200),
-                        );
+                        context.draw_line(Point::new(rect.x + 4, mid_y), Point::new(rect.x + rect.width as i32 - 4, mid_y), Color::from_rgb(200, 200, 200));
                     }
                 }
                 continue;
@@ -345,10 +338,7 @@ impl Draw for ToolBar {
             context.fill_rect(Rect::new(item_r.x, item_r.y, item_r.width, item_r.height), bg);
             if is_hovered || item.checked {
                 context.draw_rect(
-                    item_r.x,
-                    item_r.y,
-                    item_r.width,
-                    item_r.height,
+                    Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
                     Color::from_rgb(0, 120, 215),
                 );
             }
@@ -358,12 +348,10 @@ impl Draw for ToolBar {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                item_r.x + item_r.width as i32 / 2,
-                item_r.y + item_r.height as i32 / 2,
+                Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),
                 &item.text,
                 &Font::default(),
                 fg,
-                Alignment::Center,
             );
         }
     }

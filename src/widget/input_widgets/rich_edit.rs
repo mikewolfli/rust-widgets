@@ -102,7 +102,7 @@ impl Widget for RichEdit {
     }
 }
 impl crate::widget::base::Draw for RichEdit {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Default drawing implementation
         // Rich edit is drawn by the renderer
     }

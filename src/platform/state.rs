@@ -308,6 +308,7 @@ where
         true
     }
     /// Inject menu trigger event.
+    #[allow(dead_code)]
     pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
         if !self.contains_widget(menu_item_id) {
             return false;
@@ -316,14 +317,17 @@ where
         true
     }
     /// Pop widget trigger event.
+    #[allow(dead_code)]
     pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
         self.pop_menu_event()
     }
     /// Pop typed widget trigger event.
+    #[allow(dead_code)]
     pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.pop_widget_event()
     }
     /// Inject widget trigger event.
+    #[allow(dead_code)]
     pub fn inject_widget_trigger_event(
         &self,
         widget_id: ObjectId,

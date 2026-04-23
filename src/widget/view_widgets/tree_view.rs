@@ -1,10 +1,8 @@
 //! Tree view widget.
 use crate::core::Rect;
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::base::{BaseWidget, Widget, WidgetKind};
-use crate::widget::base_widgets::frame::Frame;
 use std::sync::Arc;
 /// Tree model abstraction for tree-like views.
 pub trait TreeModel: Send + Sync {

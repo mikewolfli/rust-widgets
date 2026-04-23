@@ -95,7 +95,10 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::WebEngineNotification
         | WidgetKind::WebEngineScriptDialog
         | WidgetKind::WebEngineContextMenuRequest => ControlRoutePreference::CustomRequired,
-        WidgetKind::StackedWidget => ControlRoutePreference::CustomRequired,
+        WidgetKind::StackedWidget
+        | WidgetKind::Action
+        | WidgetKind::ToolButton
+        | WidgetKind::ToolBox => ControlRoutePreference::CustomRequired,
     }
 }
 /// Unified control backend contract.

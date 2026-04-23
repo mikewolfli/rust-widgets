@@ -1,12 +1,11 @@
 //! Calendar widget.
 use chrono::Datelike;
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Calendar widget.
 pub struct Calendar {
     base: BaseWidget,

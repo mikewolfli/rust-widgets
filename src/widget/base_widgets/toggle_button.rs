@@ -107,7 +107,7 @@ impl Widget for ToggleButton {
     }
 }
 impl crate::widget::base::Draw for ToggleButton {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Default drawing implementation
         // Toggle button is drawn by the renderer
     }

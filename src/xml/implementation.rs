@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::core::{Color, Rect};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{
-    Button, Canvas, ChartWidget, CheckBox, ComboBox, Dialog, GridWidget, GroupBox, Label, LineEdit,
+    Button, Canvas, ChartWidget, CheckBox, ComboBox, GridWidget, GroupBox, Label, LineEdit,
     ListBox, Menu, MenuBar, Panel, PopupWindow, ProgressBar, RadioButton, ScrollBar, Slider,
     StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar, TreeModel, TreeView, Widget,
 };
@@ -353,7 +353,7 @@ impl XmlLayoutLoader {
             .unwrap_or_else(|| text.clone());
         let mut widget: Box<dyn Widget> = match class.as_str() {
             "window" => Box::new(Window::new(title, rect)),
-            "dialog" => Box::new(Dialog::new("Dialog".to_string(), rect)),
+            "dialog" => Box::new(PopupWindow::new(rect)),
             "popupwindow" | "popup" => Box::new(PopupWindow::new(rect)),
             "button" => Box::new(Button::new(text, rect)),
             "checkbox" => {
@@ -401,7 +401,7 @@ impl XmlLayoutLoader {
                     }
                 }
                 if let Some(index) = parse_usize_property(&element.properties, "current_index") {
-                    combo.set_current_index(index);
+                    combo.set_current_index(Some(index));
                 }
                 Box::new(combo)
             }
@@ -430,7 +430,7 @@ impl XmlLayoutLoader {
             "progressbar" => {
                 let mut progress = ProgressBar::new(rect);
                 if let Some(value) = parse_u32_property(&element.properties, "value") {
-                    progress.set_value(value);
+                    progress.set_value(value as i32);
                 }
                 Box::new(progress)
             }
@@ -452,7 +452,7 @@ impl XmlLayoutLoader {
             "groupbox" => Box::new(GroupBox::new(rect)),
             "tabwidget" => Box::new(TabWidget::new(rect)),
             "menubar" => Box::new(MenuBar::new(rect)),
-            "menu" => Box::new(Menu::new(rect)),
+            "menu" => Box::new(Menu::new("", rect)),
             "toolbar" => Box::new(ToolBar::new(rect)),
             "statusbar" => Box::new(StatusBar::new(rect)),
             "canvas" => Box::new(Canvas::new(rect)),
@@ -574,6 +574,7 @@ fn parse_rect(properties: &HashMap<String, String>) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::GenericSignal;
     #[test]
     fn xml_instantiation_applies_common_widget_properties() {
         let mut loader = XmlLayoutLoader::new();
@@ -699,19 +700,48 @@ mod tests {
         assert!(check.is_visible());
         assert!(line.is_enabled());
     }
+    /// In-memory table model for testing XML model binding.
+    struct VecTableModel {
+        columns: Vec<String>,
+        data: Vec<Vec<String>>,
+        _data_changed: GenericSignal,
+    }
+    impl VecTableModel {
+        fn new(columns: Vec<String>, data: Vec<Vec<String>>) -> Self {
+            Self {
+                columns,
+                data,
+                _data_changed: GenericSignal::new(),
+            }
+        }
+    }
+    impl TableModel for VecTableModel {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+        fn column_count(&self) -> usize {
+            self.columns.len()
+        }
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|r| r.get(column).cloned())
+        }
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self._data_changed)
+        }
+    }
     #[test]
     fn xml_loader_registers_table_and_tree_models() {
         let mut loader = XmlLayoutLoader::new();
         loader.register_table_model(
             "main_table",
-            Arc::new(crate::widget::VecTableModel::new(
+            Arc::new(VecTableModel::new(
                 vec!["Name".to_string()],
                 vec![vec!["Alice".to_string()]],
             )),
         );
         loader.register_tree_model(
             "main_tree",
-            Arc::new(crate::widget::VecTreeModel::new(vec!["Root".to_string()])),
+            Arc::new(crate::widget::view_widgets::tree_view::VecTreeModel::new(vec!["Root".to_string()])),
         );
         assert!(loader.has_table_model("main_table"));
         assert!(loader.has_tree_model("main_tree"));
@@ -723,14 +753,14 @@ mod tests {
         let mut loader = XmlLayoutLoader::new();
         loader.register_table_model(
             "users",
-            Arc::new(crate::widget::VecTableModel::new(
+            Arc::new(VecTableModel::new(
                 vec!["Name".to_string()],
                 vec![vec!["Alice".to_string()], vec!["Bob".to_string()]],
             )),
         );
         loader.register_tree_model(
             "filesystem",
-            Arc::new(crate::widget::VecTreeModel::new(vec![
+            Arc::new(crate::widget::view_widgets::tree_view::VecTreeModel::new(vec![
                 "/".to_string(),
                 "/tmp".to_string(),
             ])),

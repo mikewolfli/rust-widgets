@@ -1,10 +1,9 @@
 //! MDI area widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
+use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 /// MDI area widget.
 pub struct MdiArea {
@@ -272,12 +271,12 @@ impl MdiArea {
             return;
         }
         let offset = 30;
-        let max_width = area_rect.width - offset * (count as f32 - 1);
-        let max_height = area_rect.height - offset * (count as f32 - 1);
+        let max_width = (area_rect.width as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
+        let max_height = (area_rect.height as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
         for (i, subwindow) in self.subwindows.iter_mut().enumerate() {
-            let x = area_rect.x + offset * i as f32;
-            let y = area_rect.y + offset * i as f32;
-            subwindow.geometry = Rect::new(x, y, max_width, max_height);
+            let x = area_rect.x as f32 + offset as f32 * i as f32;
+            let y = area_rect.y as f32 + offset as f32 * i as f32;
+            subwindow.geometry = Rect::new(x as i32, y as i32, max_width, max_height);
         }
     }
     /// Tile sub-windows.
@@ -289,20 +288,20 @@ impl MdiArea {
         }
         let cols = (count as f32).sqrt().ceil() as usize;
         let rows = (count as f32 / cols as f32).ceil() as usize;
-        let cell_width = area_rect.width / cols as f32;
-        let cell_height = area_rect.height / rows as f32;
+        let cell_width = (area_rect.width as f32 / cols as f32).max(0.0) as u32;
+        let cell_height = (area_rect.height as f32 / rows as f32).max(0.0) as u32;
         for (i, subwindow) in self.subwindows.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let x = area_rect.x + cell_width * col as f32;
-            let y = area_rect.y + cell_height * row as f32;
-            subwindow.geometry = Rect::new(x, y, cell_width, cell_height);
+            let x = area_rect.x as f32 + cell_width as f32 * col as f32;
+            let y = area_rect.y as f32 + cell_height as f32 * row as f32;
+            subwindow.geometry = Rect::new(x as i32, y as i32, cell_width, cell_height);
         }
     }
     /// Arranges minimized sub-windows.
     pub fn arrange_icons(&mut self) {
         let area_rect = self.geometry();
-        let minimized: Vec<_> = self
+        let mut minimized: Vec<_> = self
             .subwindows
             .iter_mut()
             .filter(|sw| sw.minimized)
@@ -314,17 +313,17 @@ impl MdiArea {
         let icon_width = 100;
         let icon_height = 80;
         let spacing = 10;
-        let cols = ((area_rect.width - spacing) / (icon_width + spacing)).floor() as usize;
-        let rows = (count as f32 / cols as f32).ceil() as usize;
+        let cols = ((area_rect.width as f32 - spacing as f32) / (icon_width as f32 + spacing as f32)).floor() as usize;
+        let _rows = (count as f32 / cols as f32).ceil() as usize;
         for (i, subwindow) in minimized.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let x = area_rect.x + spacing + (icon_width + spacing) * col as f32;
-            let y = area_rect.y + area_rect.height
-                - icon_height
-                - spacing
-                - (icon_height + spacing) * row as f32;
-            subwindow.geometry = Rect::new(x, y, icon_width, icon_height);
+            let x = area_rect.x + spacing as i32 + (icon_width as i32 + spacing as i32) * col as i32;
+            let y = area_rect.y + area_rect.height as i32
+                - icon_height as i32
+                - spacing as i32
+                - (icon_height as i32 + spacing as i32) * row as i32;
+            subwindow.geometry = Rect::new(x, y, icon_width, icon_height as u32);
         }
     }
     /// Activates next sub-window.
@@ -476,7 +475,7 @@ impl EventHandler for MdiArea {
             _ => {}
         }
         // Forward events to active sub-window
-        if let Some(widget_id) = self.active_sub_window() {
+        if self.active_sub_window().is_some() {
             // TODO: Forward event to active sub-window
         }
     }
@@ -499,13 +498,13 @@ impl Draw for MdiArea {
             Background::Gradient => {
                 // Draw gradient background
                 for y in 0..rect.height as i32 {
-                    let ratio = y as f32 / rect.height;
+                    let ratio = y as f32 / rect.height as f32;
                     let color = Color::from_rgb(
-                        (240 * (1 - ratio) + 200 * ratio) as u8,
-                        (240 * (1 - ratio) + 200 * ratio) as u8,
-                        (240 * (1 - ratio) + 200 * ratio) as u8,
+                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
+                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
+                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                     );
-                    context.draw_line(Point::new(rect.x as f32, rect.y + y as f32 as f32), Point::new(rect.x + rect.width as f32 as f32, rect.y + y as f32 as f32), color,);
+                    context.draw_line(Point::new(rect.x, rect.y + y as i32), Point::new(rect.x + rect.width as i32, rect.y + y as i32), color);
                 }
             }
             Background::Pattern => {
@@ -520,8 +519,8 @@ impl Draw for MdiArea {
                         };
                         context.fill_rect(
                             Rect::new(
-                                (rect.x as f32 + x as f32 * pattern_size) as i32,
-                                (rect.y as f32 + y as f32 * pattern_size) as i32,
+                                (rect.x as f32 + x as f32 * pattern_size as f32) as i32,
+                                (rect.y as f32 + y as f32 * pattern_size as f32) as i32,
                                 pattern_size as u32,
                                 pattern_size as u32,
                             ),
@@ -568,10 +567,7 @@ impl Draw for MdiArea {
                 Color::from_rgb(180, 180, 180)
             };
             context.fill_rect(
-                frame_rect.x,
-                frame_rect.y,
-                frame_rect.width,
-                title_bar_height,
+                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
                 title_bar_color,
             );
             // Draw title text
@@ -583,27 +579,28 @@ impl Draw for MdiArea {
             context.draw_text(
                 Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
                 &subwindow.title,
+                &Font::default(),
                 text_color,
             );
             // Draw close button if closable
             if subwindow.closable {
                 let close_size = 12;
-                let close_x = frame_rect.x + frame_rect.width - close_size - 5;
+                let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
                 let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
                 let close_color = if is_active {
                     Color::from_rgb(255, 255, 255)
                 } else {
                     Color::from_rgb(100, 100, 100)
                 };
-                context.draw_line(Point::new(close_x as f32, close_y as f32), Point::new(close_x + close_size as f32, close_y + close_size as f32), close_color,);
-                context.draw_line(Point::new(close_x + close_size as f32, close_y as f32), Point::new(close_x as f32, close_y + close_size as f32), close_color,);
+                context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), close_color);
+                context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), close_color);
             }
             // Draw widget content
-            let content_rect = Rect::new(
+            let _content_rect = Rect::new(
                 frame_rect.x,
                 frame_rect.y + title_bar_height,
                 frame_rect.width,
-                frame_rect.height - title_bar_height,
+                frame_rect.height - title_bar_height as u32,
             );
             // TODO: Draw widget in content area
             // widget.draw(context);

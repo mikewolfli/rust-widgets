@@ -1,11 +1,10 @@
 //! List box widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// List box widget.
 pub struct ListBox {
     base: BaseWidget,
@@ -44,7 +43,7 @@ impl ListBox {
             selected_indices: Vec::new(),
             selection_mode: SelectionMode::SingleSelection,
             current_row: None,
-            item_height: 20,
+            item_height: 20.0,
             item_selected: Signal1::new(),
             item_activated: Signal1::new(),
             selection_changed: GenericSignal::new(),
@@ -234,7 +233,7 @@ impl ListBox {
     }
     /// Sets item height.
     pub fn set_item_height(&mut self, height: f32) {
-        self.item_height = height.max(1);
+        self.item_height = height.max(1.0);
     }
     /// Returns all items.
     pub fn items(&self) -> &[String] {
@@ -243,7 +242,7 @@ impl ListBox {
     /// Returns visible item range based on scroll position.
     fn visible_range(&self) -> (usize, usize) {
         let rect = self.geometry();
-        let visible_items = (rect.height / self.item_height).ceil() as usize;
+        let visible_items = (rect.height as f32 / self.item_height).ceil() as usize;
         let start = 0;
         let end = self.items.len().min(start + visible_items);
         (start, end)
@@ -359,7 +358,7 @@ impl EventHandler for ListBox {
                 if *button == 1 {
                     let rect = self.geometry();
                     if rect.contains(*pos) {
-                        let item_index = ((pos.y - rect.y) / self.item_height) as usize;
+                        let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
                         if item_index < self.items.len() {
                             self.select(item_index);
                             self.base.clicked.emit();
@@ -371,7 +370,7 @@ impl EventHandler for ListBox {
                 if *button == 1 {
                     let rect = self.geometry();
                     if rect.contains(*pos) {
-                        let item_index = ((pos.y - rect.y) / self.item_height) as usize;
+                        let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
                         if item_index < self.items.len() {
                             self.select(item_index);
                             self.item_activated.emit(item_index);
@@ -433,40 +432,28 @@ impl Draw for ListBox {
         let padding = 2;
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw items
         let (start, end) = self.visible_range();
         for i in start..end {
-            let item_y = rect.y + (i as f32 * self.item_height);
-            let item_rect = Rect::new(rect.x, item_y, rect.width, self.item_height);
+            let item_y_f = rect.y as f32 + (i as f32 * self.item_height);
+            let item_rect = Rect::from_f32(rect.x as f32, item_y_f, rect.width as f32, self.item_height);
             // Draw item background
             if self.is_selected(i) {
                 context.fill_rect(
-                    item_rect.x,
-                    item_rect.y,
-                    item_rect.width,
-                    item_rect.height,
+                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     Color::from_rgb(0, 120, 215),
                 );
             } else if Some(i) == self.current_row {
                 context.fill_rect(
-                    item_rect.x,
-                    item_rect.y,
-                    item_rect.width,
-                    item_rect.height,
+                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     Color::from_rgb(240, 240, 240),
                 );
             }
@@ -478,17 +465,19 @@ impl Draw for ListBox {
                     Color::from_rgb(0, 0, 0)
                 };
                 context.draw_text(
-                    item_rect.x + padding,
-                    item_rect.y + self.item_height / 2,
+                    Point::new(item_rect.x + padding as i32, (item_rect.y as f32 + self.item_height / 2.0) as i32),
                     text,
                     &Font::default(),
                     text_color,
-                    Alignment::Left,
                 );
             }
             // Draw item separator
             if i < end - 1 {
-                context.draw_line(Point::new(item_rect.x as f32, item_rect.y + item_rect.height as f32), Point::new(item_rect.x + item_rect.width as f32, item_rect.y + item_rect.height as f32), Color::from_rgb(230, 230, 230),
+                let sep_y = item_rect.y as i32 + item_rect.height as i32;
+                context.draw_line(
+                    Point::new(item_rect.x, sep_y),
+                    Point::new(item_rect.x + item_rect.width as i32, sep_y),
+                    Color::from_rgb(230, 230, 230),
                 );
             }
         }

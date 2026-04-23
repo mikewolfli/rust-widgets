@@ -1,7 +1,6 @@
 //! Tool button widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -31,7 +30,6 @@ pub struct ToolButton {
     popup_mode: ToolButtonPopupMode,
     button_style: ToolButtonStyle,
     auto_raise: bool,
-    arrow_type: Option<u8>, // 0=up 1=down 2=left 3=right 4=no
     pressed: bool,
     hovered: bool,
     pub clicked: Signal1<bool>,
@@ -42,14 +40,13 @@ impl ToolButton {
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         Self {
-            base: BaseWidget::new(WidgetKind::ToolButton, geometry, &text),
+            base: BaseWidget::new(WidgetKind::ToolButton, geometry, "ToolButton"),
             text,
             checkable: false,
             checked: false,
             popup_mode: ToolButtonPopupMode::DelayedPopup,
             button_style: ToolButtonStyle::IconOnly,
             auto_raise: false,
-            arrow_type: None,
             pressed: false,
             hovered: false,
             clicked: Signal1::new(),
@@ -212,10 +209,10 @@ impl EventHandler for ToolButton {
             return;
         }
         match event {
-            Event::MouseEnter => {
+            Event::MouseEnter { pos: _ } => {
                 self.hovered = true;
             }
-            Event::MouseLeave => {
+            Event::MouseLeave { pos: _ } => {
                 self.hovered = false;
                 self.pressed = false;
             }
@@ -252,10 +249,7 @@ impl Draw for ToolButton {
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         if self.hovered || self.pressed || self.checked {
             context.draw_rect(
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
+                Rect::new(rect.x, rect.y, rect.width, rect.height),
                 Color::from_rgb(0, 120, 215),
             );
         }
@@ -275,26 +269,22 @@ impl Draw for ToolButton {
         let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
             || self.popup_mode == ToolButtonPopupMode::InstantPopup;
         let text_right = if has_popup {
-            rect.x + rect.width as f32 - 12
+            rect.x as f32 + rect.width as f32 - 12.0
         } else {
-            rect.x + rect.width as f32
+            rect.x as f32 + rect.width as f32
         };
         context.draw_text(
-            rect.x + (text_right - rect.x) / 2,
-            rect.y + rect.height as f32 / 2,
+            Point::from_f32(rect.x as f32 + (text_right - rect.x as f32) / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
             label,
             &Font::default(),
             fg,
-            Alignment::Center,
         );
         if has_popup {
             context.draw_text(
-                rect.x + rect.width as f32 - 8,
-                rect.y + rect.height as f32 - 6,
+                Point::from_f32(rect.x as f32 + rect.width as f32 - 8.0, rect.y as f32 + rect.height as f32 - 6.0),
                 "▾",
                 &Font::default(),
                 fg,
-                Alignment::Center,
             );
         }
     }

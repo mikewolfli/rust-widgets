@@ -1,7 +1,6 @@
 //! Progress dialog widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -106,7 +105,7 @@ impl ProgressDialog {
     pub fn progress_fraction(&self) -> f32 {
         let range = self.maximum - self.minimum;
         if range <= 0 {
-            return 1;
+            return 1.0;
         }
         (self.value - self.minimum) as f32 / range as f32
     }
@@ -225,105 +224,73 @@ impl Draw for ProgressDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(245, 245, 245),
         );
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            28,
+            Rect::new(rect.x, rect.y, rect.width, 28),
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8,
-            rect.y + 14,
+            Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
-            Alignment::Left,
         );
         // Label
         context.draw_text(
-            rect.x + 10,
-            rect.y + 48,
+            Point::new(rect.x + 10, rect.y + 48),
             &self.label_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
         );
         // Progress bar
         let bar_y = rect.y + 62;
-        let bar_w = rect.width - 20;
-        let bar_h = 20;
+        let bar_w = rect.width.saturating_sub(20);
+        let bar_h: u32 = 20;
         context.fill_rect(
-            rect.x + 10,
-            bar_y,
-            bar_w,
-            bar_h,
+            Rect::new(rect.x + 10, bar_y, bar_w, bar_h),
             Color::from_rgb(220, 220, 220),
         );
         context.draw_rect(
-            rect.x + 10,
-            bar_y,
-            bar_w,
-            bar_h,
+            Rect::new(rect.x + 10, bar_y, bar_w, bar_h),
             Color::from_rgb(150, 150, 150),
         );
-        let fill_w = bar_w * self.progress_fraction();
+        let fill_w = (bar_w as f32 * self.progress_fraction()) as i32;
         if fill_w > 0 {
             context.fill_rect(
-                rect.x + 10,
-                bar_y,
-                fill_w,
-                bar_h,
+                Rect::new(rect.x + 10, bar_y, fill_w.max(0) as u32, bar_h),
                 Color::from_rgb(6, 176, 37),
             );
         }
         // Percentage text
-        let pct = (self.progress_fraction() * 100) as i32;
+        let pct = (self.progress_fraction() * 100.0) as i32;
         context.draw_text(
-            rect.x + 10 + bar_w / 2,
-            bar_y + bar_h / 2,
+            Point::new(rect.x + 10 + (bar_w as i32 / 2), bar_y + (bar_h as i32 / 2)),
             &format!("{}%", pct),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Center,
         );
         // Cancel button
-        let btn_y = rect.y + rect.height as f32 - 40;
+        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
         let btn_w = 80;
         context.fill_rect(
-            rect.x + rect.width as f32 / 2 - btn_w / 2,
-            btn_y,
-            btn_w,
-            28,
+            Rect::new(rect.x + rect.width as i32 / 2 - btn_w / 2, btn_y as i32, btn_w as u32, 28u32),
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width as f32 / 2 - btn_w / 2,
-            btn_y,
-            btn_w,
-            28,
+            Rect::new(rect.x + rect.width as i32 / 2 - btn_w / 2, btn_y as i32, btn_w as u32, 28u32),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width as f32 / 2,
-            btn_y + 14,
+            Point::new(rect.x + rect.width as i32 / 2, (btn_y + 14.0) as i32),
             &self.cancel_button_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Center,
         );
     }
 }

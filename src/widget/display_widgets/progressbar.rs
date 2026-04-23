@@ -1,11 +1,10 @@
 //! Progress bar widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress bar widget.
 pub struct ProgressBar {
     base: BaseWidget,
@@ -118,7 +117,7 @@ impl ProgressBar {
     /// Returns progress as percentage (0 to 1).
     pub fn progress(&self) -> f32 {
         if self.maximum == self.minimum {
-            return 0;
+            return 0.0;
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
@@ -127,7 +126,7 @@ impl ProgressBar {
         if !self.text_visible {
             return String::new();
         }
-        let percentage = self.progress() * 100;
+        let percentage = self.progress() * 100.0;
         format!("{}%", percentage.round() as i32)
     }
 }
@@ -243,49 +242,37 @@ impl Draw for ProgressBar {
         let progress = self.progress();
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(240, 240, 240),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw progress bar
         match self.orientation {
             Orientation::Horizontal => {
-                let progress_width = rect.width * progress;
+                let progress_width = (rect.width as f32 * progress) as u32;
                 let x = if self.inverted_appearance {
-                    rect.x + rect.width as f32 - progress_width
+                    rect.x + rect.width as i32 - progress_width as i32
                 } else {
                     rect.x
                 };
                 context.fill_rect(
-                    x,
-                    rect.y,
-                    progress_width,
-                    rect.height,
+                    Rect::new(x, rect.y, progress_width, rect.height),
                     Color::from_rgb(0, 120, 215),
                 );
             }
             Orientation::Vertical => {
-                let progress_height = rect.height * progress;
+                let progress_height = (rect.height as f32 * progress) as u32;
                 let y = if self.inverted_appearance {
                     rect.y
                 } else {
-                    rect.y + rect.height as f32 - progress_height
+                    rect.y + rect.height as i32 - progress_height as i32
                 };
                 context.fill_rect(
-                    rect.x,
-                    y,
-                    rect.width,
-                    progress_height,
+                    Rect::new(rect.x, y, rect.width, progress_height),
                     Color::from_rgb(0, 120, 215),
                 );
             }
@@ -294,12 +281,13 @@ impl Draw for ProgressBar {
         let text = self.format_text();
         if !text.is_empty() {
             context.draw_text(
-                rect.x + rect.width as f32 / 2,
-                rect.y + rect.height as f32 / 2,
+                Point::new(
+                    rect.x + rect.width as i32 / 2,
+                    rect.y + rect.height as i32 / 2,
+                ),
                 &text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Center,
             );
         }
     }

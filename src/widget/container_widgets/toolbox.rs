@@ -1,10 +1,9 @@
 //! Tool box widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
+use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 /// Tool box widget.
 pub struct ToolBox {
@@ -182,12 +181,12 @@ impl ToolBox {
         let item_width = 120;
         match self.orientation {
             Orientation::Horizontal => {
-                let x = rect.x + item_width * index as f32;
-                Some(Rect::new(x, rect.y, item_width, rect.height))
+                let x = rect.x as f32 + item_width as f32 * index as f32;
+                Some(Rect::new(x as i32, rect.y, item_width, rect.height))
             }
             Orientation::Vertical => {
-                let y = rect.y + item_height * index as f32;
-                Some(Rect::new(rect.x, y, rect.width, item_height))
+                let y = rect.y as f32 + item_height as f32 * index as f32;
+                Some(Rect::new(rect.x, y as i32, rect.width, item_height))
             }
         }
     }
@@ -197,22 +196,22 @@ impl ToolBox {
         match self.orientation {
             Orientation::Horizontal => {
                 let item_width = 120;
-                let content_width = rect.width - item_width * self.items.len() as f32;
+                let content_width = (rect.width as f32 - item_width as f32 * self.items.len() as f32).max(0.0);
                 Rect::new(
-                    rect.x + item_width * self.items.len() as f32,
+                    (rect.x as f32 + item_width as f32 * self.items.len() as f32) as i32,
                     rect.y,
-                    content_width.max(0),
+                    content_width as u32,
                     rect.height,
                 )
             }
             Orientation::Vertical => {
                 let item_height = 32;
-                let content_height = rect.height - item_height * self.items.len() as f32;
+                let content_height = (rect.height as f32 - item_height as f32 * self.items.len() as f32).max(0.0);
                 Rect::new(
                     rect.x,
-                    rect.y + item_height * self.items.len() as f32,
+                    (rect.y as f32 + item_height as f32 * self.items.len() as f32) as i32,
                     rect.width,
-                    content_height.max(0),
+                    content_height as u32,
                 )
             }
         }
@@ -347,7 +346,7 @@ impl EventHandler for ToolBox {
             _ => {}
         }
         // Forward events to current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Forward event to current widget
         }
     }
@@ -355,22 +354,16 @@ impl EventHandler for ToolBox {
 impl Draw for ToolBox {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        let rect = self.geometry();
+        let _rect = self.geometry();
         let content_rect = self.content_rect();
         // Draw content background
         context.fill_rect(
-            content_rect.x,
-            content_rect.y,
-            content_rect.width,
-            content_rect.height,
+            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw content border
         context.draw_rect(
-            content_rect.x,
-            content_rect.y,
-            content_rect.width,
-            content_rect.height,
+            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw items
@@ -388,10 +381,7 @@ impl Draw for ToolBox {
                     Color::from_rgb(240, 240, 240)
                 };
                 context.fill_rect(
-                    item_rect.x,
-                    item_rect.y,
-                    item_rect.width,
-                    item_rect.height,
+                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     bg_color,
                 );
                 // Draw item border
@@ -403,10 +393,7 @@ impl Draw for ToolBox {
                     Color::from_rgb(200, 200, 200)
                 };
                 context.draw_rect(
-                    item_rect.x,
-                    item_rect.y,
-                    item_rect.width,
-                    item_rect.height,
+                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     border_color,
                 );
                 // Draw icon if available
@@ -416,14 +403,11 @@ impl Draw for ToolBox {
                 } else {
                     item_rect.x + 5
                 };
-                if let Some(icon) = &item.icon {
+                if item.icon.is_some() {
                     // TODO: Draw icon
                     // For now, draw a placeholder
                     context.fill_rect(
-                        item_rect.x + 5,
-                        item_rect.y + (item_rect.height - icon_size) / 2,
-                        icon_size,
-                        icon_size,
+                        Rect::new(item_rect.x + 5, item_rect.y + (item_rect.height - icon_size as u32) as i32 / 2, icon_size as u32, icon_size as u32),
                         Color::from_rgb(150, 150, 150),
                     );
                 }
@@ -434,17 +418,15 @@ impl Draw for ToolBox {
                     Color::from_rgb(0, 0, 0)
                 };
                 context.draw_text(
-                    text_x,
-                    item_rect.y + item_rect.height as i32 / 2,
+                    Point::new(text_x, item_rect.y + item_rect.height as i32 / 2),
                     &item.text,
                     &Font::default(),
                     text_color,
-                    Alignment::Left,
                 );
             }
         }
         // Draw current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Draw current widget in content area
         }
     }

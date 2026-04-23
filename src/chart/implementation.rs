@@ -92,13 +92,13 @@ impl SvgChartContext {
     }
 }
 impl ChartContext for SvgChartContext {
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+    fn draw_line(&mut self, from: Point, to: Point, width: f32, color: Color) {
         self.elements.push(format!(
             "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-opacity=\"{:.3}\" stroke-width=\"{:.2}\" />",
-            x1,
-            y1,
-            x2,
-            y2,
+            from.x,
+            from.y,
+            to.x,
+            to.y,
             svg_color_hex(color),
             svg_alpha(color),
             width.max(0.1)
@@ -115,11 +115,11 @@ impl ChartContext for SvgChartContext {
             svg_alpha(color)
         ));
     }
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
+    fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color) {
         self.elements.push(format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" font-size=\"{:.2}\" font-family=\"sans-serif\">{}</text>",
-            x,
-            y,
+            pos.x,
+            pos.y,
             svg_color_hex(color),
             svg_alpha(color),
             font_size.max(1.0),
@@ -150,9 +150,9 @@ pub fn render_chart_to_svg_file(
     context.save(path)
 }
 impl ChartContext for MemoryChartContext {
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, _color: Color) {
+    fn draw_line(&mut self, from: Point, to: Point, width: f32, _color: Color) {
         self.commands
-            .push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
+            .push(format!("line:{},{}->{},{}:{width}", from.x, from.y, to.x, to.y));
     }
     fn draw_rect(&mut self, rect: Rect, _color: Color) {
         self.commands.push(format!(
@@ -160,9 +160,9 @@ impl ChartContext for MemoryChartContext {
             rect.x, rect.y, rect.width, rect.height
         ));
     }
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, _color: Color) {
+    fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, _color: Color) {
         self.commands
-            .push(format!("text:{text}@{x},{y}:{font_size}"));
+            .push(format!("text:{text}@{},{}:{font_size}", pos.x, pos.y));
     }
     fn draw_circle(&mut self, center: Point, radius: f32, _color: Color) {
         self.commands
@@ -189,11 +189,11 @@ pub trait Chart {
 /// Chart context
 pub trait ChartContext {
     /// Draw line
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color);
+    fn draw_line(&mut self, from: Point, to: Point, width: f32, color: Color);
     /// Draw rectangle
     fn draw_rect(&mut self, rect: Rect, color: Color);
     /// Draw text
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color);
+    fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color);
     /// Draw circle
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
 }
@@ -246,10 +246,18 @@ fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout)
         b: 90,
         a: 255,
     };
-    context.draw_line(Point::new(layout.plot_x as f32, layout.plot_y + layout.plot_h as f32), Point::new(layout.plot_x + layout.plot_w as f32, layout.plot_y + layout.plot_h as f32), 1.0,
-        axis_color,);
-    context.draw_line(Point::new(layout.plot_x as f32, layout.plot_y as f32), Point::new(layout.plot_x as f32, layout.plot_y + layout.plot_h as f32), 1.0,
-        axis_color,);
+    context.draw_line(
+        Point::from_f32(layout.plot_x, layout.plot_y + layout.plot_h),
+        Point::from_f32(layout.plot_x + layout.plot_w, layout.plot_y + layout.plot_h),
+        1.0,
+        axis_color,
+    );
+    context.draw_line(
+        Point::from_f32(layout.plot_x, layout.plot_y),
+        Point::from_f32(layout.plot_x, layout.plot_y + layout.plot_h),
+        1.0,
+        axis_color,
+    );
 }
 fn draw_y_ticks(
     context: &mut dyn ChartContext,
@@ -282,15 +290,23 @@ fn draw_y_ticks(
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
         if draw_grid {
-            context.draw_line(Point::new(layout.plot_x as f32, y as f32), Point::new(layout.plot_x + layout.plot_w as f32, y as f32), 1.0,
-                grid_color,);
+            context.draw_line(
+                Point::from_f32(layout.plot_x, y),
+                Point::from_f32(layout.plot_x + layout.plot_w, y),
+                1.0,
+                grid_color,
+            );
         }
-        context.draw_line(Point::new(Point::new(Point::new(layout.plot_x - 4.0 as f32, y as f32))), Point::new(Point::new(Point::new(layout.plot_x as f32, y as f32))), 1.0, axis_color);
+        context.draw_line(
+            Point::from_f32(layout.plot_x - 4.0, y),
+            Point::from_f32(layout.plot_x, y),
+            1.0,
+            axis_color,
+        );
         let value = min_y + (max_y - min_y) * t as f64;
         context.draw_text(
             &format!("{value:.1}"),
-            layout.plot_x - 44.0,
-            y + 4.0,
+            Point::from_f32(layout.plot_x - 44.0, y + 4.0),
             10.0,
             label_color,
         );
@@ -327,16 +343,23 @@ fn draw_x_ticks(
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
         if draw_grid {
-            context.draw_line(Point::new(x as f32, layout.plot_y as f32), Point::new(x as f32, layout.plot_y + layout.plot_h as f32), 1.0,
-                grid_color,);
+            context.draw_line(
+                Point::from_f32(x, layout.plot_y),
+                Point::from_f32(x, layout.plot_y + layout.plot_h),
+                1.0,
+                grid_color,
+            );
         }
-        context.draw_line(Point::new(x as f32, layout.plot_y + layout.plot_h as f32), Point::new(x as f32, layout.plot_y + layout.plot_h + 4.0 as f32), 1.0,
-            axis_color,);
+        context.draw_line(
+            Point::from_f32(x, layout.plot_y + layout.plot_h),
+            Point::from_f32(x, layout.plot_y + layout.plot_h + 4.0),
+            1.0,
+            axis_color,
+        );
         let value = min_x + (max_x - min_x) * t as f64;
         context.draw_text(
             &format!("{value:.1}"),
-            x - 12.0,
-            layout.plot_y + layout.plot_h + 16.0,
+            Point::from_f32(x - 12.0, layout.plot_y + layout.plot_h + 16.0),
             10.0,
             label_color,
         );
@@ -352,12 +375,15 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
     let max_label_chars = 20usize;
     let mut cursor_y = layout.legend_y;
     for item in series.iter().take(max_items) {
-        context.draw_line(Point::new(layout.legend_x as f32, cursor_y as f32), Point::new(layout.legend_x + 20.0 as f32, cursor_y as f32), 3.0,
-            item.color,);
+        context.draw_line(
+            Point::from_f32(layout.legend_x, cursor_y),
+            Point::from_f32(layout.legend_x + 20.0, cursor_y),
+            3.0,
+            item.color,
+        );
         context.draw_text(
             &truncate_legend_label(&item.name, max_label_chars),
-            layout.legend_x + 26.0,
-            cursor_y + 4.0,
+            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             11.0,
             Color {
                 r: 40,
@@ -372,8 +398,7 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
     if hidden > 0 {
         context.draw_text(
             &format!("+{hidden} more"),
-            layout.legend_x + 26.0,
-            cursor_y + 4.0,
+            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             10.0,
             Color {
                 r: 90,
@@ -458,8 +483,7 @@ impl Chart for LineChart {
         );
         context.draw_text(
             &self.title,
-            rect.x as f32 + 8.0,
-            rect.y as f32 + 16.0,
+            Point::new(rect.x + 8, rect.y + 16),
             14.0,
             Color {
                 r: 20,
@@ -513,8 +537,7 @@ impl Chart for LineChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                layout.plot_x + layout.plot_w * 0.5 - 28.0,
-                layout.plot_y + layout.plot_h + 36.0,
+                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
                 11.0,
                 Color {
                     r: 40,
@@ -527,8 +550,7 @@ impl Chart for LineChart {
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
-                layout.plot_x - 56.0,
-                layout.plot_y - 10.0,
+                Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
                 Color {
                     r: 40,
@@ -551,7 +573,12 @@ impl Chart for LineChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(Point::new(Point::new(Point::new(x1 as f32, y1 as f32))), Point::new(Point::new(Point::new(x2 as f32, y2 as f32))), 2.0, series.color);
+                context.draw_line(
+                    Point::from_f32(x1, y1),
+                    Point::from_f32(x2, y2),
+                    2.0,
+                    series.color,
+                );
             }
         }
         draw_legend(context, &layout, &visible_series);
@@ -629,8 +656,7 @@ impl Chart for BarChart {
         );
         context.draw_text(
             &self.title,
-            rect.x as f32 + 8.0,
-            rect.y as f32 + 16.0,
+            Point::new(rect.x + 8, rect.y + 16),
             14.0,
             Color {
                 r: 20,
@@ -686,8 +712,7 @@ impl Chart for BarChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                layout.plot_x + layout.plot_w * 0.5 - 28.0,
-                layout.plot_y + layout.plot_h + 36.0,
+                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
                 11.0,
                 Color {
                     r: 40,
@@ -700,8 +725,7 @@ impl Chart for BarChart {
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
-                layout.plot_x - 56.0,
-                layout.plot_y - 10.0,
+                Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
                 Color {
                     r: 40,
@@ -772,8 +796,7 @@ impl Chart for PieChart {
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_text(
             &self.title,
-            rect.x as f32 + 8.0,
-            rect.y as f32 + 16.0,
+            Point::new(rect.x + 8, rect.y + 16),
             14.0,
             Color {
                 r: 20,
@@ -873,8 +896,7 @@ impl Chart for ScatterChart {
         );
         context.draw_text(
             &self.title,
-            rect.x as f32 + 8.0,
-            rect.y as f32 + 16.0,
+            Point::new(rect.x + 8, rect.y + 16),
             14.0,
             Color {
                 r: 20,
@@ -928,8 +950,7 @@ impl Chart for ScatterChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                layout.plot_x + layout.plot_w * 0.5 - 28.0,
-                layout.plot_y + layout.plot_h + 36.0,
+                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
                 11.0,
                 Color {
                     r: 40,
@@ -942,8 +963,7 @@ impl Chart for ScatterChart {
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
-                layout.plot_x - 56.0,
-                layout.plot_y - 10.0,
+                Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
                 Color {
                     r: 40,
@@ -1049,8 +1069,7 @@ impl Chart for AreaChart {
         );
         context.draw_text(
             &self.title,
-            rect.x as f32 + 8.0,
-            rect.y as f32 + 16.0,
+            Point::new(rect.x + 8, rect.y + 16),
             14.0,
             Color {
                 r: 20,
@@ -1104,8 +1123,7 @@ impl Chart for AreaChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                layout.plot_x + layout.plot_w * 0.5 - 28.0,
-                layout.plot_y + layout.plot_h + 36.0,
+                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
                 11.0,
                 Color {
                     r: 40,
@@ -1118,8 +1136,7 @@ impl Chart for AreaChart {
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
-                layout.plot_x - 56.0,
-                layout.plot_y - 10.0,
+                Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
                 Color {
                     r: 40,
@@ -1142,7 +1159,12 @@ impl Chart for AreaChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(Point::new(Point::new(Point::new(x1 as f32, y1 as f32))), Point::new(Point::new(Point::new(x2 as f32, y2 as f32))), 2.0, series.color);
+                context.draw_line(
+                    Point::from_f32(x1, y1),
+                    Point::from_f32(x2, y2),
+                    2.0,
+                    series.color,
+                );
             }
         }
         draw_legend(context, &layout, &visible_series);

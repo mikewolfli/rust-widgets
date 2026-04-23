@@ -1,7 +1,6 @@
 //! Dial (knob) widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;

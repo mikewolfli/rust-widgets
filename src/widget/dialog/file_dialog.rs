@@ -1,7 +1,6 @@
 //! File dialog widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -259,94 +258,65 @@ impl Draw for FileDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(245, 245, 245),
         );
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            28,
+            Rect::new(rect.x, rect.y, rect.width, 28),
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8,
-            rect.y + 14,
+            Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
-            Alignment::Left,
         );
         // File list area
         let list_y = rect.y + 38;
-        let list_h = rect.height - 120;
+        let list_h = rect.height.saturating_sub(120);
         context.fill_rect(
-            rect.x + 10,
-            list_y,
-            rect.width - 20,
-            list_h,
+            Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 10,
-            list_y,
-            rect.width - 20,
-            list_h,
+            Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
             Color::from_rgb(150, 150, 150),
         );
         context.draw_text(
-            rect.x + 16,
-            list_y + 20,
+            Point::new(rect.x + 16, list_y + 20),
             "(file list)",
             &Font::default(),
             Color::from_rgb(150, 150, 150),
-            Alignment::Left,
         );
         // Selected files display
-        let sel_y = list_y + list_h + 8;
+        let sel_y = list_y + list_h as i32 + 8;
         context.draw_text(
-            rect.x + 10,
-            sel_y + 10,
+            Point::new(rect.x + 10, sel_y + 10),
             "File name:",
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
         );
         let fname = self.selected_file().unwrap_or("");
         context.fill_rect(
-            rect.x + 80,
-            sel_y,
-            rect.width - 90,
-            22,
+            Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 80,
-            sel_y,
-            rect.width - 90,
-            22,
+            Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
             Color::from_rgb(150, 150, 150),
         );
         context.draw_text(
-            rect.x + 84,
-            sel_y + 11,
+            Point::new(rect.x + 84, sel_y + 11),
             fname,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
         );
         // OK/Cancel buttons
-        let btn_y = rect.y + rect.height as f32 - 40;
+        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
         let btn_w = 80;
         let ok_label = if self.mode == FileDialogMode::SaveFile {
             "Save"
@@ -354,41 +324,28 @@ impl Draw for FileDialog {
             "Open"
         };
         context.fill_rect(
-            rect.x + rect.width as f32 - 176,
-            btn_y,
-            btn_w,
-            28,
+            Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width as f32 - 136,
-            btn_y + 14,
+            Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             ok_label,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
-            Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width as f32 - 88,
-            btn_y,
-            btn_w,
-            28,
+            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width as f32 - 88,
-            btn_y,
-            btn_w,
-            28,
+            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width as f32 - 48,
-            btn_y + 14,
+            Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             "Cancel",
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Center,
         );
     }
 }

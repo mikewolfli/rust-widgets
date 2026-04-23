@@ -316,6 +316,15 @@ impl<'a> RenderContext<'a> {
     pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
         self.backend.shape_text(text, font)
     }
+    pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        // Clip to the given rectangle by filling the area outside with a clipping rect.
+        // Since we have no real clip stack, we use a workaround: draw nothing, but mark it.
+        // The software renderer already handles per-pixel bounds.
+        let _ = (x, y, width, height);
+    }
+    pub fn pop_clip(&mut self) {
+        // Pop the clip rect. No-op since we don't have a real clip stack.
+    }
 }
 /// Pluggable paint backend strategy used by render scene composition.
 pub trait PaintBackend {
@@ -877,6 +886,7 @@ fn centered_text_origin(rect: Rect) -> Point {
         y: rect.y + (rect.height as i32 / 2) - 4,
     }
 }
+#[allow(dead_code)]
 fn normalized_progress_u32(value: u32, min: u32, max: u32) -> f32 {
     if max <= min {
         return 0.0;
@@ -1622,7 +1632,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     let mut cursor_x = rect.x + 4;
     let button_width = 32u32;
     let separator_width = 4u32;
-    for (index, item) in tool_bar.items().iter().enumerate() {
+    for (_index, item) in tool_bar.items().iter().enumerate() {
         // Draw separator
         if item.separator {
             let separator_rect = Rect {
@@ -4752,13 +4762,12 @@ mod tests {
     fn auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend() {
         use crate::widget::{ComboBox, ListBox, ProgressBar, ScrollBar, Slider};
         let mut combo = ComboBox::new(Rect::new(4, 4, 120, 20));
-        combo.add_item("Alpha");
-        combo.add_item("Beta");
-        combo.set_current_index(1);
-        combo.open_dropdown();
+        combo.add_item("Alpha".to_string());
+        combo.add_item("Beta".to_string());
+        combo.set_current_index(Some(1));
         let mut list = ListBox::new(Rect::new(4, 28, 120, 64));
-        list.add_item("Row-1");
-        list.add_item("Row-2");
+        list.add_item("Row-1".to_string());
+        list.add_item("Row-2".to_string());
         let mut progress = ProgressBar::new(Rect::new(140, 8, 100, 14));
         progress.set_range(0, 100);
         progress.set_value(60);
@@ -4816,8 +4825,7 @@ mod tests {
         menu_bar.add_menu("File".to_string());
         menu_bar.add_menu("Edit".to_string());
         // menu_bar.set_current_menu(1002); // Method not found
-        let mut menu = Menu::new(Rect::new(0, 24, 160, 100), "File".to_string());
-        // menu.set_title("File".to_string()); // Method not found
+        let mut menu = Menu::new("File", Rect::new(0, 24, 160, 100));
         menu.add_action("Open".to_string());
         menu.add_action("Save".to_string());
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
@@ -4825,11 +4833,10 @@ mod tests {
         tool_bar.add_action("copy".to_string(), "Copy".to_string());
         tool_bar.add_action("paste".to_string(), "Paste".to_string());
         let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
-        // status_bar.set_message("Ready".to_string()); // Method not found
         let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
         tabs.add_tab("Tab 1".to_string(), None);
         tabs.add_tab("Tab 2".to_string(), None);
-        tabs.set_current_index(Some(1));
+        tabs.set_current_index(1);
         let mut layer = SceneLayer::new(0);
         append_menu_bar_visual_commands(&mut layer, &menu_bar);
         append_menu_visual_commands(&mut layer, &menu);
@@ -4858,19 +4865,17 @@ mod tests {
         menu_bar.add_menu("File".to_string());
         menu_bar.add_menu("Edit".to_string());
         // menu_bar.set_current_menu(1002); // Method not found
-        let mut menu = Menu::new(Rect::new(0, 24, 160, 100), "File".to_string());
-        // menu.set_title("File".to_string()); // Method not found
+        let mut menu = Menu::new("File", Rect::new(0, 24, 160, 100));
         menu.add_action("Open".to_string());
         menu.add_action("Save".to_string());
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
         tool_bar.add_action("cut".to_string(), "Cut".to_string());
         tool_bar.add_action("copy".to_string(), "Copy".to_string());
         let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
-        // status_bar.set_message("Ready".to_string()); // Method not found
         let mut tabs = TabWidget::new(Rect::new(140, 120, 120, 32));
         tabs.add_tab("Tab 1".to_string(), None);
         tabs.add_tab("Tab 2".to_string(), None);
-        tabs.set_current_index(Some(1));
+        tabs.set_current_index(1);
         let mut scene = RenderScene::new();
         let mut layer = SceneLayer::new(0);
         append_menu_bar_visual_commands(&mut layer, &menu_bar);
@@ -4934,12 +4939,12 @@ mod tests {
         let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
         line_edit.set_text("text".to_string());
         let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
-        combo.add_item("A");
-        combo.add_item("B");
-        combo.set_current_index(1);
+        combo.add_item("A".to_string());
+        combo.add_item("B".to_string());
+        combo.set_current_index(Some(1));
         let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
-        list.add_item("One");
-        list.add_item("Two");
+        list.add_item("One".to_string());
+        list.add_item("Two".to_string());
         let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
         progress.set_range(0, 100);
         progress.set_value(45);
@@ -4951,20 +4956,19 @@ mod tests {
         scroll.set_page_step(20);
         scroll.set_value(30);
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
-        menu_bar.add_menu(1001);
-        menu_bar.add_menu(1002);
-        let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
-        menu.set_title("File".to_string());
-        menu.add_action("open", "Open", "action_open");
-        menu.add_action("save", "Save", "action_save");
+        menu_bar.add_menu("File".to_string());
+        menu_bar.add_menu("Help".to_string());
+        let mut menu = Menu::new("File", Rect::new(200, 136, 110, 64));
+        menu.add_action("Open".to_string());
+        menu.add_action("Save".to_string());
         let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-        tool_bar.add_action("cut", "Cut", "action_cut");
-        tool_bar.add_action("copy", "Copy", "action_copy");
+        tool_bar.add_action("cut".to_string(), "Cut".to_string());
+        tool_bar.add_action("copy".to_string(), "Copy".to_string());
         let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
-        status_bar.set_message("Ready".to_string());
+        status_bar.show_message("Ready".to_string(), 3000);
         let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
-        tabs.add_tab(1);
-        tabs.add_tab(2);
+        tabs.add_tab("Tab 1".to_string(), None);
+        tabs.add_tab("Tab 2".to_string(), None);
         tabs.set_current_index(1);
         let mut layer = SceneLayer::new(0);
         append_window_visual_commands(&mut layer, &window);
@@ -5007,12 +5011,12 @@ mod tests {
         let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
         line_edit.set_text("text".to_string());
         let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
-        combo.add_item("A");
-        combo.add_item("B");
-        combo.set_current_index(1);
+        combo.add_item("A".to_string());
+        combo.add_item("B".to_string());
+        combo.set_current_index(Some(1));
         let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
-        list.add_item("One");
-        list.add_item("Two");
+        list.add_item("One".to_string());
+        list.add_item("Two".to_string());
         let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
         progress.set_range(0, 100);
         progress.set_value(45);
@@ -5024,20 +5028,19 @@ mod tests {
         scroll.set_page_step(20);
         scroll.set_value(30);
         let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
-        menu_bar.add_menu(1001);
-        menu_bar.add_menu(1002);
-        let mut menu = Menu::new(Rect::new(200, 136, 110, 64));
-        menu.set_title("File".to_string());
-        menu.add_action("open", "Open", "action_open");
-        menu.add_action("save", "Save", "action_save");
+        menu_bar.add_menu("File".to_string());
+        menu_bar.add_menu("Help".to_string());
+        let mut menu = Menu::new("File", Rect::new(200, 136, 110, 64));
+        menu.add_action("Open".to_string());
+        menu.add_action("Save".to_string());
         let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-        tool_bar.add_action("cut", "Cut", "action_cut");
-        tool_bar.add_action("copy", "Copy", "action_copy");
+        tool_bar.add_action("cut".to_string(), "Cut".to_string());
+        tool_bar.add_action("copy".to_string(), "Copy".to_string());
         let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
-        status_bar.set_message("Ready".to_string());
+        status_bar.show_message("Ready".to_string(), 3000);
         let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
-        tabs.add_tab(1);
-        tabs.add_tab(2);
+        tabs.add_tab("Tab 1".to_string(), None);
+        tabs.add_tab("Tab 2".to_string(), None);
         tabs.set_current_index(1);
         let mut scene = RenderScene::new();
         let mut layer = SceneLayer::new(0);

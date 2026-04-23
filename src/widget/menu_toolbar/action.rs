@@ -1,8 +1,6 @@
 //! Action widget — represents a command or toggle that can be placed in menus and toolbars.
-use crate::core::{Color, Font, Point};
-use crate::core::{ObjectId, Rect, Size};
+use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -25,7 +23,7 @@ impl Action {
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         Self {
-            base: BaseWidget::new(WidgetKind::Action, geometry, &text),
+            base: BaseWidget::new(WidgetKind::Action, geometry, "Action"),
             text: text.clone(),
             icon_text: String::new(),
             shortcut: String::new(),
@@ -205,7 +203,7 @@ impl EventHandler for Action {
     }
 }
 impl Draw for Action {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Actions are drawn by their parent menu/toolbar, not directly.
     }
 }

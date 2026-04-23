@@ -1,7 +1,6 @@
 //! Menu widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -51,10 +50,9 @@ pub struct Menu {
 }
 impl Menu {
     pub fn new(title: impl Into<String>, geometry: Rect) -> Self {
-        let title_str = title.into();
         Self {
-            base: BaseWidget::new(WidgetKind::Menu, geometry, &title_str.clone()),
-            title: title_str,
+            base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
+            title: title.into(),
             items: Vec::new(),
             hovered_index: None,
             triggered: Signal1::new(),
@@ -107,12 +105,12 @@ impl Menu {
         self.items.clear();
     }
     fn item_height() -> f32 {
-        22
+        22.0
     }
     fn separator_height() -> f32 {
-        6
+        6.0
     }
-    fn item_rect(&self, index: usize, base_y: f32) -> Rect {
+    fn _item_rect(&self, index: usize, base_y: f32) -> Rect {
         let rect = self.geometry();
         let mut y = base_y;
         for (i, item) in self.items.iter().enumerate() {
@@ -149,7 +147,7 @@ impl Menu {
                 }
             })
             .sum::<f32>()
-            + 4
+            + 4.0
     }
 }
 impl Widget for Menu {
@@ -261,7 +259,7 @@ impl EventHandler for Menu {
         match event {
             Event::MouseMove { pos } => {
                 let rect = self.geometry();
-                let mut y = rect.y as f32 + 2;
+                let mut y = rect.y as f32 + 2.0;
                 for (i, item) in self.items.iter().enumerate() {
                     let h = if item.separator {
                         Self::separator_height()
@@ -277,8 +275,8 @@ impl EventHandler for Menu {
             }
             Event::MousePress { pos, button: 1 } => {
                 let rect = self.geometry();
-                let mut y = rect.y as f32 + 2;
-                for (i, item) in self.items.iter().enumerate() {
+                let mut y = rect.y as f32 + 2.0;
+                for (_i, item) in self.items.iter().enumerate() {
                     let h = if item.separator {
                         Self::separator_height()
                     } else {
@@ -334,12 +332,11 @@ impl Draw for Menu {
             Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
             Color::from_rgb(160, 160, 160),
         );
-        let mut y = rect.y as f32 + 2;
+        let mut y = rect.y as f32 + 2.0;
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
-                let sep_y = y + Self::separator_height() / 2;
-                context.draw_line(Point::new(Point::new(rect.x + 4 as f32, sep_y as i32 as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 - 4 as f32, sep_y as i32 as f32)), Color::from_rgb(200, 200, 200),
-                );
+                let sep_y = y + Self::separator_height() / 2.0;
+                context.draw_line(Point::new(rect.x + 4, sep_y as i32), Point::new(rect.x + rect.width as i32 - 4, sep_y as i32), Color::from_rgb(200, 200, 200));
                 y += Self::separator_height();
                 continue;
             }
@@ -365,14 +362,14 @@ impl Draw for Menu {
             if item.checkable {
                 let check_sym = if item.checked { "✓" } else { " " };
                 context.draw_text(
-                    Point::new(rect.x + 8.0, (y + Self::item_height() as f32 / 2.0) as i32),
+                    Point::from_f32(rect.x as f32 + 8.0, y + Self::item_height() / 2.0),
                     check_sym,
                     &Font::default(),
                     fg,
                 );
             }
             context.draw_text(
-                Point::new(rect.x + 28.0, (y + Self::item_height() as f32 / 2.0) as i32),
+                Point::from_f32(rect.x as f32 + 28.0, y + Self::item_height() / 2.0),
                 &item.text,
                 &Font::default(),
                 fg,
@@ -380,8 +377,8 @@ impl Draw for Menu {
             if !item.shortcut.is_empty() {
                 context.draw_text(
                     Point::new(
-                        rect.x + rect.width as f32 as i32 - 8,
-                        (y + Self::item_height() / 2) as i32,
+                        rect.x + rect.width as i32 - 8,
+                        (y + Self::item_height() / 2.0) as i32,
                     ),
                     &item.shortcut,
                     &Font::default(),
@@ -391,8 +388,8 @@ impl Draw for Menu {
             if item.has_submenu {
                 context.draw_text(
                     Point::new(
-                        rect.x + rect.width as f32 as i32 - 4,
-                        (y + Self::item_height() / 2) as i32,
+                        rect.x + rect.width as i32 - 4,
+                        (y + Self::item_height() / 2.0) as i32,
                     ),
                     "▶",
                     &Font::default(),

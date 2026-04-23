@@ -489,6 +489,10 @@ impl Rect {
             (self.height as i32 + 2 * margin).max(0) as u32,
         )
     }
+    /// Returns `true` if the rectangle contains the point (alias for contains_point).
+    pub fn contains(&self, point: Point) -> bool {
+        self.contains_point(point)
+    }
 }
 #[cfg(test)]
 mod tests {

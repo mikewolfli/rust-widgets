@@ -1,11 +1,10 @@
 //! Scroll area widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Scroll area widget.
 pub struct ScrollArea {
     base: BaseWidget,
@@ -13,8 +12,8 @@ pub struct ScrollArea {
     alignment: Alignment,
     horizontal_scroll_bar_policy: ScrollBarPolicy,
     vertical_scroll_bar_policy: ScrollBarPolicy,
-    horizontal_scroll_bar: Option<ObjectId>,
-    vertical_scroll_bar: Option<ObjectId>,
+    _horizontal_scroll_bar: Option<ObjectId>,
+    _vertical_scroll_bar: Option<ObjectId>,
     viewport: Rect,
     widget: Option<ObjectId>,
 }
@@ -42,8 +41,8 @@ impl ScrollArea {
             alignment: Alignment::Center,
             horizontal_scroll_bar_policy: ScrollBarPolicy::AsNeeded,
             vertical_scroll_bar_policy: ScrollBarPolicy::AsNeeded,
-            horizontal_scroll_bar: None,
-            vertical_scroll_bar: None,
+            _horizontal_scroll_bar: None,
+            _vertical_scroll_bar: None,
             viewport: Rect::new(0, 0, geometry.width, geometry.height),
             widget: None,
         }
@@ -116,7 +115,7 @@ impl ScrollArea {
         self.viewport = new_viewport;
     }
     /// Ensures widget is visible.
-    pub fn ensure_widget_visible(&mut self, widget_id: ObjectId) {
+    pub fn ensure_widget_visible(&mut self, _widget_id: ObjectId) {
         // This would need access to widget geometry
         // For now, just center the viewport
         if let Some(_) = self.widget {
@@ -129,7 +128,7 @@ impl ScrollArea {
             ScrollBarPolicy::AlwaysOn => true,
             ScrollBarPolicy::AlwaysOff => false,
             ScrollBarPolicy::AsNeeded => {
-                if let Some(widget_id) = self.widget {
+                if self.widget.is_some() {
                     // TODO: Check if widget width > viewport width
                     false
                 } else {
@@ -144,7 +143,7 @@ impl ScrollArea {
             ScrollBarPolicy::AlwaysOn => true,
             ScrollBarPolicy::AlwaysOff => false,
             ScrollBarPolicy::AsNeeded => {
-                if let Some(widget_id) = self.widget {
+                if self.widget.is_some() {
                     // TODO: Check if widget height > viewport height
                     false
                 } else {
@@ -276,7 +275,7 @@ impl EventHandler for ScrollArea {
             _ => {}
         }
         // Forward events to widget (with viewport offset)
-        if let Some(widget_id) = self.widget {
+        if self.widget.is_some() {
             // TODO: Forward event to widget with adjusted coordinates
         }
     }
@@ -292,7 +291,7 @@ impl Draw for ScrollArea {
         // Set viewport for clipping
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
         // Draw widget with viewport offset
-        if let Some(widget_id) = self.widget {
+        if self.widget.is_some() {
             // TODO: Draw widget with translation based on viewport
             // context.translate(-self.viewport.x, -self.viewport.y);
             // widget.draw(context);
@@ -305,23 +304,23 @@ impl Draw for ScrollArea {
         if h_scroll_visible {
             // Draw horizontal scroll bar
             let scroll_bar_height = 16;
-            let scroll_bar_y = rect.y + rect.height as f32 - scroll_bar_height;
+            let scroll_bar_y = rect.y as f32 + rect.height as f32 - scroll_bar_height as f32;
             context.fill_rect(
-                Rect::new(rect.x, scroll_bar_y, rect.width, scroll_bar_height as u32),
+                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height as u32),
                 Color::from_rgb(240, 240, 240),
             );
             context.draw_rect(
-                Rect::new(rect.x, scroll_bar_y, rect.width, scroll_bar_height as u32),
+                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height as u32),
                 Color::from_rgb(200, 200, 200),
             );
             // Draw scroll bar thumb
             let thumb_width = rect.width * 3 / 10;
             let thumb_x = rect.x
-                + (rect.width - thumb_width) * (self.viewport.x / self.viewport.width.max(1));
+                + ((rect.width - thumb_width) as i32) * (self.viewport.x / self.viewport.width.max(1) as i32);
             context.fill_rect(
                 Rect::new(
                     thumb_x as i32,
-                    scroll_bar_y,
+                    scroll_bar_y as i32,
                     thumb_width as u32,
                     scroll_bar_height as u32,
                 ),
@@ -331,22 +330,22 @@ impl Draw for ScrollArea {
         if v_scroll_visible {
             // Draw vertical scroll bar
             let scroll_bar_width = 16;
-            let scroll_bar_x = rect.x + rect.width as f32 - scroll_bar_width;
+            let scroll_bar_x = rect.x as f32 + rect.width as f32 - scroll_bar_width as f32;
             context.fill_rect(
-                Rect::new(scroll_bar_x, rect.y, scroll_bar_width as u32, rect.height),
+                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width as u32, rect.height),
                 Color::from_rgb(240, 240, 240),
             );
             context.draw_rect(
-                Rect::new(scroll_bar_x, rect.y, scroll_bar_width as u32, rect.height),
+                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width as u32, rect.height),
                 Color::from_rgb(200, 200, 200),
             );
             // Draw scroll bar thumb
             let thumb_height = rect.height * 3 / 10;
             let thumb_y = rect.y
-                + (rect.height - thumb_height) * (self.viewport.y / self.viewport.height.max(1));
+                + ((rect.height - thumb_height) as i32) * (self.viewport.y / self.viewport.height.max(1) as i32);
             context.fill_rect(
                 Rect::new(
-                    scroll_bar_x,
+                    scroll_bar_x as i32,
                     thumb_y as i32,
                     scroll_bar_width as u32,
                     thumb_height as u32,
@@ -357,10 +356,10 @@ impl Draw for ScrollArea {
         // Draw corner between scroll bars
         if h_scroll_visible && v_scroll_visible {
             let corner_size = 16;
-            let corner_x = rect.x + rect.width as f32 - corner_size;
-            let corner_y = rect.y + rect.height as f32 - corner_size;
+            let corner_x = rect.x as f32 + rect.width as f32 - corner_size as f32;
+            let corner_y = rect.y as f32 + rect.height as f32 - corner_size as f32;
             context.fill_rect(
-                Rect::new(corner_x, corner_y, corner_size as u32, corner_size as u32),
+                Rect::new(corner_x as i32, corner_y as i32, corner_size as u32, corner_size as u32),
                 Color::from_rgb(240, 240, 240),
             );
         }

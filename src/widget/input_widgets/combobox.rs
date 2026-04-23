@@ -1,11 +1,10 @@
 //! Combo box widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Combo box widget.
 pub struct ComboBox {
     base: BaseWidget,
@@ -258,7 +257,7 @@ impl EventHandler for ComboBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { button, .. } => {
                 if *button == 1 {
                     // Toggle dropdown (in real implementation)
                     self.base.clicked.emit();
@@ -319,54 +318,54 @@ impl Draw for ComboBox {
         let rect = self.geometry();
         let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as f32 / 2;
+        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw dropdown arrow
         let arrow_size = 8;
-        let arrow_x = rect.x + rect.width as f32 - padding - arrow_size;
-        let arrow_y = rect.y + rect.height as f32 / 2;
+        let arrow_x_f = rect.x as f32 + rect.width as f32 - padding as f32 - arrow_size as f32;
+        let arrow_y_f = rect.y as f32 + rect.height as f32 / 2.0;
+        let arrow_size_f = arrow_size as f32;
         // Draw arrow (triangle)
-        context.draw_line(Point::new(arrow_x as f32, arrow_y - arrow_size / 2 as f32), Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32), Point::new(arrow_x + arrow_size / 2 as f32, arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(arrow_x + arrow_size / 2 as f32, arrow_y + arrow_size / 2 as f32), Point::new(arrow_x as f32, arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
         // Draw current text
         let current_text = self.current_text();
         if !current_text.is_empty() {
             context.draw_text(
-                text_x,
-                text_y,
+                Point::new(text_x as i32, text_y as i32),
                 &current_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Left,
             );
         } else if self.items.is_empty() {
             // Draw placeholder
             context.draw_text(
-                text_x,
-                text_y,
+                Point::new(text_x as i32, text_y as i32),
                 "(Empty)",
                 &Font::default(),
                 Color::from_rgb(150, 150, 150),
-                Alignment::Left,
             );
         }
     }

@@ -36,7 +36,7 @@ impl EventLoop {
             let queue = queue_clone;
             while *running.lock().unwrap() {
                 // Process events from the queue
-                if let Some(event) = queue.lock().unwrap().dequeue() {
+                if let Some(_event) = queue.lock().unwrap().dequeue() {
                     // Process the event
                     // In a real implementation, this would dispatch to widgets
                 }

@@ -77,7 +77,7 @@ impl Splitter {
         if index >= self.ratios.len() {
             return false;
         }
-        self.ratios[index] = ratio.max(0);
+        self.ratios[index] = ratio.max(0.0);
         self.pane_layout_changed.emit(self.ratios.clone());
         true
     }
@@ -86,14 +86,14 @@ impl Splitter {
         if ratios.len() != self.ratios.len() {
             return false;
         }
-        self.ratios = ratios.into_iter().map(|r| r.max(0)).collect();
+        self.ratios = ratios.into_iter().map(|r| r.max(0.0)).collect();
         self.pane_layout_changed.emit(self.ratios.clone());
         true
     }
     /// Normalizes ratios to sum to 1.
     pub fn normalize_ratios(&mut self) {
         let sum: f32 = self.ratios.iter().sum();
-        if sum > 0 {
+        if sum > 0.0 {
             for ratio in &mut self.ratios {
                 *ratio /= sum;
             }
@@ -120,12 +120,12 @@ impl crate::widget::base::Draw for Splitter {
                     let total_width = rect.width as f32;
                     let mut x = rect.x as f32;
                     for i in 0..self.pane_count() - 1 {
-                        let ratio = self.ratio(i).unwrap_or(0);
+                        let ratio = self.ratio(i).unwrap_or(0.0);
                         x += total_width * ratio;
                         let handle_rect = Rect::new(
-                            x as i32 - handle_width / 2,
+                            x as i32 - handle_width as i32 / 2,
                             rect.y,
-                            handle_width,
+                            handle_width as u32,
                             rect.height,
                         );
                         // Draw splitter handle
@@ -140,13 +140,13 @@ impl crate::widget::base::Draw for Splitter {
                     let total_height = rect.height as f32;
                     let mut y = rect.y as f32;
                     for i in 0..self.pane_count() - 1 {
-                        let ratio = self.ratio(i).unwrap_or(0);
+                        let ratio = self.ratio(i).unwrap_or(0.0);
                         y += total_height * ratio;
                         let handle_rect = Rect::new(
                             rect.x,
-                            y as i32 - handle_width / 2,
+                            y as i32 - handle_width as i32 / 2,
                             rect.width,
-                            handle_width,
+                            handle_width as u32,
                         );
                         // Draw splitter handle
                         context.fill_rect(handle_rect, crate::core::Color::from_rgb(200, 200, 200));

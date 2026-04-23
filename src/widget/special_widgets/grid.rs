@@ -23,7 +23,7 @@ impl Widget for GridWidget {
     }
 }
 impl crate::widget::base::Draw for GridWidget {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Default drawing implementation
         // Grid is drawn by the renderer
     }

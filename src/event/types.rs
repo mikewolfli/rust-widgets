@@ -21,6 +21,8 @@ pub enum Event {
     MouseMove { pos: Point },
     /// Pointer/button press.
     MousePress { pos: Point, button: u32 },
+    /// Pointer double-click.
+    MouseDoubleClick { pos: Point, button: u32 },
     /// Pointer/button release.
     MouseRelease { pos: Point, button: u32 },
     /// Pointer entered widget bounds.
@@ -37,6 +39,8 @@ pub enum Event {
     Resize { size: Size },
     /// Timer fired.
     Timer { id: u32 },
+    /// Mouse wheel / scroll event.
+    Wheel { delta: Point, modifiers: u32 },
     /// Free-form custom event payload.
     Custom { name: String, payload: Vec<u8> },
     /// Event loop shutdown signal.

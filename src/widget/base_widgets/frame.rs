@@ -1,11 +1,10 @@
 //! Frame widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::{Padding, WidgetStyle};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Frame widget.
 pub struct Frame {
     base: BaseWidget,
@@ -172,27 +171,51 @@ impl Frame {
                 let light_color = Color::from_rgb(255, 255, 255);
                 let dark_color = Color::from_rgb(128, 128, 128);
                 // Top and left (light)
-                context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x as f32 + rect.width as f32, rect.y), light_color);;
-                context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x, rect.y as f32 + rect.height as f32), light_color);;
+                context.draw_line(
+                    Point::from_f32(rect.x as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+                    light_color,
+                );
+                context.draw_line(
+                    Point::from_f32(rect.x as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+                    light_color,
+                );
                 // Bottom and right (dark)
                 context.draw_line(
-                    Point::new(rect.x, rect.y as f32 + rect.height as f32),
-                    Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
                     dark_color,
                 );
-                context.draw_line(Point::new(rect.x as f32 + rect.width as f32, rect.y), Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32), dark_color);;
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+                    dark_color,
+                );
                 // Draw mid line if needed
                 if mid_line_width > 0.0 {
                     let mid_light = Color::from_rgb(192, 192, 192);
                     let mid_dark = Color::from_rgb(64, 64, 64);
                     context.draw_line(
-                        Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + line_width as f32),
-                        Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + line_width as f32),
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + line_width),
                         mid_light,
                     );
-                    context.draw_line(Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + line_width as f32), Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_light);;
-                    context.draw_line(Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + rect.height as f32 - line_width as f32), Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_dark);;
-                    context.draw_line(Point::new(rect.x as f32 + rect.width as f32 - line_width as f32, rect.y as f32 + line_width as f32), Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_dark);;
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_light,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_dark,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_dark,
+                    );
                 }
             }
             FrameShadow::Sunken => {
@@ -200,19 +223,51 @@ impl Frame {
                 let light_color = Color::from_rgb(128, 128, 128);
                 let dark_color = Color::from_rgb(255, 255, 255);
                 // Top and left (dark)
-                context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x as f32 + rect.width as f32, rect.y), light_color);;
-                context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x, rect.y as f32 + rect.height as f32), light_color);;
+                context.draw_line(
+                    Point::from_f32(rect.x as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+                    light_color,
+                );
+                context.draw_line(
+                    Point::from_f32(rect.x as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+                    light_color,
+                );
                 // Bottom and right (light)
-                context.draw_line(Point::new(rect.x, rect.y as f32 + rect.height as f32), Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32), dark_color);;
-                context.draw_line(Point::new(rect.x as f32 + rect.width as f32, rect.y), Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32), dark_color);;
+                context.draw_line(
+                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+                    dark_color,
+                );
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+                    dark_color,
+                );
                 // Draw mid line if needed
                 if mid_line_width > 0.0 {
                     let mid_light = Color::from_rgb(64, 64, 64);
                     let mid_dark = Color::from_rgb(192, 192, 192);
-                    context.draw_line(Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + line_width as f32), Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + line_width as f32), mid_light);;
-                    context.draw_line(Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + line_width as f32), Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_light);;
-                    context.draw_line(Point::new(rect.x as f32 + line_width as f32, rect.y as f32 + rect.height as f32 - line_width as f32), Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_dark);;
-                    context.draw_line(Point::new(rect.x as f32 + rect.width as f32 - line_width as f32, rect.y as f32 + line_width as f32), Point::new(rect.x as f32 + rect.width as f32 - line_width as i32 as f32, rect.y as f32 + rect.height as f32 - line_width as i32 as f32), mid_dark);;
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + line_width),
+                        mid_light,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_light,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_dark,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + line_width),
+                        Point::from_f32(rect.x as f32 + rect.width as f32 - line_width, rect.y as f32 + rect.height as f32 - line_width),
+                        mid_dark,
+                    );
                 }
             }
         }
@@ -231,16 +286,20 @@ impl Frame {
     }
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
-        let line_width = self.line_width;
         let y = rect.y + (rect.height as i32) / 2;
-        context.draw_line(Point::new(rect.x as f32, y as f32), Point::new(rect.x as f32 + rect.width as f32, y as f32), Color::from_rgb(0, 0, 0),
+        context.draw_line(
+            Point::new(rect.x, y),
+            Point::new(rect.x + rect.width as i32, y),
+            Color::from_rgb(0, 0, 0),
         );
     }
     /// Draws vertical line frame.
     fn draw_vline_frame(&self, context: &mut RenderContext, rect: Rect) {
-        let line_width = self.line_width;
         let x = rect.x + (rect.width as i32) / 2;
-        context.draw_line(Point::new(x as f32, rect.y as f32), Point::new(x as f32, rect.y as f32 + rect.height as f32), Color::from_rgb(0, 0, 0),
+        context.draw_line(
+            Point::new(x, rect.y),
+            Point::new(x, rect.y + rect.height as i32),
+            Color::from_rgb(0, 0, 0),
         );
     }
     /// Draws Windows panel frame.
@@ -252,29 +311,53 @@ impl Frame {
         let light_color = Color::from_rgb(255, 255, 255);
         let dark_color = Color::from_rgb(128, 128, 128);
         // Outer border (sunken)
-        context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x as f32 + rect.width as f32, rect.y), dark_color);;
-        context.draw_line(Point::new(rect.x as f32, rect.y as f32), Point::new(rect.x, rect.y as f32 + rect.height as f32), dark_color);;
         context.draw_line(
-            Point::new(rect.x as f32, rect.y as f32 + rect.height as f32),
-            Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+            Point::from_f32(rect.x as f32, rect.y as f32),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+            dark_color,
+        );
+        context.draw_line(
+            Point::from_f32(rect.x as f32, rect.y as f32),
+            Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+            dark_color,
+        );
+        context.draw_line(
+            Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
             light_color,
         );
         context.draw_line(
-            Point::new(rect.x as f32 + rect.width as f32, rect.y as f32),
-            Point::new(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
             light_color,
         );
         // Inner border (raised)
         let inner_rect = Rect::new(
             rect.x + 1,
             rect.y + 1,
-            rect.width - 2,
-            rect.height - 2,
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(2),
         );
-        context.draw_line(Point::new(inner_rect.x, inner_rect.y), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y), light_color);
-        context.draw_line(Point::new(inner_rect.x, inner_rect.y), Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32), light_color);
-        context.draw_line(Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32), dark_color);
-        context.draw_line(Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32), dark_color);
+        context.draw_line(
+            Point::new(inner_rect.x, inner_rect.y),
+            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y),
+            light_color,
+        );
+        context.draw_line(
+            Point::new(inner_rect.x, inner_rect.y),
+            Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32),
+            light_color,
+        );
+        context.draw_line(
+            Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32),
+            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32),
+            dark_color,
+        );
+        context.draw_line(
+            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y),
+            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32),
+            dark_color,
+        );
     }
 }
 // Implement Widget trait
@@ -380,7 +463,7 @@ impl EventHandler for Frame {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         // Forward events to widget
-        if let Some(widget_id) = self.widget {
+        if self.widget.is_some() {
             // TODO: Forward event to widget
         }
     }
@@ -390,9 +473,9 @@ impl Draw for Frame {
         // Draw frame
         self.draw_frame(context);
         // Draw widget
-        if let Some(widget_id) = self.widget {
+        if self.widget.is_some() {
             // TODO: Draw widget in content area
-            let content_rect = self.content_rect();
+            let _content_rect = self.content_rect();
             // widget.draw(context);
         }
     }

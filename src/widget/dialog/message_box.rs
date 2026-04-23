@@ -1,7 +1,6 @@
 //! Message box dialog widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -303,45 +302,32 @@ impl Draw for MessageBox {
         let rect = self.geometry();
         // Dialog background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(245, 245, 245),
         );
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
         // Title bar
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            28,
+            Rect::new(rect.x, rect.y, rect.width, 28u32),
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8,
-            rect.y + 14,
+            Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
-            Alignment::Left,
         );
         // Icon
         let icon_sym = self.icon_symbol();
         if !icon_sym.is_empty() {
             context.draw_text(
-                rect.x + 20,
-                rect.y + 60,
+                Point::new(rect.x + 20, rect.y + 60),
                 icon_sym,
                 &Font::default(),
                 self.icon_color(),
-                Alignment::Left,
             );
         }
         // Message text
@@ -351,19 +337,17 @@ impl Draw for MessageBox {
             rect.x + 60
         };
         context.draw_text(
-            text_x,
-            rect.y + 60,
+            Point::new(text_x, rect.y + 60),
             &self.text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
         );
         // Buttons
-        let btn_h = 28;
-        let btn_w = 80;
-        let btn_y = rect.y + rect.height as f32 - btn_h - 12;
-        let total_btn_w = self.buttons.len() as f32 * (btn_w + 8);
-        let mut btn_x = rect.x + rect.width as f32 - total_btn_w;
+        let btn_h = 28f32;
+        let btn_w = 80f32;
+        let btn_y = rect.y as f32 + rect.height as f32 - btn_h - 12.0;
+        let total_btn_w = self.buttons.len() as f32 * (btn_w + 8.0);
+        let mut btn_x = rect.x as f32 + rect.width as f32 - total_btn_w;
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
             let bg = if is_default {
@@ -376,17 +360,15 @@ impl Draw for MessageBox {
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-            context.fill_rect(Rect::new(btn_x, btn_y, btn_w, btn_h), bg);
-            context.draw_rect(Rect::new(btn_x, btn_y), Color::from_rgb(100, 100, 100));
+            context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w as f32, btn_h as f32), bg);
+            context.draw_rect(Rect::from_f32(btn_x, btn_y, btn_w as f32, btn_h as f32), Color::from_rgb(100, 100, 100));
             context.draw_text(
-                btn_x + btn_w / 2,
-                btn_y + btn_h / 2,
+                Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
                 btn.label(),
                 &Font::default(),
                 fg,
-                Alignment::Center,
             );
-            btn_x += btn_w + 8;
+            btn_x += btn_w + 8.0;
         }
     }
 }

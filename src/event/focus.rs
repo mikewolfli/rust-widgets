@@ -8,7 +8,7 @@ pub struct FocusManager {
     /// Signal emitted when focus changes.
     pub focus_changed: GenericSignal,
     /// Scoped connections for focus tracking.
-    connection_scope: ConnectionScope,
+    _connection_scope: ConnectionScope,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -16,7 +16,7 @@ impl FocusManager {
         Self {
             focused_widget: None,
             focus_changed: GenericSignal::new(),
-            connection_scope: ConnectionScope::new(),
+            _connection_scope: ConnectionScope::new(),
         }
     }
     /// Returns the currently focused widget, if any.

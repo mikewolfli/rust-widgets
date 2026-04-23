@@ -23,7 +23,7 @@ impl Widget for PopupWindow {
     }
 }
 impl crate::widget::base::Draw for PopupWindow {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Default drawing implementation
         // Popup window is drawn by the renderer
     }

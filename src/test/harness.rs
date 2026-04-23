@@ -25,13 +25,13 @@ impl TestHarness {
         self.events.push_back(event);
     }
     pub fn send_mouse_click(&mut self, x: i32, y: i32, button: u32) {
-        let point = Point::new(x as f32, y as f32);
+        let point = Point::from_f32(x as f32, y as f32);
         self.send_event(Event::MousePress { pos: point, button });
         self.send_event(Event::MouseRelease { pos: point, button });
     }
     pub fn send_mouse_move(&mut self, x: i32, y: i32) {
         self.send_event(Event::MouseMove {
-            pos: Point::new(x as f32, y as f32),
+            pos: Point::from_f32(x as f32, y as f32),
         });
     }
     pub fn send_key_press(&mut self, key: u32, modifiers: u32) {

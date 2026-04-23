@@ -1,5 +1,5 @@
 //! Label widget implementation.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};

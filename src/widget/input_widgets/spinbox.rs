@@ -1,11 +1,10 @@
 //! Spin box widget for numeric input.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Spin box widget for integer input.
 pub struct SpinBox {
     base: BaseWidget,
@@ -151,7 +150,7 @@ impl SpinBox {
                 return special.clone();
             }
         }
-        let mut text = format!("{}{}{}", self.prefix, self.value, self.suffix);
+        let text = format!("{}{}{}", self.prefix, self.value, self.suffix);
         text
     }
 }
@@ -266,8 +265,8 @@ impl EventHandler for SpinBox {
                 let button_width = 20;
                 if *button == 1 {
                     // Check if click is on up/down buttons
-                    if pos.x >= rect.x + rect.width as f32 - button_width * 2 {
-                        if pos.x < rect.x + rect.width as f32 - button_width {
+                    if pos.x as f32 >= rect.x as f32 + rect.width as f32 - button_width as f32 * 2.0 {
+                        if (pos.x as f32) < rect.x as f32 + rect.width as f32 - button_width as f32 {
                             // Down button
                             self.step_down();
                         } else {
@@ -313,85 +312,87 @@ impl Draw for SpinBox {
         let padding = 4;
         let button_width = 20;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as f32 / 2;
+        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw up/down buttons
-        let down_button_x = rect.x + rect.width as f32 - button_width * 2;
-        let up_button_x = rect.x + rect.width as f32 - button_width;
+        let down_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32 * 2.0;
+        let up_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32;
+        let button_width_f = button_width as f32;
+        let rect_y_f = rect.y as f32;
+        let rect_height_f = rect.height as f32;
         // Down button
         context.fill_rect(
-            down_button_x,
-            rect.y,
-            button_width,
-            rect.height,
+            Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
             Color::from_rgb(240, 240, 240),
         );
         context.draw_rect(
-            down_button_x,
-            rect.y,
-            button_width,
-            rect.height,
+            Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
             Color::from_rgb(200, 200, 200),
         );
         // Down arrow
-        let down_arrow_x = down_button_x + button_width / 2;
-        let down_arrow_y = rect.y + rect.height as f32 / 2;
+        let down_arrow_x_f = down_button_x_f + button_width_f / 2.0;
+        let down_arrow_y_f = rect_y_f + rect_height_f / 2.0;
         let arrow_size = 4;
-        context.draw_line(Point::new(down_arrow_x - arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Point::new(down_arrow_x + arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        let arrow_size_f = arrow_size as f32;
+        context.draw_line(
+            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(down_arrow_x + arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Point::new(down_arrow_x as f32, down_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(down_arrow_x as f32, down_arrow_y + arrow_size / 2 as f32), Point::new(down_arrow_x - arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
         // Up button
         context.fill_rect(
-            up_button_x,
-            rect.y,
-            button_width,
-            rect.height,
+            Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
             Color::from_rgb(240, 240, 240),
         );
         context.draw_rect(
-            up_button_x,
-            rect.y,
-            button_width,
-            rect.height,
+            Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
             Color::from_rgb(200, 200, 200),
         );
         // Up arrow
-        let up_arrow_x = up_button_x + button_width / 2;
-        let up_arrow_y = rect.y + rect.height as f32 / 2;
-        context.draw_line(Point::new(up_arrow_x - arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Point::new(up_arrow_x + arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        let up_arrow_x_f = up_button_x_f + button_width_f / 2.0;
+        let up_arrow_y_f = rect_y_f + rect_height_f / 2.0;
+        context.draw_line(
+            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(up_arrow_x + arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Point::new(up_arrow_x as f32, up_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(up_arrow_x as f32, up_arrow_y - arrow_size / 2 as f32), Point::new(up_arrow_x - arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
+        context.draw_line(
+            Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
+            Color::from_rgb(100, 100, 100),
         );
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {
             context.draw_text(
-                text_x,
-                text_y,
+                Point::new(text_x as i32, text_y as i32),
                 &display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Left,
             );
         }
     }

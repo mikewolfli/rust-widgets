@@ -1,11 +1,10 @@
 //! Scroll bar widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -19,6 +18,7 @@ pub struct ScrollBar {
     pub slider_moved: Signal1<i32>,
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
+    mouse_pressed: bool,
 }
 /// Scroll bar orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,7 @@ impl ScrollBar {
             slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
+            mouse_pressed: false,
         }
     }
     /// Returns minimum value.
@@ -120,7 +121,7 @@ impl ScrollBar {
     /// Returns slider size as percentage of visible area.
     pub fn slider_size(&self) -> f32 {
         if self.maximum == self.minimum {
-            return 1;
+            return 1.0;
         }
         let page_size = self.page_step as f32;
         let total_range = (self.maximum - self.minimum) as f32;
@@ -129,7 +130,7 @@ impl ScrollBar {
     /// Returns slider position as percentage.
     pub fn slider_position(&self) -> f32 {
         if self.maximum == self.minimum {
-            return 0;
+            return 0.0;
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
@@ -140,15 +141,15 @@ impl ScrollBar {
         let range = (self.maximum - self.minimum) as f32;
         match self.orientation {
             Orientation::Horizontal => {
-                let available_width = rect.width * (1 - slider_size);
-                let relative = (pos - rect.x) / available_width;
-                let value = self.minimum as f32 + range * relative.clamp(0, 1);
+                let available_width = rect.width as f32 * (1.0 - slider_size);
+                let relative = (pos - rect.x as f32) / available_width;
+                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
                 value.round() as i32
             }
             Orientation::Vertical => {
-                let available_height = rect.height * (1 - slider_size);
-                let relative = (pos - rect.y) / available_height;
-                let value = self.minimum as f32 + range * relative.clamp(0, 1);
+                let available_height = rect.height as f32 * (1.0 - slider_size);
+                let relative = (pos - rect.y as f32) / available_height;
+                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
                 value.round() as i32
             }
         }
@@ -159,21 +160,21 @@ impl ScrollBar {
         let clamped = value.clamp(self.minimum, self.maximum);
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
-        if range == 0 {
+        if range == 0.0 {
             return match self.orientation {
-                Orientation::Horizontal => rect.x,
-                Orientation::Vertical => rect.y,
+                Orientation::Horizontal => rect.x as f32,
+                Orientation::Vertical => rect.y as f32,
             };
         }
         let relative = (clamped - self.minimum) as f32 / range;
         match self.orientation {
             Orientation::Horizontal => {
-                let available_width = rect.width * (1 - slider_size);
-                rect.x + available_width * relative
+                let available_width = rect.width as f32 * (1.0 - slider_size);
+                rect.x as f32 + available_width * relative
             }
             Orientation::Vertical => {
-                let available_height = rect.height * (1 - slider_size);
-                rect.y + available_height * relative
+                let available_height = rect.height as f32 * (1.0 - slider_size);
+                rect.y as f32 + available_height * relative
             }
         }
     }
@@ -340,19 +341,21 @@ impl EventHandler for ScrollBar {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
+                    self.mouse_pressed = true;
                     self.slider_pressed.emit();
-                    let value = self.pixel_pos_to_value(pos.x);
+                    let value = self.pixel_pos_to_value(pos.x as f32);
                     self.set_value(value);
                 }
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
+                    self.mouse_pressed = false;
                     self.slider_released.emit();
                 }
             }
             Event::MouseMove { pos } => {
-                if self.base.is_mouse_pressed() {
-                    let value = self.pixel_pos_to_value(pos.x);
+                if self.mouse_pressed {
+                    let value = self.pixel_pos_to_value(pos.x as f32);
                     self.set_value(value);
                     self.slider_moved.emit(value);
                 }
@@ -414,99 +417,85 @@ impl Draw for ScrollBar {
         let slider_size = self.slider_size();
         // Draw background
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(240, 240, 240),
         );
         // Draw border
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw slider
         match self.orientation {
             Orientation::Horizontal => {
-                let slider_width = rect.width * slider_size;
+                let slider_width = (rect.width as f32 * slider_size) as u32;
                 context.fill_rect(
-                    slider_pos,
-                    rect.y,
-                    slider_width,
-                    rect.height,
+                    Rect::from_f32(slider_pos, rect.y as f32, slider_width as f32, rect.height as f32),
                     Color::from_rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
-                    slider_pos,
-                    rect.y,
-                    slider_width,
-                    rect.height,
+                    Rect::from_f32(slider_pos, rect.y as f32, slider_width as f32, rect.height as f32),
                     Color::from_rgb(150, 150, 150),
                 );
-                // Draw arrows
-                let arrow_size = rect.height.min(rect.width * 0.2);
-                // Left arrow
-                context.fill_triangle(
-                    rect.x + arrow_size / 2,
-                    rect.y + rect.height as f32 / 2,
-                    rect.x + arrow_size,
-                    rect.y + rect.height as f32 / 4,
-                    rect.x + arrow_size,
-                    rect.y + rect.height as f32 * 3 / 4,
+                // Draw arrows using draw_line (triangles approximated)
+                let arrow_size = (rect.height as f32).min(rect.width as f32 * 0.2) as u32;
+                // Left arrow head
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + arrow_size as f32, rect.y as f32 + rect.height as f32 / 4.0),
                     Color::from_rgb(100, 100, 100),
                 );
-                // Right arrow
-                context.fill_triangle(
-                    rect.x + rect.width as f32 - arrow_size / 2,
-                    rect.y + rect.height as f32 / 2,
-                    rect.x + rect.width as f32 - arrow_size,
-                    rect.y + rect.height as f32 / 4,
-                    rect.x + rect.width as f32 - arrow_size,
-                    rect.y + rect.height as f32 * 3 / 4,
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + arrow_size as f32, rect.y as f32 + rect.height as f32 * 3.0 / 4.0),
+                    Color::from_rgb(100, 100, 100),
+                );
+                // Right arrow head
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32, rect.y as f32 + rect.height as f32 / 4.0),
+                    Color::from_rgb(100, 100, 100),
+                );
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32, rect.y as f32 + rect.height as f32 * 3.0 / 4.0),
                     Color::from_rgb(100, 100, 100),
                 );
             }
             Orientation::Vertical => {
-                let slider_height = rect.height * slider_size;
+                let slider_height = (rect.height as f32 * slider_size) as u32;
                 context.fill_rect(
-                    rect.x,
-                    slider_pos,
-                    rect.width,
-                    slider_height,
+                    Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, slider_height as f32),
                     Color::from_rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
-                    rect.x,
-                    slider_pos,
-                    rect.width,
-                    slider_height,
+                    Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, slider_height as f32),
                     Color::from_rgb(150, 150, 150),
                 );
-                // Draw arrows
-                let arrow_size = rect.width.min(rect.height * 0.2);
-                // Up arrow
-                context.fill_triangle(
-                    rect.x + rect.width as f32 / 2,
-                    rect.y + arrow_size / 2,
-                    rect.x + rect.width as f32 / 4,
-                    rect.y + arrow_size,
-                    rect.x + rect.width as f32 * 3 / 4,
-                    rect.y + arrow_size,
+                // Draw arrows using draw_line (triangles approximated)
+                let arrow_size = (rect.width as f32).min(rect.height as f32 * 0.2) as u32;
+                // Up arrow head
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + arrow_size as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 4.0, rect.y as f32 + arrow_size as f32),
                     Color::from_rgb(100, 100, 100),
                 );
-                // Down arrow
-                context.fill_triangle(
-                    rect.x + rect.width as f32 / 2,
-                    rect.y + rect.height as f32 - arrow_size / 2,
-                    rect.x + rect.width as f32 / 4,
-                    rect.y + rect.height as f32 - arrow_size,
-                    rect.x + rect.width as f32 * 3 / 4,
-                    rect.y + rect.height as f32 - arrow_size,
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + arrow_size as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 * 3.0 / 4.0, rect.y as f32 + arrow_size as f32),
+                    Color::from_rgb(100, 100, 100),
+                );
+                // Down arrow head
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 4.0, rect.y as f32 + rect.height as f32 - arrow_size as f32),
+                    Color::from_rgb(100, 100, 100),
+                );
+                context.draw_line(
+                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0),
+                    Point::from_f32(rect.x as f32 + rect.width as f32 * 3.0 / 4.0, rect.y as f32 + rect.height as f32 - arrow_size as f32),
                     Color::from_rgb(100, 100, 100),
                 );
             }

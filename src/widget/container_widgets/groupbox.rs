@@ -1,5 +1,5 @@
 //! Group box widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -69,17 +69,17 @@ impl GroupBox {
     /// Returns title rectangle.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
-        let font = Font::default();
         // Note: measure_text需要通过RenderContext调用
         // 这里暂时使用估算值
         let text_width = self.title.len() as u32 * 8; // 估算宽度
-        let text_height = 16; // 估算高度
+        let text_height = 16i32; // 估算高度
         let x = match self.alignment {
             Alignment::Left => rect.x + 10,
-            Alignment::Center => rect.x + (rect.width - text_width) / 2,
-            Alignment::Right => rect.x + rect.width as f32 - text_width - 10,
+            Alignment::Center => rect.x + ((rect.width - text_width) / 2) as i32,
+            Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - 10,
+            Alignment::Top | Alignment::Bottom => rect.x + 10,
         };
-        Rect::new(x, rect.y - text_height / 2, text_width, text_height)
+        Rect::new(x, rect.y - text_height / 2, text_width, text_height as u32)
     }
     /// Returns checkbox rectangle if checkable.
     fn checkbox_rect(&self) -> Option<Rect> {
@@ -87,12 +87,12 @@ impl GroupBox {
             return None;
         }
         let title_rect = self.title_rect();
-        let checkbox_size = 12;
+        let checkbox_size: i32 = 12;
         Some(Rect::new(
             title_rect.x - checkbox_size - 5,
-            title_rect.y + (title_rect.height - checkbox_size) / 2,
-            checkbox_size,
-            checkbox_size,
+            title_rect.y + (title_rect.height as i32 - checkbox_size) / 2,
+            checkbox_size as u32,
+            checkbox_size as u32,
         ))
     }
 }
@@ -237,13 +237,13 @@ impl Draw for GroupBox {
                 // Draw checkmark if checked
                 if self.checked {
                     context.draw_line(
-                        Point::new(checkbox_rect.x + 2 as f32, checkbox_rect.y + checkbox_rect.height as i32 / 2 as f32),
-                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2 as f32, checkbox_rect.y + checkbox_rect.height - 2 as f32),
+                        Point::from_f32(checkbox_rect.x as f32 + 2.0, checkbox_rect.y as f32 + checkbox_rect.height as f32 * 0.5),
+                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5, checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0),
                         Color::from_rgb(0, 0, 0),
                     );
                     context.draw_line(
-                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2 as f32, checkbox_rect.y + checkbox_rect.height - 2 as f32),
-                        Point::new(checkbox_rect.x + checkbox_rect.width - 2 as f32, checkbox_rect.y + 2 as f32),
+                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5, checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0),
+                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 - 2.0, checkbox_rect.y as f32 + 2.0),
                         Color::from_rgb(0, 0, 0),
                     );
                 }
@@ -257,7 +257,7 @@ impl Draw for GroupBox {
                 Color::from_rgb(150, 150, 150)
             };
             context.draw_text(
-                Point::new(title_rect.x as f32, title_rect.y as f32),
+                Point::from_f32(title_rect.x as f32, title_rect.y as f32),
                 &self.title,
                 &Font::default(),
                 text_color,

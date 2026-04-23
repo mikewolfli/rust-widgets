@@ -1,11 +1,10 @@
 //! Stacked widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Stacked widget.
 pub struct StackedWidget {
     base: BaseWidget,
@@ -181,7 +180,7 @@ impl EventHandler for StackedWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         // Forward events to current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Forward event to current widget
         }
     }
@@ -193,7 +192,7 @@ impl Draw for StackedWidget {
         // Draw background
         context.fill_rect(rect, Color::from_rgb(255, 255, 255));
         // Draw current widget
-        if let Some(widget_id) = self.current_widget() {
+        if self.current_widget().is_some() {
             // TODO: Draw current widget
         }
     }

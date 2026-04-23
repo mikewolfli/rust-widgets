@@ -1,7 +1,6 @@
 //! Menu bar widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -71,9 +70,9 @@ impl MenuBar {
     }
     fn entry_width(title: &str) -> f32 {
         // Approximate width: 8 pixels per char + 16 padding
-        title.len() as f32 * 8 + 16
+        title.len() as f32 * 8.0 + 16.0
     }
-    fn entry_rect(&self, index: usize) -> Rect {
+    fn _entry_rect(&self, index: usize) -> Rect {
         let rect = self.geometry();
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
@@ -251,8 +250,7 @@ impl Draw for MenuBar {
         let rect = self.geometry();
         // Menu bar background
         context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-        context.draw_line(Point::new(Point::new(rect.x as f32, rect.y + rect.height as f32 as i32 - 1 as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 as f32, rect.y + rect.height as f32 as i32 - 1 as f32)), Color::from_rgb(200, 200, 200),
-        );
+        context.draw_line(Point::new(rect.x, rect.y + rect.height as i32 - 1), Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1), Color::from_rgb(200, 200, 200));
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
             let w = Self::entry_width(&entry.title) as i32;
@@ -277,7 +275,7 @@ impl Draw for MenuBar {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                Point::new(x + w / 2 as f32, rect.y + (rect.height as i32 as f32) / 2),
+                Point::new(x + w / 2, rect.y + rect.height as i32 / 2),
                 &entry.title,
                 &Font::default(),
                 fg,

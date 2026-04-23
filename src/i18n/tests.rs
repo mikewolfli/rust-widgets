@@ -17,20 +17,14 @@ fn test_i18n_manager_basic() {
 #[test]
 fn test_i18n_manager_with_translations() {
     let mut manager = I18nManager::new();
-    let translation = Translation {
-        context: None,
-        message: "Hello World".to_string(),
-        plural: None,
-    };
-    let mut translations = HashMap::new();
-    translations.insert("hello".to_string(), translation);
-    let translation_file = TranslationFile {
-        language: "en".to_string(),
-        translations,
-    };
-    manager
-        .translations
-        .insert("en".to_string(), translation_file);
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    let json = r#"{
+        "hello": {"message": "Hello World"}
+    }"#;
+    fs::write(&file_path, json).unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    manager.set_language("en");
     assert_eq!(manager.translate("hello"), "Hello World");
 }
 #[test]

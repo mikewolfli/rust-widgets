@@ -1,11 +1,10 @@
 //! Multi-line text edit widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Multi-line text edit widget.
 pub struct TextEdit {
     base: BaseWidget,
@@ -229,7 +228,7 @@ impl EventHandler for TextEdit {
             return;
         }
         match event {
-            Event::KeyPress { key, modifiers } => {
+            Event::KeyPress { key, .. } => {
                 match *key {
                     8 => {
                         // Backspace
@@ -278,7 +277,7 @@ impl Draw for TextEdit {
         if !display_text.is_empty() {
             // Simple text drawing - in real implementation would handle line wrapping
             context.draw_text(
-                Point::new(text_x as f32, text_y as f32),
+                Point::new(text_x, text_y),
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),

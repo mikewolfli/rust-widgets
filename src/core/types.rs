@@ -1,7 +1,5 @@
 use std::fmt::Debug;
-use super::geometry::{Point, Rect, Size};
-use super::alignment::Alignment;
-use super::font::Font;
+use super::geometry::{Rect, Size};
 
 /// Stable numeric identifier used for widgets and objects.
 pub type ObjectId = u64;

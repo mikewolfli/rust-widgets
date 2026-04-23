@@ -23,7 +23,7 @@ impl Widget for ChartWidget {
     }
 }
 impl crate::widget::base::Draw for ChartWidget {
-    fn draw(&mut self, context: &mut RenderContext) {
+    fn draw(&mut self, _context: &mut RenderContext) {
         // Default drawing implementation
         // Chart is drawn by the renderer
     }

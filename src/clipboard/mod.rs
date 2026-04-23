@@ -7,7 +7,7 @@ pub use drag_drop_manager::DragDropManager;
 mod tests {
     use super::*;
     use crate::core::PlatformFamily;
-    use crate::platform::{Platform, StubPlatform};
+    use crate::platform::{DropEvent, Platform, StubPlatform};
     #[test]
     fn clipboard_roundtrip() {
         let stub = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
