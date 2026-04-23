@@ -1,7 +1,6 @@
 use crate::core::{Color, Point, Rect};
 use crate::render::{RenderCommand, SceneLayer};
 use crate::widget::{command_link::CommandLink, Widget};
-
 fn push_widget_fill_and_border(
     layer: &mut SceneLayer,
     widget: &dyn Widget,
@@ -23,7 +22,6 @@ fn push_widget_fill_and_border(
         });
     }
 }
-
 /// Append visual commands for a `CommandLink` baseline representation.
 pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link: &CommandLink) {
     push_widget_fill_and_border(
@@ -32,7 +30,6 @@ pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link:
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = command_link.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -44,7 +41,6 @@ pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link:
             font: command_link.font().cloned().unwrap_or_default(),
             color: command_link.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 30 {
             // Draw command link button
             layer.push(RenderCommand::FillRect {
@@ -56,7 +52,6 @@ pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link:
                 },
                 color: Color::PRIMARY,
             });
-
             // Draw command link text
             layer.push(RenderCommand::DrawText {
                 origin: Point {
@@ -67,7 +62,6 @@ pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link:
                 font: command_link.font().cloned().unwrap_or_default(),
                 color: Color::WHITE,
             });
-
             // Draw description text
             if rect.height > 70 && !command_link.description().is_empty() {
                 layer.push(RenderCommand::DrawText {

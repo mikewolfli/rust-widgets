@@ -1,17 +1,13 @@
 //! Base widget types and traits.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
 use chrono::{Datelike, Timelike};
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
-
 /// Image structure for widget icons and favicons.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Image {
@@ -19,19 +15,16 @@ pub struct Image {
     // For now, we'll just use a placeholder
     pub data: Vec<u8>,
 }
-
 impl Image {
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
 }
-
 impl Default for Image {
     fn default() -> Self {
         Self::new()
     }
 }
-
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetKind {
@@ -119,7 +112,6 @@ pub enum WidgetKind {
     /// Web engine context menu request widget for context menu handling.
     WebEngineContextMenuRequest,
 }
-
 /// Custom drawing trait for widgets that want to render their own content.
 /// Widgets implementing this trait can provide custom drawing logic instead of
 /// relying solely on native platform rendering.
@@ -127,13 +119,11 @@ pub trait Draw {
     /// Draw the widget's content using the provided render context.
     /// This method is called when the widget needs to be repainted.
     fn draw(&mut self, context: &mut RenderContext);
-
     /// Returns true if this widget uses custom drawing, false for native rendering.
     /// This allows the rendering system to choose between native and custom paths.
     fn uses_custom_drawing(&self) -> bool {
         true
     }
-
     /// Optional: Request a redraw of the widget.
     /// Default implementation calls request_redraw() on the widget.
     fn request_custom_redraw(&self)
@@ -143,15 +133,30 @@ pub trait Draw {
         self.request_redraw();
     }
 }
-
 /// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler {
+    /// Returns shared base widget state for default trait delegation.
+    fn base(&self) -> &BaseWidget {
+        panic!("Widget::base() not implemented")
+    }
+    /// Returns mutable base widget state for default trait delegation.
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        panic!("Widget::base_mut() not implemented")
+    }
     /// Get stable widget id.
-    fn id(&self) -> ObjectId;
+    fn id(&self) -> ObjectId {
+        self.base().id()
+    }
     /// Get widget runtime kind.
-    fn kind(&self) -> WidgetKind;
-    fn geometry(&self) -> Rect;
-    fn set_geometry(&mut self, geometry: Rect);
+    fn kind(&self) -> WidgetKind {
+        self.base().kind()
+    }
+    fn geometry(&self) -> Rect {
+        self.base().geometry()
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base_mut().set_geometry(geometry);
+    }
     /// Returns widget rectangle aliasing `geometry()`.
     fn rect(&self) -> Rect {
         self.geometry()
@@ -177,29 +182,72 @@ pub trait Widget: EventHandler {
         self.set_geometry(Rect::from_position_size(self.position(), size));
     }
     /// Returns minimum size constraint when configured.
-    fn min_size(&self) -> Option<Size>;
+    fn min_size(&self) -> Option<Size> {
+        self.base().min_size()
+    }
     /// Returns maximum size constraint when configured.
-    fn max_size(&self) -> Option<Size>;
+    fn max_size(&self) -> Option<Size> {
+        self.base().max_size()
+    }
     /// Sets minimum size constraint.
-    fn set_min_size(&mut self, min_size: Option<Size>);
+    fn set_min_size(&mut self, min_size: Option<Size>) {
+        self.base_mut().set_min_size(min_size);
+    }
     /// Sets maximum size constraint.
-    fn set_max_size(&mut self, max_size: Option<Size>);
-    fn parent(&self) -> Option<ObjectId>;
-    fn set_parent(&mut self, parent: Option<ObjectId>);
-    fn add_child(&mut self, child: ObjectId);
-    fn remove_child(&mut self, child: ObjectId);
-    fn children(&self) -> &[ObjectId];
+    fn set_max_size(&mut self, max_size: Option<Size>) {
+        self.base_mut().set_max_size(max_size);
+    }
+    fn parent(&self) -> Option<ObjectId> {
+        self.base().parent()
+    }
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        self.base_mut().set_parent(parent);
+    }
+    fn add_child(&mut self, child: ObjectId) {
+        self.base_mut().add_child(child);
+    }
+    fn remove_child(&mut self, child: ObjectId) {
+        self.base_mut().remove_child(child);
+    }
+    fn children(&self) -> &[ObjectId] {
+        self.base().children()
+    }
     /// Show widget.
-    fn show(&mut self);
+    fn show(&mut self) {
+        self.base_mut().show();
+    }
     /// Hide widget.
-    fn hide(&mut self);
-    fn is_visible(&self) -> bool;
-    fn set_enabled(&mut self, enabled: bool);
-    fn is_enabled(&self) -> bool;
-    fn set_tooltip(&mut self, tooltip: String);
-    fn tooltip(&self) -> &str;
-    fn style(&self) -> &WidgetStyle;
-    fn set_style(&mut self, style: WidgetStyle);
+    fn hide(&mut self) {
+        self.base_mut().hide();
+    }
+    fn is_visible(&self) -> bool {
+        self.base().is_visible()
+    }
+    fn set_visible(&mut self, visible: bool) {
+        if visible {
+            self.show();
+        } else {
+            self.hide();
+        }
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.base_mut().set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        self.base().is_enabled()
+    }
+    fn set_tooltip(&mut self, tooltip: String) {
+        self.base_mut().set_tooltip(tooltip);
+    }
+    fn tooltip(&self) -> &str {
+        self.base().tooltip()
+    }
+    fn style(&self) -> &WidgetStyle {
+        self.base().style()
+    }
+    fn set_style(&mut self, style: WidgetStyle) {
+        self.base_mut().set_style(style);
+    }
     /// Returns optional background color shorthand.
     fn background_color(&self) -> Option<Color> {
         self.style().background_color
@@ -289,25 +337,53 @@ pub trait Widget: EventHandler {
         self.set_style(style);
     }
     /// Returns connection scope used to auto-disconnect slots when widget drops.
-    fn connection_scope(&self) -> &ConnectionScope;
+    fn connection_scope(&self) -> &ConnectionScope {
+        self.base().connection_scope()
+    }
+    /// Optional clicked signal (legacy API compatibility).
+    fn clicked_signal(&self) -> &GenericSignal {
+        &self.base().clicked
+    }
+    /// Optional changed signal (legacy API compatibility).
+    fn changed_signal(&self) -> &GenericSignal {
+        &self.base().changed
+    }
     /// Emits on hover/move interactions while pointer is over widget.
-    fn hover_signal(&self) -> &Signal1<Point>;
+    fn hover_signal(&self) -> &Signal1<Point> {
+        self.base().hover_signal()
+    }
     /// Emits on mouse/pointer press interactions.
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)>;
+    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base().mouse_down_signal()
+    }
     /// Emits on mouse/pointer release interactions.
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)>;
+    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
+        self.base().mouse_up_signal()
+    }
     /// Emits on keyboard press interactions.
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)>;
+    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base().key_down_signal()
+    }
     /// Emits on keyboard release interactions.
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)>;
+    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
+        self.base().key_up_signal()
+    }
     /// Emits when logical focus is gained.
-    fn focus_gained_signal(&self) -> &GenericSignal;
+    fn focus_gained_signal(&self) -> &GenericSignal {
+        self.base().focus_gained_signal()
+    }
     /// Emits when logical focus is lost.
-    fn focus_lost_signal(&self) -> &GenericSignal;
+    fn focus_lost_signal(&self) -> &GenericSignal {
+        self.base().focus_lost_signal()
+    }
     /// Emits when redraw is requested.
-    fn redraw_requested_signal(&self) -> &GenericSignal;
+    fn redraw_requested_signal(&self) -> &GenericSignal {
+        self.base().redraw_requested_signal()
+    }
     /// Emits when layout pass is requested.
-    fn layout_requested_signal(&self) -> &GenericSignal;
+    fn layout_requested_signal(&self) -> &GenericSignal {
+        self.base().layout_requested_signal()
+    }
     /// Requests redraw and emits redraw signal.
     fn request_redraw(&self) {
         self.redraw_requested_signal().emit();
@@ -321,21 +397,20 @@ pub trait Widget: EventHandler {
         self.size()
     }
 }
-
 /// Shared widget state and signals used by concrete controls.
 pub struct BaseWidget {
-    object: Object,
-    kind: WidgetKind,
-    geometry: Rect,
-    min_size: Option<Size>,
-    max_size: Option<Size>,
-    parent: Option<ObjectId>,
-    children: Vec<ObjectId>,
-    visible: bool,
-    enabled: bool,
-    tooltip: String,
-    style: WidgetStyle,
-    connection_scope: ConnectionScope,
+    pub(crate) object: Object,
+    pub(crate) kind: WidgetKind,
+    pub(crate) geometry: Rect,
+    pub(crate) min_size: Option<Size>,
+    pub(crate) max_size: Option<Size>,
+    pub(crate) parent: Option<ObjectId>,
+    pub(crate) children: Vec<ObjectId>,
+    pub(crate) visible: bool,
+    pub(crate) enabled: bool,
+    pub(crate) tooltip: String,
+    pub(crate) style: WidgetStyle,
+    pub(crate) connection_scope: ConnectionScope,
     /// Emitted when a click-like interaction is received.
     pub clicked: GenericSignal,
     /// Emitted when widget internal value/state changes.
@@ -359,7 +434,6 @@ pub struct BaseWidget {
     /// Emitted when layout is requested.
     pub layout_requested: GenericSignal,
 }
-
 impl BaseWidget {
     /// Create base widget state and core signals.
     pub fn new(kind: WidgetKind, geometry: Rect, class_name: &'static str) -> Self {
@@ -389,174 +463,130 @@ impl BaseWidget {
             layout_requested: GenericSignal::new(),
         }
     }
-
     // 基础方法实现
     pub fn id(&self) -> ObjectId {
         self.object.id()
     }
-
     pub fn kind(&self) -> WidgetKind {
         self.kind
     }
-
     pub fn geometry(&self) -> Rect {
         self.geometry
     }
-
     pub fn set_geometry(&mut self, geometry: Rect) {
         self.geometry = geometry;
     }
-
     pub fn min_size(&self) -> Option<Size> {
         self.min_size
     }
-
     pub fn max_size(&self) -> Option<Size> {
         self.max_size
     }
-
     pub fn set_min_size(&mut self, min_size: Option<Size>) {
         self.min_size = min_size;
     }
-
     pub fn set_max_size(&mut self, max_size: Option<Size>) {
         self.max_size = max_size;
     }
-
     pub fn parent(&self) -> Option<ObjectId> {
         self.parent
     }
-
     pub fn set_parent(&mut self, parent: Option<ObjectId>) {
         self.parent = parent;
     }
-
     pub fn children(&self) -> &[ObjectId] {
         &self.children
     }
-
     pub fn add_child(&mut self, child: ObjectId) {
         self.children.push(child);
     }
-
     pub fn remove_child(&mut self, child: ObjectId) {
         self.children.retain(|&id| id != child);
     }
-
     pub fn show(&mut self) {
         self.visible = true;
     }
-
     pub fn hide(&mut self) {
         self.visible = false;
     }
-
     pub fn is_visible(&self) -> bool {
         self.visible
     }
-
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-
     pub fn set_tooltip(&mut self, tooltip: String) {
         self.tooltip = tooltip;
     }
-
     pub fn tooltip(&self) -> &str {
         &self.tooltip
     }
-
     pub fn style(&self) -> &WidgetStyle {
         &self.style
     }
-
     pub fn set_style(&mut self, style: WidgetStyle) {
         self.style = style;
     }
-
     pub fn connection_scope(&self) -> &ConnectionScope {
         &self.connection_scope
     }
-
     pub fn hover_signal(&self) -> &Signal1<Point> {
         &self.hover
     }
-
     pub fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
         &self.mouse_down
     }
-
     pub fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
         &self.mouse_up
     }
-
     pub fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
         &self.key_down
     }
-
     pub fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
         &self.key_up
     }
-
     pub fn focus_gained_signal(&self) -> &GenericSignal {
         &self.focus_gained
     }
-
     pub fn focus_lost_signal(&self) -> &GenericSignal {
         &self.focus_lost
     }
-
     pub fn redraw_requested_signal(&self) -> &GenericSignal {
         &self.redraw_requested
     }
-
     pub fn layout_requested_signal(&self) -> &GenericSignal {
         &self.layout_requested
     }
-
     pub fn request_redraw(&self) {
         self.redraw_requested.emit();
     }
-
     pub fn request_layout(&self) {
         self.layout_requested.emit();
     }
 }
-
 impl EventHandler for BaseWidget {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         // 基础事件处理逻辑
         match event {
-            Event::MouseMove { position, .. } => {
-                self.hover.emit(*position);
-                true
+            Event::MouseMove { pos } => {
+                self.hover.emit(*pos);
             }
-            Event::MouseDown {
-                position, button, ..
-            } => {
-                self.mouse_down.emit((*position, *button));
-                true
+            Event::MouseDown((pos, button)) => {
+                self.mouse_down.emit((*pos, *button));
             }
-            Event::MouseUp {
-                position, button, ..
-            } => {
-                self.mouse_up.emit((*position, *button));
-                true
+            Event::MouseUp((pos, button)) => {
+                self.mouse_up.emit((*pos, *button));
             }
-            Event::KeyDown { key, modifiers, .. } => {
+            Event::KeyDown((key, modifiers)) => {
                 self.key_down.emit((*key, *modifiers));
-                true
             }
-            Event::KeyUp { key, modifiers, .. } => {
+            Event::KeyUp((key, modifiers)) => {
                 self.key_up.emit((*key, *modifiers));
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }

@@ -4,25 +4,20 @@ mod plugins;
 mod privacy;
 mod web_engine;
 mod web_view;
-
 pub use history::*;
 pub use js_engine::*;
 pub use plugins::*;
 pub use privacy::*;
 pub use web_engine::*;
 pub use web_view::*;
-
 use std::collections::VecDeque;
-
 const MAX_HISTORY_SIZE: usize = 100;
-
 #[derive(Debug, Clone)]
 pub struct NavigationEntry {
     pub url: String,
     pub title: String,
     pub timestamp: u64,
 }
-
 impl Default for NavigationEntry {
     fn default() -> Self {
         Self {
@@ -32,20 +27,17 @@ impl Default for NavigationEntry {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct NavigationHistory {
     entries: VecDeque<NavigationEntry>,
     current_index: Option<usize>,
     max_size: usize,
 }
-
 impl Default for NavigationHistory {
     fn default() -> Self {
         Self::new(MAX_HISTORY_SIZE)
     }
 }
-
 impl NavigationHistory {
     pub fn new(max_size: usize) -> Self {
         Self {
@@ -54,38 +46,31 @@ impl NavigationHistory {
             max_size,
         }
     }
-
     pub fn push(&mut self, entry: NavigationEntry) {
         if let Some(idx) = self.current_index {
             if idx < self.entries.len() - 1 {
                 self.entries.truncate(idx + 1);
             }
         }
-
         if self.entries.len() >= self.max_size {
             self.entries.pop_front();
             if let Some(ref mut idx) = self.current_index {
                 *idx = idx.saturating_sub(1);
             }
         }
-
         self.entries.push_back(entry);
         self.current_index = Some(self.entries.len() - 1);
     }
-
     pub fn current(&self) -> Option<&NavigationEntry> {
         self.current_index.and_then(|idx| self.entries.get(idx))
     }
-
     pub fn can_go_back(&self) -> bool {
         self.current_index.map_or(false, |idx| idx > 0)
     }
-
     pub fn can_go_forward(&self) -> bool {
         self.current_index
             .map_or(false, |idx| idx < self.entries.len() - 1)
     }
-
     pub fn go_back(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_back() {
             if let Some(ref mut idx) = self.current_index {
@@ -96,7 +81,6 @@ impl NavigationHistory {
             None
         }
     }
-
     pub fn go_forward(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_forward() {
             if let Some(ref mut idx) = self.current_index {
@@ -107,25 +91,20 @@ impl NavigationHistory {
             None
         }
     }
-
     pub fn entries(&self) -> &[NavigationEntry] {
         self.entries.as_slices().0
     }
-
     pub fn clear(&mut self) {
         self.entries.clear();
         self.current_index = None;
     }
-
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadStatus {
     NotStarted,
@@ -133,14 +112,12 @@ pub enum LoadStatus {
     Loaded,
     Failed,
 }
-
 #[derive(Debug, Clone)]
 pub struct WebResource {
     pub url: String,
     pub mime_type: String,
     pub data: Vec<u8>,
 }
-
 impl WebResource {
     pub fn new(url: String, mime_type: String, data: Vec<u8>) -> Self {
         Self {
@@ -149,7 +126,6 @@ impl WebResource {
             data,
         }
     }
-
     pub fn from_text(url: &str, text: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -157,7 +133,6 @@ impl WebResource {
             data: text.as_bytes().to_vec(),
         }
     }
-
     pub fn from_html(url: &str, html: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -166,7 +141,6 @@ impl WebResource {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct WebSettings {
     pub javascript_enabled: bool,
@@ -179,7 +153,6 @@ pub struct WebSettings {
     pub user_agent: String,
     pub default_encoding: String,
 }
-
 impl Default for WebSettings {
     fn default() -> Self {
         Self {
@@ -195,7 +168,6 @@ impl Default for WebSettings {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct SecuritySettings {
     pub allow_insecure_content: bool,
@@ -204,7 +176,6 @@ pub struct SecuritySettings {
     pub block_tracking: bool,
     pub block_malware: bool,
 }
-
 impl Default for SecuritySettings {
     fn default() -> Self {
         Self {

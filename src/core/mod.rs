@@ -32,14 +32,12 @@
 //! - **PDF**: PDF uses bottom-left origin, converted from screen coordinates when rendering
 //! - **SVG**: Uses same top-left origin as screen coordinates, no conversion needed
 //! - **Widgets**: All widget positioning uses screen coordinates
-
 mod alignment;
 mod color;
 pub mod coords;
 mod font;
 mod geometry;
 mod types;
-
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;

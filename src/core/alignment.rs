@@ -12,7 +12,6 @@ pub enum Alignment {
     /// Align to bottom edge.
     Bottom,
 }
-
 /// Horizontal alignment options for widget and layout APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HorizontalAlignment {
@@ -20,7 +19,6 @@ pub enum HorizontalAlignment {
     Center,
     Right,
 }
-
 /// Vertical alignment options for widget and layout APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerticalAlignment {
@@ -28,7 +26,6 @@ pub enum VerticalAlignment {
     Center,
     Bottom,
 }
-
 impl HorizontalAlignment {
     /// Maps generic alignment to horizontal alignment when possible.
     pub const fn from_alignment(alignment: Alignment) -> Option<Self> {
@@ -40,7 +37,6 @@ impl HorizontalAlignment {
         }
     }
 }
-
 impl VerticalAlignment {
     /// Maps generic alignment to vertical alignment when possible.
     pub const fn from_alignment(alignment: Alignment) -> Option<Self> {
@@ -52,11 +48,9 @@ impl VerticalAlignment {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn axis_alignment_mapping_is_explicit() {
         assert_eq!(

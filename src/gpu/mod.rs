@@ -28,12 +28,10 @@
 //!     println!("Mode: {:?}", manager.operation_mode());
 //! }
 //! ```
-
 pub mod adapter;
 pub mod buffer_pool;
 pub mod manager;
 pub mod performance;
-
 // Re-export main types
 pub use adapter::{
     AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector, GpuAdapter,
@@ -50,32 +48,27 @@ pub use performance::{
     AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceMonitorStrategy,
     PerformanceSample, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
-
 /// Initialize the GPU subsystem with automatic hardware detection
 pub async fn init() -> Result<GpuManager, GpuManagerError> {
     GpuManager::new().await
 }
-
 /// Initialize with specific strategy
 pub async fn init_with_strategy(
     strategy: AdapterSelectionStrategy,
 ) -> Result<GpuManager, GpuManagerError> {
     GpuManager::with_strategy(strategy).await
 }
-
 /// Check if GPU is available
 pub fn is_gpu_available() -> bool {
     // This is a simplified check - in production, you'd actually try to create
     // a GPU context
     cfg!(feature = "gpu-wgpu")
 }
-
 /// Get a summary of the GPU subsystem
 pub fn subsystem_summary() -> String {
     let mut summary = String::new();
     summary.push_str("GPU Subsystem Summary\n");
     summary.push_str("====================\n\n");
-
     summary.push_str(&format!(
         "GPU support: {}\n",
         if is_gpu_available() {
@@ -84,21 +77,17 @@ pub fn subsystem_summary() -> String {
             "disabled"
         }
     ));
-
     summary.push_str("\nSupported features:\n");
     summary.push_str("  - Automatic GPU adapter selection\n");
     summary.push_str("  - Hardware-adaptive buffer pools\n");
     summary.push_str("  - Performance monitoring\n");
     summary.push_str("  - Dynamic quality adjustment\n");
     summary.push_str("  - Performance trap detection\n");
-
     summary
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_subsystem_summary() {
         let summary = subsystem_summary();

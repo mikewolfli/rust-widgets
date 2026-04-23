@@ -1,5 +1,4 @@
 //! Spin box widget for numeric input.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Spin box widget for integer input.
 pub struct SpinBox {
     base: BaseWidget,
@@ -22,7 +20,6 @@ pub struct SpinBox {
     pub value_changed: Signal1<i32>,
     pub editing_finished: GenericSignal,
 }
-
 impl SpinBox {
     /// Creates a spin box with default range 0-99.
     pub fn new(geometry: Rect) -> Self {
@@ -40,12 +37,10 @@ impl SpinBox {
             editing_finished: GenericSignal::new(),
         }
     }
-
     /// Returns current value.
     pub fn value(&self) -> i32 {
         self.value
     }
-
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
         let clamped = value.clamp(self.minimum, self.maximum);
@@ -55,12 +50,10 @@ impl SpinBox {
         self.value = clamped;
         self.value_changed.emit(self.value);
     }
-
     /// Returns minimum value.
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
-
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
         self.minimum = minimum;
@@ -69,12 +62,10 @@ impl SpinBox {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
         self.maximum
     }
-
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
         self.maximum = maximum;
@@ -83,64 +74,52 @@ impl SpinBox {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Sets range.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns single step value.
     pub fn single_step(&self) -> i32 {
         self.single_step
     }
-
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
     }
-
     /// Returns prefix text.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
-
     /// Sets prefix text.
     pub fn set_prefix(&mut self, prefix: String) {
         self.prefix = prefix;
     }
-
     /// Returns suffix text.
     pub fn suffix(&self) -> &str {
         &self.suffix
     }
-
     /// Sets suffix text.
     pub fn set_suffix(&mut self, suffix: String) {
         self.suffix = suffix;
     }
-
     /// Returns special value text.
     pub fn special_value_text(&self) -> Option<&str> {
         self.special_value_text.as_deref()
     }
-
     /// Sets special value text.
     pub fn set_special_value_text(&mut self, text: Option<String>) {
         self.special_value_text = text;
     }
-
     /// Returns whether wrapping is enabled.
     pub fn wrapping(&self) -> bool {
         self.wrapping
     }
-
     /// Sets wrapping state.
     pub fn set_wrapping(&mut self, wrapping: bool) {
         self.wrapping = wrapping;
     }
-
     /// Increments value by single step.
     pub fn step_up(&mut self) {
         let mut new_value = self.value + self.single_step;
@@ -153,7 +132,6 @@ impl SpinBox {
         }
         self.set_value(new_value);
     }
-
     /// Decrements value by single step.
     pub fn step_down(&mut self) {
         let mut new_value = self.value - self.single_step;
@@ -166,7 +144,6 @@ impl SpinBox {
         }
         self.set_value(new_value);
     }
-
     /// Returns display text.
     fn display_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
@@ -174,12 +151,10 @@ impl SpinBox {
                 return special.clone();
             }
         }
-
         let mut text = format!("{}{}{}", self.prefix, self.value, self.suffix);
         text
     }
 }
-
 // Implement Widget trait
 impl Widget for SpinBox {
     fn id(&self) -> ObjectId {
@@ -279,23 +254,20 @@ impl Widget for SpinBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for SpinBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 let rect = self.geometry();
-                let button_width = 20.0;
-
+                let button_width = 20;
                 if *button == 1 {
                     // Check if click is on up/down buttons
-                    if pos.x >= rect.x + rect.width - button_width * 2.0 {
-                        if pos.x < rect.x + rect.width - button_width {
+                    if pos.x >= rect.x + rect.width as i32 - button_width * 2 {
+                        if pos.x < rect.x + rect.width as i32 - button_width {
                             // Down button
                             self.step_down();
                         } else {
@@ -334,18 +306,14 @@ impl EventHandler for SpinBox {
         }
     }
 }
-
 impl Draw for SpinBox {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-        let padding = 4.0;
-        let button_width = 20.0;
+        let padding = 4;
+        let button_width = 20;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height / 2.0;
-
+        let text_y = rect.y + rect.height as i32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -354,7 +322,6 @@ impl Draw for SpinBox {
             rect.height,
             Color::from_rgb(255, 255, 255),
         );
-
         // Draw border
         context.draw_rect(
             rect.x,
@@ -363,11 +330,9 @@ impl Draw for SpinBox {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Draw up/down buttons
-        let down_button_x = rect.x + rect.width - button_width * 2.0;
-        let up_button_x = rect.x + rect.width - button_width;
-
+        let down_button_x = rect.x + rect.width as i32 - button_width * 2;
+        let up_button_x = rect.x + rect.width as i32 - button_width;
         // Down button
         context.fill_rect(
             down_button_x,
@@ -383,34 +348,16 @@ impl Draw for SpinBox {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Down arrow
-        let down_arrow_x = down_button_x + button_width / 2.0;
-        let down_arrow_y = rect.y + rect.height / 2.0;
-        let arrow_size = 4.0;
-
-        context.draw_line(
-            down_arrow_x - arrow_size,
-            down_arrow_y - arrow_size / 2.0,
-            down_arrow_x + arrow_size,
-            down_arrow_y - arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        let down_arrow_x = down_button_x + button_width / 2;
+        let down_arrow_y = rect.y + rect.height as i32 / 2;
+        let arrow_size = 4;
+        context.draw_line(Point::new(down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2), Point::new(down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            down_arrow_x + arrow_size,
-            down_arrow_y - arrow_size / 2.0,
-            down_arrow_x,
-            down_arrow_y + arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2), Point::new(down_arrow_x, down_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            down_arrow_x,
-            down_arrow_y + arrow_size / 2.0,
-            down_arrow_x - arrow_size,
-            down_arrow_y - arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(down_arrow_x, down_arrow_y + arrow_size / 2), Point::new(down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-
         // Up button
         context.fill_rect(
             up_button_x,
@@ -426,33 +373,15 @@ impl Draw for SpinBox {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Up arrow
-        let up_arrow_x = up_button_x + button_width / 2.0;
-        let up_arrow_y = rect.y + rect.height / 2.0;
-
-        context.draw_line(
-            up_arrow_x - arrow_size,
-            up_arrow_y + arrow_size / 2.0,
-            up_arrow_x + arrow_size,
-            up_arrow_y + arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        let up_arrow_x = up_button_x + button_width / 2;
+        let up_arrow_y = rect.y + rect.height as i32 / 2;
+        context.draw_line(Point::new(up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2), Point::new(up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            up_arrow_x + arrow_size,
-            up_arrow_y + arrow_size / 2.0,
-            up_arrow_x,
-            up_arrow_y - arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2), Point::new(up_arrow_x, up_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            up_arrow_x,
-            up_arrow_y - arrow_size / 2.0,
-            up_arrow_x - arrow_size,
-            up_arrow_y + arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(up_arrow_x, up_arrow_y - arrow_size / 2), Point::new(up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {

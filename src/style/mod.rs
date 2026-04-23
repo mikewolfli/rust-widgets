@@ -1,15 +1,11 @@
 //! Style system primitives.
-
 pub mod animation;
 pub mod gradient;
 pub mod theme_state;
-
 pub use animation::*;
 pub use gradient::*;
 pub use theme_state::*;
-
 use crate::core::{Color, Font};
-
 /// Insets for top/right/bottom/left spacing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeInsets {
@@ -22,7 +18,6 @@ pub struct EdgeInsets {
     /// Left inset.
     pub left: u32,
 }
-
 impl EdgeInsets {
     /// Create equal inset values on all sides.
     pub const fn all(value: u32) -> Self {
@@ -34,7 +29,6 @@ impl EdgeInsets {
         }
     }
 }
-
 /// Per-side padding values around widget content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Padding {
@@ -47,7 +41,6 @@ pub struct Padding {
     /// Left padding.
     pub left: u32,
 }
-
 impl Padding {
     /// Creates per-side padding values.
     pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
@@ -58,17 +51,14 @@ impl Padding {
             left,
         }
     }
-
     /// Creates equal padding on all sides.
     pub const fn all(value: u32) -> Self {
         Self::new(value, value, value, value)
     }
-
     /// Creates symmetric padding as `(vertical, horizontal)`.
     pub const fn symmetric(vertical: u32, horizontal: u32) -> Self {
         Self::new(vertical, horizontal, vertical, horizontal)
     }
-
     /// Creates padding from possibly-negative values, clamping each side to `>= 0`.
     pub fn normalized(top: i32, right: i32, bottom: i32, left: i32) -> Self {
         Self::new(
@@ -78,7 +68,6 @@ impl Padding {
             normalize_side(left),
         )
     }
-
     /// Converts to shared edge-insets representation.
     pub const fn to_insets(&self) -> EdgeInsets {
         EdgeInsets {
@@ -89,7 +78,6 @@ impl Padding {
         }
     }
 }
-
 /// Per-side outer spacing values around a widget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Margin {
@@ -102,7 +90,6 @@ pub struct Margin {
     /// Left margin.
     pub left: u32,
 }
-
 impl Margin {
     /// Creates per-side margin values.
     pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
@@ -113,17 +100,14 @@ impl Margin {
             left,
         }
     }
-
     /// Creates equal margin on all sides.
     pub const fn all(value: u32) -> Self {
         Self::new(value, value, value, value)
     }
-
     /// Creates symmetric margin as `(vertical, horizontal)`.
     pub const fn symmetric(vertical: u32, horizontal: u32) -> Self {
         Self::new(vertical, horizontal, vertical, horizontal)
     }
-
     /// Creates margin from possibly-negative values, clamping each side to `>= 0`.
     pub fn normalized(top: i32, right: i32, bottom: i32, left: i32) -> Self {
         Self::new(
@@ -133,7 +117,6 @@ impl Margin {
             normalize_side(left),
         )
     }
-
     /// Converts to shared edge-insets representation.
     pub const fn to_insets(&self) -> EdgeInsets {
         EdgeInsets {
@@ -144,31 +127,26 @@ impl Margin {
         }
     }
 }
-
 impl Default for Padding {
     fn default() -> Self {
         Self::all(0)
     }
 }
-
 impl Default for Margin {
     fn default() -> Self {
         Self::all(0)
     }
 }
-
 impl From<Padding> for EdgeInsets {
     fn from(value: Padding) -> Self {
         value.to_insets()
     }
 }
-
 impl From<Margin> for EdgeInsets {
     fn from(value: Margin) -> Self {
         value.to_insets()
     }
 }
-
 const fn normalize_side(value: i32) -> u32 {
     if value <= 0 {
         0
@@ -176,7 +154,6 @@ const fn normalize_side(value: i32) -> u32 {
         value as u32
     }
 }
-
 /// Drop-shadow style token.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadow {
@@ -189,7 +166,6 @@ pub struct Shadow {
     /// Shadow color.
     pub color: Color,
 }
-
 /// Resolved style values applied to a widget.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WidgetStyle {
@@ -212,11 +188,9 @@ pub struct WidgetStyle {
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn padding_and_margin_normalize_negative_values() {
         let padding = Padding::normalized(-1, 4, -99, 8);
@@ -224,7 +198,6 @@ mod tests {
         assert_eq!(padding, Padding::new(0, 4, 0, 8));
         assert_eq!(margin, Margin::new(0, 0, 3, 2));
     }
-
     #[test]
     fn padding_and_margin_support_symmetric_builders() {
         assert_eq!(Padding::symmetric(6, 2), Padding::new(6, 2, 6, 2));

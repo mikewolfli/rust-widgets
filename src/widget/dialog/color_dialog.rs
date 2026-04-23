@@ -1,5 +1,4 @@
 //! Color dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Color dialog for picking RGBA colors.
 pub struct ColorDialog {
     base: BaseWidget,
@@ -17,7 +15,6 @@ pub struct ColorDialog {
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
 }
-
 impl ColorDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -29,38 +26,31 @@ impl ColorDialog {
             rejected: GenericSignal::new(),
         }
     }
-
     pub fn current_color(&self) -> Color {
         self.current_color
     }
     pub fn options_alpha(&self) -> bool {
         self.options_alpha
     }
-
     pub fn set_current_color(&mut self, color: Color) {
         self.current_color = color;
         self.color_selected.emit(color);
     }
-
     pub fn set_options_alpha(&mut self, enabled: bool) {
         self.options_alpha = enabled;
     }
-
     pub fn accept(&mut self) {
         self.accepted.emit();
         self.hide();
     }
-
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();
     }
-
     pub fn get_color(&self) -> Color {
         self.current_color
     }
 }
-
 impl Widget for ColorDialog {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -159,7 +149,6 @@ impl Widget for ColorDialog {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ColorDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -178,12 +167,9 @@ impl EventHandler for ColorDialog {
         }
     }
 }
-
 impl Draw for ColorDialog {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         context.fill_rect(
             rect.x,
             rect.y,
@@ -202,23 +188,22 @@ impl Draw for ColorDialog {
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             "Select Color",
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
         // Color picker area (simplified)
-        let picker_rect_x = rect.x + 10.0;
-        let picker_rect_y = rect.y + 38.0;
-        let picker_w = rect.width - 20.0;
-        let picker_h = rect.height - 120.0;
+        let picker_rect_x = rect.x + 10;
+        let picker_rect_y = rect.y + 38;
+        let picker_w = rect.width - 20;
+        let picker_h = rect.height - 120;
         context.fill_rect(
             picker_rect_x,
             picker_rect_y,
@@ -233,61 +218,59 @@ impl Draw for ColorDialog {
             picker_h,
             Color::from_rgb(100, 100, 100),
         );
-
         // Color preview
-        let preview_y = rect.y + rect.height - 80.0;
-        context.fill_rect(rect.x + 10.0, preview_y, 60.0, 30.0, self.current_color);
+        let preview_y = rect.y + rect.height as i32 - 80;
+        context.fill_rect(Rect::new(rect.x + 10, preview_y, 60, 30), self.current_color);
         context.draw_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             preview_y,
-            60.0,
-            30.0,
+            60,
+            30,
             Color::from_rgb(0, 0, 0),
         );
         context.draw_text(
-            rect.x + 80.0,
-            preview_y + 15.0,
+            rect.x + 80,
+            preview_y + 15,
             "Current Color",
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // OK/Cancel buttons
-        let btn_y = rect.y + rect.height - 40.0;
-        let btn_w = 80.0;
+        let btn_y = rect.y + rect.height as i32 - 40;
+        let btn_w = 80;
         context.fill_rect(
-            rect.x + rect.width - 176.0,
+            rect.x + rect.width as i32 - 176,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width - 136.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 136,
+            btn_y + 14,
             "OK",
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width - 48.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 48,
+            btn_y + 14,
             "Cancel",
             &Font::default(),
             Color::from_rgb(0, 0, 0),

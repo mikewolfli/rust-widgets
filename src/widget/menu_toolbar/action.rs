@@ -1,5 +1,4 @@
 //! Action widget — represents a command or toggle that can be placed in menus and toolbars.
-
 use crate::core::{Color, Font, Point};
 use crate::core::{ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
@@ -8,7 +7,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Represents a user action (command, toggle, etc.) used in menus and toolbars.
 pub struct Action {
     base: BaseWidget,
@@ -23,7 +21,6 @@ pub struct Action {
     pub hovered: GenericSignal,
     pub changed: GenericSignal,
 }
-
 impl Action {
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
@@ -41,13 +38,11 @@ impl Action {
             changed: GenericSignal::new(),
         }
     }
-
     pub fn separator(geometry: Rect) -> Self {
         let mut a = Self::new("", geometry);
         a.separator = true;
         a
     }
-
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -66,22 +61,18 @@ impl Action {
     pub fn is_separator(&self) -> bool {
         self.separator
     }
-
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.changed.emit();
     }
-
     pub fn set_icon_text(&mut self, text: impl Into<String>) {
         self.icon_text = text.into();
         self.changed.emit();
     }
-
     pub fn set_shortcut(&mut self, shortcut: impl Into<String>) {
         self.shortcut = shortcut.into();
         self.changed.emit();
     }
-
     pub fn set_checkable(&mut self, checkable: bool) {
         self.checkable = checkable;
         if !checkable {
@@ -89,7 +80,6 @@ impl Action {
         }
         self.changed.emit();
     }
-
     pub fn set_checked(&mut self, checked: bool) {
         if self.checkable && self.checked != checked {
             self.checked = checked;
@@ -97,7 +87,6 @@ impl Action {
             self.changed.emit();
         }
     }
-
     pub fn trigger(&mut self) {
         if self.checkable {
             self.set_checked(!self.checked);
@@ -105,7 +94,6 @@ impl Action {
         self.triggered.emit(self.checked);
     }
 }
-
 impl Widget for Action {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -204,7 +192,6 @@ impl Widget for Action {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Action {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -217,9 +204,8 @@ impl EventHandler for Action {
         }
     }
 }
-
 impl Draw for Action {
-    fn draw(&self, _context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Actions are drawn by their parent menu/toolbar, not directly.
     }
 }

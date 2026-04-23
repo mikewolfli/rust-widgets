@@ -1,5 +1,4 @@
 //! Platform abstraction for desktop/embedded/mobile families.
-
 pub mod harmony;
 pub mod linux;
 #[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
@@ -11,22 +10,16 @@ pub mod mobile;
 mod state;
 #[cfg(target_os = "windows")]
 pub mod windows;
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-
 use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
-
 #[cfg(target_os = "windows")]
 use crate::platform::windows::WindowsPlatform;
-
 #[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
 use crate::platform::macos::MacOSPlatform;
-
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
-
 /// Typed widget trigger kinds surfaced by platform backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WidgetTriggerKind {
@@ -41,9 +34,7 @@ pub enum WidgetTriggerKind {
     /// Widget/window closed lifecycle trigger.
     Closed = 4,
 }
-
 use serde::{Deserialize, Serialize};
-
 /// Typed widget trigger event with source widget id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidgetTriggerEvent {
@@ -52,7 +43,6 @@ pub struct WidgetTriggerEvent {
     /// Normalized trigger kind for cross-platform consumption.
     pub kind: WidgetTriggerKind,
 }
-
 /// Drag-and-drop payload event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DropEvent {
@@ -65,7 +55,6 @@ pub struct DropEvent {
     /// Opaque drag payload bytes.
     pub payload: Vec<u8>,
 }
-
 /// Supported desktop backend families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopBackend {
@@ -78,7 +67,6 @@ pub enum DesktopBackend {
     /// Harmony desktop backend.
     HarmonyDesktop,
 }
-
 /// Supported mobile backend families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobileBackend {
@@ -89,7 +77,6 @@ pub enum MobileBackend {
     /// Harmony mobile backend.
     HarmonyMobile,
 }
-
 /// Cross-platform runtime capability flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformCapabilities {
@@ -104,7 +91,6 @@ pub struct PlatformCapabilities {
     /// Typed widget trigger event support.
     pub typed_widget_trigger: bool,
 }
-
 /// Native-runtime capability contract used by desktop-oriented negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeCapabilityContract {
@@ -119,7 +105,6 @@ pub struct NativeCapabilityContract {
     /// Whether typed widget triggers are supported.
     pub typed_widget_trigger: bool,
 }
-
 /// Embedded-runtime capability contract used by constrained-profile negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedCapabilityContract {
@@ -130,14 +115,12 @@ pub struct EmbeddedCapabilityContract {
     /// Whether typed widget triggers are supported.
     pub typed_widget_trigger: bool,
 }
-
 /// Runtime capability negotiation result split by profile contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityContract {
     Native(NativeCapabilityContract),
     Embedded(EmbeddedCapabilityContract),
 }
-
 impl NativeCapabilityContract {
     fn from_platform_caps(caps: PlatformCapabilities) -> Self {
         Self {
@@ -149,7 +132,6 @@ impl NativeCapabilityContract {
         }
     }
 }
-
 /// Platform backend contract used by widget/runtime layers.
 pub trait Platform: Send + Sync {
     /// Returns backend identifier string.
@@ -390,53 +372,43 @@ pub trait Platform: Send + Sync {
     fn is_widget_enabled(&self, widget_id: ObjectId) -> bool;
     fn set_widget_visible(&self, widget_id: ObjectId, visible: bool);
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool;
-
     /// Enable or disable IME input handling for a widget.
     fn set_widget_ime_enabled(&self, _widget_id: ObjectId, _enabled: bool) -> bool {
         false
     }
-
     /// Query IME enabled state for a widget.
     fn is_widget_ime_enabled(&self, _widget_id: ObjectId) -> bool {
         false
     }
-
     /// Set accessibility name/label for a widget.
     fn set_widget_accessibility_name(&self, _widget_id: ObjectId, _name: &str) -> bool {
         false
     }
-
     /// Read accessibility name/label for a widget.
     fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String {
         String::new()
     }
-
     /// Set plain text clipboard content.
     fn set_clipboard_text(&self, _text: &str) -> bool {
         false
     }
-
     /// Read plain text clipboard content.
     fn get_clipboard_text(&self) -> String {
         String::new()
     }
-
     /// Start a drag operation from source widget.
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
         false
     }
-
     /// Poll next drop event if available.
     fn poll_drop_event(&self) -> Option<DropEvent> {
         None
     }
-
     /// Inject drop event into backend queue.
     fn inject_drop_event(&self, _event: DropEvent) -> bool {
         false
     }
 }
-
 /// Optional mobile-specific extension contract.
 pub trait MobilePlatformExtension: Send + Sync {
     /// Returns the active mobile backend family.
@@ -444,7 +416,6 @@ pub trait MobilePlatformExtension: Send + Sync {
     /// Attaches runtime to an externally provided native view handle.
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
 }
-
 #[derive(Default)]
 struct WidgetState {
     text: String,
@@ -457,11 +428,9 @@ struct WidgetState {
     width: u32,
     height: u32,
 }
-
 struct MenuNodeState {
     text: String,
 }
-
 /// In-memory test/dummy backend implementing the `Platform` contract.
 pub struct StubPlatform {
     backend: &'static str,
@@ -485,7 +454,6 @@ pub struct StubPlatform {
     /// In-memory list-box selected index by logical list widget id.
     list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
 }
-
 impl StubPlatform {
     /// Creates a new in-memory stub backend for tests and demos.
     pub fn new(backend: &'static str, family: PlatformFamily) -> Self {
@@ -505,15 +473,12 @@ impl StubPlatform {
             list_box_selection: Mutex::new(HashMap::new()),
         }
     }
-
     fn new_id(&self) -> ObjectId {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
-
     fn is_embedded_profile(&self) -> bool {
         matches!(self.family, PlatformFamily::Embedded)
     }
-
     fn create_widget_state(&self, text: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let id = self.new_id();
         self.widgets.lock().expect("platform lock poisoned").insert(
@@ -532,7 +497,6 @@ impl StubPlatform {
         );
         id
     }
-
     fn embedded_unsupported_id(&self, _name: &str) -> ObjectId {
         // Return a dummy id for unsupported features in embedded profile
         0
@@ -542,7 +506,6 @@ impl StubPlatform {
         false
     }
 }
-
 impl Platform for StubPlatform {
     fn backend_name(&self) -> &'static str {
         self.backend
@@ -553,11 +516,9 @@ impl Platform for StubPlatform {
     fn init(&self) {}
     fn run(&self) {}
     fn quit(&self) {}
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.create_widget_state(title, x, y, width, height)
     }
-
     fn create_button(
         &self,
         _parent: ObjectId,
@@ -569,7 +530,6 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         self.create_widget_state(text, x, y, width, height)
     }
-
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -593,7 +553,6 @@ impl Platform for StubPlatform {
             );
         id
     }
-
     fn create_checkbox(
         &self,
         parent: ObjectId,
@@ -606,7 +565,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state(text, x, y, width, height)
     }
-
     fn create_line_edit(
         &self,
         parent: ObjectId,
@@ -619,7 +577,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state(text, x, y, width, height)
     }
-
     fn create_label(
         &self,
         parent: ObjectId,
@@ -632,7 +589,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state(text, x, y, width, height)
     }
-
     fn create_radio_button(
         &self,
         parent: ObjectId,
@@ -645,12 +601,10 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state(text, x, y, width, height)
     }
-
     fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let _ = parent;
         self.create_widget_state("Slider", x, y, width, height)
     }
-
     fn create_progress_bar(
         &self,
         parent: ObjectId,
@@ -662,7 +616,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state("ProgressBar", x, y, width, height)
     }
-
     fn create_combo_box(
         &self,
         parent: ObjectId,
@@ -682,7 +635,6 @@ impl Platform for StubPlatform {
             .insert(id, None);
         id
     }
-
     fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool {
         let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
         let list = match items.get_mut(&combo_box) {
@@ -692,7 +644,6 @@ impl Platform for StubPlatform {
         list.push(_text.to_string());
         true
     }
-
     fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
         let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
         if let Some(list) = items.get_mut(&combo_box) {
@@ -705,7 +656,6 @@ impl Platform for StubPlatform {
         }
         false
     }
-
     fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
         let items = self.combo_box_items.lock().expect("platform lock poisoned");
         let len = match items.get(&combo_box) {
@@ -722,7 +672,6 @@ impl Platform for StubPlatform {
             .insert(combo_box, Some(index));
         true
     }
-
     fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
         self.combo_box_selection
             .lock()
@@ -730,7 +679,6 @@ impl Platform for StubPlatform {
             .get(&combo_box)
             .and_then(|index| *index)
     }
-
     fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
         self.combo_box_items
             .lock()
@@ -739,7 +687,6 @@ impl Platform for StubPlatform {
             .map(|items| items.len())
             .unwrap_or(0)
     }
-
     fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
         self.combo_box_items
             .lock()
@@ -747,7 +694,6 @@ impl Platform for StubPlatform {
             .get(&combo_box)
             .and_then(|items| items.get(index).cloned())
     }
-
     fn create_list_box(
         &self,
         parent: ObjectId,
@@ -767,7 +713,6 @@ impl Platform for StubPlatform {
             .insert(id, None);
         id
     }
-
     fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
         let mut items = self.list_box_items.lock().expect("platform lock poisoned");
         let list = match items.get_mut(&list_box) {
@@ -777,7 +722,6 @@ impl Platform for StubPlatform {
         list.push(text.to_string());
         true
     }
-
     fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
         let mut items = self.list_box_items.lock().expect("platform lock poisoned");
         let list = match items.get_mut(&list_box) {
@@ -801,7 +745,6 @@ impl Platform for StubPlatform {
         }
         true
     }
-
     fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
         let mut items = self.list_box_items.lock().expect("platform lock poisoned");
         if let Some(list) = items.get_mut(&list_box) {
@@ -814,7 +757,6 @@ impl Platform for StubPlatform {
         }
         false
     }
-
     fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
         let items = self.list_box_items.lock().expect("platform lock poisoned");
         let len = match items.get(&list_box) {
@@ -831,7 +773,6 @@ impl Platform for StubPlatform {
             .insert(list_box, Some(index));
         true
     }
-
     fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
         self.list_box_selection
             .lock()
@@ -839,7 +780,6 @@ impl Platform for StubPlatform {
             .get(&list_box)
             .and_then(|index| *index)
     }
-
     fn list_box_item_count(&self, list_box: ObjectId) -> usize {
         self.list_box_items
             .lock()
@@ -848,7 +788,6 @@ impl Platform for StubPlatform {
             .map(|items| items.len())
             .unwrap_or(0)
     }
-
     fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
         self.list_box_items
             .lock()
@@ -856,12 +795,10 @@ impl Platform for StubPlatform {
             .get(&list_box)
             .and_then(|items| items.get(index).cloned())
     }
-
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let _ = parent;
         self.create_widget_state("Panel", x, y, width, height)
     }
-
     fn create_menu(
         &self,
         parent: ObjectId,
@@ -886,7 +823,6 @@ impl Platform for StubPlatform {
             );
         id
     }
-
     fn create_tool_bar(
         &self,
         parent: ObjectId,
@@ -900,7 +836,6 @@ impl Platform for StubPlatform {
         }
         self.create_button(parent, "ToolBar", x, y, width, height)
     }
-
     fn create_status_bar(
         &self,
         parent: ObjectId,
@@ -915,7 +850,6 @@ impl Platform for StubPlatform {
         }
         self.create_button(parent, text, x, y, width, height)
     }
-
     fn create_message_box(
         &self,
         parent: ObjectId,
@@ -929,7 +863,6 @@ impl Platform for StubPlatform {
         let _ = (parent, title, text);
         self.create_widget_state("MessageBox", x, y, width, height)
     }
-
     fn create_file_dialog(
         &self,
         parent: ObjectId,
@@ -941,7 +874,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state("FileDialog", x, y, width, height)
     }
-
     fn create_color_dialog(
         &self,
         parent: ObjectId,
@@ -953,7 +885,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state("ColorDialog", x, y, width, height)
     }
-
     fn create_font_dialog(
         &self,
         parent: ObjectId,
@@ -965,7 +896,6 @@ impl Platform for StubPlatform {
         let _ = parent;
         self.create_widget_state("FontDialog", x, y, width, height)
     }
-
     fn create_spin_box(
         &self,
         _parent: ObjectId,
@@ -976,7 +906,6 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         self.create_widget_state("ComboBox", x, y, width, height)
     }
-
     fn create_list_view(
         &self,
         _parent: ObjectId,
@@ -987,7 +916,6 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         self.create_widget_state("ListBox", x, y, width, height)
     }
-
     fn create_scroll_area(
         &self,
         _parent: ObjectId,
@@ -998,7 +926,6 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         self.create_widget_state("Panel", x, y, width, height)
     }
-
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_bool("attach_menu_bar_to_window");
@@ -1006,7 +933,6 @@ impl Platform for StubPlatform {
         let widgets = self.widgets.lock().expect("platform lock poisoned");
         widgets.contains_key(&window) && widgets.contains_key(&menu_bar)
     }
-
     fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("menu_add_item");
@@ -1024,12 +950,10 @@ impl Platform for StubPlatform {
         let _ = shortcut;
         id
     }
-
     fn poll_menu_triggered(&self) -> Option<ObjectId> {
         let mut events = self.menu_events.lock().expect("platform lock poisoned");
         events.pop_front()
     }
-
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_bool("inject_menu_trigger");
@@ -1049,19 +973,16 @@ impl Platform for StubPlatform {
             .push_back(menu_item_id);
         true
     }
-
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
         self.poll_widget_trigger_event()
             .map(|event| event.widget_id)
     }
-
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.widget_events
             .lock()
             .expect("platform lock poisoned")
             .pop_front()
     }
-
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
         // Accept only known widget ids to keep queue semantics deterministic.
         if !self
@@ -1078,7 +999,6 @@ impl Platform for StubPlatform {
             .push_back(WidgetTriggerEvent { widget_id, kind });
         true
     }
-
     fn show_widget(&self, widget_id: ObjectId) {
         if let Some(widget) = self
             .widgets
@@ -1089,7 +1009,6 @@ impl Platform for StubPlatform {
             widget.visible = true;
         }
     }
-
     fn hide_widget(&self, widget_id: ObjectId) {
         if let Some(widget) = self
             .widgets
@@ -1100,7 +1019,6 @@ impl Platform for StubPlatform {
             widget.visible = false;
         }
     }
-
     fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
         if let Some(widget) = self
             .widgets
@@ -1114,7 +1032,6 @@ impl Platform for StubPlatform {
             widget.height = height;
         }
     }
-
     fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
         if let Some(widget) = self
             .widgets
@@ -1133,7 +1050,6 @@ impl Platform for StubPlatform {
             node.text = text.to_string();
         }
     }
-
     fn get_widget_text(&self, widget_id: ObjectId) -> String {
         self.widgets
             .lock()
@@ -1142,7 +1058,6 @@ impl Platform for StubPlatform {
             .map(|widget| widget.text.clone())
             .unwrap_or_default()
     }
-
     fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
         if let Some(widget) = self
             .widgets
@@ -1153,7 +1068,6 @@ impl Platform for StubPlatform {
             widget.enabled = enabled;
         }
     }
-
     fn is_widget_enabled(&self, widget_id: ObjectId) -> bool {
         self.widgets
             .lock()
@@ -1162,7 +1076,6 @@ impl Platform for StubPlatform {
             .map(|widget| widget.enabled)
             .unwrap_or(false)
     }
-
     fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
         if let Some(widget) = self
             .widgets
@@ -1173,7 +1086,6 @@ impl Platform for StubPlatform {
             widget.visible = visible;
         }
     }
-
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
         self.widgets
             .lock()
@@ -1182,7 +1094,6 @@ impl Platform for StubPlatform {
             .map(|widget| widget.visible)
             .unwrap_or(false)
     }
-
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
         if let Some(widget) = self
             .widgets
@@ -1195,7 +1106,6 @@ impl Platform for StubPlatform {
         }
         false
     }
-
     fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
         self.widgets
             .lock()
@@ -1204,7 +1114,6 @@ impl Platform for StubPlatform {
             .map(|widget| widget.ime_enabled)
             .unwrap_or(false)
     }
-
     fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
         if let Some(widget) = self
             .widgets
@@ -1217,7 +1126,6 @@ impl Platform for StubPlatform {
         }
         false
     }
-
     fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
         self.widgets
             .lock()
@@ -1226,7 +1134,6 @@ impl Platform for StubPlatform {
             .map(|widget| widget.accessibility_name.clone())
             .unwrap_or_default()
     }
-
     fn set_clipboard_text(&self, text: &str) -> bool {
         *self
             .clipboard_text
@@ -1234,14 +1141,12 @@ impl Platform for StubPlatform {
             .expect("platform clipboard lock poisoned") = text.to_string();
         true
     }
-
     fn get_clipboard_text(&self) -> String {
         self.clipboard_text
             .lock()
             .expect("platform clipboard lock poisoned")
             .clone()
     }
-
     fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         if !self
             .widgets
@@ -1251,7 +1156,6 @@ impl Platform for StubPlatform {
         {
             return false;
         }
-
         self.drop_events
             .lock()
             .expect("platform drop lock poisoned")
@@ -1263,14 +1167,12 @@ impl Platform for StubPlatform {
             });
         true
     }
-
     fn poll_drop_event(&self) -> Option<DropEvent> {
         self.drop_events
             .lock()
             .expect("platform drop lock poisoned")
             .pop_front()
     }
-
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         if !self
             .widgets
@@ -1280,7 +1182,6 @@ impl Platform for StubPlatform {
         {
             return false;
         }
-
         self.drop_events
             .lock()
             .expect("platform drop lock poisoned")
@@ -1288,7 +1189,6 @@ impl Platform for StubPlatform {
         true
     }
 }
-
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(StubPlatform::new(
@@ -1296,12 +1196,10 @@ fn create_native_platform() -> Box<dyn Platform> {
         PlatformFamily::Embedded,
     ))
 }
-
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(WindowsPlatform::new())
 }
-
 /// Select objc2 preview backend when migration feature is enabled on macOS.
 #[cfg(all(
     target_os = "macos",
@@ -1311,7 +1209,6 @@ fn create_native_platform() -> Box<dyn Platform> {
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(new())
 }
-
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
 #[cfg(all(
     target_os = "macos",
@@ -1321,12 +1218,10 @@ fn create_native_platform() -> Box<dyn Platform> {
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(MacOSPlatform::new())
 }
-
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
 }
-
 #[cfg(all(
     not(feature = "embedded"),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
@@ -1337,14 +1232,11 @@ fn create_native_platform() -> Box<dyn Platform> {
         PlatformFamily::Desktop,
     ))
 }
-
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
-
 /// Returns the process-global platform backend instance.
 pub fn get_platform() -> &'static dyn Platform {
     PLATFORM.get_or_init(create_native_platform).as_ref()
 }
-
 /// Initializes the platform backend.
 pub fn init() {
     get_platform().init();
@@ -1361,7 +1253,6 @@ pub fn quit() {
 pub fn capabilities() -> PlatformCapabilities {
     get_platform().capabilities()
 }
-
 /// Runtime GUI mode contract used by demos/tools to explain visible behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeGuiMode {
@@ -1370,7 +1261,6 @@ pub enum RuntimeGuiMode {
     /// Backend is preview/stub-like and may not render native windows.
     PreviewOrStub,
 }
-
 /// Resolve GUI mode for a specific platform backend.
 pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
     match platform.backend_name() {
@@ -1391,29 +1281,24 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
         _ => RuntimeGuiMode::PreviewOrStub,
     }
 }
-
 /// Resolve GUI mode for the active process-global backend.
 pub fn runtime_gui_mode() -> RuntimeGuiMode {
     runtime_gui_mode_for(get_platform())
 }
-
 /// Returns logical DPI scale factor for the active backend.
 pub fn dpi_scale_factor() -> f32 {
     get_platform().dpi_scale_factor()
 }
-
 #[cfg(feature = "mobile-api")]
 /// Returns the mobile backend name.
 pub fn mobile_backend_name() -> &'static str {
     mobile::get_mobile_platform().backend_name()
 }
-
 #[cfg(feature = "mobile-api")]
 /// Attaches the mobile backend to a native view handle.
 pub fn mobile_attach_to_native_view(native_handle: usize) -> bool {
     mobile::get_mobile_platform().attach_to_native_view(native_handle)
 }
-
 fn fallback_native_capability_contract() -> NativeCapabilityContract {
     NativeCapabilityContract {
         dpi_scaling: true,
@@ -1423,7 +1308,6 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
         typed_widget_trigger: true,
     }
 }
-
 fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
     EmbeddedCapabilityContract {
         fixed_dpi: true,
@@ -1431,7 +1315,6 @@ fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
         typed_widget_trigger: true,
     }
 }
-
 /// Negotiate capabilities using profile-specific contracts with deterministic fallbacks.
 pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContract {
     match profile {
@@ -1449,11 +1332,9 @@ pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContr
             )),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn consistency_menu_trigger_roundtrip() {
         let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
@@ -1461,17 +1342,14 @@ mod tests {
         let menu_bar = platform.create_menu_bar(window, 0, 0, 100, 20);
         let menu = platform.create_menu(menu_bar, "File", 0, 0, 50, 20);
         let item = platform.menu_add_item(menu, "Open", None);
-
         assert!(platform.inject_menu_trigger(item));
         assert_eq!(platform.poll_menu_triggered(), Some(item));
     }
-
     #[test]
     fn consistency_typed_widget_trigger_roundtrip() {
         let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let window = platform.create_window("w", 0, 0, 100, 100);
         let button = platform.create_button(window, "btn", 0, 0, 80, 30);
-
         assert!(platform.inject_widget_trigger_event(button, WidgetTriggerKind::Clicked));
         assert_eq!(
             platform.poll_widget_trigger_event(),
@@ -1481,25 +1359,21 @@ mod tests {
             })
         );
     }
-
     #[test]
     fn consistency_compat_poll_widget_triggered_is_single_delivery_shim() {
         let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let window = platform.create_window("w", 0, 0, 100, 100);
         let button = platform.create_button(window, "btn", 0, 0, 80, 30);
-
         assert!(platform.inject_widget_trigger_event(button, WidgetTriggerKind::Clicked));
         assert_eq!(platform.poll_widget_triggered(), Some(button));
         assert_eq!(platform.poll_widget_triggered(), None);
         assert_eq!(platform.poll_widget_trigger_event(), None);
     }
-
     #[test]
     fn consistency_list_box_data_path_roundtrip() {
         let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let window = platform.create_window("w", 0, 0, 100, 100);
         let list_box = platform.create_list_box(window, 0, 0, 120, 80);
-
         assert!(platform.list_box_add_item(list_box, "A"));
         assert!(platform.list_box_add_item(list_box, "B"));
         assert_eq!(platform.list_box_item_count(list_box), 2);
@@ -1507,33 +1381,26 @@ mod tests {
             platform.list_box_item_text(list_box, 1).as_deref(),
             Some("B")
         );
-
         assert!(platform.list_box_set_current_index(list_box, 1));
         assert_eq!(platform.list_box_current_index(list_box), Some(1));
-
         assert!(platform.list_box_remove_item(list_box, 0));
         assert_eq!(platform.list_box_item_count(list_box), 1);
         assert_eq!(platform.list_box_current_index(list_box), Some(0));
-
         assert!(platform.list_box_clear_items(list_box));
         assert_eq!(platform.list_box_item_count(list_box), 0);
         assert_eq!(platform.list_box_current_index(list_box), None);
     }
-
     #[test]
     fn consistency_combo_box_data_and_event_path_roundtrip() {
         let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let window = platform.create_window("w", 0, 0, 100, 100);
         let combo = platform.create_combo_box(window, 0, 0, 120, 24);
-
         assert!(platform.combo_box_add_item(combo, "A"));
         assert!(platform.combo_box_add_item(combo, "B"));
         assert_eq!(platform.combo_box_item_count(combo), 2);
         assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("A"));
-
         assert!(platform.combo_box_set_current_index(combo, 1));
         assert_eq!(platform.combo_box_current_index(combo), Some(1));
-
         assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
         assert_eq!(
             platform.poll_widget_trigger_event(),
@@ -1542,29 +1409,23 @@ mod tests {
                 kind: WidgetTriggerKind::SelectionChanged,
             })
         );
-
         assert!(platform.combo_box_clear_items(combo));
         assert_eq!(platform.combo_box_item_count(combo), 0);
         assert_eq!(platform.combo_box_current_index(combo), None);
     }
-
     #[test]
     fn consistency_capability_contract_by_profile() {
         let desktop = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
         let embedded = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
-
         assert!(desktop.native_capability_contract().is_some());
         assert!(desktop.embedded_capability_contract().is_none());
-
         assert!(embedded.native_capability_contract().is_none());
         assert!(embedded.embedded_capability_contract().is_some());
     }
-
     #[test]
     fn embedded_profile_core_controls_have_non_placeholder_create_paths() {
         let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
         let window = platform.create_window("w", 0, 0, 200, 120);
-
         assert_ne!(window, 0);
         assert_ne!(platform.create_button(window, "b", 0, 0, 80, 24), 0);
         assert_ne!(platform.create_checkbox(window, "c", 0, 0, 80, 24), 0);
@@ -1577,12 +1438,10 @@ mod tests {
         assert_ne!(platform.create_combo_box(window, 0, 0, 120, 24), 0);
         assert_ne!(platform.create_list_box(window, 0, 0, 120, 80), 0);
     }
-
     #[test]
     fn embedded_profile_host_controls_are_explicitly_unsupported() {
         let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
         let window = platform.create_window("w", 0, 0, 200, 120);
-
         let menu_bar = platform.create_menu_bar(window, 0, 0, 200, 24);
         assert_eq!(menu_bar, 0);
         assert_eq!(platform.create_menu(window, "File", 0, 0, 80, 24), 0);
@@ -1595,12 +1454,10 @@ mod tests {
         assert!(!platform.attach_menu_bar_to_window(window, menu_bar));
         assert!(!platform.inject_menu_trigger(1));
     }
-
     #[test]
     fn embedded_profile_combo_list_state_event_data_roundtrip() {
         let platform = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
         let window = platform.create_window("w", 0, 0, 220, 160);
-
         let combo = platform.create_combo_box(window, 0, 0, 120, 24);
         assert_ne!(combo, 0);
         assert!(platform.combo_box_add_item(combo, "A"));
@@ -1609,7 +1466,6 @@ mod tests {
         assert_eq!(platform.combo_box_current_index(combo), Some(1));
         assert_eq!(platform.combo_box_item_count(combo), 2);
         assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("A"));
-
         assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
         assert_eq!(
             platform.poll_widget_trigger_event(),
@@ -1618,7 +1474,6 @@ mod tests {
                 kind: WidgetTriggerKind::SelectionChanged,
             })
         );
-
         let list = platform.create_list_box(window, 0, 30, 120, 80);
         assert_ne!(list, 0);
         assert!(platform.list_box_add_item(list, "L1"));
@@ -1627,7 +1482,6 @@ mod tests {
         assert_eq!(platform.list_box_current_index(list), Some(0));
         assert_eq!(platform.list_box_item_count(list), 2);
         assert_eq!(platform.list_box_item_text(list, 1).as_deref(), Some("L2"));
-
         assert!(platform.inject_widget_trigger_event(list, WidgetTriggerKind::SelectionChanged));
         assert_eq!(
             platform.poll_widget_trigger_event(),

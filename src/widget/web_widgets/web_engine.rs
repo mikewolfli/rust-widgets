@@ -3,7 +3,6 @@ use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
-
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
     base: BaseWidget,
@@ -38,7 +37,17 @@ pub struct WebEngineView {
     /// Emitted when the page is destroyed.
     pub page_destroyed: Signal1<ObjectId>,
 }
-
+// Backward-compatibility aliases for render pipeline symbol imports.
+pub type WebEnginePage = WebEngineView;
+pub type WebEngine = WebEngineView;
+pub type WebEngineSettings = WebEngineView;
+pub type WebEngineDownloadItem = WebEngineView;
+pub type WebEngineCookieStore = WebEngineView;
+pub type WebEngineWebChannel = WebEngineView;
+pub type WebEngineFindTextResult = WebEngineView;
+pub type WebEngineNotification = WebEngineView;
+pub type WebEngineScriptDialog = WebEngineView;
+pub type WebEngineContextMenuRequest = WebEngineView;
 impl WebEngineView {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -64,7 +73,6 @@ impl WebEngineView {
             page_destroyed: Signal1::new(),
         }
     }
-
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -89,7 +97,6 @@ impl WebEngineView {
     pub fn is_private_browsing(&self) -> bool {
         self.private_browsing
     }
-
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url.clone();
@@ -104,7 +111,6 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-
     pub fn load_html(&mut self, _html: &str) {
         // In a real implementation, this would load the HTML
         // For now, we'll just simulate it
@@ -119,7 +125,6 @@ impl WebEngineView {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-
     pub fn load_data(&mut self, _data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
         // In a real implementation, this would load the data
         // For now, we'll just simulate it
@@ -134,7 +139,6 @@ impl WebEngineView {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-
     pub fn go_back(&mut self) {
         if self.can_go_back {
             // In a real implementation, this would navigate back
@@ -145,7 +149,6 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-
     pub fn go_forward(&mut self) {
         if self.can_go_forward {
             // In a real implementation, this would navigate forward
@@ -156,7 +159,6 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
             // In a real implementation, this would reload the page
@@ -168,7 +170,6 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-
     pub fn stop(&mut self) {
         if self.loading {
             // In a real implementation, this would stop loading
@@ -178,31 +179,25 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-
     pub fn evaluate_javascript(&mut self, _script: &str) -> Result<String, String> {
         // In a real implementation, this would evaluate the JavaScript
         // For now, we'll just return a placeholder
         Ok("Result".to_string())
     }
-
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.javascript_enabled = enabled;
     }
-
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.plugins_enabled = enabled;
     }
-
     pub fn set_private_browsing(&mut self, enabled: bool) {
         self.private_browsing = enabled;
     }
-
     fn update_navigation_state(&self) {
         self.navigation_state_changed
             .emit((self.can_go_back, self.can_go_forward));
     }
 }
-
 impl Widget for WebEngineView {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -301,7 +296,6 @@ impl Widget for WebEngineView {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for WebEngineView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

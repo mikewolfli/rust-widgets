@@ -1,13 +1,10 @@
 //! Table widget.
-
 use crate::core::Rect;
-use crate::object::Object;
+use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::base::{BaseWidget, Widget, WidgetKind};
-use crate::widget::base_widgets::frame::Frame;
 use std::collections::HashMap;
 use std::sync::Arc;
-
 /// Table model abstraction for table-like views.
 pub trait TableModel: Send + Sync {
     /// Number of rows exposed by model.
@@ -16,13 +13,11 @@ pub trait TableModel: Send + Sync {
     fn column_count(&self) -> usize;
     /// Data for row and column index, if present.
     fn data(&self, row: usize, column: usize) -> Option<String>;
-
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
     }
 }
-
 /// Item delegate for custom display/editing.
 pub trait ItemDelegate: Send + Sync {
     /// Creates editor for given cell.
@@ -37,7 +32,6 @@ pub trait ItemDelegate: Send + Sync {
     /// Gets editor data.
     fn get_editor_data(&self, editor: &dyn Widget, row: usize, column: usize) -> Option<String>;
 }
-
 /// Table widget with model/view helpers and selection state.
 pub struct TableWidget {
     base: BaseWidget,
@@ -60,7 +54,6 @@ pub struct TableWidget {
     /// Emitted when focused row changes.
     pub focused_row_changed: Signal1<Option<usize>>,
 }
-
 impl TableWidget {
     /// Creates an empty table widget.
     pub fn new(geometry: Rect) -> Self {
@@ -77,7 +70,6 @@ impl TableWidget {
             focused_row_changed: Signal1::new(),
         }
     }
-
     /// Binds an external table model.
     pub fn set_model(&mut self, model: Arc<dyn TableModel>) {
         self.model_connection_scope = ConnectionScope::new();
@@ -94,22 +86,18 @@ impl TableWidget {
         self.base.request_layout();
         self.base.request_redraw();
     }
-
     /// Returns visible row count.
     pub fn row_count(&self) -> usize {
         self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
     }
-
     /// Returns visible column count.
     pub fn column_count(&self) -> usize {
         self.model.as_ref().map(|m| m.column_count()).unwrap_or(0)
     }
-
     /// Returns item text by row and column index.
     pub fn item(&self, row: usize, column: usize) -> Option<String> {
         self.model.as_ref().and_then(|m| m.data(row, column))
     }
-
     /// Select one row in the current view projection.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
@@ -121,12 +109,10 @@ impl TableWidget {
             false
         }
     }
-
     /// Clear current row selection.
     pub fn clear_selection(&mut self) {
         self.selection.clear();
     }
-
     /// Sets focused row in current projection.
     pub fn set_focused_row(&mut self, row: usize) -> bool {
         if row >= self.row_count() {
@@ -139,7 +125,6 @@ impl TableWidget {
         self.focused_row_changed.emit(self.focused_row);
         true
     }
-
     /// Clears focused row.
     pub fn clear_focused_row(&mut self) {
         if self.focused_row.is_none() {
@@ -148,19 +133,16 @@ impl TableWidget {
         self.focused_row = None;
         self.focused_row_changed.emit(None);
     }
-
     /// Returns focused row when still visible in projection.
     pub fn focused_row(&self) -> Option<usize> {
         self.focused_row.filter(|row| *row < self.row_count())
     }
-
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
         self.selection
             .current_row()
             .filter(|row| *row < self.row_count())
     }
-
     /// All selected rows in stable order.
     pub fn selected_rows(&self) -> Vec<usize> {
         self.selection
@@ -169,7 +151,6 @@ impl TableWidget {
             .filter(|row| *row < self.row_count())
             .collect()
     }
-
     /// Sets row selection mode.
     pub fn set_selection_mode(
         &mut self,
@@ -177,57 +158,60 @@ impl TableWidget {
     ) {
         self.selection.set_mode(mode);
     }
-
     /// Returns current selection mode.
     pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
         self.selection.mode()
     }
-
     /// Sets column width.
     pub fn set_column_width(&mut self, column: usize, width: u32) {
         self.column_widths.insert(column, width);
         self.base.request_layout();
     }
-
     /// Sets row height.
     pub fn set_row_height(&mut self, row: usize, height: u32) {
         self.row_heights.insert(row, height);
         self.base.request_layout();
     }
-
     /// Sets item delegate.
     pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
         self.delegate = Some(delegate);
     }
-
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
-        self.selection.selected_rows.retain(|row| *row < row_count);
-        self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
+        // Get current selection and filter out invalid rows
+        let mut selected_rows = self.selection.rows();
+        selected_rows.retain(|row| *row < row_count);
+        // Clear and re-add valid rows
+        self.selection.clear();
+        for row in selected_rows {
+            self.selection.select_row(row);
+        }
+        // Update current row if invalid
+        if let Some(current_row) = self.selection.current_row() {
+            if current_row >= row_count {
+                self.selection.clear();
+            }
+        }
         self.focused_row = self.focused_row.filter(|row| *row < row_count);
     }
 }
-
 impl Widget for TableWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
-
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 }
-
 impl crate::widget::base::Draw for TableWidget {
-    fn draw(&self, canvas: &mut dyn crate::render::Canvas) {
-        // Default drawing implementation
-        Frame::draw_frame(canvas, self.base().geometry());
+    fn draw(&mut self, context: &mut RenderContext) {
+        self.base.request_redraw();
+        let _ = context;
     }
 }
-
 impl crate::event::EventHandler for TableWidget {
-    fn handle_event(&mut self, event: &crate::event::Event) -> bool {
+    fn handle_event(&mut self, event: &crate::event::Event) {
         // Default event handling
-        false
+        let _ = event;
     }
 }

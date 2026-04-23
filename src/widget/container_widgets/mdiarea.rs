@@ -1,5 +1,4 @@
 //! MDI area widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// MDI area widget.
 pub struct MdiArea {
     base: BaseWidget,
@@ -18,7 +16,6 @@ pub struct MdiArea {
     activation_order: ActivationOrder,
     pub subwindow_activated: Signal1<ObjectId>,
 }
-
 /// MDI sub-window.
 pub struct MdiSubWindow {
     widget: ObjectId,
@@ -32,7 +29,6 @@ pub struct MdiSubWindow {
     resizable: bool,
     z_order: i32,
 }
-
 /// MDI view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -41,13 +37,11 @@ pub enum ViewMode {
     /// Tabbed view
     TabbedView,
 }
-
 impl Default for ViewMode {
     fn default() -> Self {
         Self::SubWindowView
     }
 }
-
 /// MDI background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Background {
@@ -60,13 +54,11 @@ pub enum Background {
     /// Pattern background
     Pattern,
 }
-
 impl Default for Background {
     fn default() -> Self {
         Self::Plain
     }
 }
-
 /// MDI activation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationOrder {
@@ -77,13 +69,11 @@ pub enum ActivationOrder {
     /// Activation follows history order
     HistoryOrder,
 }
-
 impl Default for ActivationOrder {
     fn default() -> Self {
         Self::StackingOrder
     }
 }
-
 impl MdiSubWindow {
     /// Creates a new MDI sub-window.
     pub fn new(widget: ObjectId, geometry: Rect) -> Self {
@@ -100,103 +90,83 @@ impl MdiSubWindow {
             z_order: 0,
         }
     }
-
     /// Returns widget.
     pub fn widget(&self) -> ObjectId {
         self.widget
     }
-
     /// Returns geometry.
     pub fn geometry(&self) -> Rect {
         self.geometry
     }
-
     /// Sets geometry.
     pub fn set_geometry(&mut self, geometry: Rect) {
         self.geometry = geometry;
     }
-
     /// Returns title.
     pub fn title(&self) -> &str {
         &self.title
     }
-
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     /// Returns icon.
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
-
     /// Sets icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;
     }
-
     /// Returns whether sub-window is minimized.
     pub fn is_minimized(&self) -> bool {
         self.minimized
     }
-
     /// Sets minimized state.
     pub fn set_minimized(&mut self, minimized: bool) {
         self.minimized = minimized;
     }
-
     /// Returns whether sub-window is maximized.
     pub fn is_maximized(&self) -> bool {
         self.maximized
     }
-
     /// Sets maximized state.
     pub fn set_maximized(&mut self, maximized: bool) {
         self.maximized = maximized;
     }
-
     /// Returns whether sub-window is closable.
     pub fn is_closable(&self) -> bool {
         self.closable
     }
-
     /// Sets closable state.
     pub fn set_closable(&mut self, closable: bool) {
         self.closable = closable;
     }
-
     /// Returns whether sub-window is movable.
     pub fn is_movable(&self) -> bool {
         self.movable
     }
-
     /// Sets movable state.
     pub fn set_movable(&mut self, movable: bool) {
         self.movable = movable;
     }
-
     /// Returns whether sub-window is resizable.
     pub fn is_resizable(&self) -> bool {
         self.resizable
     }
-
     /// Sets resizable state.
     pub fn set_resizable(&mut self, resizable: bool) {
         self.resizable = resizable;
     }
-
     /// Returns z-order.
     pub fn z_order(&self) -> i32 {
         self.z_order
     }
-
     /// Sets z-order.
     pub fn set_z_order(&mut self, z_order: i32) {
         self.z_order = z_order;
     }
 }
-
 impl MdiArea {
     /// Creates an MDI area.
     pub fn new(geometry: Rect) -> Self {
@@ -210,30 +180,24 @@ impl MdiArea {
             subwindow_activated: Signal1::new(),
         }
     }
-
     /// Adds a sub-window.
     pub fn add_sub_window(&mut self, widget: ObjectId, geometry: Rect) -> usize {
         let mut subwindow = MdiSubWindow::new(widget, geometry);
         subwindow.z_order = self.subwindows.len() as i32;
-
         self.base.add_child(widget);
         self.subwindows.push(subwindow);
-
         let index = self.subwindows.len() - 1;
         if self.active_subwindow.is_none() {
             self.active_subwindow = Some(index);
             self.subwindow_activated.emit(widget);
         }
-
         index
     }
-
     /// Removes a sub-window.
     pub fn remove_sub_window(&mut self, widget: ObjectId) {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
             self.base.remove_child(widget);
             self.subwindows.remove(index);
-
             if self.active_subwindow == Some(index) {
                 self.active_subwindow = None;
                 // Try to activate another sub-window
@@ -250,18 +214,15 @@ impl MdiArea {
             }
         }
     }
-
     /// Returns number of sub-windows.
     pub fn sub_window_count(&self) -> usize {
         self.subwindows.len()
     }
-
     /// Returns active sub-window.
     pub fn active_sub_window(&self) -> Option<ObjectId> {
         self.active_subwindow
             .and_then(|index| self.subwindows.get(index).map(|sw| sw.widget))
     }
-
     /// Sets active sub-window.
     pub fn set_active_sub_window(&mut self, widget: ObjectId) {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
@@ -271,92 +232,73 @@ impl MdiArea {
             }
         }
     }
-
     /// Returns sub-window at index.
     pub fn sub_window(&self, index: usize) -> Option<&MdiSubWindow> {
         self.subwindows.get(index)
     }
-
     /// Returns mutable sub-window at index.
     pub fn sub_window_mut(&mut self, index: usize) -> Option<&mut MdiSubWindow> {
         self.subwindows.get_mut(index)
     }
-
     /// Returns view mode.
     pub fn view_mode(&self) -> ViewMode {
         self.view_mode
     }
-
     /// Sets view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         self.view_mode = mode;
     }
-
     /// Returns background.
     pub fn background(&self) -> Background {
         self.background
     }
-
     /// Sets background.
     pub fn set_background(&mut self, background: Background) {
         self.background = background;
     }
-
     /// Returns activation order.
     pub fn activation_order(&self) -> ActivationOrder {
         self.activation_order
     }
-
     /// Sets activation order.
     pub fn set_activation_order(&mut self, order: ActivationOrder) {
         self.activation_order = order;
     }
-
     /// Cascade sub-windows.
     pub fn cascade_sub_windows(&mut self) {
         let area_rect = self.geometry();
         let count = self.subwindows.len();
-
         if count == 0 {
             return;
         }
-
-        let offset = 30.0;
-        let max_width = area_rect.width - offset * (count as f32 - 1.0);
-        let max_height = area_rect.height - offset * (count as f32 - 1.0);
-
+        let offset = 30;
+        let max_width = area_rect.width - offset * (count as f32 - 1);
+        let max_height = area_rect.height - offset * (count as f32 - 1);
         for (i, subwindow) in self.subwindows.iter_mut().enumerate() {
             let x = area_rect.x + offset * i as f32;
             let y = area_rect.y + offset * i as f32;
             subwindow.geometry = Rect::new(x, y, max_width, max_height);
         }
     }
-
     /// Tile sub-windows.
     pub fn tile_sub_windows(&mut self) {
         let area_rect = self.geometry();
         let count = self.subwindows.len();
-
         if count == 0 {
             return;
         }
-
         let cols = (count as f32).sqrt().ceil() as usize;
         let rows = (count as f32 / cols as f32).ceil() as usize;
-
         let cell_width = area_rect.width / cols as f32;
         let cell_height = area_rect.height / rows as f32;
-
         for (i, subwindow) in self.subwindows.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-
             let x = area_rect.x + cell_width * col as f32;
             let y = area_rect.y + cell_height * row as f32;
             subwindow.geometry = Rect::new(x, y, cell_width, cell_height);
         }
     }
-
     /// Arranges minimized sub-windows.
     pub fn arrange_icons(&mut self) {
         let area_rect = self.geometry();
@@ -365,23 +307,18 @@ impl MdiArea {
             .iter_mut()
             .filter(|sw| sw.minimized)
             .collect();
-
         let count = minimized.len();
         if count == 0 {
             return;
         }
-
-        let icon_width = 100.0;
-        let icon_height = 80.0;
-        let spacing = 10.0;
-
+        let icon_width = 100;
+        let icon_height = 80;
+        let spacing = 10;
         let cols = ((area_rect.width - spacing) / (icon_width + spacing)).floor() as usize;
         let rows = (count as f32 / cols as f32).ceil() as usize;
-
         for (i, subwindow) in minimized.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-
             let x = area_rect.x + spacing + (icon_width + spacing) * col as f32;
             let y = area_rect.y + area_rect.height
                 - icon_height
@@ -390,24 +327,20 @@ impl MdiArea {
             subwindow.geometry = Rect::new(x, y, icon_width, icon_height);
         }
     }
-
     /// Activates next sub-window.
     pub fn activate_next_sub_window(&mut self) {
         if self.subwindows.is_empty() {
             return;
         }
-
         let current = self.active_subwindow.unwrap_or(0);
         let next = (current + 1) % self.subwindows.len();
         self.set_active_sub_window(self.subwindows[next].widget);
     }
-
     /// Activates previous sub-window.
     pub fn activate_previous_sub_window(&mut self) {
         if self.subwindows.is_empty() {
             return;
         }
-
         let current = self.active_subwindow.unwrap_or(0);
         let prev = if current == 0 {
             self.subwindows.len() - 1
@@ -416,13 +349,11 @@ impl MdiArea {
         };
         self.set_active_sub_window(self.subwindows[prev].widget);
     }
-
     /// Returns sub-window at position.
     fn sub_window_at_position(&self, pos: Point) -> Option<usize> {
         // Check from top (highest z-order) to bottom
         let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
         sorted_indices.sort_by_key(|&i| -self.subwindows[i].z_order);
-
         for index in sorted_indices {
             let subwindow = &self.subwindows[index];
             if subwindow.geometry.contains(pos) {
@@ -432,7 +363,6 @@ impl MdiArea {
         None
     }
 }
-
 // Implement Widget trait
 impl Widget for MdiArea {
     fn id(&self) -> ObjectId {
@@ -532,11 +462,9 @@ impl Widget for MdiArea {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for MdiArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -547,21 +475,16 @@ impl EventHandler for MdiArea {
             }
             _ => {}
         }
-
         // Forward events to active sub-window
         if let Some(widget_id) = self.active_sub_window() {
             // TODO: Forward event to active sub-window
         }
     }
 }
-
 impl Draw for MdiArea {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-
         // Draw background
         match self.background {
             Background::NoBackground => {
@@ -581,22 +504,16 @@ impl Draw for MdiArea {
                 for y in 0..rect.height as i32 {
                     let ratio = y as f32 / rect.height;
                     let color = Color::from_rgb(
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
+                        (240 * (1 - ratio) + 200 * ratio) as u8,
+                        (240 * (1 - ratio) + 200 * ratio) as u8,
+                        (240 * (1 - ratio) + 200 * ratio) as u8,
                     );
-                    context.draw_line(
-                        rect.x,
-                        rect.y + y as f32,
-                        rect.x + rect.width,
-                        rect.y + y as f32,
-                        color,
-                    );
+                    context.draw_line(Point::new(rect.x, rect.y + y as f32), Point::new(rect.x + rect.width as i32, rect.y + y as f32), color,);
                 }
             }
             Background::Pattern => {
                 // Draw pattern background
-                let pattern_size = 20.0;
+                let pattern_size = 20;
                 for y in 0..(rect.height / pattern_size) as i32 {
                     for x in 0..(rect.width / pattern_size) as i32 {
                         let color = if (x + y) % 2 == 0 {
@@ -615,19 +532,15 @@ impl Draw for MdiArea {
                 }
             }
         }
-
         // Draw sub-windows
         // Sort by z-order (lowest first, so highest draws last)
         let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
         sorted_indices.sort_by_key(|&i| self.subwindows[i].z_order);
-
         for index in sorted_indices {
             let subwindow = &self.subwindows[index];
             let is_active = self.active_subwindow == Some(index);
-
             // Draw sub-window frame
             let frame_rect = subwindow.geometry;
-
             // Draw frame background
             let bg_color = if is_active {
                 Color::from_rgb(255, 255, 255)
@@ -641,7 +554,6 @@ impl Draw for MdiArea {
                 frame_rect.height,
                 bg_color,
             );
-
             // Draw frame border
             let border_color = if is_active {
                 Color::from_rgb(0, 120, 215)
@@ -655,9 +567,8 @@ impl Draw for MdiArea {
                 frame_rect.height,
                 border_color,
             );
-
             // Draw title bar
-            let title_bar_height = 24.0;
+            let title_bar_height = 24;
             let title_bar_color = if is_active {
                 Color::from_rgb(0, 120, 215)
             } else {
@@ -670,7 +581,6 @@ impl Draw for MdiArea {
                 title_bar_height,
                 title_bar_color,
             );
-
             // Draw title text
             let text_color = if is_active {
                 Color::from_rgb(255, 255, 255)
@@ -678,42 +588,23 @@ impl Draw for MdiArea {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                frame_rect.x + 5.0,
-                frame_rect.y + title_bar_height / 2.0,
+                Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
                 &subwindow.title,
-                &Font::default(),
                 text_color,
-                Alignment::Left,
             );
-
             // Draw close button if closable
             if subwindow.closable {
-                let close_size = 12.0;
-                let close_x = frame_rect.x + frame_rect.width - close_size - 5.0;
-                let close_y = frame_rect.y + (title_bar_height - close_size) / 2.0;
-
+                let close_size = 12;
+                let close_x = frame_rect.x + frame_rect.width - close_size - 5;
+                let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
                 let close_color = if is_active {
                     Color::from_rgb(255, 255, 255)
                 } else {
                     Color::from_rgb(100, 100, 100)
                 };
-
-                context.draw_line(
-                    close_x,
-                    close_y,
-                    close_x + close_size,
-                    close_y + close_size,
-                    close_color,
-                );
-                context.draw_line(
-                    close_x + close_size,
-                    close_y,
-                    close_x,
-                    close_y + close_size,
-                    close_color,
-                );
+                context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), close_color,);
+                context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), close_color,);
             }
-
             // Draw widget content
             let content_rect = Rect::new(
                 frame_rect.x,
@@ -721,7 +612,6 @@ impl Draw for MdiArea {
                 frame_rect.width,
                 frame_rect.height - title_bar_height,
             );
-
             // TODO: Draw widget in content area
             // widget.draw(context);
         }

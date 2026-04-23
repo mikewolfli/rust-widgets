@@ -4,7 +4,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Font combo box widget for font selection.
 pub struct FontComboBox {
     base: BaseWidget,
@@ -26,7 +25,6 @@ pub struct FontComboBox {
     /// Emitted when the popup is hidden.
     pub popup_hidden: GenericSignal,
 }
-
 impl FontComboBox {
     pub fn new(geometry: Rect) -> Self {
         let default_font = Font::default();
@@ -45,7 +43,6 @@ impl FontComboBox {
             popup_hidden: GenericSignal::new(),
         }
     }
-
     pub fn current_font(&self) -> &Font {
         &self.current_font
     }
@@ -64,7 +61,6 @@ impl FontComboBox {
     pub fn count(&self) -> i32 {
         self.fonts.len() as i32
     }
-
     pub fn set_current_font(&mut self, font: Font) {
         if self.current_font != font {
             self.current_font = font.clone();
@@ -94,7 +90,6 @@ impl FontComboBox {
     pub fn set_max_visible_items(&mut self, max_items: i32) {
         self.max_visible_items = max_items.max(1);
     }
-
     pub fn add_font(&mut self, font_name: String) {
         self.fonts.push(font_name);
         self.base.request_redraw();
@@ -115,14 +110,12 @@ impl FontComboBox {
         self.set_current_index(-1);
         self.base.request_redraw();
     }
-
     pub fn show_popup(&mut self) {
         self.popup_shown.emit();
     }
     pub fn hide_popup(&mut self) {
         self.popup_hidden.emit();
     }
-
     pub fn current_text(&self) -> String {
         if self.current_index >= 0 && self.current_index < self.fonts.len() as i32 {
             self.fonts[self.current_index as usize].clone()
@@ -131,7 +124,6 @@ impl FontComboBox {
         }
     }
 }
-
 impl Widget for FontComboBox {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -230,7 +222,6 @@ impl Widget for FontComboBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for FontComboBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -293,25 +284,20 @@ impl EventHandler for FontComboBox {
         }
     }
 }
-
 impl Draw for FontComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-
         let bg_color = style.background_color.unwrap_or(Color::WHITE);
         let border_color = style.border_color.unwrap_or(Color::GRAY);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let border_width = style.border_width;
-
         // Draw background
         context.fill_rect(rect, bg_color);
-
         // Draw border
         if border_width > 0 {
             context.draw_rect_stroke(rect, border_color, border_width);
         }
-
         // Draw current text
         let padding = &style.padding;
         let text_rect = Rect::new(
@@ -320,7 +306,6 @@ impl Draw for FontComboBox {
             rect.width - padding.left - padding.right - 24,
             rect.height - padding.top - padding.bottom,
         );
-
         let current_text = self.current_text();
         if !current_text.is_empty() {
             let font = &self.current_font;
@@ -331,38 +316,21 @@ impl Draw for FontComboBox {
                 text_color,
             );
         }
-
         // Draw dropdown arrow button
-        let arrow_rect = Rect::new(rect.x + rect.width as i32 - 24, rect.y, 24, rect.height);
-
+        let arrow_rect = Rect::new(rect.x + rect.width as i32 as i32 - 24, rect.y, 24, rect.height);
         let arrow_color = if self.base.is_enabled() {
             text_color
         } else {
             Color::GRAY
         };
-
         // Draw arrow background
-        context.fill_rect(arrow_rect, Color::rgba(240, 240, 240, 255));
-
+        context.fill_rect(Rect::new(arrow_rect, Color::rgba(240, 240, 240), 255));
         // Draw arrow using lines
         let arrow_x = arrow_rect.x + arrow_rect.width as i32 / 2;
         let arrow_y = arrow_rect.y + arrow_rect.height as i32 / 2;
         let arrow_size = 6;
-
-        context.draw_line(
-            Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2),
-            Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2),
-            Point::new(arrow_x, arrow_y + arrow_size / 2),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x, arrow_y + arrow_size / 2),
-            Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2),
-            arrow_color,
-        );
+        context.draw_line(Point::new(Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2)), Point::new(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2)), arrow_color,);
+        context.draw_line(Point::new(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2)), Point::new(Point::new(arrow_x, arrow_y + arrow_size / 2)), arrow_color,);
+        context.draw_line(Point::new(Point::new(arrow_x, arrow_y + arrow_size / 2)), Point::new(Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2)), arrow_color,);
     }
 }

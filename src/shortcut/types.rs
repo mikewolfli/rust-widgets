@@ -6,43 +6,35 @@ pub struct Shortcut {
     /// Modifier keys (Ctrl, Alt, Shift, Meta).
     pub modifiers: Modifiers,
 }
-
 impl Shortcut {
     /// Creates a new shortcut with the given key and modifiers.
     pub fn new(key: Key, modifiers: Modifiers) -> Self {
         Self { key, modifiers }
     }
-
     /// Creates a simple shortcut with no modifiers.
     pub fn from_key(key: Key) -> Self {
         Self::new(key, Modifiers::empty())
     }
-
     /// Creates a Ctrl+key shortcut.
     pub fn ctrl(key: Key) -> Self {
         Self::new(key, Modifiers::CTRL)
     }
-
     /// Creates an Alt+key shortcut.
     pub fn alt(key: Key) -> Self {
         Self::new(key, Modifiers::ALT)
     }
-
     /// Creates a Shift+key shortcut.
     pub fn shift(key: Key) -> Self {
         Self::new(key, Modifiers::SHIFT)
     }
-
     /// Creates a Ctrl+Alt+key shortcut.
     pub fn ctrl_alt(key: Key) -> Self {
         Self::new(key, Modifiers::CTRL | Modifiers::ALT)
     }
-
     /// Creates a Ctrl+Shift+key shortcut.
     pub fn ctrl_shift(key: Key) -> Self {
         Self::new(key, Modifiers::CTRL | Modifiers::SHIFT)
     }
-
     /// Creates a shortcut from a string representation.
     /// Supported formats: "Ctrl+A", "Alt+F4", "Ctrl+Shift+S", "F1".
     pub fn from_string(s: &str) -> Option<Self> {
@@ -50,10 +42,8 @@ impl Shortcut {
         if parts.is_empty() {
             return None;
         }
-
         let mut modifiers = Modifiers::empty();
         let mut key_str = "";
-
         for part in &parts {
             match part.to_lowercase().as_str() {
                 "ctrl" | "control" => modifiers |= Modifiers::CTRL,
@@ -63,15 +53,12 @@ impl Shortcut {
                 _ => key_str = part,
             }
         }
-
         let key = Key::from_string(key_str)?;
         Some(Self::new(key, modifiers))
     }
-
     /// Returns a string representation of the shortcut.
     pub fn to_string(&self) -> String {
         let mut result = String::new();
-
         if self.modifiers.contains(Modifiers::CTRL) {
             if !result.is_empty() {
                 result.push('+');
@@ -102,19 +89,16 @@ impl Shortcut {
         result.push_str(&self.key.to_string());
         result
     }
-
     /// Returns true if this shortcut conflicts with another.
     pub fn conflicts_with(&self, other: &Shortcut) -> bool {
         self.key == other.key && self.modifiers == other.modifiers
     }
 }
-
 impl Default for Shortcut {
     fn default() -> Self {
         Self::new(Key::None, Modifiers::empty())
     }
 }
-
 /// Keyboard keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -200,7 +184,6 @@ pub enum Key {
     Slash,
     Backslash,
 }
-
 impl Key {
     /// Parses a key from a string.
     pub fn from_string(s: &str) -> Option<Self> {
@@ -281,7 +264,6 @@ impl Key {
             _ => None,
         }
     }
-
     /// Returns a string representation of the key.
     pub fn to_string(&self) -> String {
         match self {
@@ -362,48 +344,39 @@ impl Key {
         }
     }
 }
-
 /// Modifier keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Modifiers(u8);
-
 impl Modifiers {
     pub const NONE: Self = Self(0);
     pub const SHIFT: Self = Self(1 << 0);
     pub const CTRL: Self = Self(1 << 1);
     pub const ALT: Self = Self(1 << 2);
     pub const META: Self = Self(1 << 3);
-
     /// Creates empty modifiers.
     pub const fn empty() -> Self {
         Self::NONE
     }
-
     /// Returns true if no modifiers are set.
     pub const fn is_empty(&self) -> bool {
         self.0 == 0
     }
-
     /// Returns true if the given modifier is set.
     pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 }
-
 impl std::ops::BitOr for Modifiers {
     type Output = Self;
-
     fn bitor(self, rhs: Self) -> Self::Output {
         Self(self.0 | rhs.0)
     }
 }
-
 impl std::ops::BitOrAssign for Modifiers {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
     }
 }
-
 /// Entry in the shortcut registry.
 #[derive(Debug, Clone)]
 pub struct ShortcutEntry {

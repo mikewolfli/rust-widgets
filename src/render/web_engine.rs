@@ -5,7 +5,6 @@ use crate::widget::{
     WebEngineDownloadItem, WebEngineFindTextResult, WebEngineNotification, WebEnginePage,
     WebEngineScriptDialog, WebEngineSettings, WebEngineWebChannel, Widget,
 };
-
 fn push_widget_fill_and_border(
     layer: &mut SceneLayer,
     widget: &dyn Widget,
@@ -27,7 +26,6 @@ fn push_widget_fill_and_border(
         });
     }
 }
-
 /// Append visual commands for a `WebEngineView` baseline representation.
 pub fn append_web_engine_view_visual_commands(
     layer: &mut SceneLayer,
@@ -39,7 +37,6 @@ pub fn append_web_engine_view_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = web_engine_view.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -53,7 +50,6 @@ pub fn append_web_engine_view_visual_commands(
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 30 {
             // Draw navigation bar
             layer.push(RenderCommand::FillRect {
@@ -65,7 +61,6 @@ pub fn append_web_engine_view_visual_commands(
                 },
                 color: Color::SECONDARY,
             });
-
             // Draw back button
             let button_size = 28u32;
             layer.push(RenderCommand::FillRect {
@@ -81,7 +76,6 @@ pub fn append_web_engine_view_visual_commands(
                     Color::BACKGROUND
                 },
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -95,7 +89,6 @@ pub fn append_web_engine_view_visual_commands(
                     Color::FOREGROUND
                 },
             });
-
             // Draw forward button
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
@@ -110,7 +103,6 @@ pub fn append_web_engine_view_visual_commands(
                     Color::BACKGROUND
                 },
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 52,
@@ -124,7 +116,6 @@ pub fn append_web_engine_view_visual_commands(
                     Color::FOREGROUND
                 },
             });
-
             // Draw reload button
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
@@ -135,7 +126,6 @@ pub fn append_web_engine_view_visual_commands(
                 },
                 color: Color::PRIMARY,
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 88,
@@ -145,7 +135,6 @@ pub fn append_web_engine_view_visual_commands(
                 font: web_engine_view.font().cloned().unwrap_or_default(),
                 color: Color::WHITE,
             });
-
             // Draw address bar
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
@@ -156,7 +145,6 @@ pub fn append_web_engine_view_visual_commands(
                 },
                 color: Color::WHITE,
             });
-
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
                     x: rect.x + 116,
@@ -167,14 +155,12 @@ pub fn append_web_engine_view_visual_commands(
                 color: Color::rgba(122, 128, 138, 255),
                 width: 1,
             });
-
             // Draw URL text
             let url_text = if web_engine_view.url().is_empty() {
                 "about:blank"
             } else {
                 web_engine_view.url()
             };
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 124,
@@ -184,7 +170,6 @@ pub fn append_web_engine_view_visual_commands(
                 font: web_engine_view.font().cloned().unwrap_or_default(),
                 color: Color::FOREGROUND,
             });
-
             // Draw web content area
             if rect.height > 80 {
                 layer.push(RenderCommand::FillRect {
@@ -196,7 +181,6 @@ pub fn append_web_engine_view_visual_commands(
                     },
                     color: Color::WHITE,
                 });
-
                 layer.push(RenderCommand::DrawRectStroke {
                     rect: Rect {
                         x: rect.x + 8,
@@ -207,14 +191,12 @@ pub fn append_web_engine_view_visual_commands(
                     color: Color::rgba(122, 128, 138, 255),
                     width: 1,
                 });
-
                 // Draw sample web content
                 let title = if web_engine_view.title().is_empty() {
                     "Web Page"
                 } else {
                     web_engine_view.title()
                 };
-
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + 24,
@@ -224,7 +206,6 @@ pub fn append_web_engine_view_visual_commands(
                     font: web_engine_view.font().cloned().unwrap_or_default(),
                     color: Color::BLACK,
                 });
-
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + 24,
@@ -234,7 +215,6 @@ pub fn append_web_engine_view_visual_commands(
                     font: web_engine_view.font().cloned().unwrap_or_default(),
                     color: Color::rgba(100, 100, 100, 255),
                 });
-
                 // Draw loading indicator
                 if web_engine_view.is_loading() {
                     layer.push(RenderCommand::FillRect {
@@ -251,7 +231,6 @@ pub fn append_web_engine_view_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEnginePage` baseline representation.
 pub fn append_web_engine_page_visual_commands(
     layer: &mut SceneLayer,
@@ -263,7 +242,6 @@ pub fn append_web_engine_page_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = web_engine_page.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -277,7 +255,6 @@ pub fn append_web_engine_page_visual_commands(
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 40 {
             // Draw page info
             layer.push(RenderCommand::DrawText {
@@ -298,7 +275,6 @@ pub fn append_web_engine_page_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -317,7 +293,6 @@ pub fn append_web_engine_page_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             // Draw status indicators
             let status_text = format!(
                 "Loading: {}, Back: {}, Forward: {}",
@@ -325,7 +300,6 @@ pub fn append_web_engine_page_visual_commands(
                 web_engine_page.can_go_back(),
                 web_engine_page.can_go_forward()
             );
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -340,7 +314,6 @@ pub fn append_web_engine_page_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineSettings` baseline representation.
 pub fn append_web_engine_settings_visual_commands(
     layer: &mut SceneLayer,
@@ -352,7 +325,6 @@ pub fn append_web_engine_settings_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = web_engine_settings.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -366,7 +338,6 @@ pub fn append_web_engine_settings_visual_commands(
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 60 {
             // Draw settings items
             let settings_items = [
@@ -376,7 +347,6 @@ pub fn append_web_engine_settings_visual_commands(
                 "Local Storage: Enabled",
                 "Cookies: Enabled",
             ];
-
             for (i, item) in settings_items.iter().enumerate() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
@@ -393,7 +363,6 @@ pub fn append_web_engine_settings_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineDownloadItem` baseline representation.
 pub fn append_web_engine_download_item_visual_commands(
     layer: &mut SceneLayer,
@@ -405,7 +374,6 @@ pub fn append_web_engine_download_item_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = download_item.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -419,7 +387,6 @@ pub fn append_web_engine_download_item_visual_commands(
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 60 {
             // Draw download info
             layer.push(RenderCommand::DrawText {
@@ -433,7 +400,6 @@ pub fn append_web_engine_download_item_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -445,7 +411,6 @@ pub fn append_web_engine_download_item_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             // Draw progress bar
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
@@ -456,7 +421,6 @@ pub fn append_web_engine_download_item_visual_commands(
                 },
                 color: Color::SECONDARY,
             });
-
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
                     x: rect.x + 16,
@@ -469,7 +433,6 @@ pub fn append_web_engine_download_item_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineCookieStore` baseline representation.
 pub fn append_web_engine_cookie_store_visual_commands(
     layer: &mut SceneLayer,
@@ -481,7 +444,6 @@ pub fn append_web_engine_cookie_store_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = cookie_store.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -493,7 +455,6 @@ pub fn append_web_engine_cookie_store_visual_commands(
             font: cookie_store.font().cloned().unwrap_or_default(),
             color: cookie_store.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 60 {
             // Draw cookie info
             layer.push(RenderCommand::DrawText {
@@ -505,7 +466,6 @@ pub fn append_web_engine_cookie_store_visual_commands(
                 font: cookie_store.font().cloned().unwrap_or_default(),
                 color: cookie_store.foreground_color().unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -518,7 +478,6 @@ pub fn append_web_engine_cookie_store_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineWebChannel` baseline representation.
 pub fn append_web_engine_web_channel_visual_commands(
     layer: &mut SceneLayer,
@@ -530,7 +489,6 @@ pub fn append_web_engine_web_channel_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = web_channel.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -542,7 +500,6 @@ pub fn append_web_engine_web_channel_visual_commands(
             font: web_channel.font().cloned().unwrap_or_default(),
             color: web_channel.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 40 {
             // Draw channel info
             layer.push(RenderCommand::DrawText {
@@ -554,7 +511,6 @@ pub fn append_web_engine_web_channel_visual_commands(
                 font: web_channel.font().cloned().unwrap_or_default(),
                 color: web_channel.foreground_color().unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -567,7 +523,6 @@ pub fn append_web_engine_web_channel_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineFindTextResult` baseline representation.
 pub fn append_web_engine_find_text_result_visual_commands(
     layer: &mut SceneLayer,
@@ -579,7 +534,6 @@ pub fn append_web_engine_find_text_result_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = find_result.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -591,7 +545,6 @@ pub fn append_web_engine_find_text_result_visual_commands(
             font: find_result.font().cloned().unwrap_or_default(),
             color: find_result.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 40 {
             // Draw find info
             layer.push(RenderCommand::DrawText {
@@ -603,7 +556,6 @@ pub fn append_web_engine_find_text_result_visual_commands(
                 font: find_result.font().cloned().unwrap_or_default(),
                 color: find_result.foreground_color().unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -616,7 +568,6 @@ pub fn append_web_engine_find_text_result_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineNotification` baseline representation.
 pub fn append_web_engine_notification_visual_commands(
     layer: &mut SceneLayer,
@@ -628,7 +579,6 @@ pub fn append_web_engine_notification_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = notification.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -640,7 +590,6 @@ pub fn append_web_engine_notification_visual_commands(
             font: notification.font().cloned().unwrap_or_default(),
             color: notification.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 60 {
             // Draw notification content
             layer.push(RenderCommand::DrawText {
@@ -652,7 +601,6 @@ pub fn append_web_engine_notification_visual_commands(
                 font: notification.font().cloned().unwrap_or_default(),
                 color: notification.foreground_color().unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -665,7 +613,6 @@ pub fn append_web_engine_notification_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineScriptDialog` baseline representation.
 pub fn append_web_engine_script_dialog_visual_commands(
     layer: &mut SceneLayer,
@@ -677,7 +624,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = script_dialog.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -691,7 +637,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
                 .foreground_color()
                 .unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 80 {
             // Draw dialog content
             layer.push(RenderCommand::DrawText {
@@ -705,7 +650,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 16,
@@ -717,7 +661,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
                     .foreground_color()
                     .unwrap_or(Color::FOREGROUND),
             });
-
             // Draw OK button
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
@@ -728,7 +671,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
                 },
                 color: Color::PRIMARY,
             });
-
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + (rect.width as i32 - 80) / 2 + 30,
@@ -741,7 +683,6 @@ pub fn append_web_engine_script_dialog_visual_commands(
         }
     }
 }
-
 /// Append visual commands for a `WebEngineContextMenuRequest` baseline representation.
 pub fn append_web_engine_context_menu_request_visual_commands(
     layer: &mut SceneLayer,
@@ -753,7 +694,6 @@ pub fn append_web_engine_context_menu_request_visual_commands(
         Some(Color::BACKGROUND),
         Some((Color::SECONDARY, 1)),
     );
-
     let rect = context_menu.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
@@ -765,7 +705,6 @@ pub fn append_web_engine_context_menu_request_visual_commands(
             font: context_menu.font().cloned().unwrap_or_default(),
             color: context_menu.foreground_color().unwrap_or(Color::FOREGROUND),
         });
-
         if rect.height > 100 {
             // Draw context menu items
             let menu_items = [
@@ -775,7 +714,6 @@ pub fn append_web_engine_context_menu_request_visual_commands(
                 "Inspect element",
                 "Save image as...",
             ];
-
             for (i, item) in menu_items.iter().enumerate() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {

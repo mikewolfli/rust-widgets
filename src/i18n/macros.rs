@@ -1,5 +1,4 @@
 //! i18n macros - translation macros
-
 /// tr! macro for translation
 #[macro_export]
 macro_rules! tr {

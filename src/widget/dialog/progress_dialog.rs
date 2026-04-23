@@ -1,5 +1,4 @@
 //! Progress dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Progress dialog widget.
 pub struct ProgressDialog {
     base: BaseWidget,
@@ -22,7 +20,6 @@ pub struct ProgressDialog {
     auto_reset: bool,
     pub canceled: GenericSignal,
 }
-
 impl ProgressDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -39,7 +36,6 @@ impl ProgressDialog {
             canceled: GenericSignal::new(),
         }
     }
-
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -67,7 +63,6 @@ impl ProgressDialog {
     pub fn cancel_button_text(&self) -> &str {
         &self.cancel_button_text
     }
-
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
     }
@@ -93,34 +88,29 @@ impl ProgressDialog {
     pub fn set_cancel_button_text(&mut self, t: impl Into<String>) {
         self.cancel_button_text = t.into();
     }
-
     pub fn set_value(&mut self, value: i32) {
         self.value = value.clamp(self.minimum, self.maximum);
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }
     }
-
     pub fn reset(&mut self) {
         self.value = self.minimum;
         self.was_canceled = false;
     }
-
     pub fn cancel(&mut self) {
         self.was_canceled = true;
         self.canceled.emit();
         self.hide();
     }
-
     pub fn progress_fraction(&self) -> f32 {
         let range = self.maximum - self.minimum;
         if range <= 0 {
-            return 1.0;
+            return 1;
         }
         (self.value - self.minimum) as f32 / range as f32
     }
 }
-
 impl Widget for ProgressDialog {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -219,7 +209,6 @@ impl Widget for ProgressDialog {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ProgressDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -232,12 +221,9 @@ impl EventHandler for ProgressDialog {
         }
     }
 }
-
 impl Draw for ProgressDialog {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         context.fill_rect(
             rect.x,
             rect.y,
@@ -256,88 +242,84 @@ impl Draw for ProgressDialog {
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
         // Label
         context.draw_text(
-            rect.x + 10.0,
-            rect.y + 48.0,
+            rect.x + 10,
+            rect.y + 48,
             &self.label_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // Progress bar
-        let bar_y = rect.y + 62.0;
-        let bar_w = rect.width - 20.0;
-        let bar_h = 20.0;
+        let bar_y = rect.y + 62;
+        let bar_w = rect.width - 20;
+        let bar_h = 20;
         context.fill_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             bar_y,
             bar_w,
             bar_h,
             Color::from_rgb(220, 220, 220),
         );
         context.draw_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             bar_y,
             bar_w,
             bar_h,
             Color::from_rgb(150, 150, 150),
         );
         let fill_w = bar_w * self.progress_fraction();
-        if fill_w > 0.0 {
+        if fill_w > 0 {
             context.fill_rect(
-                rect.x + 10.0,
+                rect.x + 10,
                 bar_y,
                 fill_w,
                 bar_h,
                 Color::from_rgb(6, 176, 37),
             );
         }
-
         // Percentage text
-        let pct = (self.progress_fraction() * 100.0) as i32;
+        let pct = (self.progress_fraction() * 100) as i32;
         context.draw_text(
-            rect.x + 10.0 + bar_w / 2.0,
-            bar_y + bar_h / 2.0,
+            rect.x + 10 + bar_w / 2,
+            bar_y + bar_h / 2,
             &format!("{}%", pct),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Center,
         );
-
         // Cancel button
-        let btn_y = rect.y + rect.height - 40.0;
-        let btn_w = 80.0;
+        let btn_y = rect.y + rect.height as i32 - 40;
+        let btn_w = 80;
         context.fill_rect(
-            rect.x + rect.width / 2.0 - btn_w / 2.0,
+            rect.x + rect.width as i32 / 2 - btn_w / 2,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width / 2.0 - btn_w / 2.0,
+            rect.x + rect.width as i32 / 2 - btn_w / 2,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width / 2.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 / 2,
+            btn_y + 14,
             &self.cancel_button_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),

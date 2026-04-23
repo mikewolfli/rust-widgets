@@ -10,18 +10,23 @@ pub struct Color {
     /// Alpha channel.
     pub a: u8,
 }
-
 impl Color {
     /// Convenience constructor for an RGBA color.
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
-
     /// Returns an opaque RGB color.
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self::rgba(r, g, b, 255)
     }
-
+    /// Backward-compatible alias for `rgb`.
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        Self::rgb(r, g, b)
+    }
+    /// Backward-compatible alias for `rgba`.
+    pub const fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self::rgba(r, g, b, a)
+    }
     /// Common color constants.
     pub const BLACK: Self = Self::rgb(0, 0, 0);
     pub const WHITE: Self = Self::rgb(255, 255, 255);
@@ -38,7 +43,6 @@ impl Color {
     pub const MEDIUM_GRAY: Self = Self::rgb(160, 160, 160);
     pub const EXTRA_DARK_GRAY: Self = Self::rgb(32, 32, 32);
     pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
-
     /// Color variants.
     pub const LIGHT_RED: Self = Self::rgb(255, 100, 100);
     pub const DARK_RED: Self = Self::rgb(150, 0, 0);
@@ -48,7 +52,6 @@ impl Color {
     pub const DARK_BLUE: Self = Self::rgb(0, 0, 150);
     pub const LIGHT_YELLOW: Self = Self::rgb(255, 255, 150);
     pub const DARK_YELLOW: Self = Self::rgb(150, 150, 0);
-
     /// UI color constants.
     pub const PRIMARY: Self = Self::rgb(72, 142, 246);
     pub const SECONDARY: Self = Self::rgb(120, 124, 132);
@@ -65,13 +68,11 @@ impl Color {
     pub const TOOLTIP: Self = Self::rgb(255, 255, 224);
     pub const MENU_BACKGROUND: Self = Self::rgb(255, 255, 255);
     pub const MENU_FOREGROUND: Self = Self::rgb(26, 28, 32);
-
     /// Semantic colors.
     pub const INFO: Self = Self::rgb(66, 133, 244);
     pub const NOTIFICATION: Self = Self::rgb(103, 58, 183);
     pub const DISABLED_BACKGROUND: Self = Self::rgb(245, 245, 245);
     pub const DISABLED_FOREGROUND: Self = Self::rgb(153, 153, 153);
-
     /// Neutral colors.
     pub const ALICE_BLUE: Self = Self::rgb(240, 248, 255);
     pub const BEIGE: Self = Self::rgb(245, 245, 220);
@@ -82,7 +83,6 @@ impl Color {
     pub const ROSE: Self = Self::rgb(255, 105, 180);
     pub const SILVER: Self = Self::rgb(192, 192, 192);
     pub const TAN: Self = Self::rgb(210, 180, 140);
-
     /// Additional QT-like colors.
     pub const AQUA: Self = Self::rgb(0, 255, 255);
     pub const BROWN: Self = Self::rgb(165, 42, 42);
@@ -95,7 +95,6 @@ impl Color {
     pub const PINK: Self = Self::rgb(255, 192, 203);
     pub const PURPLE: Self = Self::rgb(128, 0, 128);
     pub const TEAL: Self = Self::rgb(0, 128, 128);
-
     /// Additional WX-like colors.
     pub const SKY_BLUE: Self = Self::rgb(135, 206, 235);
     pub const STEEL_BLUE: Self = Self::rgb(70, 130, 180);
@@ -106,7 +105,6 @@ impl Color {
     pub const LIGHT_GOLDENROD_YELLOW: Self = Self::rgb(250, 250, 210);
     pub const LIGHT_PINK: Self = Self::rgb(255, 182, 193);
     pub const LIGHT_SALMON: Self = Self::rgb(255, 160, 122);
-
     /// Parses `#RRGGBB`, `#RRGGBBAA`, `#RGB` or `#RGBA` hex color strings.
     ///
     /// The parser is intentionally strict and deterministic:
@@ -116,10 +114,8 @@ impl Color {
     pub fn parse_hex(text: &str) -> Option<Self> {
         let raw = text.trim();
         let hex = raw.strip_prefix('#')?;
-
         let parse_byte = |slice: &str| u8::from_str_radix(slice, 16).ok();
         let parse_nibble = |ch: char| ch.to_digit(16).map(|n| (n as u8) * 17);
-
         match hex.len() {
             3 => {
                 let mut chars = hex.chars();
@@ -152,22 +148,18 @@ impl Color {
             _ => None,
         }
     }
-
     /// Returns canonical uppercase `#RRGGBB` serialization.
     pub fn to_hex_rgb(&self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
-
     /// Returns canonical uppercase `#RRGGBBAA` serialization.
     pub fn to_hex_rgba(&self) -> String {
         format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
     }
-
     /// Packs color channels into `0xRRGGBBAA` for stable transport/serialization.
     pub const fn to_rgba_u32(&self) -> u32 {
         ((self.r as u32) << 24) | ((self.g as u32) << 16) | ((self.b as u32) << 8) | self.a as u32
     }
-
     /// Unpacks channels from `0xRRGGBBAA`.
     pub const fn from_rgba_u32(value: u32) -> Self {
         Self::rgba(
@@ -178,11 +170,9 @@ impl Color {
         )
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn color_hex_parse_and_serialize_are_deterministic() {
         assert_eq!(
@@ -203,12 +193,10 @@ mod tests {
         );
         assert_eq!(Color::parse_hex("112233"), None);
         assert_eq!(Color::parse_hex("#12"), None);
-
         let color = Color::rgba(0x0A, 0x1B, 0x2C, 0x7D);
         assert_eq!(color.to_hex_rgb(), "#0A1B2C");
         assert_eq!(color.to_hex_rgba(), "#0A1B2C7D");
     }
-
     #[test]
     fn color_u32_pack_roundtrip_is_stable() {
         let color = Color::rgba(0x01, 0x23, 0x45, 0x67);

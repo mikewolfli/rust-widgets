@@ -1,5 +1,4 @@
 //! Date editor widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Date value (year, month, day).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
@@ -15,7 +13,6 @@ pub struct Date {
     pub month: u8, // 1-12
     pub day: u8,   // 1-31
 }
-
 impl Date {
     pub fn new(year: i32, month: u8, day: u8) -> Self {
         Self {
@@ -24,7 +21,6 @@ impl Date {
             day: day.clamp(1, 31),
         }
     }
-
     pub fn today() -> Self {
         Self {
             year: 2024,
@@ -32,7 +28,6 @@ impl Date {
             day: 1,
         }
     }
-
     pub fn days_in_month(&self) -> u8 {
         match self.month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -47,22 +42,18 @@ impl Date {
             _ => 30,
         }
     }
-
     pub fn is_leap_year(&self) -> bool {
         (self.year % 4 == 0 && self.year % 100 != 0) || (self.year % 400 == 0)
     }
-
     pub fn is_valid(&self) -> bool {
         self.month >= 1 && self.month <= 12 && self.day >= 1 && self.day <= self.days_in_month()
     }
 }
-
 impl std::fmt::Display for Date {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 }
-
 /// Date editor widget.
 pub struct DateEdit {
     base: BaseWidget,
@@ -73,11 +64,10 @@ pub struct DateEdit {
     calendar_popup: bool,
     pub date_changed: Signal1<Date>,
 }
-
 impl DateEdit {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::DateEdit, geometry, "DateEdit"),
+            base: BaseWidget::new(WidgetKind::DatePicker, geometry, "DateEdit"),
             date: Date::today(),
             minimum: Date::new(1752, 9, 14),
             maximum: Date::new(9999, 12, 31),
@@ -86,7 +76,6 @@ impl DateEdit {
             date_changed: Signal1::new(),
         }
     }
-
     pub fn date(&self) -> Date {
         self.date
     }
@@ -102,7 +91,6 @@ impl DateEdit {
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
     }
-
     pub fn set_date(&mut self, date: Date) {
         if date.is_valid() && date >= self.minimum && date <= self.maximum {
             if self.date != date {
@@ -111,7 +99,6 @@ impl DateEdit {
             }
         }
     }
-
     pub fn set_minimum_date(&mut self, date: Date) {
         self.minimum = date;
     }
@@ -128,7 +115,6 @@ impl DateEdit {
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
     }
-
     pub fn step_up(&mut self) {
         let mut d = self.date;
         d.day += 1;
@@ -142,7 +128,6 @@ impl DateEdit {
         }
         self.set_date(d);
     }
-
     pub fn step_down(&mut self) {
         let mut d = self.date;
         if d.day > 1 {
@@ -159,7 +144,6 @@ impl DateEdit {
         self.set_date(d);
     }
 }
-
 impl Widget for DateEdit {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -258,7 +242,6 @@ impl Widget for DateEdit {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for DateEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -275,88 +258,20 @@ impl EventHandler for DateEdit {
         }
     }
 }
-
 impl Draw for DateEdit {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let spin_width = 16.0;
-
-        // Background
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width - spin_width,
-            rect.height,
-            Color::from_rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
-
-        // Date text
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.draw_rect(rect, Color::from_rgb(150, 150, 150));
+        let text = self.date.to_string();
         context.draw_text(
-            rect.x + 4.0,
-            rect.y + rect.height / 2.0,
-            &self.date.to_string(),
+            Point {
+                x: rect.x + 6,
+                y: rect.y + (rect.height as i32 / 2),
+            },
+            &text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
-        );
-
-        // Spin buttons
-        let btn_x = rect.x + rect.width - spin_width;
-        let btn_h = rect.height / 2.0;
-        context.fill_rect(
-            btn_x,
-            rect.y,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.fill_rect(
-            btn_x,
-            rect.y + btn_h,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y,
-            btn_x,
-            rect.y + rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y + btn_h,
-            rect.x + rect.width,
-            rect.y + btn_h,
-            Color::from_rgb(150, 150, 150),
-        );
-
-        // Up/Down arrows
-        let mid_x = btn_x + spin_width / 2.0;
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h / 2.0,
-            "▲",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
-        );
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h + btn_h / 2.0,
-            "▼",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
         );
     }
 }

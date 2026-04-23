@@ -1,5 +1,4 @@
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
-
 pub mod dockwidget;
 pub mod groupbox;
 pub mod mdiarea;
@@ -8,7 +7,6 @@ pub mod splitter;
 pub mod stackedwidget;
 pub mod tabwidget;
 pub mod toolbox;
-
 // Re-export container widgets
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;

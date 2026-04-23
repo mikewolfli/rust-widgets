@@ -1,5 +1,4 @@
 //! Stacked widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Stacked widget.
 pub struct StackedWidget {
     base: BaseWidget,
@@ -15,7 +13,6 @@ pub struct StackedWidget {
     current_index: usize,
     pub current_changed: Signal1<usize>,
 }
-
 impl StackedWidget {
     /// Creates a stacked widget.
     pub fn new(geometry: Rect) -> Self {
@@ -26,14 +23,12 @@ impl StackedWidget {
             current_changed: Signal1::new(),
         }
     }
-
     /// Adds a widget.
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
         self.base.add_child(widget);
         self.widgets.push(widget);
         self.widgets.len() - 1
     }
-
     /// Inserts a widget at position.
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
         self.base.add_child(widget);
@@ -42,13 +37,11 @@ impl StackedWidget {
             self.current_index += 1;
         }
     }
-
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
         if let Some(index) = self.widgets.iter().position(|&id| id == widget) {
             self.base.remove_child(widget);
             self.widgets.remove(index);
-
             if self.current_index >= index && self.current_index > 0 {
                 self.current_index -= 1;
             }
@@ -57,17 +50,14 @@ impl StackedWidget {
             }
         }
     }
-
     /// Returns number of widgets.
     pub fn count(&self) -> usize {
         self.widgets.len()
     }
-
     /// Returns current widget index.
     pub fn current_index(&self) -> usize {
         self.current_index
     }
-
     /// Sets current widget index.
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.widgets.len() && self.current_index != index {
@@ -75,23 +65,19 @@ impl StackedWidget {
             self.current_changed.emit(index);
         }
     }
-
     /// Returns current widget.
     pub fn current_widget(&self) -> Option<ObjectId> {
         self.widgets.get(self.current_index).copied()
     }
-
     /// Returns widget at index.
     pub fn widget(&self, index: usize) -> Option<ObjectId> {
         self.widgets.get(index).copied()
     }
-
     /// Returns index of widget.
     pub fn index_of(&self, widget: ObjectId) -> Option<usize> {
         self.widgets.iter().position(|&id| id == widget)
     }
 }
-
 // Implement Widget trait
 impl Widget for StackedWidget {
     fn id(&self) -> ObjectId {
@@ -191,34 +177,21 @@ impl Widget for StackedWidget {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for StackedWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-
         // Forward events to current widget
         if let Some(widget_id) = self.current_widget() {
             // TODO: Forward event to current widget
         }
     }
 }
-
 impl Draw for StackedWidget {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-
         // Draw background
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(255, 255, 255),
-        );
-
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
         // Draw current widget
         if let Some(widget_id) = self.current_widget() {
             // TODO: Draw current widget

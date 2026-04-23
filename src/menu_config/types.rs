@@ -1,5 +1,4 @@
 use crate::gpu::GpuType;
-
 /// User override settings for menu features.
 #[derive(Debug, Clone, Default)]
 pub struct UserOverrides {
@@ -18,7 +17,6 @@ pub struct UserOverrides {
     /// User override for hardware acceleration.
     pub hardware_acceleration: Option<bool>,
 }
-
 /// Hardware capabilities detected at runtime.
 #[derive(Debug, Clone)]
 pub struct HardwareCapabilities {
@@ -37,7 +35,6 @@ pub struct HardwareCapabilities {
     /// Current performance level.
     pub performance_level: PerformanceLevel,
 }
-
 /// Performance level for adaptive feature selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceLevel {
@@ -48,7 +45,6 @@ pub enum PerformanceLevel {
     /// High-end hardware - all effects enabled.
     High,
 }
-
 impl Default for PerformanceLevel {
     fn default() -> Self {
         Self::Medium

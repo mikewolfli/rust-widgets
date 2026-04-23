@@ -1,10 +1,8 @@
 //! XML layout loading and lookup.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
-
 use crate::core::{Color, Rect};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{
@@ -13,7 +11,6 @@ use crate::widget::{
     StatusBar, TabWidget, TableModel, TableWidget, TextEdit, ToolBar, TreeModel, TreeView, Widget,
 };
 use crate::window::Window;
-
 /// Declarative widget node parsed from XML/JSON layout sources.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XmlElement {
@@ -26,14 +23,12 @@ pub struct XmlElement {
     /// Nested child elements.
     pub children: Vec<XmlElement>,
 }
-
 /// Root XML layout document wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XmlLayout {
     /// Root element of this layout.
     pub root: XmlElement,
 }
-
 /// Loader/cache for named XML or JSON layouts.
 #[derive(Default)]
 pub struct XmlLayoutLoader {
@@ -41,7 +36,6 @@ pub struct XmlLayoutLoader {
     table_models: HashMap<String, Arc<dyn TableModel>>,
     tree_models: HashMap<String, Arc<dyn TreeModel>>,
 }
-
 /// Runtime registry storing instantiated widgets and optional name index.
 pub struct WidgetRegistry {
     /// Runtime widget instances by generated id.
@@ -49,7 +43,6 @@ pub struct WidgetRegistry {
     /// Optional name/id index to generated widget id.
     index_by_name: HashMap<String, u64>,
 }
-
 /// Bound layout wrapper for mixed declarative + imperative UI workflows.
 pub struct BoundLayout {
     /// Root widget id of instantiated layout tree.
@@ -57,7 +50,6 @@ pub struct BoundLayout {
     /// Backing widget registry.
     registry: WidgetRegistry,
 }
-
 impl WidgetRegistry {
     /// Create empty widget registry.
     pub fn new() -> Self {
@@ -66,7 +58,6 @@ impl WidgetRegistry {
             index_by_name: HashMap::new(),
         }
     }
-
     /// Insert widget and optional symbolic name.
     pub fn insert(&mut self, id_name: Option<&str>, widget: Box<dyn Widget>) -> u64 {
         let widget_id = widget.id();
@@ -76,12 +67,10 @@ impl WidgetRegistry {
         self.widgets.insert(widget_id, widget);
         widget_id
     }
-
     /// Resolve widget id by symbolic name.
     pub fn id_by_name(&self, name: &str) -> Option<u64> {
         self.index_by_name.get(name).copied()
     }
-
     /// Returns immutable widget by runtime id.
     pub fn widget(&self, id: u64) -> Option<&(dyn Widget + '_)> {
         if let Some(widget) = self.widgets.get(&id) {
@@ -90,7 +79,6 @@ impl WidgetRegistry {
             None
         }
     }
-
     /// Returns mutable widget by runtime id.
     pub fn widget_mut(&mut self, id: u64) -> Option<&mut (dyn Widget + '_)> {
         if let Some(widget) = self.widgets.get_mut(&id) {
@@ -99,27 +87,22 @@ impl WidgetRegistry {
             None
         }
     }
-
     /// Returns number of registered widgets.
     pub fn len(&self) -> usize {
         self.widgets.len()
     }
-
     /// Returns true if there are no registered widgets.
     pub fn is_empty(&self) -> bool {
         self.widgets.is_empty()
     }
-
     /// Return true when symbolic id exists.
     pub fn contains_name(&self, name: &str) -> bool {
         self.index_by_name.contains_key(name)
     }
-
     /// Remove symbolic name mapping if present.
     pub fn remove_name(&mut self, name: &str) -> bool {
         self.index_by_name.remove(name).is_some()
     }
-
     /// Remove widget by id from registry and unlink name mapping.
     pub fn remove_widget(&mut self, id: u64) -> bool {
         if self.widgets.remove(&id).is_none() {
@@ -129,41 +112,34 @@ impl WidgetRegistry {
         true
     }
 }
-
 impl Default for WidgetRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl BoundLayout {
     /// Create a bound layout from root id and registry.
     pub fn new(root_id: u64, registry: WidgetRegistry) -> Self {
         Self { root_id, registry }
     }
-
     /// Return root widget id.
     pub fn root_id(&self) -> u64 {
         self.root_id
     }
-
     /// Resolve widget id by declarative id name.
     pub fn id(&self, name: &str) -> Option<u64> {
         self.registry.id_by_name(name)
     }
-
     /// Get immutable widget by declarative id name.
     pub fn widget_by_name(&self, name: &str) -> Option<&(dyn Widget + '_)> {
         let id = self.id(name)?;
         self.registry.widget(id)
     }
-
     /// Get mutable widget by declarative id name.
     pub fn widget_by_name_mut(&mut self, name: &str) -> Option<&mut (dyn Widget + '_)> {
         let id = self.id(name)?;
         self.registry.widget_mut(id)
     }
-
     /// Update widget tooltip by declarative id name.
     pub fn set_tooltip_by_name(
         &mut self,
@@ -176,7 +152,6 @@ impl BoundLayout {
         widget.set_tooltip(tooltip.into());
         Ok(())
     }
-
     /// Update visibility by declarative id name.
     pub fn set_visible_by_name(&mut self, name: &str, visible: bool) -> Result<(), String> {
         let Some(widget) = self.widget_by_name_mut(name) else {
@@ -189,7 +164,6 @@ impl BoundLayout {
         }
         Ok(())
     }
-
     /// Attach an imperative widget under declarative parent and optionally bind a symbolic id.
     pub fn add_imperative_widget(
         &mut self,
@@ -200,62 +174,50 @@ impl BoundLayout {
         let Some(parent_id) = self.id(parent_name) else {
             return Err(format!("parent widget '{parent_name}' not found"));
         };
-
         if let Some(name) = bind_name {
             if self.registry.contains_name(name) {
                 return Err(format!("widget name '{name}' already exists"));
             }
         }
-
         widget.set_parent(Some(parent_id));
         let widget_id = self.registry.insert(bind_name, widget);
-
         if let Some(parent_widget) = self.registry.widget_mut(parent_id) {
             parent_widget.add_child(widget_id);
         }
-
         Ok(widget_id)
     }
-
     /// Remove a widget by declarative id name and detach from its parent if possible.
     pub fn remove_widget_by_name(&mut self, name: &str) -> Result<(), String> {
         let Some(widget_id) = self.id(name) else {
             return Err(format!("widget '{name}' not found"));
         };
-
         let parent_id = self
             .registry
             .widget(widget_id)
             .and_then(|widget| widget.parent());
-
         if let Some(parent_id) = parent_id {
             if let Some(parent_widget) = self.registry.widget_mut(parent_id) {
                 parent_widget.remove_child(widget_id);
             }
         }
-
         let _ = self.registry.remove_name(name);
         let _ = self.registry.remove_widget(widget_id);
         Ok(())
     }
-
     /// Access underlying registry (immutable).
     pub fn registry(&self) -> &WidgetRegistry {
         &self.registry
     }
-
     /// Access underlying registry (mutable).
     pub fn registry_mut(&mut self) -> &mut WidgetRegistry {
         &mut self.registry
     }
 }
-
 impl XmlLayoutLoader {
     /// Create empty loader with no cached layouts.
     pub fn new() -> Self {
         Self::default()
     }
-
     /// Load layout from JSON or XML file path.
     pub fn load_layout(
         &mut self,
@@ -270,7 +232,6 @@ impl XmlLayoutLoader {
         }
         self.load_layout_from_xml_str(name, &content)
     }
-
     /// Parse and cache layout directly from XML string.
     pub fn load_layout_from_xml_str(
         &mut self,
@@ -285,63 +246,52 @@ impl XmlLayoutLoader {
         self.layouts.insert(name.to_string(), layout);
         Ok(())
     }
-
     /// Returns a cached layout by name.
     pub fn get_layout(&self, name: &str) -> Option<&XmlLayout> {
         self.layouts.get(name)
     }
-
     /// Register a named table model for declarative `model="..."` binding.
     pub fn register_table_model(&mut self, name: impl Into<String>, model: Arc<dyn TableModel>) {
         self.table_models.insert(name.into(), model);
     }
-
     /// Register a named tree model for declarative `model="..."` binding.
     pub fn register_tree_model(&mut self, name: impl Into<String>, model: Arc<dyn TreeModel>) {
         self.tree_models.insert(name.into(), model);
     }
-
     /// Returns true if a table model with `name` is registered.
     pub fn has_table_model(&self, name: &str) -> bool {
         self.table_models.contains_key(name)
     }
-
     /// Returns true if a tree model with `name` is registered.
     pub fn has_tree_model(&self, name: &str) -> bool {
         self.tree_models.contains_key(name)
     }
-
     /// Instantiate cached layout into concrete widget objects.
     pub fn instantiate_layout(&self, name: &str) -> Result<WidgetRegistry, String> {
         let layout = self
             .layouts
             .get(name)
             .ok_or_else(|| format!("layout '{name}' not found"))?;
-
         let mut registry = WidgetRegistry::new();
         self.instantiate_recursive(&layout.root, None, &mut registry)?;
         Ok(registry)
     }
-
     /// Instantiate cached layout and return bound wrapper for mixed declarative/imperative usage.
     pub fn instantiate_bound_layout(&self, name: &str) -> Result<BoundLayout, String> {
         let layout = self
             .layouts
             .get(name)
             .ok_or_else(|| format!("layout '{name}' not found"))?;
-
         let mut registry = WidgetRegistry::new();
         let root_id = self.instantiate_recursive(&layout.root, None, &mut registry)?;
         Ok(BoundLayout::new(root_id, registry))
     }
-
     /// Find element in cached layout by declared id.
     pub fn find_element_by_id(&self, layout_name: &str, id: &str) -> Option<&XmlElement> {
         self.layouts
             .get(layout_name)
             .and_then(|layout| Self::find_element_recursive(&layout.root, id))
     }
-
     fn build_element(node: &roxmltree::Node<'_, '_>) -> XmlElement {
         let mut properties = HashMap::new();
         for attr in node.attributes() {
@@ -364,7 +314,6 @@ impl XmlLayoutLoader {
                 .collect(),
         }
     }
-
     fn find_element_recursive<'a>(element: &'a XmlElement, id: &str) -> Option<&'a XmlElement> {
         if element.id.as_deref() == Some(id) {
             return Some(element);
@@ -374,7 +323,6 @@ impl XmlLayoutLoader {
             .iter()
             .find_map(|child| Self::find_element_recursive(child, id))
     }
-
     fn instantiate_recursive(
         &self,
         element: &XmlElement,
@@ -384,20 +332,16 @@ impl XmlLayoutLoader {
         let mut widget = self.create_widget_from_element(element);
         widget.set_parent(parent_id);
         let this_id = registry.insert(element.id.as_deref(), widget);
-
         if let Some(parent) = parent_id {
             if let Some(parent_widget) = registry.widget_mut(parent) {
                 parent_widget.add_child(this_id);
             }
         }
-
         for child in &element.children {
             self.instantiate_recursive(child, Some(this_id), registry)?;
         }
-
         Ok(this_id)
     }
-
     fn create_widget_from_element(&self, element: &XmlElement) -> Box<dyn Widget> {
         let rect = parse_rect(&element.properties);
         let class = element.class.to_lowercase();
@@ -407,7 +351,6 @@ impl XmlLayoutLoader {
             .get("title")
             .cloned()
             .unwrap_or_else(|| text.clone());
-
         let mut widget: Box<dyn Widget> = match class.as_str() {
             "window" => Box::new(Window::new(title, rect)),
             "dialog" => Box::new(Dialog::new("Dialog".to_string(), rect)),
@@ -526,12 +469,10 @@ impl XmlLayoutLoader {
             "chart" | "chartwidget" => Box::new(ChartWidget::new(rect)),
             _ => Box::new(Panel::new(rect)),
         };
-
         apply_common_properties(&mut widget, &element.properties);
         widget
     }
 }
-
 fn resolve_model_name(properties: &HashMap<String, String>) -> Option<&str> {
     properties
         .get("model")
@@ -539,16 +480,13 @@ fn resolve_model_name(properties: &HashMap<String, String>) -> Option<&str> {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
 }
-
 fn apply_common_properties(widget: &mut Box<dyn Widget>, properties: &HashMap<String, String>) {
     if let Some(tooltip) = properties.get("tooltip") {
         widget.set_tooltip(tooltip.clone());
     }
-
     if let Some(enabled) = parse_bool_property(properties, "enabled") {
         widget.set_enabled(enabled);
     }
-
     if let Some(visible) = parse_bool_property(properties, "visible") {
         if visible {
             widget.show();
@@ -556,13 +494,11 @@ fn apply_common_properties(widget: &mut Box<dyn Widget>, properties: &HashMap<St
             widget.hide();
         }
     }
-
     let style = parse_widget_style(properties);
     if style != WidgetStyle::default() {
         widget.set_style(style);
     }
 }
-
 fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
     let background_color = parse_color_property(properties, "style.background")
         .or_else(|| parse_color_property(properties, "background_color"));
@@ -570,14 +506,12 @@ fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
         .or_else(|| parse_color_property(properties, "text_color"));
     let border_color = parse_color_property(properties, "style.border")
         .or_else(|| parse_color_property(properties, "border_color"));
-
     let border_width = parse_u32_property(properties, "style.border_width")
         .or_else(|| parse_u32_property(properties, "border_width"))
         .unwrap_or(0);
     let border_radius = parse_u32_property(properties, "style.border_radius")
         .or_else(|| parse_u32_property(properties, "border_radius"))
         .unwrap_or(0);
-
     let padding = parse_u32_property(properties, "style.padding")
         .or_else(|| parse_u32_property(properties, "padding"))
         .map(Padding::all)
@@ -586,7 +520,6 @@ fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
         .or_else(|| parse_u32_property(properties, "margin"))
         .map(Margin::all)
         .unwrap_or_default();
-
     WidgetStyle {
         background_color,
         text_color,
@@ -598,7 +531,6 @@ fn parse_widget_style(properties: &HashMap<String, String>) -> WidgetStyle {
         ..Default::default()
     }
 }
-
 fn parse_bool_property(properties: &HashMap<String, String>, key: &str) -> Option<bool> {
     let value = properties.get(key)?;
     match value.trim().to_ascii_lowercase().as_str() {
@@ -607,23 +539,18 @@ fn parse_bool_property(properties: &HashMap<String, String>, key: &str) -> Optio
         _ => None,
     }
 }
-
 fn parse_u32_property(properties: &HashMap<String, String>, key: &str) -> Option<u32> {
     properties.get(key)?.trim().parse::<u32>().ok()
 }
-
 fn parse_usize_property(properties: &HashMap<String, String>, key: &str) -> Option<usize> {
     properties.get(key)?.trim().parse::<usize>().ok()
 }
-
 fn parse_i32_property(properties: &HashMap<String, String>, key: &str) -> Option<i32> {
     properties.get(key)?.trim().parse::<i32>().ok()
 }
-
 fn parse_color_property(properties: &HashMap<String, String>, key: &str) -> Option<Color> {
     Color::parse_hex(properties.get(key)?)
 }
-
 fn parse_rect(properties: &HashMap<String, String>) -> Rect {
     let parse_i32 = |key: &str, default: i32| {
         properties
@@ -637,7 +564,6 @@ fn parse_rect(properties: &HashMap<String, String>) -> Rect {
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(default)
     };
-
     Rect::new(
         parse_i32("x", 0),
         parse_i32("y", 0),
@@ -645,11 +571,9 @@ fn parse_rect(properties: &HashMap<String, String>) -> Rect {
         parse_u32("height", 36),
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn xml_instantiation_applies_common_widget_properties() {
         let mut loader = XmlLayoutLoader::new();
@@ -677,15 +601,12 @@ mod tests {
                     "##,
             )
             .expect("load xml");
-
         let registry = loader.instantiate_layout("layout").expect("instantiate");
         let button_id = registry.id_by_name("btn").expect("button id exists");
         let button = registry.widget(button_id).expect("button exists");
-
         assert_eq!(button.tooltip(), "tip");
         assert!(!button.is_visible());
         assert!(!button.is_enabled());
-
         let style = button.style();
         assert_eq!(
             style.background_color,
@@ -719,7 +640,6 @@ mod tests {
         assert_eq!(style.padding, Padding::all(3));
         assert_eq!(style.margin, Margin::all(5));
     }
-
     #[test]
     fn xml_instantiation_accepts_short_and_alpha_hex_colors() {
         let mut loader = XmlLayoutLoader::new();
@@ -739,13 +659,11 @@ mod tests {
                     "##,
             )
             .expect("load xml");
-
         let registry = loader
             .instantiate_layout("hex_layout")
             .expect("instantiate");
         let button_id = registry.id_by_name("btn").expect("button id exists");
         let button = registry.widget(button_id).expect("button exists");
-
         let style = button.style();
         assert_eq!(
             style.background_color,
@@ -757,7 +675,6 @@ mod tests {
             Some(Color::rgba(0x00, 0xFF, 0x00, 0x88))
         );
     }
-
     #[test]
     fn xml_instantiation_applies_state_value_properties() {
         let mut loader = XmlLayoutLoader::new();
@@ -772,20 +689,16 @@ mod tests {
                 "#,
             )
             .expect("load xml");
-
         let registry = loader
             .instantiate_layout("state_layout")
             .expect("instantiate");
         let check_id = registry.id_by_name("check").expect("check id");
         let line_id = registry.id_by_name("line").expect("line id");
-
         let check = registry.widget(check_id).expect("check exists");
         let line = registry.widget(line_id).expect("line exists");
-
         assert!(check.is_visible());
         assert!(line.is_enabled());
     }
-
     #[test]
     fn xml_loader_registers_table_and_tree_models() {
         let mut loader = XmlLayoutLoader::new();
@@ -800,13 +713,11 @@ mod tests {
             "main_tree",
             Arc::new(crate::widget::VecTreeModel::new(vec!["Root".to_string()])),
         );
-
         assert!(loader.has_table_model("main_table"));
         assert!(loader.has_tree_model("main_tree"));
         assert!(!loader.has_table_model("missing"));
         assert!(!loader.has_tree_model("missing"));
     }
-
     #[test]
     fn xml_instantiation_with_model_binding_attributes_succeeds() {
         let mut loader = XmlLayoutLoader::new();
@@ -824,7 +735,6 @@ mod tests {
                 "/tmp".to_string(),
             ])),
         );
-
         loader
             .load_layout_from_xml_str(
                 "model_layout",
@@ -836,21 +746,18 @@ mod tests {
                 "#,
             )
             .expect("load xml");
-
         let registry = loader
             .instantiate_layout("model_layout")
             .expect("instantiate");
         assert!(registry.id_by_name("table").is_some());
         assert!(registry.id_by_name("tree").is_some());
     }
-
     #[test]
     fn resolve_model_name_prefers_model_then_model_ref() {
         let mut properties = HashMap::new();
         properties.insert("model_ref".to_string(), "fallback".to_string());
         properties.insert("model".to_string(), "primary".to_string());
         assert_eq!(resolve_model_name(&properties), Some("primary"));
-
         properties.remove("model");
         assert_eq!(resolve_model_name(&properties), Some("fallback"));
     }

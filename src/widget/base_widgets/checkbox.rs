@@ -1,12 +1,10 @@
 //! Checkbox widget implementation.
-
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Checkbox state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckState {
@@ -14,7 +12,6 @@ pub enum CheckState {
     PartiallyChecked,
     Checked,
 }
-
 /// Checkbox widget for boolean or tristate selection.
 pub struct CheckBox {
     base: BaseWidget,
@@ -23,7 +20,6 @@ pub struct CheckBox {
     pub toggled: Signal1<bool>,
     pub state_changed: Signal1<CheckState>,
 }
-
 impl CheckBox {
     /// Creates an unchecked checkbox with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -35,47 +31,38 @@ impl CheckBox {
             state_changed: Signal1::new(),
         }
     }
-
     /// Returns current check state.
     pub fn state(&self) -> CheckState {
         self.state
     }
-
     /// Returns true when the checkbox is fully checked.
     pub fn is_checked(&self) -> bool {
         self.state == CheckState::Checked
     }
-
     /// Returns true when the checkbox is partially checked (tristate).
     pub fn is_partially_checked(&self) -> bool {
         self.state == CheckState::PartiallyChecked
     }
-
     /// Returns true when tristate behavior is enabled.
     pub fn is_tristate_enabled(&self) -> bool {
         self.tristate_enabled
     }
-
     /// Sets check state and emits signals when changed.
     pub fn set_state(&mut self, state: CheckState) {
         if self.state == state {
             return;
         }
-
         let previous = self.state;
         self.state = state;
         self.state_changed.emit(state);
-
         // Emit toggled signal for boolean transitions
         match (previous, state) {
             (CheckState::Unchecked, CheckState::Checked) => self.toggled.emit(true),
             (CheckState::Checked, CheckState::Unchecked) => self.toggled.emit(false),
             _ => {}
         }
-
         self.base.request_redraw();
     }
-
     /// Sets checked state (true = checked, false = unchecked).
     pub fn set_checked(&mut self, checked: bool) {
         self.set_state(if checked {
@@ -84,7 +71,6 @@ impl CheckBox {
             CheckState::Unchecked
         });
     }
-
     /// Enables or disables tristate behavior.
     pub fn set_tristate_enabled(&mut self, enabled: bool) {
         self.tristate_enabled = enabled;
@@ -92,7 +78,6 @@ impl CheckBox {
             self.set_state(CheckState::Unchecked);
         }
     }
-
     /// Toggles between checked states.
     pub fn toggle(&mut self) {
         let next_state = match self.state {
@@ -109,7 +94,6 @@ impl CheckBox {
         self.set_state(next_state);
     }
 }
-
 impl Widget for CheckBox {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -209,52 +193,39 @@ impl Widget for CheckBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for CheckBox {
-    fn handle_event(&mut self, event: &Event) -> bool {
-        let handled = self.base.handle_event(event);
-
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
         match event {
-            Event::MouseDown {
-                position: _,
-                button: _,
-                ..
-            } => {
+            Event::MouseDown((_, _)) => {
                 if self.base.is_enabled() {
                     self.toggle();
-                    return true;
+                    return;
                 }
             }
-            Event::KeyDown {
-                key, modifiers: _, ..
-            } => {
+            Event::KeyDown((key, _)) => {
                 // Space key toggles checkbox
                 if *key == 32 && self.base.is_enabled() {
                     // Space key
                     self.toggle();
-                    return true;
+                    return;
                 }
             }
             _ => {}
         }
-
-        handled
     }
 }
-
 impl Draw for CheckBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let checkbox_size = 16; // Standard checkbox size
-
         // Calculate checkbox rectangle
         let checkbox_rect = Rect::new(
             rect.x,
-            rect.y + (rect.height - checkbox_size) / 2,
+            rect.y + (rect.height as i32 - checkbox_size) / 2,
             checkbox_size as u32,
             checkbox_size as u32,
         );
-
         // Draw checkbox background
         let bg_color = if !self.base.is_enabled() {
             Color::from_rgb(240, 240, 240)
@@ -262,15 +233,13 @@ impl Draw for CheckBox {
             Color::from_rgb(255, 255, 255)
         };
         context.fill_rect(checkbox_rect, bg_color);
-
         // Draw checkbox border
         let border_color = if !self.base.is_enabled() {
             Color::from_rgb(180, 180, 180)
         } else {
             Color::from_rgb(100, 100, 100)
         };
-        context.draw_rect(checkbox_rect, border_color, 1);
-
+        context.draw_rect(checkbox_rect, border_color);
         // Draw checkmark or partial check
         if self.state != CheckState::Unchecked {
             let check_color = if !self.base.is_enabled() {
@@ -278,17 +247,18 @@ impl Draw for CheckBox {
             } else {
                 Color::from_rgb(0, 120, 215) // Blue checkmark
             };
-
             match self.state {
                 CheckState::Checked => {
-                    // Draw checkmark
-                    let check_rect = Rect::new(
-                        checkbox_rect.x + 3,
-                        checkbox_rect.y + 6,
-                        checkbox_rect.width - 6,
-                        checkbox_rect.height - 12,
+                    // Draw a compact check glyph.
+                    context.draw_text(
+                        Point {
+                            x: checkbox_rect.x + 3,
+                            y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
+                        },
+                        "x",
+                        &Font::default(),
+                        check_color,
                     );
-                    context.draw_checkmark(check_rect, check_color);
                 }
                 CheckState::PartiallyChecked => {
                     // Draw partial check (minus sign)
@@ -302,22 +272,6 @@ impl Draw for CheckBox {
                 }
                 _ => {}
             }
-        }
-
-        // Draw label if there's text in the style
-        if let Some(text) = &self.base.style().text {
-            let text_rect = Rect::new(
-                checkbox_rect.right() + 4,
-                rect.y,
-                rect.width - checkbox_rect.width as u32 - 4,
-                rect.height,
-            );
-            let text_color = if !self.base.is_enabled() {
-                Color::from_rgb(150, 150, 150)
-            } else {
-                self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0))
-            };
-            context.draw_text(text_rect, text, text_color);
         }
     }
 }

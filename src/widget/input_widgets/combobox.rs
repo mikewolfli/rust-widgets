@@ -1,5 +1,4 @@
 //! Combo box widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Combo box widget.
 pub struct ComboBox {
     base: BaseWidget,
@@ -19,7 +17,6 @@ pub struct ComboBox {
     pub current_text_changed: Signal1<String>,
     pub activated: Signal1<usize>,
 }
-
 impl ComboBox {
     /// Creates an empty combo box with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -34,32 +31,26 @@ impl ComboBox {
             activated: Signal1::new(),
         }
     }
-
     /// Returns number of items.
     pub fn count(&self) -> usize {
         self.items.len()
     }
-
     /// Returns whether the combo box is empty.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
-
     /// Returns item at specified index.
     pub fn item(&self, index: usize) -> Option<&str> {
         self.items.get(index).map(|s| s.as_str())
     }
-
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
     }
-
     /// Adds multiple items.
     pub fn add_items(&mut self, items: Vec<String>) {
         self.items.extend(items);
     }
-
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
@@ -72,7 +63,6 @@ impl ComboBox {
             }
         }
     }
-
     /// Removes item at specified index.
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
@@ -89,7 +79,6 @@ impl ComboBox {
             }
         }
     }
-
     /// Clears all items.
     pub fn clear(&mut self) {
         self.items.clear();
@@ -97,18 +86,15 @@ impl ComboBox {
         self.current_text_changed.emit(String::new());
         self.current_index_changed.emit(None);
     }
-
     /// Returns current index.
     pub fn current_index(&self) -> Option<usize> {
         self.current_index
     }
-
     /// Sets current index.
     pub fn set_current_index(&mut self, index: Option<usize>) {
         if index == self.current_index {
             return;
         }
-
         if let Some(idx) = index {
             if idx < self.items.len() {
                 self.current_index = Some(idx);
@@ -121,7 +107,6 @@ impl ComboBox {
             self.current_index_changed.emit(None);
         }
     }
-
     /// Returns current text.
     pub fn current_text(&self) -> String {
         self.current_index
@@ -129,54 +114,44 @@ impl ComboBox {
             .cloned()
             .unwrap_or_default()
     }
-
     /// Sets current text (for editable combo boxes).
     pub fn set_current_text(&mut self, text: String) {
         if !self.editable {
             return;
         }
-
         // Find matching item
         let index = self.items.iter().position(|item| item == &text);
         self.set_current_index(index);
-
         // For editable combo boxes, we might want to add the text if not found
         if index.is_none() && !text.is_empty() {
             // In a real implementation, we might add it or keep it as custom text
         }
     }
-
     /// Returns whether the combo box is editable.
     pub fn is_editable(&self) -> bool {
         self.editable
     }
-
     /// Sets editable state.
     pub fn set_editable(&mut self, editable: bool) {
         self.editable = editable;
     }
-
     /// Returns maximum number of visible items in dropdown.
     pub fn max_visible_items(&self) -> usize {
         self.max_visible_items
     }
-
     /// Sets maximum number of visible items in dropdown.
     pub fn set_max_visible_items(&mut self, max: usize) {
         self.max_visible_items = max.max(1);
     }
-
     /// Finds index of item with specified text.
     pub fn find_text(&self, text: &str) -> Option<usize> {
         self.items.iter().position(|item| item == text)
     }
-
     /// Returns all items.
     pub fn items(&self) -> &[String] {
         &self.items
     }
 }
-
 // Implement Widget trait
 impl Widget for ComboBox {
     fn id(&self) -> ObjectId {
@@ -276,20 +251,17 @@ impl Widget for ComboBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ComboBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
                     // Toggle dropdown (in real implementation)
                     self.base.clicked.emit();
-
                     // Simulate selection for demo
                     if !self.items.is_empty() {
                         let new_index = if let Some(current) = self.current_index {
@@ -341,17 +313,13 @@ impl EventHandler for ComboBox {
         }
     }
 }
-
 impl Draw for ComboBox {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-        let padding = 4.0;
+        let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height / 2.0;
-
+        let text_y = rect.y + rect.height as i32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -360,7 +328,6 @@ impl Draw for ComboBox {
             rect.height,
             Color::from_rgb(255, 255, 255),
         );
-
         // Draw border
         context.draw_rect(
             rect.x,
@@ -369,35 +336,17 @@ impl Draw for ComboBox {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Draw dropdown arrow
-        let arrow_size = 8.0;
-        let arrow_x = rect.x + rect.width - padding - arrow_size;
-        let arrow_y = rect.y + rect.height / 2.0;
-
+        let arrow_size = 8;
+        let arrow_x = rect.x + rect.width as i32 - padding - arrow_size;
+        let arrow_y = rect.y + rect.height as i32 / 2;
         // Draw arrow (triangle)
-        context.draw_line(
-            arrow_x,
-            arrow_y - arrow_size / 2.0,
-            arrow_x + arrow_size,
-            arrow_y - arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x, arrow_y - arrow_size / 2), Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            arrow_x + arrow_size,
-            arrow_y - arrow_size / 2.0,
-            arrow_x + arrow_size / 2.0,
-            arrow_y + arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2), Point::new(arrow_x + arrow_size / 2, arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(
-            arrow_x + arrow_size / 2.0,
-            arrow_y + arrow_size / 2.0,
-            arrow_x,
-            arrow_y - arrow_size / 2.0,
-            Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x + arrow_size / 2, arrow_y + arrow_size / 2), Point::new(arrow_x, arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
         );
-
         // Draw current text
         let current_text = self.current_text();
         if !current_text.is_empty() {

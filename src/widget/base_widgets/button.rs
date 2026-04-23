@@ -1,12 +1,10 @@
 //! Button widget implementation.
-
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Button interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
@@ -14,7 +12,6 @@ pub enum ButtonState {
     Pressed,
     Disabled,
 }
-
 /// Button widget for clickable actions.
 pub struct Button {
     base: BaseWidget,
@@ -25,7 +22,6 @@ pub struct Button {
     pub released_signal: GenericSignal,
     pub state_changed: Signal1<ButtonState>,
 }
-
 impl Button {
     /// Creates a button with initial text and geometry.
     pub fn new(text: String, geometry: Rect) -> Self {
@@ -39,12 +35,10 @@ impl Button {
             state_changed: Signal1::new(),
         }
     }
-
     /// Returns button text.
     pub fn text(&self) -> &str {
         &self.text
     }
-
     /// Returns current button interaction state.
     pub fn state(&self) -> ButtonState {
         if !self.base.is_enabled() {
@@ -55,12 +49,10 @@ impl Button {
             ButtonState::Normal
         }
     }
-
     /// Returns whether button is in pressed state.
     pub fn is_pressed(&self) -> bool {
         self.pressed
     }
-
     /// Sets pressed state and emits transition signals when changed.
     pub fn set_pressed(&mut self, pressed: bool) {
         if !self.base.is_enabled() {
@@ -69,7 +61,6 @@ impl Button {
         if self.pressed == pressed {
             return;
         }
-
         self.pressed = pressed;
         if pressed {
             self.pressed_signal.emit();
@@ -78,15 +69,12 @@ impl Button {
         }
         self.state_changed.emit(self.state());
     }
-
     pub fn press(&mut self) {
         self.set_pressed(true);
     }
-
     pub fn release(&mut self) {
         self.set_pressed(false);
     }
-
     /// Enables/disables button while preserving deterministic state transitions.
     pub fn set_enabled_state(&mut self, enabled: bool) {
         let previous = self.state();
@@ -99,14 +87,12 @@ impl Button {
             self.state_changed.emit(current);
         }
     }
-
     /// Sets button text.
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.base.request_redraw();
     }
 }
-
 impl Widget for Button {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -205,62 +191,47 @@ impl Widget for Button {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Button {
-    fn handle_event(&mut self, event: &Event) -> bool {
-        let handled = self.base.handle_event(event);
-
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
         match event {
-            Event::MouseDown {
-                position: _,
-                button: _,
-                ..
-            } => {
+            Event::MouseDown((_, _)) => {
                 if self.base.is_enabled() {
                     self.press();
-                    return true;
+                    return;
                 }
             }
-            Event::MouseUp {
-                position: _,
-                button: _,
-                ..
-            } => {
+            Event::MouseUp((_, _)) => {
                 if self.pressed {
                     self.release();
                     self.activated.emit();
-                    return true;
+                    return;
                 }
             }
             _ => {}
         }
-
-        handled
     }
 }
-
 impl Draw for Button {
     fn draw(&mut self, context: &mut RenderContext) {
         // Button rendering logic will be implemented in the render module
         // For now, just draw a simple rectangle
         let rect = self.geometry();
         let state = self.state();
-
         match state {
             ButtonState::Normal => {
                 context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-                context.draw_rect(rect, Color::from_rgb(200, 200, 200), 1);
+                context.draw_rect(rect, Color::from_rgb(200, 200, 200));
             }
             ButtonState::Pressed => {
                 context.fill_rect(rect, Color::from_rgb(200, 200, 200));
-                context.draw_rect(rect, Color::from_rgb(150, 150, 150), 1);
+                context.draw_rect(rect, Color::from_rgb(150, 150, 150));
             }
             ButtonState::Disabled => {
                 context.fill_rect(rect, Color::from_rgb(220, 220, 220));
-                context.draw_rect(rect, Color::from_rgb(180, 180, 180), 1);
+                context.draw_rect(rect, Color::from_rgb(180, 180, 180));
             }
         }
-
         // Draw text
         if !self.text.is_empty() {
             let text_color = if state == ButtonState::Disabled {
@@ -268,8 +239,15 @@ impl Draw for Button {
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-
-            context.draw_text(rect, &self.text, text_color);
+            context.draw_text(
+                Point {
+                    x: rect.x + 6,
+                    y: rect.y + rect.height as i32 as i32 / 2,
+                },
+                &self.text,
+                &self.font().cloned().unwrap_or_default(),
+                text_color,
+            );
         }
     }
 }

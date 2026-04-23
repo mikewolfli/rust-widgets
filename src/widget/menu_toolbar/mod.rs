@@ -1,12 +1,10 @@
 //! Menu and toolbar widgets.
-
 pub mod action;
 pub mod menu;
 pub mod menu_bar;
 pub mod status_bar;
 pub mod tool_bar;
 pub mod tool_button;
-
 // Re-export menu and toolbar types
 pub use action::Action;
 pub use menu::Menu;

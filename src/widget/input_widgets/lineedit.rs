@@ -1,5 +1,4 @@
 //! Single-line text edit widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Single-line text edit widget.
 pub struct LineEdit {
     base: BaseWidget,
@@ -21,7 +19,6 @@ pub struct LineEdit {
     pub editing_finished: GenericSignal,
     pub return_pressed: GenericSignal,
 }
-
 /// Text echo mode for password fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EchoMode {
@@ -34,13 +31,11 @@ pub enum EchoMode {
     /// Display asterisks only when editing
     PasswordEchoOnEdit,
 }
-
 impl Default for EchoMode {
     fn default() -> Self {
         Self::Normal
     }
 }
-
 impl LineEdit {
     /// Creates an empty line edit with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -57,12 +52,10 @@ impl LineEdit {
             return_pressed: GenericSignal::new(),
         }
     }
-
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
     }
-
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: String) {
         if self.text == text {
@@ -73,22 +66,18 @@ impl LineEdit {
         self.selection_start = None;
         self.text_changed.emit(self.text.clone());
     }
-
     /// Returns placeholder text.
     pub fn placeholder_text(&self) -> &str {
         &self.placeholder_text
     }
-
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
         self.placeholder_text = text;
     }
-
     /// Returns maximum text length.
     pub fn max_length(&self) -> Option<usize> {
         self.max_length
     }
-
     /// Sets maximum text length.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
@@ -104,33 +93,27 @@ impl LineEdit {
             }
         }
     }
-
     /// Returns echo mode.
     pub fn echo_mode(&self) -> EchoMode {
         self.echo_mode
     }
-
     /// Sets echo mode.
     pub fn set_echo_mode(&mut self, mode: EchoMode) {
         self.echo_mode = mode;
     }
-
     /// Returns cursor position.
     pub fn cursor_position(&self) -> usize {
         self.cursor_position
     }
-
     /// Sets cursor position.
     pub fn set_cursor_position(&mut self, position: usize) {
         self.cursor_position = position.min(self.text.len());
         self.selection_start = None;
     }
-
     /// Returns selection start position.
     pub fn selection_start(&self) -> Option<usize> {
         self.selection_start
     }
-
     /// Returns selected text.
     pub fn selected_text(&self) -> String {
         if let Some(start) = self.selection_start {
@@ -146,24 +129,20 @@ impl LineEdit {
             String::new()
         }
     }
-
     /// Selects all text.
     pub fn select_all(&mut self) {
         self.selection_start = Some(0);
         self.cursor_position = self.text.len();
     }
-
     /// Clears selection.
     pub fn clear_selection(&mut self) {
         self.selection_start = None;
     }
-
     /// Inserts text at cursor position.
     pub fn insert_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
-
         // Check max length
         if let Some(max) = self.max_length {
             let available = max.saturating_sub(self.text.len());
@@ -176,7 +155,6 @@ impl LineEdit {
                 text
             };
         }
-
         // Handle selection
         let mut new_text = self.text.clone();
         if let Some(start) = self.selection_start {
@@ -193,11 +171,9 @@ impl LineEdit {
             new_text.insert_str(self.cursor_position, text);
             self.cursor_position += text.len();
         }
-
         self.selection_start = None;
         self.set_text(new_text);
     }
-
     /// Deletes selected text or character before cursor.
     pub fn backspace(&mut self) {
         if let Some(start) = self.selection_start {
@@ -209,7 +185,6 @@ impl LineEdit {
             } else {
                 (end, start)
             };
-
             let mut new_text = self.text.clone();
             new_text.replace_range(start..end, "");
             self.cursor_position = start;
@@ -223,7 +198,6 @@ impl LineEdit {
             self.set_text(new_text);
         }
     }
-
     /// Deletes selected text or character after cursor.
     pub fn delete(&mut self) {
         if let Some(start) = self.selection_start {
@@ -236,12 +210,10 @@ impl LineEdit {
             self.set_text(new_text);
         }
     }
-
     /// Clears all text.
     pub fn clear(&mut self) {
         self.set_text(String::new());
     }
-
     /// Returns display text based on echo mode.
     fn display_text(&self) -> String {
         match self.echo_mode {
@@ -255,7 +227,6 @@ impl LineEdit {
         }
     }
 }
-
 // Implement Widget trait
 impl Widget for LineEdit {
     fn id(&self) -> ObjectId {
@@ -355,14 +326,12 @@ impl Widget for LineEdit {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::KeyPress { key, modifiers } => {
                 match *key {
@@ -466,17 +435,13 @@ impl EventHandler for LineEdit {
         }
     }
 }
-
 impl Draw for LineEdit {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-        let padding = 4.0;
+        let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height / 2.0;
-
+        let text_y = rect.y + rect.height as i32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -485,7 +450,6 @@ impl Draw for LineEdit {
             rect.height,
             Color::from_rgb(255, 255, 255),
         );
-
         // Draw border
         context.draw_rect(
             rect.x,
@@ -494,14 +458,12 @@ impl Draw for LineEdit {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
         } else {
             &self.display_text()
         };
-
         if !display_text.is_empty() {
             context.draw_text(
                 text_x,
@@ -512,7 +474,6 @@ impl Draw for LineEdit {
                 Alignment::Left,
             );
         }
-
         // Draw cursor if focused
         // Note: Would need focus state tracking
     }

@@ -7,7 +7,6 @@ use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
-
 pub struct WebEngineViewEnhanced {
     base: BaseWidget,
     url: String,
@@ -34,7 +33,6 @@ pub struct WebEngineViewEnhanced {
     pub certificate_error: Signal1<String>,
     pub download_requested: Signal1<String>,
 }
-
 impl WebEngineViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -64,119 +62,90 @@ impl WebEngineViewEnhanced {
             download_requested: Signal1::new(),
         }
     }
-
     pub fn url(&self) -> &str {
         &self.url
     }
-
     pub fn is_loading(&self) -> bool {
         self.loading
     }
-
     pub fn title(&self) -> &str {
         &self.title
     }
-
     pub fn load_progress(&self) -> u8 {
         self.load_progress
     }
-
     pub fn can_go_back(&self) -> bool {
         self.history.can_go_back()
     }
-
     pub fn can_go_forward(&self) -> bool {
         self.history.can_go_forward()
     }
-
     pub fn settings(&self) -> &super::WebSettings {
         &self.settings
     }
-
     pub fn settings_mut(&mut self) -> &mut super::WebSettings {
         &mut self.settings
     }
-
     pub fn security(&self) -> &super::SecuritySettings {
         &self.security
     }
-
     pub fn security_mut(&mut self) -> &mut super::SecuritySettings {
         &mut self.security
     }
-
     pub fn cookies(&self) -> &CookieJar {
         &self.cookies
     }
-
     pub fn cookies_mut(&mut self) -> &mut CookieJar {
         &mut self.cookies
     }
-
     pub fn privacy(&self) -> &TrackingProtection {
         &self.privacy
     }
-
     pub fn privacy_mut(&mut self) -> &mut TrackingProtection {
         &mut self.privacy
     }
-
     pub fn plugins(&self) -> &PluginManager {
         &self.plugins
     }
-
     pub fn plugins_mut(&mut self) -> &mut PluginManager {
         &mut self.plugins
     }
-
     pub fn history(&self) -> &SessionHistory {
         &self.history
     }
-
     pub fn browser_history(&self) -> &BrowserHistory {
         &self.browser_history
     }
-
     pub fn load_url(&mut self, url: &str) {
         self.set_url(url.to_string());
     }
-
     pub fn set_url(&mut self, url: String) {
         if self.url == url {
             return;
         }
-
         self.url = url.clone();
         self.loading = true;
         self.load_progress = 0;
-
         self.url_changed.emit(url.clone());
         self.loading_started.emit(url.clone());
         self.history.navigate(url.clone());
-
         self.load_progress = 50;
         self.loading_progress.emit(self.load_progress);
-
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
         self.update_navigation_state();
-
         self.browser_history
             .add_entry(self.url.clone(), self.title.clone());
         self.base.request_redraw();
     }
-
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
         self.url = base_url.unwrap_or("data:text/html").to_string();
         self.title = "HTML Content".to_string();
         self.loading = true;
         self.load_progress = 0;
-
         self.loading_started.emit(self.url.clone());
-
         let _ = html;
-
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -185,17 +154,13 @@ impl WebEngineViewEnhanced {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
         self.url = base_url.to_string();
         self.title = format!("Data: {}", mime_type);
         self.loading = true;
         self.load_progress = 0;
-
         self.loading_started.emit(self.url.clone());
-
         let _ = data;
-
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -203,7 +168,6 @@ impl WebEngineViewEnhanced {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-
     pub fn go_back(&mut self) {
         if let Some(url) = self.history.go_back() {
             self.url = url;
@@ -215,7 +179,6 @@ impl WebEngineViewEnhanced {
             self.base.request_redraw();
         }
     }
-
     pub fn go_forward(&mut self) {
         if let Some(url) = self.history.go_forward() {
             self.url = url;
@@ -227,7 +190,6 @@ impl WebEngineViewEnhanced {
             self.base.request_redraw();
         }
     }
-
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
             self.loading = true;
@@ -239,7 +201,6 @@ impl WebEngineViewEnhanced {
             self.base.request_redraw();
         }
     }
-
     pub fn stop(&mut self) {
         if self.loading {
             self.loading = false;
@@ -248,47 +209,38 @@ impl WebEngineViewEnhanced {
             self.base.request_redraw();
         }
     }
-
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title.clone();
             self.title_changed.emit(title);
         }
     }
-
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
         if !self.settings.javascript_enabled {
             return Err(super::js_engine::JsError::new(
                 "JavaScript is disabled".to_string(),
             ));
         }
-
         let result = self.js_engine.evaluate(script, &mut self.js_context)?;
-
         for msg in self.js_context.console_messages() {
             let level = format!("{:?}", msg.level);
             self.console_message
                 .emit((level, msg.line, msg.message.clone()));
         }
-
         Ok(result)
     }
-
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.settings.javascript_enabled = enabled;
     }
-
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.settings.plugins_enabled = enabled;
     }
-
     pub fn set_private_browsing(&mut self, enabled: bool) {
         self.settings.private_browsing = enabled;
         if enabled {
             self.privacy = TrackingProtection::new(PrivacySettings::strict());
         }
     }
-
     pub fn clear_browsing_data(&mut self, data: super::privacy::BrowsingData) {
         if data.cookies {
             self.cookies.clear();
@@ -298,13 +250,11 @@ impl WebEngineViewEnhanced {
             self.history.clear();
         }
     }
-
     fn update_navigation_state(&self) {
         self.navigation_state_changed
             .emit((self.can_go_back(), self.can_go_forward()));
     }
 }
-
 impl Widget for WebEngineViewEnhanced {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -403,7 +353,6 @@ impl Widget for WebEngineViewEnhanced {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for WebEngineViewEnhanced {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

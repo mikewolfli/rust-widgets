@@ -1,5 +1,4 @@
 //! Status bar widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Status bar widget — shows status messages and permanent widgets.
 pub struct StatusBar {
     base: BaseWidget,
@@ -16,7 +14,6 @@ pub struct StatusBar {
     size_grip_enabled: bool,
     pub message_changed: Signal1<String>,
 }
-
 impl StatusBar {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -27,7 +24,6 @@ impl StatusBar {
             message_changed: Signal1::new(),
         }
     }
-
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -37,27 +33,22 @@ impl StatusBar {
     pub fn size_grip_enabled(&self) -> bool {
         self.size_grip_enabled
     }
-
     /// Show a temporary status message (timeout_ms is informational; actual timeout managed externally).
     pub fn show_message(&mut self, message: impl Into<String>, _timeout_ms: u64) {
         self.message = message.into();
         self.message_changed.emit(self.message.clone());
     }
-
     pub fn clear_message(&mut self) {
         self.message.clear();
         self.message_changed.emit(String::new());
     }
-
     pub fn set_permanent_message(&mut self, msg: impl Into<String>) {
         self.permanent_message = msg.into();
     }
-
     pub fn set_size_grip_enabled(&mut self, enabled: bool) {
         self.size_grip_enabled = enabled;
     }
 }
-
 impl Widget for StatusBar {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -156,75 +147,49 @@ impl Widget for StatusBar {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for StatusBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
     }
 }
-
 impl Draw for StatusBar {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
+        self.base.paint(context);
         let rect = self.geometry();
-
         // Background
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(240, 240, 240),
+        context.fill_rect(rect, Color::from_rgb(240, 240, 240));
+        context.draw_line(Point::new(Point::new(rect.x, rect.y)), Point::new(Point::new(rect.x + rect.width as i32 as i32, rect.y)), Color::from_rgb(200, 200, 200),
         );
-        context.draw_line(
-            rect.x,
-            rect.y,
-            rect.x + rect.width,
-            rect.y,
-            Color::from_rgb(200, 200, 200),
-        );
-
         // Temporary message (left side)
         if !self.message.is_empty() {
             context.draw_text(
-                rect.x + 6.0,
-                rect.y + rect.height / 2.0,
+                Point::new(rect.x + 6, rect.y + (rect.height as i32) / 2),
                 &self.message,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Left,
             );
         }
-
         // Permanent message (right side, before size grip)
         if !self.permanent_message.is_empty() {
             let right_x = if self.size_grip_enabled {
-                rect.x + rect.width - 20.0
+                rect.x + rect.width as i32 as i32 - 20
             } else {
-                rect.x + rect.width - 4.0
+                rect.x + rect.width as i32 as i32 - 4
             };
             context.draw_text(
-                right_x,
-                rect.y + rect.height / 2.0,
+                Point::new(right_x, rect.y + (rect.height as i32) / 2),
                 &self.permanent_message,
                 &Font::default(),
                 Color::from_rgb(80, 80, 80),
-                Alignment::Right,
             );
         }
-
         // Size grip (bottom-right corner)
         if self.size_grip_enabled {
-            let gx = rect.x + rect.width - 14.0;
-            let gy = rect.y + rect.height - 14.0;
+            let gx = rect.x + rect.width as i32 as i32 - 14;
+            let gy = rect.y + rect.height as i32 as i32 - 14;
             for i in 0..3 {
-                let offset = i as f32 * 4.0;
-                context.draw_line(
-                    gx + offset,
-                    gy + 12.0,
-                    gx + 12.0,
-                    gy + offset,
-                    Color::from_rgb(160, 160, 160),
+                let offset = i * 4;
+                context.draw_line(Point::new(Point::new(gx + offset, gy + 12)), Point::new(Point::new(gx + 12, gy + offset)), Color::from_rgb(160, 160, 160),
                 );
             }
         }

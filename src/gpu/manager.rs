@@ -7,16 +7,13 @@
 //! - Detects performance traps and provides user guidance
 //!
 //! This integrates with the existing memory pool system in `crate::memory`.
-
 use std::sync::Mutex;
-
 use super::adapter::{AdapterInfo, AdapterSelectionStrategy, AdapterSelector};
 use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
 use super::performance::{
     AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
 use crate::quality::{QualityLevel, QualityManager};
-
 /// GPU operation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuOperationMode {
@@ -27,7 +24,6 @@ pub enum GpuOperationMode {
     /// Hybrid mode (CPU fallback for some operations)
     Hybrid,
 }
-
 /// Hardware-adaptive GPU manager
 pub struct GpuManager {
     /// Selected adapter info
@@ -47,28 +43,23 @@ pub struct GpuManager {
     /// Performance warnings
     warnings: Mutex<Vec<String>>,
 }
-
 impl GpuManager {
     /// Creates a new GPU manager with automatic hardware detection
     pub async fn new() -> Result<Self, GpuManagerError> {
         Self::with_strategy(AdapterSelectionStrategy::Auto).await
     }
-
     /// Creates a new GPU manager with specific selection strategy
     pub async fn with_strategy(
         strategy: AdapterSelectionStrategy,
     ) -> Result<Self, GpuManagerError> {
         let selector = AdapterSelector::with_strategy(strategy);
-
         // Try to select adapter
         let adapter_info = selector
             .select_adapter_with_fallback(None)
             .await
             .map_err(|e| GpuManagerError::AdapterSelectionFailed(e.to_string()))?;
-
         Self::from_adapter_info(adapter_info).await
     }
-
     /// Creates a GPU manager from adapter info
     pub async fn from_adapter_info(adapter_info: AdapterInfo) -> Result<Self, GpuManagerError> {
         let mode = if adapter_info.device_type.is_cpu() {
@@ -76,14 +67,11 @@ impl GpuManager {
         } else {
             GpuOperationMode::Hardware
         };
-
         // Create buffer pool based on device type
         let buffer_pool = GpuStagingBufferPool::for_gpu_type(adapter_info.device_type);
-
         // Create performance monitor
         let performance_monitor =
             AdaptivePerformanceMonitor::for_device_type(adapter_info.device_type);
-
         // Create quality manager with hardware-aware initial quality
         let gpu_capability = crate::quality::GpuCapability {
             supports_high_quality: adapter_info.supports_high_quality(),
@@ -94,7 +82,6 @@ impl GpuManager {
             crate::quality::QualityConfig::default(),
             gpu_capability,
         );
-
         // Create performance trap detector
         let low_fps_threshold = if adapter_info.device_type.is_cpu() {
             15.0 // Lower threshold for CPU
@@ -104,10 +91,8 @@ impl GpuManager {
             25.0
         };
         let trap_detector = PerformanceTrapDetector::new(low_fps_threshold, 10);
-
         // Detect browser environment
         let is_browser = super::adapter::detect_browser_forced_integrated_gpu();
-
         let manager = Self {
             adapter_info,
             mode,
@@ -118,49 +103,40 @@ impl GpuManager {
             is_browser,
             warnings: Mutex::new(Vec::new()),
         };
-
         // Check for browser forced iGPU
         if is_browser && manager.adapter_info.device_type.is_integrated() {
             manager.add_warning(
                 "Browser is forcing integrated GPU. For best performance, run outside browser.",
             );
         }
-
         Ok(manager)
     }
-
     /// Returns the selected adapter info
     pub fn adapter_info(&self) -> &AdapterInfo {
         &self.adapter_info
     }
-
     /// Returns the operation mode
     pub fn operation_mode(&self) -> GpuOperationMode {
         self.mode
     }
-
     /// Returns true if using hardware GPU
     pub fn is_hardware(&self) -> bool {
         matches!(self.mode, GpuOperationMode::Hardware)
     }
-
     /// Returns true if using CPU software rendering
     pub fn is_software(&self) -> bool {
         matches!(self.mode, GpuOperationMode::Software)
     }
-
     /// Begins a new frame
     pub fn begin_frame(&self) {
         if let Ok(mut monitor) = self.performance_monitor.lock() {
             monitor.begin_frame();
         }
-
         // Advance buffer pool
         if let Ok(mut pool) = self.buffer_pool.lock() {
             pool.next_frame();
         }
     }
-
     /// Ends the current frame and updates performance monitoring
     pub fn end_frame(&self) -> Option<PerformanceStats> {
         let sample = if let Ok(mut monitor) = self.performance_monitor.lock() {
@@ -168,14 +144,12 @@ impl GpuManager {
         } else {
             None
         };
-
         // Update quality manager
         if let Ok(mut quality) = self.quality_manager.lock() {
             if let Some(ref s) = sample {
                 quality.finish_frame(s.frame_duration);
             }
         }
-
         // Check for performance traps
         if let Ok(mut detector) = self.trap_detector.lock() {
             if let Some(sample) = sample {
@@ -185,12 +159,10 @@ impl GpuManager {
                 }
             }
         }
-
         // Auto-adjust thresholds periodically
         if let Ok(mut monitor) = self.performance_monitor.lock() {
             monitor.auto_adjust_thresholds();
         }
-
         // Return stats
         if let Ok(monitor) = self.performance_monitor.lock() {
             Some(monitor.stats())
@@ -198,7 +170,6 @@ impl GpuManager {
             None
         }
     }
-
     /// Handles a performance trap
     fn handle_performance_trap(&self, trap: PerformanceTrap) {
         match &trap {
@@ -220,7 +191,6 @@ impl GpuManager {
             }
         }
     }
-
     /// Adds a warning message
     fn add_warning(&self, message: &str) {
         if let Ok(mut warnings) = self.warnings.lock() {
@@ -230,7 +200,6 @@ impl GpuManager {
             }
         }
     }
-
     /// Returns all warnings
     pub fn warnings(&self) -> Vec<String> {
         if let Ok(warnings) = self.warnings.lock() {
@@ -239,14 +208,12 @@ impl GpuManager {
             Vec::new()
         }
     }
-
     /// Clears all warnings
     pub fn clear_warnings(&self) {
         if let Ok(mut warnings) = self.warnings.lock() {
             warnings.clear();
         }
     }
-
     /// Returns the current quality level
     pub fn current_quality(&self) -> QualityLevel {
         if let Ok(quality) = self.quality_manager.lock() {
@@ -255,14 +222,12 @@ impl GpuManager {
             QualityLevel::Medium
         }
     }
-
     /// Sets the quality level manually
     pub fn set_quality(&self, level: QualityLevel) {
         if let Ok(mut quality) = self.quality_manager.lock() {
             quality.set_quality_level(level);
         }
     }
-
     /// Returns buffer pool statistics
     pub fn buffer_pool_stats(&self) -> Option<GpuBufferPoolStats> {
         if let Ok(pool) = self.buffer_pool.lock() {
@@ -271,7 +236,6 @@ impl GpuManager {
             None
         }
     }
-
     /// Returns performance statistics
     pub fn performance_stats(&self) -> Option<PerformanceStats> {
         if let Ok(monitor) = self.performance_monitor.lock() {
@@ -280,7 +244,6 @@ impl GpuManager {
             None
         }
     }
-
     /// Returns true if should degrade quality
     pub fn should_degrade_quality(&self) -> bool {
         if let Ok(monitor) = self.performance_monitor.lock() {
@@ -289,7 +252,6 @@ impl GpuManager {
             false
         }
     }
-
     /// Returns true if should upgrade quality
     pub fn should_upgrade_quality(&self) -> bool {
         if let Ok(monitor) = self.performance_monitor.lock() {
@@ -298,11 +260,9 @@ impl GpuManager {
             false
         }
     }
-
     /// Returns recommended actions based on current state
     pub fn recommended_actions(&self) -> Vec<GpuManagerAction> {
         let mut actions = Vec::new();
-
         // Check if quality is at minimum and performance is still bad
         if self.current_quality() == QualityLevel::Low {
             if let Some(stats) = self.performance_stats() {
@@ -315,40 +275,32 @@ impl GpuManager {
                 }
             }
         }
-
         // Check for sustained low performance
         if let Some(stats) = self.performance_stats() {
             if stats.consecutive_bad_frames > 30 {
                 actions.push(GpuManagerAction::SuggestCloseOtherApplications);
             }
         }
-
         actions
     }
-
     /// Returns a summary of the current GPU configuration
     pub fn configuration_summary(&self) -> String {
         let mut summary = String::new();
-
         summary.push_str(&format!("GPU: {}\n", self.adapter_info.name));
         summary.push_str(&format!("Type: {}\n", self.adapter_info.device_type));
         summary.push_str(&format!("Mode: {:?}\n", self.mode));
         summary.push_str(&format!("Quality: {:?}\n", self.current_quality()));
-
         if let Some(stats) = self.performance_stats() {
             summary.push_str(&format!("FPS: {:.1}\n", stats.current_fps));
             summary.push_str(&format!("Stability: {:.0}%\n", stats.stability * 100.0));
         }
-
         if let Some(pool_stats) = self.buffer_pool_stats() {
             let utilization = pool_stats.used_size as f32 / pool_stats.total_size as f32 * 100.0;
             summary.push_str(&format!("Buffer Pool: {:.0}%\n", utilization));
         }
-
         summary
     }
 }
-
 /// Actions recommended by the GPU manager
 #[derive(Debug, Clone)]
 pub enum GpuManagerAction {
@@ -363,7 +315,6 @@ pub enum GpuManagerAction {
     /// Suggest updating GPU drivers
     SuggestUpdateDrivers,
 }
-
 impl GpuManagerAction {
     /// Returns a user-friendly message
     pub fn message(&self) -> String {
@@ -385,7 +336,6 @@ impl GpuManagerAction {
             }
         }
     }
-
     /// Returns the priority (higher = more urgent)
     pub fn priority(&self) -> u8 {
         match self {
@@ -397,7 +347,6 @@ impl GpuManagerAction {
         }
     }
 }
-
 /// GPU manager errors
 #[derive(Debug, Clone)]
 pub enum GpuManagerError {
@@ -408,7 +357,6 @@ pub enum GpuManagerError {
     /// No suitable GPU found
     NoSuitableGpu,
 }
-
 impl std::fmt::Display for GpuManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -418,16 +366,13 @@ impl std::fmt::Display for GpuManagerError {
         }
     }
 }
-
 impl std::error::Error for GpuManagerError {}
-
 /// Builder for GPU manager
 pub struct GpuManagerBuilder {
     strategy: AdapterSelectionStrategy,
     allow_fallback: bool,
     target_quality: QualityLevel,
 }
-
 impl GpuManagerBuilder {
     /// Creates a new builder
     pub fn new() -> Self {
@@ -437,41 +382,34 @@ impl GpuManagerBuilder {
             target_quality: QualityLevel::High,
         }
     }
-
     /// Sets the selection strategy
     pub fn strategy(mut self, strategy: AdapterSelectionStrategy) -> Self {
         self.strategy = strategy;
         self
     }
-
     /// Sets whether to allow fallback
     pub fn allow_fallback(mut self, allow: bool) -> Self {
         self.allow_fallback = allow;
         self
     }
-
     /// Sets the target quality
     pub fn target_quality(mut self, quality: QualityLevel) -> Self {
         self.target_quality = quality;
         self
     }
-
     /// Builds the GPU manager
     pub async fn build(self) -> Result<GpuManager, GpuManagerError> {
         GpuManager::with_strategy(self.strategy).await
     }
 }
-
 impl Default for GpuManagerBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_gpu_manager_action_priority() {
         assert!(
@@ -479,14 +417,12 @@ mod tests {
                 > GpuManagerAction::SuggestCloseOtherApplications.priority()
         );
     }
-
     #[test]
     fn test_gpu_manager_action_messages() {
         let action = GpuManagerAction::SuggestSwitchToCpuMode;
         let msg = action.message();
         assert!(msg.contains("CPU"));
     }
-
     #[test]
     fn test_operation_mode() {
         assert!(matches!(

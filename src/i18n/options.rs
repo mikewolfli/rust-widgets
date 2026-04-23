@@ -1,5 +1,4 @@
 //! i18n options - configuration and initialization types
-
 /// Initialization options for i18n system
 #[derive(Debug, Clone)]
 pub struct InitOptions {
@@ -10,7 +9,6 @@ pub struct InitOptions {
     /// Enable diagnostics output
     pub diagnostics: bool,
 }
-
 impl Default for InitOptions {
     fn default() -> Self {
         Self {
@@ -20,7 +18,6 @@ impl Default for InitOptions {
         }
     }
 }
-
 /// Initialization report
 #[derive(Debug, Clone)]
 pub struct InitReport {
@@ -31,7 +28,6 @@ pub struct InitReport {
     /// Any errors that occurred during initialization
     pub errors: Vec<String>,
 }
-
 impl InitReport {
     /// Create a new empty report
     pub fn new() -> Self {
@@ -42,7 +38,6 @@ impl InitReport {
         }
     }
 }
-
 impl Default for InitReport {
     fn default() -> Self {
         Self::new()

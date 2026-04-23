@@ -1,5 +1,4 @@
 //! Input dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Input dialog input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -16,7 +14,6 @@ pub enum InputMode {
     Double,
     Item,
 }
-
 /// Input dialog for simple user input.
 pub struct InputDialog {
     base: BaseWidget,
@@ -41,7 +38,6 @@ pub struct InputDialog {
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
 }
-
 impl InputDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -51,7 +47,7 @@ impl InputDialog {
             mode: InputMode::Text,
             text_value: String::new(),
             int_value: 0,
-            double_value: 0.0,
+            double_value: 0,
             items: Vec::new(),
             current_item: 0,
             int_min: i64::MIN,
@@ -59,7 +55,7 @@ impl InputDialog {
             int_step: 1,
             double_min: f64::MIN,
             double_max: f64::MAX,
-            double_step: 1.0,
+            double_step: 1,
             double_decimals: 1,
             text_value_changed: Signal1::new(),
             int_value_changed: Signal1::new(),
@@ -68,7 +64,6 @@ impl InputDialog {
             rejected: GenericSignal::new(),
         }
     }
-
     pub fn get_text(
         geometry: Rect,
         title: impl Into<String>,
@@ -82,7 +77,6 @@ impl InputDialog {
         d.mode = InputMode::Text;
         d
     }
-
     pub fn get_int(
         geometry: Rect,
         title: impl Into<String>,
@@ -102,7 +96,6 @@ impl InputDialog {
         d.mode = InputMode::Integer;
         d
     }
-
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -127,7 +120,6 @@ impl InputDialog {
     pub fn current_item_text(&self) -> Option<&str> {
         self.items.get(self.current_item).map(|s| s.as_str())
     }
-
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
     }
@@ -150,18 +142,15 @@ impl InputDialog {
     pub fn set_double_value(&mut self, v: f64) {
         self.double_value = v.clamp(self.double_min, self.double_max);
     }
-
     pub fn accept(&mut self) {
         self.accepted.emit();
         self.hide();
     }
-
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();
     }
 }
-
 impl Widget for InputDialog {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -260,7 +249,6 @@ impl Widget for InputDialog {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for InputDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -279,12 +267,9 @@ impl EventHandler for InputDialog {
         }
     }
 }
-
 impl Draw for InputDialog {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         context.fill_rect(
             rect.x,
             rect.y,
@@ -303,45 +288,42 @@ impl Draw for InputDialog {
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
         // Label
         context.draw_text(
-            rect.x + 10.0,
-            rect.y + 48.0,
+            rect.x + 10,
+            rect.y + 48,
             &self.label_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // Input field
-        let input_y = rect.y + 60.0;
+        let input_y = rect.y + 60;
         context.fill_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             input_y,
-            rect.width - 20.0,
-            26.0,
+            rect.width - 20,
+            26,
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             input_y,
-            rect.width - 20.0,
-            26.0,
+            rect.width - 20,
+            26,
             Color::from_rgb(150, 150, 150),
         );
-
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
             InputMode::Integer => self.int_value.to_string(),
@@ -353,48 +335,47 @@ impl Draw for InputDialog {
             InputMode::Item => self.current_item_text().unwrap_or("").to_string(),
         };
         context.draw_text(
-            rect.x + 14.0,
-            input_y + 13.0,
+            rect.x + 14,
+            input_y + 13,
             &display_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // OK/Cancel
-        let btn_y = rect.y + rect.height - 40.0;
+        let btn_y = rect.y + rect.height as i32 - 40;
         context.fill_rect(
-            rect.x + rect.width - 176.0,
+            rect.x + rect.width as i32 - 176,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width - 136.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 136,
+            btn_y + 14,
             "OK",
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width - 48.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 48,
+            btn_y + 14,
             "Cancel",
             &Font::default(),
             Color::from_rgb(0, 0, 0),

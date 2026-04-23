@@ -1,5 +1,4 @@
 //! Radio button widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Radio button widget.
 pub struct RadioButton {
     base: BaseWidget,
@@ -16,7 +14,6 @@ pub struct RadioButton {
     pub selected: GenericSignal,
     pub checked_changed: Signal1<bool>,
 }
-
 impl RadioButton {
     /// Creates an unchecked radio button with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -28,22 +25,18 @@ impl RadioButton {
             checked_changed: Signal1::new(),
         }
     }
-
     /// Returns current checked state.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
-
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
         self.group_id = group_id;
     }
-
     /// Returns optional group identifier.
     pub fn group_id(&self) -> Option<&str> {
         self.group_id.as_deref()
     }
-
     /// Sets checked state and emits deterministic signals.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked == checked {
@@ -55,13 +48,11 @@ impl RadioButton {
             self.selected.emit();
         }
     }
-
     /// Selects one radio button within a peer group.
     pub fn select_in_group(peers: &mut [&mut RadioButton], selected_index: usize) -> bool {
         if selected_index >= peers.len() {
             return false;
         }
-
         let selected_group = peers[selected_index].group_id.clone();
         for (index, peer) in peers.iter_mut().enumerate() {
             if selected_group.is_some() && peer.group_id != selected_group {
@@ -72,7 +63,6 @@ impl RadioButton {
         true
     }
 }
-
 // Implement Widget trait
 impl Widget for RadioButton {
     fn id(&self) -> ObjectId {
@@ -172,7 +162,6 @@ impl Widget for RadioButton {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for RadioButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -200,29 +189,28 @@ impl EventHandler for RadioButton {
         }
     }
 }
-
 impl Draw for RadioButton {
-    fn draw(&self, context: &mut RenderContext) {
-        // Draw base widget
-        self.base.draw(context);
-
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw radio button
         let rect = self.geometry();
-        let center_x = rect.x + rect.width / 2.0;
-        let center_y = rect.y + rect.height / 2.0;
-        let radius = rect.height.min(rect.width) / 4.0;
-
+        let center = Point::new(
+            rect.x + rect.width as i32 as i32 / 2,
+            rect.y + rect.height as i32 as i32 / 2,
+        );
+        let radius = (rect.height.min(rect.width) / 4) as u32;
         // Draw outer circle
-        context.draw_circle(center_x, center_y, radius, Color::from_rgb(100, 100, 100));
-
+        context.draw_circle(
+            center,
+            radius,
+            Color::from_rgb(100 as u32, 100, 100),
+        );
         // Draw inner circle if checked
         if self.checked {
-            let inner_radius = radius / 2.0;
+            let inner_radius = radius / 2;
             context.fill_circle(
-                center_x,
-                center_y,
+                center,
                 inner_radius,
-                Color::from_rgb(0, 120, 215),
+                Color::from_rgb(0 as u32, 120, 215),
             );
         }
     }

@@ -18,10 +18,8 @@
 //!
 //! The conversion is handled automatically by the chart rendering code, so you can work with
 //! natural data coordinates when creating charts.
-
 use crate::core::{Color, Point, Rect};
 use std::fs;
-
 /// Chart data point
 #[derive(Debug, Clone)]
 pub struct DataPoint {
@@ -32,7 +30,6 @@ pub struct DataPoint {
     /// Optional point label for legends/tooltips.
     pub label: Option<String>,
 }
-
 /// Chart series
 #[derive(Debug, Clone)]
 pub struct ChartSeries {
@@ -45,7 +42,6 @@ pub struct ChartSeries {
     /// Visibility flag for filtering/toggling.
     pub visible: bool,
 }
-
 /// Chart type
 pub enum ChartType {
     /// Polyline chart.
@@ -55,21 +51,18 @@ pub enum ChartType {
     /// Pie chart.
     Pie,
 }
-
 #[derive(Default)]
 /// In-memory chart draw-command collector used by tests/demos.
 pub struct MemoryChartContext {
     /// Recorded draw commands for tests/demos.
     pub commands: Vec<String>,
 }
-
 /// SVG chart context that emits real vector drawing output.
 pub struct SvgChartContext {
     width: u32,
     height: u32,
     elements: Vec<String>,
 }
-
 impl SvgChartContext {
     /// Create SVG context with explicit viewport size.
     pub fn new(width: u32, height: u32) -> Self {
@@ -79,7 +72,6 @@ impl SvgChartContext {
             elements: Vec::new(),
         }
     }
-
     /// Return SVG XML text.
     pub fn to_svg_string(&self) -> String {
         let mut svg = String::new();
@@ -94,13 +86,11 @@ impl SvgChartContext {
         svg.push_str("</svg>\n");
         svg
     }
-
     /// Save SVG XML text to a file path.
     pub fn save(&self, path: &str) -> Result<(), std::io::Error> {
         fs::write(path, self.to_svg_string())
     }
 }
-
 impl ChartContext for SvgChartContext {
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
         self.elements.push(format!(
@@ -114,7 +104,6 @@ impl ChartContext for SvgChartContext {
             width.max(0.1)
         ));
     }
-
     fn draw_rect(&mut self, rect: Rect, color: Color) {
         self.elements.push(format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"{}\" stroke-opacity=\"{:.3}\" stroke-width=\"1\" />",
@@ -126,7 +115,6 @@ impl ChartContext for SvgChartContext {
             svg_alpha(color)
         ));
     }
-
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
         self.elements.push(format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" font-size=\"{:.2}\" font-family=\"sans-serif\">{}</text>",
@@ -138,7 +126,6 @@ impl ChartContext for SvgChartContext {
             svg_escape_text(text)
         ));
     }
-
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color) {
         self.elements.push(format!(
             "<circle cx=\"{}\" cy=\"{}\" r=\"{:.2}\" fill=\"none\" stroke=\"{}\" stroke-opacity=\"{:.3}\" stroke-width=\"2\" />",
@@ -150,7 +137,6 @@ impl ChartContext for SvgChartContext {
         ));
     }
 }
-
 /// Render chart into SVG content and write to file.
 pub fn render_chart_to_svg_file(
     chart: &dyn Chart,
@@ -163,70 +149,54 @@ pub fn render_chart_to_svg_file(
     chart.draw(rect, &mut context);
     context.save(path)
 }
-
 impl ChartContext for MemoryChartContext {
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, _color: Color) {
         self.commands
             .push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
     }
-
     fn draw_rect(&mut self, rect: Rect, _color: Color) {
         self.commands.push(format!(
             "rect:{},{},{},{}",
             rect.x, rect.y, rect.width, rect.height
         ));
     }
-
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, _color: Color) {
         self.commands
             .push(format!("text:{text}@{x},{y}:{font_size}"));
     }
-
     fn draw_circle(&mut self, center: Point, radius: f32, _color: Color) {
         self.commands
             .push(format!("circle:{},{}:{radius}", center.x, center.y));
     }
 }
-
 /// Chart
 pub trait Chart {
     /// Add a series
     fn add_series(&mut self, series: ChartSeries);
-
     /// Remove a series
     fn remove_series(&mut self, name: &str);
-
     /// Clear all series
     fn clear_series(&mut self);
-
     /// Set chart title
     fn set_title(&mut self, title: String);
-
     /// Set x-axis label
     fn set_x_axis_label(&mut self, label: String);
-
     /// Set y-axis label
     fn set_y_axis_label(&mut self, label: String);
-
     /// Draw the chart
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext);
 }
-
 /// Chart context
 pub trait ChartContext {
     /// Draw line
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color);
-
     /// Draw rectangle
     fn draw_rect(&mut self, rect: Rect, color: Color);
-
     /// Draw text
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color);
-
     /// Draw circle
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
 }
-
 /// Line chart
 pub struct LineChart {
     title: String,
@@ -237,7 +207,6 @@ pub struct LineChart {
     y_tick_count: usize,
     show_grid: bool,
 }
-
 /// Common cartesian layout for line/bar style charts.
 struct CartesianLayout {
     plot_x: f32,
@@ -247,7 +216,6 @@ struct CartesianLayout {
     legend_x: f32,
     legend_y: f32,
 }
-
 fn compute_cartesian_layout(
     rect: Rect,
     has_x_label: bool,
@@ -258,12 +226,10 @@ fn compute_cartesian_layout(
     let top_margin = 32.0;
     let bottom_margin = if has_x_label { 52.0 } else { 36.0 };
     let right_margin = if legend_items > 0 { 170.0 } else { 24.0 };
-
     let plot_x = rect.x as f32 + left_margin;
     let plot_y = rect.y as f32 + top_margin;
     let plot_w = (rect.width as f32 - left_margin - right_margin).max(1.0);
     let plot_h = (rect.height as f32 - top_margin - bottom_margin).max(1.0);
-
     CartesianLayout {
         plot_x,
         plot_y,
@@ -273,7 +239,6 @@ fn compute_cartesian_layout(
         legend_y: plot_y + 8.0,
     }
 }
-
 fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
     let axis_color = Color {
         r: 90,
@@ -281,24 +246,11 @@ fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout)
         b: 90,
         a: 255,
     };
-    context.draw_line(
-        layout.plot_x,
-        layout.plot_y + layout.plot_h,
-        layout.plot_x + layout.plot_w,
-        layout.plot_y + layout.plot_h,
-        1.0,
-        axis_color,
-    );
-    context.draw_line(
-        layout.plot_x,
-        layout.plot_y,
-        layout.plot_x,
-        layout.plot_y + layout.plot_h,
-        1.0,
-        axis_color,
-    );
+    context.draw_line(Point::new(layout.plot_x, layout.plot_y + layout.plot_h), Point::new(layout.plot_x + layout.plot_w, layout.plot_y + layout.plot_h), 1.0,
+        axis_color,);
+    context.draw_line(Point::new(layout.plot_x, layout.plot_y), Point::new(layout.plot_x, layout.plot_y + layout.plot_h), 1.0,
+        axis_color,);
 }
-
 fn draw_y_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
@@ -330,16 +282,10 @@ fn draw_y_ticks(
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
         if draw_grid {
-            context.draw_line(
-                layout.plot_x,
-                y,
-                layout.plot_x + layout.plot_w,
-                y,
-                1.0,
-                grid_color,
-            );
+            context.draw_line(Point::new(layout.plot_x, y), Point::new(layout.plot_x + layout.plot_w, y), 1.0,
+                grid_color,);
         }
-        context.draw_line(layout.plot_x - 4.0, y, layout.plot_x, y, 1.0, axis_color);
+        context.draw_line(Point::new(Point::new(Point::new(layout.plot_x - 4.0, y))), Point::new(Point::new(Point::new(layout.plot_x, y))), 1.0, axis_color);
         let value = min_y + (max_y - min_y) * t as f64;
         context.draw_text(
             &format!("{value:.1}"),
@@ -350,7 +296,6 @@ fn draw_y_ticks(
         );
     }
 }
-
 fn draw_x_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
@@ -382,23 +327,11 @@ fn draw_x_ticks(
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
         if draw_grid {
-            context.draw_line(
-                x,
-                layout.plot_y,
-                x,
-                layout.plot_y + layout.plot_h,
-                1.0,
-                grid_color,
-            );
+            context.draw_line(Point::new(x, layout.plot_y), Point::new(x, layout.plot_y + layout.plot_h), 1.0,
+                grid_color,);
         }
-        context.draw_line(
-            x,
-            layout.plot_y + layout.plot_h,
-            x,
-            layout.plot_y + layout.plot_h + 4.0,
-            1.0,
-            axis_color,
-        );
+        context.draw_line(Point::new(x, layout.plot_y + layout.plot_h), Point::new(x, layout.plot_y + layout.plot_h + 4.0), 1.0,
+            axis_color,);
         let value = min_x + (max_x - min_x) * t as f64;
         context.draw_text(
             &format!("{value:.1}"),
@@ -409,27 +342,18 @@ fn draw_x_ticks(
         );
     }
 }
-
 fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series: &[&ChartSeries]) {
     if series.is_empty() {
         return;
     }
-
     // Keep one legend row roughly every 18 px and reserve one row for overflow summary.
     let max_rows = ((layout.plot_h / 18.0).floor() as usize).max(1);
     let max_items = max_rows.saturating_sub(1).max(1);
     let max_label_chars = 20usize;
-
     let mut cursor_y = layout.legend_y;
     for item in series.iter().take(max_items) {
-        context.draw_line(
-            layout.legend_x,
-            cursor_y,
-            layout.legend_x + 20.0,
-            cursor_y,
-            3.0,
-            item.color,
-        );
+        context.draw_line(Point::new(layout.legend_x, cursor_y), Point::new(layout.legend_x + 20.0, cursor_y), 3.0,
+            item.color,);
         context.draw_text(
             &truncate_legend_label(&item.name, max_label_chars),
             layout.legend_x + 26.0,
@@ -444,7 +368,6 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
         );
         cursor_y += 18.0;
     }
-
     let hidden = series.len().saturating_sub(max_items);
     if hidden > 0 {
         context.draw_text(
@@ -461,7 +384,6 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
         );
     }
 }
-
 fn truncate_legend_label(label: &str, max_chars: usize) -> String {
     let char_count = label.chars().count();
     if char_count <= max_chars {
@@ -474,7 +396,6 @@ fn truncate_legend_label(label: &str, max_chars: usize) -> String {
     let prefix = label.chars().take(kept).collect::<String>();
     format!("{prefix}...")
 }
-
 impl LineChart {
     /// Create a new line chart
     pub fn new() -> Self {
@@ -488,54 +409,43 @@ impl LineChart {
             show_grid: false,
         }
     }
-
     /// Configure x-axis tick density for line chart rendering.
     pub fn set_x_tick_count(&mut self, tick_count: usize) {
         self.x_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Configure y-axis tick density for line chart rendering.
     pub fn set_y_tick_count(&mut self, tick_count: usize) {
         self.y_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Enable or disable cartesian gridline rendering.
     pub fn set_grid_enabled(&mut self, enabled: bool) {
         self.show_grid = enabled;
     }
 }
-
 impl Default for LineChart {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Chart for LineChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-
     fn clear_series(&mut self) {
         self.series.clear();
     }
-
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
-
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(
             rect,
@@ -558,7 +468,6 @@ impl Chart for LineChart {
                 a: 255,
             },
         );
-
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
@@ -568,7 +477,6 @@ impl Chart for LineChart {
             visible_series.len(),
         );
         draw_cartesian_axes(context, &layout);
-
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
@@ -586,7 +494,6 @@ impl Chart for LineChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-
         draw_x_ticks(
             context,
             &layout,
@@ -603,7 +510,6 @@ impl Chart for LineChart {
             self.y_tick_count,
             self.show_grid,
         );
-
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -618,7 +524,6 @@ impl Chart for LineChart {
                 },
             );
         }
-
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
@@ -633,7 +538,6 @@ impl Chart for LineChart {
                 },
             );
         }
-
         for series in &visible_series {
             if series.data.len() < 2 {
                 continue;
@@ -647,14 +551,12 @@ impl Chart for LineChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(x1, y1, x2, y2, 2.0, series.color);
+                context.draw_line(Point::new(Point::new(Point::new(x1, y1))), Point::new(Point::new(Point::new(x2, y2))), 2.0, series.color);
             }
         }
-
         draw_legend(context, &layout, &visible_series);
     }
 }
-
 /// Bar chart
 pub struct BarChart {
     title: String,
@@ -665,7 +567,6 @@ pub struct BarChart {
     y_tick_count: usize,
     show_grid: bool,
 }
-
 impl BarChart {
     /// Create a new bar chart
     pub fn new() -> Self {
@@ -679,53 +580,43 @@ impl BarChart {
             show_grid: false,
         }
     }
-
     /// Configure x-axis tick density for bar chart rendering.
     pub fn set_x_tick_count(&mut self, tick_count: usize) {
         self.x_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Configure y-axis tick density for bar chart rendering.
     pub fn set_y_tick_count(&mut self, tick_count: usize) {
         self.y_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Enable or disable cartesian gridline rendering.
     pub fn set_grid_enabled(&mut self, enabled: bool) {
         self.show_grid = enabled;
     }
 }
-
 impl Default for BarChart {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Chart for BarChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-
     fn clear_series(&mut self) {
         self.series.clear();
     }
-
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(
             rect,
@@ -748,7 +639,6 @@ impl Chart for BarChart {
                 a: 255,
             },
         );
-
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
         if visible_series.is_empty() {
@@ -761,7 +651,6 @@ impl Chart for BarChart {
             visible_series.len(),
         );
         draw_cartesian_axes(context, &layout);
-
         let mut max_y = 1.0f64;
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
@@ -778,7 +667,6 @@ impl Chart for BarChart {
             return;
         }
         let span_x = (max_x - min_x).max(1.0);
-
         draw_x_ticks(
             context,
             &layout,
@@ -795,7 +683,6 @@ impl Chart for BarChart {
             self.y_tick_count,
             self.show_grid,
         );
-
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -810,7 +697,6 @@ impl Chart for BarChart {
                 },
             );
         }
-
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
@@ -825,10 +711,8 @@ impl Chart for BarChart {
                 },
             );
         }
-
         let point_slots = points_per_series.max(1) * visible_series.len();
         let bar_width = (layout.plot_w / (point_slots as f32 + 1.0)).clamp(4.0, 24.0);
-
         for (series_index, series) in visible_series.iter().enumerate() {
             for point in &series.data {
                 let base_x = layout.plot_x
@@ -844,17 +728,14 @@ impl Chart for BarChart {
                 context.draw_rect(bar, series.color);
             }
         }
-
         draw_legend(context, &layout, &visible_series);
     }
 }
-
 /// Pie chart
 pub struct PieChart {
     title: String,
     series: Vec<ChartSeries>,
 }
-
 impl PieChart {
     /// Create a new pie chart
     pub fn new() -> Self {
@@ -864,38 +745,30 @@ impl PieChart {
         }
     }
 }
-
 impl Default for PieChart {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Chart for PieChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-
     fn clear_series(&mut self) {
         self.series.clear();
     }
-
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     fn set_x_axis_label(&mut self, _label: String) {
         // Not used in pie chart
     }
-
     fn set_y_axis_label(&mut self, _label: String) {
         // Not used in pie chart
     }
-
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_text(
             &self.title,
@@ -910,8 +783,8 @@ impl Chart for PieChart {
             },
         );
         let center = Point {
-            x: rect.x + rect.width as i32 / 2,
-            y: rect.y + rect.height as i32 / 2,
+            x: rect.x + rect.width as i32 as i32 / 2,
+            y: rect.y + rect.height as i32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 3) as f32;
         for series in &self.series {
@@ -922,7 +795,6 @@ impl Chart for PieChart {
         }
     }
 }
-
 /// Scatter plot chart
 pub struct ScatterChart {
     title: String,
@@ -934,7 +806,6 @@ pub struct ScatterChart {
     show_grid: bool,
     point_radius: f32,
 }
-
 impl ScatterChart {
     /// Create a new scatter plot chart
     pub fn new() -> Self {
@@ -949,59 +820,47 @@ impl ScatterChart {
             point_radius: 4.0,
         }
     }
-
     /// Configure x-axis tick density
     pub fn set_x_tick_count(&mut self, tick_count: usize) {
         self.x_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Configure y-axis tick density
     pub fn set_y_tick_count(&mut self, tick_count: usize) {
         self.y_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Enable or disable grid rendering
     pub fn set_grid_enabled(&mut self, enabled: bool) {
         self.show_grid = enabled;
     }
-
     /// Set point radius
     pub fn set_point_radius(&mut self, radius: f32) {
         self.point_radius = radius.max(1.0);
     }
 }
-
 impl Default for ScatterChart {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Chart for ScatterChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-
     fn clear_series(&mut self) {
         self.series.clear();
     }
-
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
-
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(
             rect,
@@ -1024,7 +883,6 @@ impl Chart for ScatterChart {
                 a: 255,
             },
         );
-
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
@@ -1034,7 +892,6 @@ impl Chart for ScatterChart {
             visible_series.len(),
         );
         draw_cartesian_axes(context, &layout);
-
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
@@ -1052,7 +909,6 @@ impl Chart for ScatterChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-
         draw_x_ticks(
             context,
             &layout,
@@ -1069,7 +925,6 @@ impl Chart for ScatterChart {
             self.y_tick_count,
             self.show_grid,
         );
-
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -1084,7 +939,6 @@ impl Chart for ScatterChart {
                 },
             );
         }
-
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
@@ -1099,7 +953,6 @@ impl Chart for ScatterChart {
                 },
             );
         }
-
         for series in &visible_series {
             for point in &series.data {
                 let x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * layout.plot_w;
@@ -1115,11 +968,9 @@ impl Chart for ScatterChart {
                 );
             }
         }
-
         draw_legend(context, &layout, &visible_series);
     }
 }
-
 /// Area chart
 pub struct AreaChart {
     title: String,
@@ -1131,7 +982,6 @@ pub struct AreaChart {
     show_grid: bool,
     stacked: bool,
 }
-
 impl AreaChart {
     /// Create a new area chart
     pub fn new() -> Self {
@@ -1146,59 +996,47 @@ impl AreaChart {
             stacked: false,
         }
     }
-
     /// Configure x-axis tick density
     pub fn set_x_tick_count(&mut self, tick_count: usize) {
         self.x_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Configure y-axis tick density
     pub fn set_y_tick_count(&mut self, tick_count: usize) {
         self.y_tick_count = tick_count.clamp(2, 16);
     }
-
     /// Enable or disable grid rendering
     pub fn set_grid_enabled(&mut self, enabled: bool) {
         self.show_grid = enabled;
     }
-
     /// Set stacked mode
     pub fn set_stacked(&mut self, stacked: bool) {
         self.stacked = stacked;
     }
 }
-
 impl Default for AreaChart {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Chart for AreaChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
     }
-
     fn remove_series(&mut self, name: &str) {
         self.series.retain(|s| s.name != name);
     }
-
     fn clear_series(&mut self) {
         self.series.clear();
     }
-
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     fn set_x_axis_label(&mut self, label: String) {
         self.x_axis_label = label;
     }
-
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
-
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(
             rect,
@@ -1221,7 +1059,6 @@ impl Chart for AreaChart {
                 a: 255,
             },
         );
-
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
         let layout = compute_cartesian_layout(
@@ -1231,7 +1068,6 @@ impl Chart for AreaChart {
             visible_series.len(),
         );
         draw_cartesian_axes(context, &layout);
-
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
@@ -1249,7 +1085,6 @@ impl Chart for AreaChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-
         draw_x_ticks(
             context,
             &layout,
@@ -1266,7 +1101,6 @@ impl Chart for AreaChart {
             self.y_tick_count,
             self.show_grid,
         );
-
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -1281,7 +1115,6 @@ impl Chart for AreaChart {
                 },
             );
         }
-
         if !self.y_axis_label.is_empty() {
             context.draw_text(
                 &self.y_axis_label,
@@ -1296,7 +1129,6 @@ impl Chart for AreaChart {
                 },
             );
         }
-
         for series in &visible_series {
             if series.data.len() < 2 {
                 continue;
@@ -1310,32 +1142,26 @@ impl Chart for AreaChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(x1, y1, x2, y2, 2.0, series.color);
+                context.draw_line(Point::new(Point::new(Point::new(x1, y1))), Point::new(Point::new(Point::new(x2, y2))), 2.0, series.color);
             }
         }
-
         draw_legend(context, &layout, &visible_series);
     }
 }
-
 fn svg_color_hex(color: Color) -> String {
     format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
 }
-
 fn svg_alpha(color: Color) -> f32 {
     color.a as f32 / 255.0
 }
-
 fn svg_escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn stable_hash64(input: &str) -> u64 {
         // FNV-1a 64-bit stable hash for deterministic snapshot checks.
         let mut hash: u64 = 0xcbf29ce484222325;
@@ -1345,7 +1171,6 @@ mod tests {
         }
         hash
     }
-
     fn count_numeric_text_labels(commands: &[String]) -> usize {
         commands
             .iter()
@@ -1354,7 +1179,6 @@ mod tests {
             .filter(|text| text.parse::<f64>().is_ok())
             .count()
     }
-
     fn sample_series(name: &str, color: Color, points: &[(f64, f64)]) -> ChartSeries {
         ChartSeries {
             name: name.to_string(),
@@ -1370,7 +1194,6 @@ mod tests {
             visible: true,
         }
     }
-
     #[test]
     fn line_chart_draws_axis_labels_and_legend() {
         let mut chart = LineChart::new();
@@ -1397,7 +1220,6 @@ mod tests {
             },
             &[(0.0, 15.0), (1.0, 30.0), (2.0, 24.0)],
         ));
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1408,7 +1230,6 @@ mod tests {
             },
             &mut context,
         );
-
         assert!(context
             .commands
             .iter()
@@ -1417,7 +1238,6 @@ mod tests {
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:p50@")));
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:p95@")));
     }
-
     #[test]
     fn bar_chart_draws_legend_and_axis_ticks() {
         let mut chart = BarChart::new();
@@ -1434,7 +1254,6 @@ mod tests {
             },
             &[(0.0, 20.0), (1.0, 40.0), (2.0, 30.0)],
         ));
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1445,7 +1264,6 @@ mod tests {
             },
             &mut context,
         );
-
         assert!(context
             .commands
             .iter()
@@ -1460,7 +1278,6 @@ mod tests {
             .any(|cmd| cmd.contains("text:region-a@")));
         assert!(context.commands.iter().any(|cmd| cmd.starts_with("line:")));
     }
-
     #[test]
     fn legend_truncates_long_labels() {
         let mut chart = LineChart::new();
@@ -1475,7 +1292,6 @@ mod tests {
             },
             &[(0.0, 1.0), (1.0, 2.0)],
         ));
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1486,7 +1302,6 @@ mod tests {
             },
             &mut context,
         );
-
         let truncated_entry = context
             .commands
             .iter()
@@ -1500,7 +1315,6 @@ mod tests {
                     .contains("text:this-is-a-very-long-legend-label-that-should-truncate@"))
         );
     }
-
     #[test]
     fn legend_shows_overflow_summary() {
         let mut chart = LineChart::new();
@@ -1517,7 +1331,6 @@ mod tests {
                 &[(0.0, index as f64 + 1.0), (1.0, index as f64 + 2.0)],
             ));
         }
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1528,11 +1341,9 @@ mod tests {
             },
             &mut context,
         );
-
         assert!(context.commands.iter().any(|cmd| cmd.contains("text:+")));
         assert!(context.commands.iter().any(|cmd| cmd.contains("more@")));
     }
-
     #[test]
     fn line_chart_respects_tick_density_configuration() {
         let mut chart = LineChart::new();
@@ -1549,7 +1360,6 @@ mod tests {
             },
             &[(0.0, 0.0), (1.0, 10.0), (2.0, 20.0)],
         ));
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1560,11 +1370,9 @@ mod tests {
             },
             &mut context,
         );
-
         // x ticks: 4 labels (0..=3), y ticks: 5 labels (0..=4)
         assert_eq!(count_numeric_text_labels(&context.commands), 9);
     }
-
     #[test]
     fn bar_chart_respects_tick_density_configuration() {
         let mut chart = BarChart::new();
@@ -1581,7 +1389,6 @@ mod tests {
             },
             &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
         ));
-
         let mut context = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1592,11 +1399,9 @@ mod tests {
             },
             &mut context,
         );
-
         // x ticks: 7 labels (0..=6), y ticks: 3 labels (0..=2)
         assert_eq!(count_numeric_text_labels(&context.commands), 10);
     }
-
     #[test]
     fn line_chart_gridline_toggle_changes_line_count() {
         let mut chart = LineChart::new();
@@ -1613,7 +1418,6 @@ mod tests {
             },
             &[(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)],
         ));
-
         let mut without_grid = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1629,7 +1433,6 @@ mod tests {
             .iter()
             .filter(|cmd| cmd.starts_with("line:"))
             .count();
-
         chart.set_grid_enabled(true);
         let mut with_grid = MemoryChartContext::default();
         chart.draw(
@@ -1646,10 +1449,8 @@ mod tests {
             .iter()
             .filter(|cmd| cmd.starts_with("line:"))
             .count();
-
         assert!(with_count > without_count);
     }
-
     #[test]
     fn bar_chart_gridline_toggle_changes_line_count() {
         let mut chart = BarChart::new();
@@ -1666,7 +1467,6 @@ mod tests {
             },
             &[(0.0, 5.0), (1.0, 10.0), (2.0, 8.0)],
         ));
-
         let mut without_grid = MemoryChartContext::default();
         chart.draw(
             Rect {
@@ -1682,7 +1482,6 @@ mod tests {
             .iter()
             .filter(|cmd| cmd.starts_with("line:"))
             .count();
-
         chart.set_grid_enabled(true);
         let mut with_grid = MemoryChartContext::default();
         chart.draw(
@@ -1699,10 +1498,8 @@ mod tests {
             .iter()
             .filter(|cmd| cmd.starts_with("line:"))
             .count();
-
         assert!(with_count > without_count);
     }
-
     #[test]
     fn svg_snapshot_line_chart_stable() {
         let mut chart = LineChart::new();
@@ -1722,7 +1519,6 @@ mod tests {
             },
             &[(0.0, 1.0), (1.0, 4.0), (2.0, 2.0), (3.0, 5.0)],
         ));
-
         let mut context = SvgChartContext::new(640, 360);
         chart.draw(
             Rect {
@@ -1738,7 +1534,6 @@ mod tests {
         let expected = 11261639005027384391u64;
         assert_eq!(got, expected, "line snapshot hash changed: {got}");
     }
-
     #[test]
     fn svg_snapshot_bar_chart_stable() {
         let mut chart = BarChart::new();
@@ -1758,7 +1553,6 @@ mod tests {
             },
             &[(0.0, 2.0), (1.0, 5.0), (2.0, 3.0)],
         ));
-
         let mut context = SvgChartContext::new(640, 360);
         chart.draw(
             Rect {

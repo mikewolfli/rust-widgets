@@ -1,5 +1,4 @@
 //! Multi-line text edit widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Multi-line text edit widget.
 pub struct TextEdit {
     base: BaseWidget,
@@ -19,7 +17,6 @@ pub struct TextEdit {
     pub text_changed: Signal1<String>,
     pub cursor_position_changed: Signal1<usize>,
 }
-
 impl TextEdit {
     /// Creates an empty text edit with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -34,12 +31,10 @@ impl TextEdit {
             cursor_position_changed: Signal1::new(),
         }
     }
-
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
     }
-
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: String) {
         if self.text == text {
@@ -48,22 +43,18 @@ impl TextEdit {
         self.text = text;
         self.text_changed.emit(self.text.clone());
     }
-
     /// Returns placeholder text.
     pub fn placeholder_text(&self) -> &str {
         &self.placeholder_text
     }
-
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
         self.placeholder_text = text;
     }
-
     /// Returns maximum text length.
     pub fn max_length(&self) -> Option<usize> {
         self.max_length
     }
-
     /// Sets maximum text length.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
@@ -75,27 +66,22 @@ impl TextEdit {
             }
         }
     }
-
     /// Returns whether the widget is read-only.
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
-
     /// Sets read-only state.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
     }
-
     /// Returns whether line wrap is enabled.
     pub fn line_wrap(&self) -> bool {
         self.line_wrap
     }
-
     /// Sets line wrap state.
     pub fn set_line_wrap(&mut self, line_wrap: bool) {
         self.line_wrap = line_wrap;
     }
-
     /// Returns number of lines in the text.
     pub fn line_count(&self) -> usize {
         if self.text.is_empty() {
@@ -104,12 +90,10 @@ impl TextEdit {
             self.text.chars().filter(|&c| c == '\n').count() + 1
         }
     }
-
     /// Returns text at specified line (0-indexed).
     pub fn line_text(&self, line: usize) -> Option<&str> {
         let mut start = 0;
         let mut current_line = 0;
-
         for (i, ch) in self.text.char_indices() {
             if ch == '\n' {
                 if current_line == line {
@@ -119,31 +103,26 @@ impl TextEdit {
                 current_line += 1;
             }
         }
-
         if current_line == line {
             Some(&self.text[start..])
         } else {
             None
         }
     }
-
     /// Appends text to the end.
     pub fn append(&mut self, text: &str) {
         self.text.push_str(text);
         self.text_changed.emit(self.text.clone());
     }
-
     /// Clears all text.
     pub fn clear(&mut self) {
         self.set_text(String::new());
     }
-
     /// Returns whether the text edit is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
 }
-
 // Implement Widget trait
 impl Widget for TextEdit {
     fn id(&self) -> ObjectId {
@@ -243,14 +222,12 @@ impl Widget for TextEdit {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for TextEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() || self.read_only {
             return;
         }
-
         match event {
             Event::KeyPress { key, modifiers } => {
                 match *key {
@@ -281,51 +258,30 @@ impl EventHandler for TextEdit {
         }
     }
 }
-
 impl Draw for TextEdit {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-        let padding = 4.0;
+        let padding = 4;
         let text_x = rect.x + padding;
         let text_y = rect.y + padding;
-
         // Draw background
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(255, 255, 255),
-        );
-
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(200, 200, 200),
-        );
-
+        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
         } else {
             &self.text
         };
-
         if !display_text.is_empty() {
             // Simple text drawing - in real implementation would handle line wrapping
             context.draw_text(
-                text_x,
-                text_y,
+                Point::new(text_x, text_y),
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
-                Alignment::Left,
             );
         }
     }

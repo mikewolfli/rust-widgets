@@ -1,5 +1,4 @@
 //! Message box dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageBoxIcon {
@@ -17,7 +15,6 @@ pub enum MessageBoxIcon {
     Warning,
     Critical,
 }
-
 /// Standard buttons for message boxes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandardButton {
@@ -36,7 +33,6 @@ pub enum StandardButton {
     Ignore,
     Help,
 }
-
 impl StandardButton {
     pub fn label(&self) -> &'static str {
         match self {
@@ -57,7 +53,6 @@ impl StandardButton {
         }
     }
 }
-
 /// Message box dialog.
 pub struct MessageBox {
     base: BaseWidget,
@@ -70,7 +65,6 @@ pub struct MessageBox {
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
 }
-
 impl MessageBox {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -85,7 +79,6 @@ impl MessageBox {
             rejected: GenericSignal::new(),
         }
     }
-
     pub fn question(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -95,7 +88,6 @@ impl MessageBox {
         mb.default_button = Some(StandardButton::Yes);
         mb
     }
-
     pub fn information(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -103,7 +95,6 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Information;
         mb
     }
-
     pub fn warning(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -111,7 +102,6 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Warning;
         mb
     }
-
     pub fn critical(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -119,7 +109,6 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Critical;
         mb
     }
-
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -135,7 +124,6 @@ impl MessageBox {
     pub fn default_button(&self) -> Option<StandardButton> {
         self.default_button
     }
-
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
     }
@@ -151,7 +139,6 @@ impl MessageBox {
     pub fn set_default_button(&mut self, btn: StandardButton) {
         self.default_button = Some(btn);
     }
-
     pub fn click_button(&mut self, btn: StandardButton) {
         self.button_clicked.emit(btn);
         match btn {
@@ -166,7 +153,6 @@ impl MessageBox {
             }
         }
     }
-
     fn icon_symbol(&self) -> &'static str {
         match self.icon {
             MessageBoxIcon::Information => "ℹ",
@@ -176,7 +162,6 @@ impl MessageBox {
             MessageBoxIcon::NoIcon => "",
         }
     }
-
     fn icon_color(&self) -> Color {
         match self.icon {
             MessageBoxIcon::Information => Color::from_rgb(0, 120, 215),
@@ -187,7 +172,6 @@ impl MessageBox {
         }
     }
 }
-
 impl Widget for MessageBox {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -286,7 +270,6 @@ impl Widget for MessageBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for MessageBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -315,12 +298,9 @@ impl EventHandler for MessageBox {
         }
     }
 }
-
 impl Draw for MessageBox {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         // Dialog background
         context.fill_rect(
             rect.x,
@@ -336,59 +316,54 @@ impl Draw for MessageBox {
             rect.height,
             Color::from_rgb(160, 160, 160),
         );
-
         // Title bar
         context.fill_rect(
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
         // Icon
         let icon_sym = self.icon_symbol();
         if !icon_sym.is_empty() {
             context.draw_text(
-                rect.x + 20.0,
-                rect.y + 60.0,
+                rect.x + 20,
+                rect.y + 60,
                 icon_sym,
                 &Font::default(),
                 self.icon_color(),
                 Alignment::Left,
             );
         }
-
         // Message text
         let text_x = if self.icon == MessageBoxIcon::NoIcon {
-            rect.x + 12.0
+            rect.x + 12
         } else {
-            rect.x + 60.0
+            rect.x + 60
         };
         context.draw_text(
             text_x,
-            rect.y + 60.0,
+            rect.y + 60,
             &self.text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // Buttons
-        let btn_h = 28.0;
-        let btn_w = 80.0;
-        let btn_y = rect.y + rect.height - btn_h - 12.0;
-        let total_btn_w = self.buttons.len() as f32 * (btn_w + 8.0);
-        let mut btn_x = rect.x + rect.width - total_btn_w;
-
+        let btn_h = 28;
+        let btn_w = 80;
+        let btn_y = rect.y + rect.height as i32 - btn_h - 12;
+        let total_btn_w = self.buttons.len() as f32 * (btn_w + 8);
+        let mut btn_x = rect.x + rect.width as i32 - total_btn_w;
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
             let bg = if is_default {
@@ -401,17 +376,17 @@ impl Draw for MessageBox {
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-            context.fill_rect(btn_x, btn_y, btn_w, btn_h, bg);
-            context.draw_rect(btn_x, btn_y, btn_w, btn_h, Color::from_rgb(100, 100, 100));
+            context.fill_rect(Rect::new(btn_x, btn_y, btn_w, btn_h), bg);
+            context.draw_rect(Rect::new(btn_x, btn_y), Color::from_rgb(100, 100, 100));
             context.draw_text(
-                btn_x + btn_w / 2.0,
-                btn_y + btn_h / 2.0,
+                btn_x + btn_w / 2,
+                btn_y + btn_h / 2,
                 btn.label(),
                 &Font::default(),
                 fg,
                 Alignment::Center,
             );
-            btn_x += btn_w + 8.0;
+            btn_x += btn_w + 8;
         }
     }
 }

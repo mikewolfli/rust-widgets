@@ -1,5 +1,4 @@
 //! Scroll bar widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -22,7 +20,6 @@ pub struct ScrollBar {
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
 }
-
 /// Scroll bar orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
@@ -31,13 +28,11 @@ pub enum Orientation {
     /// Vertical scroll bar (top to bottom)
     Vertical,
 }
-
 impl Default for Orientation {
     fn default() -> Self {
         Self::Horizontal
     }
 }
-
 impl ScrollBar {
     /// Creates a scroll bar with default range 0-100.
     pub fn new(geometry: Rect) -> Self {
@@ -55,12 +50,10 @@ impl ScrollBar {
             slider_released: GenericSignal::new(),
         }
     }
-
     /// Returns minimum value.
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
-
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
         self.minimum = minimum;
@@ -69,12 +62,10 @@ impl ScrollBar {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
         self.maximum
     }
-
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
         self.maximum = maximum;
@@ -83,19 +74,16 @@ impl ScrollBar {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Sets range.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns current value.
     pub fn value(&self) -> i32 {
         self.value
     }
-
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
         let clamped = value.clamp(self.minimum, self.maximum);
@@ -105,105 +93,90 @@ impl ScrollBar {
         self.value = clamped;
         self.value_changed.emit(self.value);
     }
-
     /// Returns single step value.
     pub fn single_step(&self) -> i32 {
         self.single_step
     }
-
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
     }
-
     /// Returns page step value.
     pub fn page_step(&self) -> i32 {
         self.page_step
     }
-
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
     }
-
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
         self.orientation
     }
-
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
     }
-
     /// Returns slider size as percentage of visible area.
     pub fn slider_size(&self) -> f32 {
         if self.maximum == self.minimum {
-            return 1.0;
+            return 1;
         }
         let page_size = self.page_step as f32;
         let total_range = (self.maximum - self.minimum) as f32;
         (page_size / total_range).clamp(0.1, 0.9)
     }
-
     /// Returns slider position as percentage.
     pub fn slider_position(&self) -> f32 {
         if self.maximum == self.minimum {
-            return 0.0;
+            return 0;
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
-
     /// Returns value for a given pixel position.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
         let rect = self.geometry();
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
-
         match self.orientation {
             Orientation::Horizontal => {
-                let available_width = rect.width * (1.0 - slider_size);
+                let available_width = rect.width * (1 - slider_size);
                 let relative = (pos - rect.x) / available_width;
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
+                let value = self.minimum as f32 + range * relative.clamp(0, 1);
                 value.round() as i32
             }
             Orientation::Vertical => {
-                let available_height = rect.height * (1.0 - slider_size);
+                let available_height = rect.height * (1 - slider_size);
                 let relative = (pos - rect.y) / available_height;
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
+                let value = self.minimum as f32 + range * relative.clamp(0, 1);
                 value.round() as i32
             }
         }
     }
-
     /// Returns pixel position for a given value.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let rect = self.geometry();
         let clamped = value.clamp(self.minimum, self.maximum);
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
-
-        if range == 0.0 {
+        if range == 0 {
             return match self.orientation {
                 Orientation::Horizontal => rect.x,
                 Orientation::Vertical => rect.y,
             };
         }
-
         let relative = (clamped - self.minimum) as f32 / range;
-
         match self.orientation {
             Orientation::Horizontal => {
-                let available_width = rect.width * (1.0 - slider_size);
+                let available_width = rect.width * (1 - slider_size);
                 rect.x + available_width * relative
             }
             Orientation::Vertical => {
-                let available_height = rect.height * (1.0 - slider_size);
+                let available_height = rect.height * (1 - slider_size);
                 rect.y + available_height * relative
             }
         }
     }
-
     /// Triggers a scroll action.
     pub fn trigger_action(&mut self, action: ScrollBarAction) {
         match action {
@@ -237,7 +210,6 @@ impl ScrollBar {
         }
     }
 }
-
 /// Scroll bar actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollBarAction {
@@ -260,7 +232,6 @@ pub enum ScrollBarAction {
     /// Move slider to maximum
     SliderToMaximum,
 }
-
 // Implement Widget trait
 impl Widget for ScrollBar {
     fn id(&self) -> ObjectId {
@@ -360,14 +331,12 @@ impl Widget for ScrollBar {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ScrollBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -437,16 +406,12 @@ impl EventHandler for ScrollBar {
         }
     }
 }
-
 impl Draw for ScrollBar {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = self.slider_size();
-
         // Draw background
         context.fill_rect(
             rect.x,
@@ -455,7 +420,6 @@ impl Draw for ScrollBar {
             rect.height,
             Color::from_rgb(240, 240, 240),
         );
-
         // Draw border
         context.draw_rect(
             rect.x,
@@ -464,7 +428,6 @@ impl Draw for ScrollBar {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Draw slider
         match self.orientation {
             Orientation::Horizontal => {
@@ -476,7 +439,6 @@ impl Draw for ScrollBar {
                     rect.height,
                     Color::from_rgb(180, 180, 180),
                 );
-
                 // Draw slider border
                 context.draw_rect(
                     slider_pos,
@@ -485,29 +447,26 @@ impl Draw for ScrollBar {
                     rect.height,
                     Color::from_rgb(150, 150, 150),
                 );
-
                 // Draw arrows
                 let arrow_size = rect.height.min(rect.width * 0.2);
-
                 // Left arrow
                 context.fill_triangle(
-                    rect.x + arrow_size / 2.0,
-                    rect.y + rect.height / 2.0,
+                    rect.x + arrow_size / 2,
+                    rect.y + rect.height as i32 / 2,
                     rect.x + arrow_size,
-                    rect.y + rect.height / 4.0,
+                    rect.y + rect.height as i32 / 4,
                     rect.x + arrow_size,
-                    rect.y + rect.height * 3.0 / 4.0,
+                    rect.y + rect.height as i32 * 3 / 4,
                     Color::from_rgb(100, 100, 100),
                 );
-
                 // Right arrow
                 context.fill_triangle(
-                    rect.x + rect.width - arrow_size / 2.0,
-                    rect.y + rect.height / 2.0,
-                    rect.x + rect.width - arrow_size,
-                    rect.y + rect.height / 4.0,
-                    rect.x + rect.width - arrow_size,
-                    rect.y + rect.height * 3.0 / 4.0,
+                    rect.x + rect.width as i32 - arrow_size / 2,
+                    rect.y + rect.height as i32 / 2,
+                    rect.x + rect.width as i32 - arrow_size,
+                    rect.y + rect.height as i32 / 4,
+                    rect.x + rect.width as i32 - arrow_size,
+                    rect.y + rect.height as i32 * 3 / 4,
                     Color::from_rgb(100, 100, 100),
                 );
             }
@@ -520,7 +479,6 @@ impl Draw for ScrollBar {
                     slider_height,
                     Color::from_rgb(180, 180, 180),
                 );
-
                 // Draw slider border
                 context.draw_rect(
                     rect.x,
@@ -529,29 +487,26 @@ impl Draw for ScrollBar {
                     slider_height,
                     Color::from_rgb(150, 150, 150),
                 );
-
                 // Draw arrows
                 let arrow_size = rect.width.min(rect.height * 0.2);
-
                 // Up arrow
                 context.fill_triangle(
-                    rect.x + rect.width / 2.0,
-                    rect.y + arrow_size / 2.0,
-                    rect.x + rect.width / 4.0,
+                    rect.x + rect.width as i32 / 2,
+                    rect.y + arrow_size / 2,
+                    rect.x + rect.width as i32 / 4,
                     rect.y + arrow_size,
-                    rect.x + rect.width * 3.0 / 4.0,
+                    rect.x + rect.width as i32 * 3 / 4,
                     rect.y + arrow_size,
                     Color::from_rgb(100, 100, 100),
                 );
-
                 // Down arrow
                 context.fill_triangle(
-                    rect.x + rect.width / 2.0,
-                    rect.y + rect.height - arrow_size / 2.0,
-                    rect.x + rect.width / 4.0,
-                    rect.y + rect.height - arrow_size,
-                    rect.x + rect.width * 3.0 / 4.0,
-                    rect.y + rect.height - arrow_size,
+                    rect.x + rect.width as i32 / 2,
+                    rect.y + rect.height as i32 - arrow_size / 2,
+                    rect.x + rect.width as i32 / 4,
+                    rect.y + rect.height as i32 - arrow_size,
+                    rect.x + rect.width as i32 * 3 / 4,
+                    rect.y + rect.height as i32 - arrow_size,
                     Color::from_rgb(100, 100, 100),
                 );
             }

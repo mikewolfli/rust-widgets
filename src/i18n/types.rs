@@ -1,8 +1,6 @@
 //! i18n types - data structures for internationalization
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
 /// Translation entry
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Translation {
@@ -10,14 +8,12 @@ pub struct Translation {
     pub message: String,
     pub plural: Option<HashMap<u32, String>>,
 }
-
 /// Translation file
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranslationFile {
     pub language: String,
     pub translations: HashMap<String, Translation>,
 }
-
 /// Reload event notification
 #[derive(Debug, Clone)]
 pub enum ReloadEvent {

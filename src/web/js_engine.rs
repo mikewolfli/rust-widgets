@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsValue {
     Undefined,
@@ -12,13 +11,11 @@ pub enum JsValue {
     Object(HashMap<String, JsValue>),
     Function(String),
 }
-
 impl Default for JsValue {
     fn default() -> Self {
         Self::Undefined
     }
 }
-
 impl JsValue {
     pub fn is_truthy(&self) -> bool {
         match self {
@@ -31,7 +28,6 @@ impl JsValue {
             JsValue::Function(_) => true,
         }
     }
-
     pub fn to_string(&self) -> String {
         match self {
             JsValue::Undefined => "undefined".to_string(),
@@ -53,7 +49,6 @@ impl JsValue {
             JsValue::Function(name) => format!("[Function: {}]", name),
         }
     }
-
     pub fn to_number(&self) -> f64 {
         match self {
             JsValue::Undefined => f64::NAN,
@@ -70,12 +65,10 @@ impl JsValue {
             JsValue::Array(_) | JsValue::Object(_) | JsValue::Function(_) => f64::NAN,
         }
     }
-
     pub fn to_boolean(&self) -> bool {
         self.is_truthy()
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct JsError {
     pub message: String,
@@ -83,7 +76,6 @@ pub struct JsError {
     pub line: Option<u32>,
     pub column: Option<u32>,
 }
-
 impl JsError {
     pub fn new(message: String) -> Self {
         Self {
@@ -93,7 +85,6 @@ impl JsError {
             column: None,
         }
     }
-
     pub fn with_location(message: String, line: u32, column: u32) -> Self {
         Self {
             message,
@@ -103,7 +94,6 @@ impl JsError {
         }
     }
 }
-
 impl std::fmt::Display for JsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "JsError: {}", self.message)?;
@@ -113,17 +103,13 @@ impl std::fmt::Display for JsError {
         Ok(())
     }
 }
-
 impl std::error::Error for JsError {}
-
 pub type JsResult<T> = Result<T, JsError>;
-
 #[derive(Debug, Clone)]
 pub struct JsContext {
     global: HashMap<String, JsValue>,
     console_messages: Vec<ConsoleMessage>,
 }
-
 #[derive(Debug, Clone)]
 pub struct ConsoleMessage {
     pub level: ConsoleLevel,
@@ -131,7 +117,6 @@ pub struct ConsoleMessage {
     pub line: u32,
     pub source: String,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleLevel {
     Log,
@@ -140,46 +125,36 @@ pub enum ConsoleLevel {
     Error,
     Debug,
 }
-
 impl JsContext {
     pub fn new() -> Self {
         let mut global = HashMap::new();
-
         global.insert("undefined".to_string(), JsValue::Undefined);
         global.insert("NaN".to_string(), JsValue::Number(f64::NAN));
         global.insert("Infinity".to_string(), JsValue::Number(f64::INFINITY));
-
         Self {
             global,
             console_messages: Vec::new(),
         }
     }
-
     pub fn set_global(&mut self, name: &str, value: JsValue) {
         self.global.insert(name.to_string(), value);
     }
-
     pub fn get_global(&self, name: &str) -> Option<&JsValue> {
         self.global.get(name)
     }
-
     pub fn console_messages(&self) -> &[ConsoleMessage] {
         &self.console_messages
     }
-
     pub fn clear_console(&mut self) {
         self.console_messages.clear();
     }
-
     // ...existing code...
 }
-
 impl Default for JsContext {
     fn default() -> Self {
         Self::new()
     }
 }
-
 pub trait JsEngine: Send + Sync {
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue>;
     fn call_function(
@@ -191,21 +166,17 @@ pub trait JsEngine: Send + Sync {
     fn set_global(&mut self, name: &str, value: JsValue, context: &mut JsContext) -> JsResult<()>;
     fn get_global(&self, name: &str, context: &JsContext) -> Option<JsValue>;
 }
-
 pub struct SimpleJsEngine {
     variables: HashMap<String, JsValue>,
 }
-
 impl SimpleJsEngine {
     pub fn new() -> Self {
         Self {
             variables: HashMap::new(),
         }
     }
-
     fn parse_value(&self, s: &str) -> JsValue {
         let s = s.trim();
-
         if s == "undefined" {
             return JsValue::Undefined;
         }
@@ -227,29 +198,23 @@ impl SimpleJsEngine {
         if let Ok(n) = s.parse::<f64>() {
             return JsValue::Number(n);
         }
-
         if let Some(v) = self.variables.get(s) {
             return v.clone();
         }
-
         JsValue::Undefined
     }
 }
-
 impl Default for SimpleJsEngine {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl JsEngine for SimpleJsEngine {
     fn evaluate(&mut self, script: &str, _context: &mut JsContext) -> JsResult<JsValue> {
         let script = script.trim();
-
         if script.is_empty() {
             return Ok(JsValue::Undefined);
         }
-
         if script.starts_with("console.log(") || script.starts_with("console.info(") {
             let start = script.find('(').unwrap() + 1;
             let end = script.rfind(')').unwrap();
@@ -257,7 +222,6 @@ impl JsEngine for SimpleJsEngine {
             let value = self.parse_value(content);
             return Ok(value);
         }
-
         if script.starts_with("var ") {
             let rest = &script[4..];
             if let Some(eq_pos) = rest.find('=') {
@@ -268,7 +232,6 @@ impl JsEngine for SimpleJsEngine {
                 return Ok(value);
             }
         }
-
         if script.starts_with("let ") || script.starts_with("const ") {
             let rest = if script.starts_with("let ") {
                 &script[4..]
@@ -283,7 +246,6 @@ impl JsEngine for SimpleJsEngine {
                 return Ok(value);
             }
         }
-
         if script.contains('=') && !script.starts_with('=') {
             let parts: Vec<&str> = script.splitn(2, '=').collect();
             if parts.len() == 2 {
@@ -294,10 +256,8 @@ impl JsEngine for SimpleJsEngine {
                 return Ok(value);
             }
         }
-
         Ok(self.parse_value(script))
     }
-
     fn call_function(
         &mut self,
         name: &str,
@@ -344,27 +304,21 @@ impl JsEngine for SimpleJsEngine {
             _ => Ok(JsValue::Undefined),
         }
     }
-
     fn set_global(&mut self, name: &str, value: JsValue, _context: &mut JsContext) -> JsResult<()> {
         self.variables.insert(name.to_string(), value);
         Ok(())
     }
-
     fn get_global(&self, name: &str, _context: &JsContext) -> Option<JsValue> {
         self.variables.get(name).cloned()
     }
 }
-
 pub type SharedJsEngine = Arc<Mutex<dyn JsEngine>>;
-
 pub fn create_simple_engine() -> SharedJsEngine {
     Arc::new(Mutex::new(SimpleJsEngine::new()))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_js_value_to_string() {
         assert_eq!(JsValue::Undefined.to_string(), "undefined");
@@ -373,15 +327,12 @@ mod tests {
         assert_eq!(JsValue::Number(42.0).to_string(), "42");
         assert_eq!(JsValue::String("hello".to_string()).to_string(), "hello");
     }
-
     #[test]
     fn test_simple_engine_evaluate() {
         let mut engine = SimpleJsEngine::new();
         let mut context = JsContext::new();
-
         let result = engine.evaluate("var x = 42;", &mut context).unwrap();
         assert_eq!(result, JsValue::Number(42.0));
-
         let result = engine.evaluate("x", &mut context).unwrap();
         assert_eq!(result, JsValue::Number(42.0));
     }

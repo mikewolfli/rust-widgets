@@ -1,19 +1,14 @@
 //! Linux backend shell.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-
 use crate::core::PlatformFamily;
-
 use super::state::BackendState;
 use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum LinuxHandleKind {
     Window,
@@ -33,7 +28,6 @@ enum LinuxHandleKind {
     ToolBar,
     StatusBar,
 }
-
 #[derive(Default)]
 struct LinuxMenuState {
     /// Tracks menu bar attachment by window id.
@@ -47,13 +41,11 @@ struct LinuxMenuState {
     /// FIFO queue for typed widget triggers.
     pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
-
 /// Runtime lifecycle state for Linux backend main loop fallback.
 struct LinuxRuntimeState {
     initialized: AtomicBool,
     running: AtomicBool,
 }
-
 impl LinuxRuntimeState {
     fn new() -> Self {
         Self {
@@ -62,7 +54,6 @@ impl LinuxRuntimeState {
         }
     }
 }
-
 /// Linux desktop platform adapter.
 pub struct LinuxPlatform {
     state: BackendState<LinuxHandleKind>,
@@ -71,7 +62,6 @@ pub struct LinuxPlatform {
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     native: Mutex<LinuxNativeState>,
 }
-
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 #[derive(Default)]
 struct LinuxNativeState {
@@ -86,7 +76,6 @@ struct LinuxNativeState {
     menu_bars: HashMap<u64, gtk::MenuBar>,
     menus: HashMap<u64, gtk::Menu>,
 }
-
 impl LinuxPlatform {
     /// Creates a new Linux platform adapter.
     pub fn new() -> Self {
@@ -99,13 +88,11 @@ impl LinuxPlatform {
         }
     }
 }
-
 impl Default for LinuxPlatform {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl LinuxPlatform {
     /// Insert and initialize one widget state record.
     fn insert_widget(
@@ -119,12 +106,10 @@ impl LinuxPlatform {
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, width, height)
     }
-
     fn kind_of(&self, id: u64) -> Option<LinuxHandleKind> {
         self.state.kind_of(id)
     }
 }
-
 impl Platform for LinuxPlatform {
     fn backend_name(&self) -> &'static str {
         "gtk"
@@ -168,7 +153,6 @@ impl Platform for LinuxPlatform {
             gtk::main_quit();
         }
     }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -177,12 +161,10 @@ impl Platform for LinuxPlatform {
             window.set_title(title);
             window.set_default_size(width as i32, height as i32);
             window.move_(x, y);
-
             let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
             let fixed = gtk::Fixed::new();
             root.pack_start(&fixed, true, true, 0);
             window.add(&root);
-
             let mut native = self.native.lock().expect("linux native lock poisoned");
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
@@ -193,7 +175,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_button(
         &self,
         parent: u64,
@@ -216,7 +197,6 @@ impl Platform for LinuxPlatform {
         {
             let button = gtk::Button::with_label(text);
             button.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             button.connect_clicked(move |_| {
                 // Normalize native button activation to typed trigger event.
@@ -229,7 +209,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::Clicked,
                     });
             });
-
             let widget = button.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -239,7 +218,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_checkbox(
         &self,
         parent: u64,
@@ -262,7 +240,6 @@ impl Platform for LinuxPlatform {
         {
             let checkbox = gtk::CheckButton::with_label(text);
             checkbox.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             checkbox.connect_toggled(move |_| {
                 // Normalize checkbox toggles to click-like activation trigger.
@@ -275,7 +252,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::Clicked,
                     });
             });
-
             let widget = checkbox.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -285,7 +261,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_line_edit(
         &self,
         parent: u64,
@@ -309,7 +284,6 @@ impl Platform for LinuxPlatform {
             let entry = gtk::Entry::new();
             entry.set_text(text);
             entry.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             entry.connect_changed(move |_| {
                 // Normalize text changes to value-changed trigger.
@@ -322,7 +296,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::ValueChanged,
                     });
             });
-
             let widget = entry.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -332,7 +305,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_label(
         &self,
         parent: u64,
@@ -364,7 +336,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_radio_button(
         &self,
         parent: u64,
@@ -387,7 +358,6 @@ impl Platform for LinuxPlatform {
         {
             let radio = gtk::RadioButton::with_label(text);
             radio.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             radio.connect_toggled(move |_| {
                 menus
@@ -399,7 +369,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::Clicked,
                     });
             });
-
             let widget = radio.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -409,7 +378,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
@@ -425,7 +393,6 @@ impl Platform for LinuxPlatform {
             let slider = gtk::Scale::new_with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
             slider.set_size_request(width as i32, height as i32);
             slider.set_draw_value(false);
-
             let menus = Arc::clone(&self.menus);
             slider.connect_value_changed(move |_| {
                 menus
@@ -437,7 +404,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::ValueChanged,
                     });
             });
-
             let widget = slider.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -447,7 +413,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
@@ -478,7 +443,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
@@ -493,7 +457,6 @@ impl Platform for LinuxPlatform {
         {
             let combo = gtk::ComboBoxText::new();
             combo.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             combo.connect_changed(move |_| {
                 menus
@@ -505,7 +468,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::SelectionChanged,
                     });
             });
-
             let widget = combo.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -515,7 +477,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
@@ -530,7 +491,6 @@ impl Platform for LinuxPlatform {
         {
             let list = gtk::ListBox::new();
             list.set_size_request(width as i32, height as i32);
-
             let menus = Arc::clone(&self.menus);
             list.connect_row_selected(move |_, _| {
                 menus
@@ -542,7 +502,6 @@ impl Platform for LinuxPlatform {
                         kind: WidgetTriggerKind::SelectionChanged,
                     });
             });
-
             let widget = list.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(container) = native.content_fixed.get(&parent) {
@@ -552,82 +511,68 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
         eprintln!("[rust_widgets][linux] list_box_add_item unsupported in current backend path");
         false
     }
-
     fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
         eprintln!("[rust_widgets][linux] list_box_remove_item unsupported in current backend path");
         false
     }
-
     fn list_box_clear_items(&self, _list_box: u64) -> bool {
         eprintln!("[rust_widgets][linux] list_box_clear_items unsupported in current backend path");
         false
     }
-
     fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
         eprintln!(
             "[rust_widgets][linux] list_box_set_current_index unsupported in current backend path"
         );
         false
     }
-
     fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
         eprintln!(
             "[rust_widgets][linux] list_box_current_index unsupported in current backend path"
         );
         None
     }
-
     fn list_box_item_count(&self, _list_box: u64) -> usize {
         eprintln!("[rust_widgets][linux] list_box_item_count unsupported in current backend path");
         0
     }
-
     fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
         eprintln!("[rust_widgets][linux] list_box_item_text unsupported in current backend path");
         None
     }
-
     fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
         eprintln!("[rust_widgets][linux] combo_box_add_item unsupported in current backend path");
         false
     }
-
     fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
         eprintln!(
             "[rust_widgets][linux] combo_box_clear_items unsupported in current backend path"
         );
         false
     }
-
     fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
         eprintln!(
             "[rust_widgets][linux] combo_box_set_current_index unsupported in current backend path"
         );
         false
     }
-
     fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
         eprintln!(
             "[rust_widgets][linux] combo_box_current_index unsupported in current backend path"
         );
         None
     }
-
     fn combo_box_item_count(&self, _combo_box: u64) -> usize {
         eprintln!("[rust_widgets][linux] combo_box_item_count unsupported in current backend path");
         0
     }
-
     fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
         eprintln!("[rust_widgets][linux] combo_box_item_text unsupported in current backend path");
         None
     }
-
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
@@ -651,7 +596,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if !matches!(self.kind_of(parent), Some(LinuxHandleKind::Window)) {
             return 0;
@@ -669,7 +613,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if !matches!(
             self.kind_of(parent),
@@ -690,7 +633,6 @@ impl Platform for LinuxPlatform {
             let menu = gtk::Menu::new();
             let menu_item = gtk::MenuItem::with_label(text);
             menu_item.set_submenu(Some(&menu));
-
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(menu_bar) = native.menu_bars.get(&parent) {
                 menu_bar.append(&menu_item);
@@ -701,12 +643,10 @@ impl Platform for LinuxPlatform {
                 .widgets
                 .insert(id, menu_item.clone().upcast::<gtk::Widget>());
             native.menus.insert(id, menu);
-
             let _ = (x, y, width, height);
         }
         id
     }
-
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if !matches!(self.kind_of(parent), Some(LinuxHandleKind::Window)) {
             return 0;
@@ -730,7 +670,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn create_status_bar(
         &self,
         parent: u64,
@@ -762,7 +701,6 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
         // Validate shape first, then attach native menu bar when available.
         if matches!(self.kind_of(window), Some(LinuxHandleKind::Window))
@@ -789,7 +727,6 @@ impl Platform for LinuxPlatform {
         }
         false
     }
-
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
         if !matches!(self.kind_of(parent_menu), Some(LinuxHandleKind::Menu)) {
             return 0;
@@ -814,7 +751,6 @@ impl Platform for LinuxPlatform {
                     .pending_menu_events
                     .push_back(item_id);
             });
-
             let mut native = self.native.lock().expect("linux native lock poisoned");
             if let Some(parent) = native.menus.get(&parent_menu) {
                 parent.append(&menu_item);
@@ -825,7 +761,6 @@ impl Platform for LinuxPlatform {
         }
         item_id
     }
-
     fn poll_menu_triggered(&self) -> Option<u64> {
         self.menus
             .lock()
@@ -833,7 +768,6 @@ impl Platform for LinuxPlatform {
             .pending_menu_events
             .pop_front()
     }
-
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
         // Keep injected events type-safe: only known menu items are accepted.
         if !matches!(self.kind_of(menu_item_id), Some(LinuxHandleKind::MenuItem)) {
@@ -846,12 +780,10 @@ impl Platform for LinuxPlatform {
             .push_back(menu_item_id);
         true
     }
-
     fn poll_widget_triggered(&self) -> Option<u64> {
         self.poll_widget_trigger_event()
             .map(|event| event.widget_id)
     }
-
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.menus
             .lock()
@@ -859,7 +791,6 @@ impl Platform for LinuxPlatform {
             .pending_widget_events
             .pop_front()
     }
-
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
         // Keep injected events deterministic: only known widget ids are accepted.
         if self.kind_of(widget_id).is_none() {
@@ -872,7 +803,6 @@ impl Platform for LinuxPlatform {
             .push_back(WidgetTriggerEvent { widget_id, kind });
         true
     }
-
     fn show_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, true);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -887,7 +817,6 @@ impl Platform for LinuxPlatform {
             }
         }
     }
-
     fn hide_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, false);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -902,7 +831,6 @@ impl Platform for LinuxPlatform {
             }
         }
     }
-
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
         self.state.set_geometry(widget_id, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -930,7 +858,6 @@ impl Platform for LinuxPlatform {
             }
         }
     }
-
     fn set_widget_text(&self, widget_id: u64, text: &str) {
         if !self.state.set_text(widget_id, text) {
             return;
@@ -965,11 +892,9 @@ impl Platform for LinuxPlatform {
                 });
         }
     }
-
     fn get_widget_text(&self, widget_id: u64) -> String {
         self.state.text(widget_id)
     }
-
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
         self.state.set_enabled(widget_id, enabled);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -980,7 +905,6 @@ impl Platform for LinuxPlatform {
             }
         }
     }
-
     fn is_widget_enabled(&self, widget_id: u64) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
@@ -991,7 +915,6 @@ impl Platform for LinuxPlatform {
         }
         self.state.enabled(widget_id)
     }
-
     fn set_widget_visible(&self, widget_id: u64, visible: bool) {
         self.state.set_visible(widget_id, visible);
         if visible {
@@ -1000,7 +923,6 @@ impl Platform for LinuxPlatform {
             self.hide_widget(widget_id);
         }
     }
-
     fn is_widget_visible(&self, widget_id: u64) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
@@ -1014,43 +936,33 @@ impl Platform for LinuxPlatform {
         }
         self.state.visible(widget_id)
     }
-
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }
-
     fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
         self.state.ime_enabled(widget_id)
     }
-
     fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
         self.state.set_accessibility_name(widget_id, name)
     }
-
     fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
         self.state.accessibility_name(widget_id)
     }
-
     fn set_clipboard_text(&self, text: &str) -> bool {
         self.state.set_clipboard_text(text)
     }
-
     fn get_clipboard_text(&self) -> String {
         self.state.clipboard_text()
     }
-
     fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
         self.state.begin_drag(source_widget_id, mime, payload)
     }
-
     fn poll_drop_event(&self) -> Option<DropEvent> {
         self.state.pop_drop_event()
     }
-
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
-
     fn create_message_box(
         &self,
         _parent: u64,
@@ -1064,12 +976,10 @@ impl Platform for LinuxPlatform {
         eprintln!("[rust_widgets][linux] create_message_box unsupported in current backend path");
         0
     }
-
     fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
         eprintln!("[rust_widgets][linux] create_file_dialog unsupported in current backend path");
         0
     }
-
     fn create_color_dialog(
         &self,
         _parent: u64,
@@ -1081,22 +991,18 @@ impl Platform for LinuxPlatform {
         eprintln!("[rust_widgets][linux] create_color_dialog unsupported in current backend path");
         0
     }
-
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
         eprintln!("[rust_widgets][linux] create_font_dialog unsupported in current backend path");
         0
     }
-
     fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
         eprintln!("[rust_widgets][linux] create_spin_box unsupported in current backend path");
         0
     }
-
     fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
         eprintln!("[rust_widgets][linux] create_list_view unsupported in current backend path");
         0
     }
-
     fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
         eprintln!("[rust_widgets][linux] create_scroll_area unsupported in current backend path");
         0

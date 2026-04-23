@@ -3,7 +3,6 @@ use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
-
 /// WebView widget for displaying web content.
 pub struct WebView {
     base: BaseWidget,
@@ -25,7 +24,6 @@ pub struct WebView {
     /// Emitted when the navigation state changes.
     pub navigation_state_changed: Signal1<(bool, bool)>,
 }
-
 impl WebView {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -43,7 +41,6 @@ impl WebView {
             navigation_state_changed: Signal1::new(),
         }
     }
-
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -59,7 +56,6 @@ impl WebView {
     pub fn can_go_forward(&self) -> bool {
         self.can_go_forward
     }
-
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url;
@@ -72,11 +68,9 @@ impl WebView {
             self.loading_finished.emit(self.url.clone());
         }
     }
-
     pub fn load_url(&mut self, url: &str) {
         self.set_url(url.to_string());
     }
-
     pub fn load_html(&mut self, _html: &str) {
         // In a real implementation, this would load the HTML
         // For now, we'll just simulate it
@@ -89,7 +83,6 @@ impl WebView {
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
     }
-
     pub fn go_back(&mut self) {
         if self.can_go_back {
             // In a real implementation, this would navigate back
@@ -100,7 +93,6 @@ impl WebView {
                 .emit((self.can_go_back, self.can_go_forward));
         }
     }
-
     pub fn go_forward(&mut self) {
         if self.can_go_forward {
             // In a real implementation, this would navigate forward
@@ -111,7 +103,6 @@ impl WebView {
                 .emit((self.can_go_back, self.can_go_forward));
         }
     }
-
     pub fn reload(&mut self) {
         // In a real implementation, this would reload the current page
         // For now, we'll just simulate it
@@ -120,28 +111,24 @@ impl WebView {
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
     }
-
     pub fn stop(&mut self) {
         // In a real implementation, this would stop loading
         // For now, we'll just simulate it
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
     }
-
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title;
             self.title_changed.emit(self.title.clone());
         }
     }
-
     pub fn evaluate_javascript(&mut self, _script: &str) -> Option<String> {
         // In a real implementation, this would evaluate the JavaScript
         // For now, we'll just return None
         None
     }
 }
-
 impl Widget for WebView {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -240,7 +227,6 @@ impl Widget for WebView {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for WebView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

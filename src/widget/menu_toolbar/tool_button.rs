@@ -1,5 +1,4 @@
 //! Tool button widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Tool button popup mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonPopupMode {
@@ -15,7 +13,6 @@ pub enum ToolButtonPopupMode {
     MenuButtonPopup,
     InstantPopup,
 }
-
 /// Tool button style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonStyle {
@@ -25,7 +22,6 @@ pub enum ToolButtonStyle {
     TextUnderIcon,
     FollowStyle,
 }
-
 /// Tool button widget.
 pub struct ToolButton {
     base: BaseWidget,
@@ -42,7 +38,6 @@ pub struct ToolButton {
     pub toggled: Signal1<bool>,
     pub triggered: GenericSignal,
 }
-
 impl ToolButton {
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
@@ -62,7 +57,6 @@ impl ToolButton {
             triggered: GenericSignal::new(),
         }
     }
-
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -81,7 +75,6 @@ impl ToolButton {
     pub fn auto_raise(&self) -> bool {
         self.auto_raise
     }
-
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
     }
@@ -100,14 +93,12 @@ impl ToolButton {
     pub fn set_auto_raise(&mut self, v: bool) {
         self.auto_raise = v;
     }
-
     pub fn set_checked(&mut self, checked: bool) {
         if self.checkable && self.checked != checked {
             self.checked = checked;
             self.toggled.emit(checked);
         }
     }
-
     pub fn click(&mut self) {
         if self.checkable {
             self.set_checked(!self.checked);
@@ -116,7 +107,6 @@ impl ToolButton {
         self.triggered.emit();
     }
 }
-
 impl Widget for ToolButton {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -215,7 +205,6 @@ impl Widget for ToolButton {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ToolButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -246,12 +235,9 @@ impl EventHandler for ToolButton {
         }
     }
 }
-
 impl Draw for ToolButton {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         let bg = if self.pressed {
             Color::from_rgb(180, 210, 255)
         } else if self.checked {
@@ -263,9 +249,7 @@ impl Draw for ToolButton {
         } else {
             Color::from_rgb(240, 240, 240)
         };
-
-        context.fill_rect(rect.x, rect.y, rect.width, rect.height, bg);
-
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         if self.hovered || self.pressed || self.checked {
             context.draw_rect(
                 rect.x,
@@ -275,13 +259,11 @@ impl Draw for ToolButton {
                 Color::from_rgb(0, 120, 215),
             );
         }
-
         let fg = if !self.base.is_enabled() {
             Color::from_rgb(150, 150, 150)
         } else {
             Color::from_rgb(0, 0, 0)
         };
-
         let label = match self.button_style {
             ToolButtonStyle::TextOnly
             | ToolButtonStyle::TextBesideIcon
@@ -289,29 +271,26 @@ impl Draw for ToolButton {
             | ToolButtonStyle::FollowStyle => &self.text,
             ToolButtonStyle::IconOnly => &self.text,
         };
-
         // Popup arrow indicator
         let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
             || self.popup_mode == ToolButtonPopupMode::InstantPopup;
         let text_right = if has_popup {
-            rect.x + rect.width - 12.0
+            rect.x + rect.width as i32 - 12
         } else {
-            rect.x + rect.width
+            rect.x + rect.width as i32
         };
-
         context.draw_text(
-            rect.x + (text_right - rect.x) / 2.0,
-            rect.y + rect.height / 2.0,
+            rect.x + (text_right - rect.x) / 2,
+            rect.y + rect.height as i32 / 2,
             label,
             &Font::default(),
             fg,
             Alignment::Center,
         );
-
         if has_popup {
             context.draw_text(
-                rect.x + rect.width - 8.0,
-                rect.y + rect.height - 6.0,
+                rect.x + rect.width as i32 - 8,
+                rect.y + rect.height as i32 - 6,
                 "▾",
                 &Font::default(),
                 fg,

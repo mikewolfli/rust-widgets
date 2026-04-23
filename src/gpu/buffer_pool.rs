@@ -7,7 +7,6 @@
 //! - CPU Software: Small buffers, CPU-cache friendly layout
 //!
 //! This module integrates with the existing memory pool system in `crate::memory`.
-
 /// GPU memory profile based on device type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuMemoryProfile {
@@ -18,7 +17,6 @@ pub enum GpuMemoryProfile {
     /// CPU Software profile - CPU cache optimized
     Cpu,
 }
-
 impl GpuMemoryProfile {
     /// Creates a memory profile from GPU device type
     pub fn from_device_type(device_type: super::adapter::GpuDeviceType) -> Self {
@@ -28,7 +26,6 @@ impl GpuMemoryProfile {
             _ => Self::Cpu,
         }
     }
-
     /// Returns the recommended buffer pool size
     pub fn buffer_pool_size(&self) -> usize {
         match self {
@@ -37,7 +34,6 @@ impl GpuMemoryProfile {
             Self::Cpu => 4 * 1024 * 1024,         // 4 MB for CPU rendering
         }
     }
-
     /// Returns the number of ring buffer slots
     pub fn ring_buffer_slots(&self) -> usize {
         match self {
@@ -46,7 +42,6 @@ impl GpuMemoryProfile {
             Self::Cpu => 2,        // Double buffering for CPU
         }
     }
-
     /// Returns the maximum upload batch size
     pub fn max_upload_batch_size(&self) -> usize {
         match self {
@@ -55,12 +50,10 @@ impl GpuMemoryProfile {
             Self::Cpu => 256 * 1024,             // 256 KB batches
         }
     }
-
     /// Returns whether to merge small uploads
     pub fn merge_small_uploads(&self) -> bool {
         matches!(self, Self::Discrete | Self::Integrated)
     }
-
     /// Returns the small upload threshold
     pub fn small_upload_threshold(&self) -> usize {
         match self {
@@ -69,7 +62,6 @@ impl GpuMemoryProfile {
             Self::Cpu => 4 * 1024,         // 4 KB
         }
     }
-
     /// Returns the mapping strategy
     pub fn mapping_strategy(&self) -> MappingStrategy {
         match self {
@@ -78,7 +70,6 @@ impl GpuMemoryProfile {
             Self::Cpu => MappingStrategy::WriteCombined,
         }
     }
-
     /// Returns the fence wait strategy
     pub fn fence_strategy(&self) -> FenceStrategy {
         match self {
@@ -87,13 +78,11 @@ impl GpuMemoryProfile {
             Self::Cpu => FenceStrategy::CpuFence,
         }
     }
-
     /// Returns whether to use coherent memory
     pub fn use_coherent_memory(&self) -> bool {
         matches!(self, Self::Integrated | Self::Cpu)
     }
 }
-
 /// Buffer mapping strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingStrategy {
@@ -104,7 +93,6 @@ pub enum MappingStrategy {
     /// Cached memory for read-back
     Cached,
 }
-
 /// Fence synchronization strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FenceStrategy {
@@ -115,7 +103,6 @@ pub enum FenceStrategy {
     /// Spinlock for low-latency
     Spinlock,
 }
-
 /// Configuration for the staging buffer pool
 #[derive(Debug, Clone)]
 pub struct StagingBufferPoolConfig {
@@ -138,13 +125,11 @@ pub struct StagingBufferPoolConfig {
     /// Alignment for buffer offsets
     pub alignment: usize,
 }
-
 impl StagingBufferPoolConfig {
     /// Creates a default configuration
     pub fn new() -> Self {
         Self::for_profile(GpuMemoryProfile::Discrete)
     }
-
     /// Creates a configuration for a specific GPU profile
     pub fn for_profile(profile: GpuMemoryProfile) -> Self {
         Self {
@@ -159,22 +144,18 @@ impl StagingBufferPoolConfig {
             alignment: 256, // Standard GPU alignment
         }
     }
-
     /// Creates a configuration for discrete GPU
     pub fn discrete() -> Self {
         Self::for_profile(GpuMemoryProfile::Discrete)
     }
-
     /// Creates a configuration for integrated GPU
     pub fn integrated() -> Self {
         Self::for_profile(GpuMemoryProfile::Integrated)
     }
-
     /// Creates a configuration for CPU rendering
     pub fn cpu() -> Self {
         Self::for_profile(GpuMemoryProfile::Cpu)
     }
-
     /// Adjusts configuration based on available memory
     pub fn with_memory_limit(mut self, available_memory: usize) -> Self {
         // Ensure pool size doesn't exceed available memory
@@ -183,13 +164,11 @@ impl StagingBufferPoolConfig {
         self
     }
 }
-
 impl Default for StagingBufferPoolConfig {
     fn default() -> Self {
         Self::new()
     }
 }
-
 /// A single ring buffer slot
 #[derive(Debug)]
 pub struct GpuRingBufferSlot {
@@ -204,7 +183,6 @@ pub struct GpuRingBufferSlot {
     /// Frame index when this slot was last used
     pub last_used_frame: u64,
 }
-
 /// Staging buffer pool with ring buffer design for GPU uploads.
 ///
 /// This is specialized for GPU staging buffers and complements the general
@@ -219,13 +197,11 @@ pub struct GpuStagingBufferPool {
     /// Optional reference to the system buffer pool for fallback
     fallback_pool: Option<crate::memory::BufferPool>,
 }
-
 impl GpuStagingBufferPool {
     /// Creates a new staging buffer pool with the given configuration
     pub fn new(config: StagingBufferPoolConfig) -> Self {
         let slot_size = config.pool_size / config.ring_slots;
         let mut slots = Vec::with_capacity(config.ring_slots);
-
         for i in 0..config.ring_slots {
             slots.push(GpuRingBufferSlot {
                 index: i,
@@ -235,7 +211,6 @@ impl GpuStagingBufferPool {
                 last_used_frame: 0,
             });
         }
-
         Self {
             config,
             slots,
@@ -246,42 +221,34 @@ impl GpuStagingBufferPool {
             fallback_pool: None,
         }
     }
-
     /// Creates a pool optimized for the given GPU type
     pub fn for_gpu_type(device_type: super::adapter::GpuDeviceType) -> Self {
         let profile = GpuMemoryProfile::from_device_type(device_type);
         Self::new(StagingBufferPoolConfig::for_profile(profile))
     }
-
     /// Sets a fallback buffer pool for overflow allocations
     pub fn with_fallback_pool(mut self, pool: crate::memory::BufferPool) -> Self {
         self.fallback_pool = Some(pool);
         self
     }
-
     /// Advances to the next frame
     pub fn next_frame(&mut self) {
         self.current_frame += 1;
-
         // Mark current slot as used and move to next
         if let Some(slot) = self.slots.get_mut(self.current_slot) {
             slot.in_use = true;
             slot.last_used_frame = self.current_frame;
         }
-
         self.current_slot = (self.current_slot + 1) % self.config.ring_slots;
-
         // Reset the new current slot
         if let Some(slot) = self.slots.get_mut(self.current_slot) {
             slot.in_use = false;
             self.total_used = 0;
         }
     }
-
     /// Allocates a buffer from the current slot
     pub fn allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         let aligned_size = (size + self.config.alignment - 1) & !(self.config.alignment - 1);
-
         // Check if we should merge small uploads
         if self.config.merge_uploads && size < self.config.small_upload_threshold {
             // Try to merge with existing allocation
@@ -289,24 +256,19 @@ impl GpuStagingBufferPool {
                 return Some(allocation);
             }
         }
-
         // Check batch size limit
         if aligned_size > self.config.max_batch_size {
             // Try fallback pool for large allocations
             return self.allocate_fallback(size);
         }
-
         let slot = self.slots.get(self.current_slot)?;
-
         if self.total_used + aligned_size > slot.size {
             // Pool exhausted, try fallback
             return self.allocate_fallback(size);
         }
-
         let offset = slot.offset + self.total_used;
         self.total_used += aligned_size;
         self.total_allocated += aligned_size;
-
         Some(GpuBufferAllocation {
             slot_index: self.current_slot,
             offset,
@@ -315,7 +277,6 @@ impl GpuStagingBufferPool {
             is_fallback: false,
         })
     }
-
     /// Allocates from fallback pool
     fn allocate_fallback(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         if let Some(ref mut pool) = self.fallback_pool {
@@ -332,20 +293,16 @@ impl GpuStagingBufferPool {
             None
         }
     }
-
     /// Tries to merge a small allocation with existing data in the current slot
     fn try_merge_allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         let aligned_size = (size + self.config.alignment - 1) & !(self.config.alignment - 1);
-
         // Get current slot
         let slot = self.slots.get(self.current_slot)?;
-
         // Check if we can merge with existing allocation
         if slot.in_use {
             // Slot is already in use, cannot merge
             return None;
         }
-
         // Check if there's enough remaining space in the current slot
         let remaining_space = slot.size - self.total_used;
         if remaining_space >= aligned_size {
@@ -353,7 +310,6 @@ impl GpuStagingBufferPool {
             let offset = self.total_used;
             self.total_used += aligned_size;
             self.total_allocated += aligned_size;
-
             Some(GpuBufferAllocation {
                 slot_index: slot.index,
                 offset,
@@ -366,17 +322,14 @@ impl GpuStagingBufferPool {
             None
         }
     }
-
     /// Returns the current frame index
     pub fn current_frame(&self) -> u64 {
         self.current_frame
     }
-
     /// Returns the pool configuration
     pub fn config(&self) -> &StagingBufferPoolConfig {
         &self.config
     }
-
     /// Returns memory statistics
     pub fn memory_stats(&self) -> GpuBufferPoolStats {
         GpuBufferPoolStats {
@@ -393,7 +346,6 @@ impl GpuStagingBufferPool {
                 .unwrap_or(0),
         }
     }
-
     /// Waits for a slot to be available (CPU fence)
     pub fn wait_for_slot(&mut self, slot_index: usize) {
         // In a real implementation, this would wait on a GPU fence
@@ -405,7 +357,6 @@ impl GpuStagingBufferPool {
         }
     }
 }
-
 /// GPU buffer allocation info
 #[derive(Debug, Clone, Copy)]
 pub struct GpuBufferAllocation {
@@ -420,7 +371,6 @@ pub struct GpuBufferAllocation {
     /// Whether this is a fallback allocation
     pub is_fallback: bool,
 }
-
 /// GPU buffer pool statistics
 #[derive(Debug, Clone, Copy)]
 pub struct GpuBufferPoolStats {
@@ -439,20 +389,17 @@ pub struct GpuBufferPoolStats {
     /// Available buffers in fallback pool
     pub fallback_used: usize,
 }
-
 /// Hardware-adaptive upload batcher
 pub struct GpuUploadBatcher {
     config: StagingBufferPoolConfig,
     pending_uploads: Vec<GpuPendingUpload>,
     current_batch_size: usize,
 }
-
 #[derive(Debug)]
 struct GpuPendingUpload {
     data: Vec<u8>,
     destination_offset: usize,
 }
-
 impl GpuUploadBatcher {
     /// Creates a new upload batcher
     pub fn new(config: StagingBufferPoolConfig) -> Self {
@@ -462,16 +409,13 @@ impl GpuUploadBatcher {
             current_batch_size: 0,
         }
     }
-
     /// Adds an upload to the batch
     pub fn add_upload(&mut self, data: Vec<u8>, destination_offset: usize) -> bool {
         let size = data.len();
-
         // Check if adding this would exceed batch size
         if self.current_batch_size + size > self.config.max_batch_size {
             return false; // Would exceed batch size
         }
-
         // Check if we should merge
         if self.config.merge_uploads && size < self.config.small_upload_threshold {
             // Try to find adjacent upload to merge with
@@ -480,16 +424,13 @@ impl GpuUploadBatcher {
                 return true;
             }
         }
-
         self.pending_uploads.push(GpuPendingUpload {
             data,
             destination_offset,
         });
         self.current_batch_size += size;
-
         true
     }
-
     /// Tries to merge with existing pending uploads
     fn try_merge(&mut self, data: &[u8], offset: usize) -> Option<usize> {
         for upload in &mut self.pending_uploads {
@@ -502,17 +443,14 @@ impl GpuUploadBatcher {
         }
         None
     }
-
     /// Returns the current batch size
     pub fn batch_size(&self) -> usize {
         self.current_batch_size
     }
-
     /// Returns true if the batch is full
     pub fn is_full(&self) -> bool {
         self.current_batch_size >= self.config.max_batch_size
     }
-
     /// Clears the batch and returns all pending uploads
     pub fn flush(&mut self) -> Vec<(Vec<u8>, usize)> {
         let uploads = self
@@ -523,19 +461,16 @@ impl GpuUploadBatcher {
         self.current_batch_size = 0;
         uploads
     }
-
     /// Returns the number of pending uploads
     pub fn pending_count(&self) -> usize {
         self.pending_uploads.len()
     }
 }
-
 /// Performance monitor for GPU buffer pool
 pub struct GpuBufferPoolMonitor {
     stats_history: Vec<GpuBufferPoolStats>,
     max_history: usize,
 }
-
 impl GpuBufferPoolMonitor {
     /// Creates a new monitor
     pub fn new(max_history: usize) -> Self {
@@ -544,7 +479,6 @@ impl GpuBufferPoolMonitor {
             max_history,
         }
     }
-
     /// Records a stats sample
     pub fn record(&mut self, stats: GpuBufferPoolStats) {
         if self.stats_history.len() >= self.max_history {
@@ -552,60 +486,49 @@ impl GpuBufferPoolMonitor {
         }
         self.stats_history.push(stats);
     }
-
     /// Returns the average utilization
     pub fn average_utilization(&self) -> f32 {
         if self.stats_history.is_empty() {
             return 0.0;
         }
-
         let total: f32 = self
             .stats_history
             .iter()
             .map(|s| s.used_size as f32 / s.total_size as f32)
             .sum();
-
         total / self.stats_history.len() as f32
     }
-
     /// Returns true if the pool is under memory pressure
     pub fn is_under_pressure(&self) -> bool {
         if self.stats_history.len() < 3 {
             return false;
         }
-
         // Check if recent utilization is consistently high
         let recent: Vec<_> = self.stats_history.iter().rev().take(3).collect();
         recent
             .iter()
             .all(|s| s.used_size as f32 / s.total_size as f32 > 0.8)
     }
-
     /// Returns true if the pool is underutilized
     pub fn is_underutilized(&self) -> bool {
         if self.stats_history.len() < 10 {
             return false;
         }
-
         self.average_utilization() < 0.3
     }
-
     /// Returns true if fallback pool is being used frequently
     pub fn is_fallback_heavy(&self) -> bool {
         if self.stats_history.len() < 5 {
             return false;
         }
-
         let recent: Vec<_> = self.stats_history.iter().rev().take(5).collect();
         recent.iter().any(|s| s.fallback_used > 0)
     }
 }
-
 /// Integration with the existing memory pool system
 pub mod integration {
     use super::*;
     use crate::memory::{BufferPool, PoolConfig};
-
     /// Creates a GPU-optimized buffer pool configuration
     pub fn create_gpu_buffer_pool_config(profile: GpuMemoryProfile) -> PoolConfig {
         let _buffer_size = match profile {
@@ -613,14 +536,12 @@ pub mod integration {
             GpuMemoryProfile::Integrated => 1 * 1024 * 1024, // 1 MB
             GpuMemoryProfile::Cpu => 256 * 1024,           // 256 KB
         };
-
         PoolConfig {
             initial_size: profile.ring_buffer_slots(),
             max_size: profile.ring_buffer_slots() * 2,
             growth_factor: 1.0, // Fixed size for GPU buffers
         }
     }
-
     /// Creates a fallback buffer pool for GPU staging
     pub fn create_fallback_pool(profile: GpuMemoryProfile) -> BufferPool {
         let buffer_size = match profile {
@@ -628,7 +549,6 @@ pub mod integration {
             GpuMemoryProfile::Integrated => 1 * 1024 * 1024,
             GpuMemoryProfile::Cpu => 256 * 1024,
         };
-
         BufferPool::new(
             buffer_size,
             profile.ring_buffer_slots(),
@@ -636,12 +556,10 @@ pub mod integration {
         )
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::super::adapter::GpuDeviceType;
     use super::*;
-
     #[test]
     fn test_gpu_memory_profile_discrete() {
         let profile = GpuMemoryProfile::Discrete;
@@ -649,7 +567,6 @@ mod tests {
         assert_eq!(profile.ring_buffer_slots(), 3);
         assert!(profile.merge_small_uploads());
     }
-
     #[test]
     fn test_gpu_memory_profile_integrated() {
         let profile = GpuMemoryProfile::Integrated;
@@ -657,7 +574,6 @@ mod tests {
         assert_eq!(profile.ring_buffer_slots(), 2);
         assert!(profile.use_coherent_memory());
     }
-
     #[test]
     fn test_gpu_memory_profile_cpu() {
         let profile = GpuMemoryProfile::Cpu;
@@ -665,48 +581,38 @@ mod tests {
         assert_eq!(profile.ring_buffer_slots(), 2);
         assert!(!profile.merge_small_uploads());
     }
-
     #[test]
     fn test_buffer_pool_allocation() {
         let config = StagingBufferPoolConfig::discrete();
         let mut pool = GpuStagingBufferPool::new(config);
-
         let allocation = pool.allocate(1024).unwrap();
         assert_eq!(allocation.slot_index, 0);
         assert_eq!(allocation.offset, 0);
         assert!(allocation.size >= 1024);
         assert!(!allocation.is_fallback);
     }
-
     #[test]
     fn test_buffer_pool_ring_rotation() {
         let config = StagingBufferPoolConfig::discrete();
         let mut pool = GpuStagingBufferPool::new(config);
-
         pool.next_frame();
         assert_eq!(pool.current_frame(), 1);
-
         pool.next_frame();
         assert_eq!(pool.current_frame(), 2);
     }
-
     #[test]
     fn test_upload_batcher() {
         let config = StagingBufferPoolConfig::discrete();
         let mut batcher = GpuUploadBatcher::new(config);
-
         assert!(batcher.add_upload(vec![0u8; 1024], 0));
         assert_eq!(batcher.batch_size(), 1024);
-
         let uploads = batcher.flush();
         assert_eq!(uploads.len(), 1);
         assert!(batcher.batch_size() == 0);
     }
-
     #[test]
     fn test_buffer_pool_monitor() {
         let mut monitor = GpuBufferPoolMonitor::new(10);
-
         let stats = GpuBufferPoolStats {
             total_size: 1024,
             used_size: 512,
@@ -716,11 +622,9 @@ mod tests {
             current_frame: 1,
             fallback_used: 0,
         };
-
         monitor.record(stats);
         assert_eq!(monitor.average_utilization(), 0.5);
     }
-
     #[test]
     fn test_from_device_type() {
         assert_eq!(
@@ -736,7 +640,6 @@ mod tests {
             GpuMemoryProfile::Cpu
         );
     }
-
     #[test]
     fn test_integration_config() {
         let config = integration::create_gpu_buffer_pool_config(GpuMemoryProfile::Discrete);

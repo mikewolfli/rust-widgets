@@ -1,35 +1,27 @@
 //! Dual-engine render abstraction for native and embedded runtime paths.
-
 use crate::core::RuntimeProfile;
 use crate::platform::get_platform;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
-
 #[cfg(feature = "gpu-wgpu")]
 pub use crate::wgpu_backend::WgpuRenderer;
-
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
 const MIN_EMBEDDED_TARGET_FPS: u32 = 1;
 const MAX_EMBEDDED_TARGET_FPS: u32 = 240;
-
 fn clamp_embedded_target_fps(fps: u32) -> u32 {
     fps.clamp(MIN_EMBEDDED_TARGET_FPS, MAX_EMBEDDED_TARGET_FPS)
 }
-
 fn frame_interval_for_fps(fps: u32) -> Duration {
     Duration::from_nanos(1_000_000_000 / fps as u64)
 }
-
 type EmbeddedTaskFn = Box<dyn FnOnce(u64) + Send + 'static>;
-
 struct EmbeddedTask {
     id: u64,
     label: String,
     action: Option<EmbeddedTaskFn>,
 }
-
 impl EmbeddedTask {
     fn new(id: u64, label: String, action: EmbeddedTaskFn) -> Self {
         Self {
@@ -38,7 +30,6 @@ impl EmbeddedTask {
             action: Some(action),
         }
     }
-
     fn run(mut self, frame_index: u64) {
         let _ = self.id;
         let _ = self.label;
@@ -47,7 +38,6 @@ impl EmbeddedTask {
         }
     }
 }
-
 #[derive(Default)]
 struct EmbeddedRuntimeState {
     initialized: bool,
@@ -57,7 +47,6 @@ struct EmbeddedRuntimeState {
     buttons: HashMap<u64, EmbeddedButtonRecord>,
     pending_tasks: VecDeque<EmbeddedTask>,
 }
-
 impl EmbeddedRuntimeState {
     fn new() -> Self {
         Self {
@@ -70,7 +59,6 @@ impl EmbeddedRuntimeState {
         }
     }
 }
-
 struct EmbeddedEngineShared {
     next_widget_id: AtomicU64,
     next_task_id: AtomicU64,
@@ -78,7 +66,6 @@ struct EmbeddedEngineShared {
     state: Mutex<EmbeddedRuntimeState>,
     wake_signal: Condvar,
 }
-
 impl EmbeddedEngineShared {
     fn new() -> Self {
         Self {
@@ -89,24 +76,20 @@ impl EmbeddedEngineShared {
             wake_signal: Condvar::new(),
         }
     }
-
     fn lock_state(&self) -> MutexGuard<'_, EmbeddedRuntimeState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-
     fn set_target_fps(&self, fps: u32) -> u32 {
         let mut state = self.lock_state();
         state.target_fps = clamp_embedded_target_fps(fps);
         self.wake_signal.notify_all();
         state.target_fps
     }
-
     fn target_fps(&self) -> u32 {
         self.lock_state().target_fps
     }
-
     fn init(&self) {
         let mut state = self.lock_state();
         if state.initialized {
@@ -114,7 +97,6 @@ impl EmbeddedEngineShared {
         }
         state.initialized = true;
     }
-
     fn run_loop(&self) {
         {
             let mut state = self.lock_state();
@@ -123,10 +105,8 @@ impl EmbeddedEngineShared {
             }
             state.running = true;
         }
-
         loop {
             let frame_start = Instant::now();
-
             let (tasks, target_fps, still_running) = {
                 let mut state = self.lock_state();
                 let still_running = state.running;
@@ -134,16 +114,13 @@ impl EmbeddedEngineShared {
                 let tasks = state.pending_tasks.drain(..).collect::<Vec<_>>();
                 (tasks, target_fps, still_running)
             };
-
             if !still_running {
                 break;
             }
-
             let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
             for task in tasks {
                 task.run(frame_index);
             }
-
             let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));
             let elapsed = frame_start.elapsed();
             if elapsed < frame_interval {
@@ -159,7 +136,6 @@ impl EmbeddedEngineShared {
             }
         }
     }
-
     fn quit(&self) {
         let mut state = self.lock_state();
         state.running = false;
@@ -167,11 +143,9 @@ impl EmbeddedEngineShared {
         drop(state);
         self.wake_signal.notify_all();
     }
-
     fn alloc_widget_id(&self) -> u64 {
         self.next_widget_id.fetch_add(1, Ordering::SeqCst)
     }
-
     fn register_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let window_id = self.alloc_widget_id();
         let mut state = self.lock_state();
@@ -188,7 +162,6 @@ impl EmbeddedEngineShared {
         );
         window_id
     }
-
     fn register_button(
         &self,
         parent: u64,
@@ -214,7 +187,6 @@ impl EmbeddedEngineShared {
         );
         button_id
     }
-
     fn submit_task<F>(&self, label: String, action: F) -> u64
     where
         F: FnOnce(u64) + Send + 'static,
@@ -228,7 +200,6 @@ impl EmbeddedEngineShared {
         self.wake_signal.notify_all();
         task_id
     }
-
     fn stats(&self) -> EmbeddedEngineStats {
         let state = self.lock_state();
         EmbeddedEngineStats {
@@ -242,7 +213,6 @@ impl EmbeddedEngineShared {
         }
     }
 }
-
 /// Snapshot record of an embedded window handle and geometry.
 #[derive(Clone, Debug)]
 pub struct EmbeddedWindowRecord {
@@ -259,7 +229,6 @@ pub struct EmbeddedWindowRecord {
     /// Window height in logical pixels.
     pub height: u32,
 }
-
 /// Snapshot record of an embedded button handle and geometry.
 #[derive(Clone, Debug)]
 pub struct EmbeddedButtonRecord {
@@ -278,7 +247,6 @@ pub struct EmbeddedButtonRecord {
     /// Button height in logical pixels.
     pub height: u32,
 }
-
 /// Runtime statistics for the embedded render-engine loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedEngineStats {
@@ -297,14 +265,12 @@ pub struct EmbeddedEngineStats {
     /// Current target FPS used by the embedded scheduler.
     pub target_fps: u32,
 }
-
 fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
     SHARED
         .get_or_init(|| Arc::new(EmbeddedEngineShared::new()))
         .clone()
 }
-
 /// Unified rendering/runtime engine abstraction.
 pub trait RenderEngine: Send + Sync {
     /// Engine display name.
@@ -330,48 +296,38 @@ pub trait RenderEngine: Send + Sync {
         height: u32,
     ) -> u64;
 }
-
 /// Native desktop engine backed by platform adapters.
 pub struct NativeRenderEngine;
-
 impl NativeRenderEngine {
     /// Create native engine.
     pub fn new() -> Self {
         Self
     }
 }
-
 impl Default for NativeRenderEngine {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl RenderEngine for NativeRenderEngine {
     fn name(&self) -> &'static str {
         "native-render-engine"
     }
-
     fn profile(&self) -> RuntimeProfile {
         RuntimeProfile::Full
     }
-
     fn init(&self) {
         get_platform().init();
     }
-
     fn run(&self) {
         get_platform().run();
     }
-
     fn quit(&self) {
         get_platform().quit();
     }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         get_platform().create_window(title, x, y, width, height)
     }
-
     fn create_button(
         &self,
         parent: u64,
@@ -384,49 +340,39 @@ impl RenderEngine for NativeRenderEngine {
         get_platform().create_button(parent, text, x, y, width, height)
     }
 }
-
 /// Embedded engine with independent lifecycle and resource registry.
 #[derive(Clone)]
 pub struct EmbeddedRenderEngine;
-
 impl EmbeddedRenderEngine {
     /// Create embedded engine.
     pub fn new() -> Self {
         Self
     }
 }
-
 impl Default for EmbeddedRenderEngine {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl RenderEngine for EmbeddedRenderEngine {
     fn name(&self) -> &'static str {
         "embedded-render-engine"
     }
-
     fn profile(&self) -> RuntimeProfile {
         RuntimeProfile::Embedded
     }
-
     fn init(&self) {
         embedded_engine_shared().init();
     }
-
     fn run(&self) {
         embedded_engine_shared().run_loop();
     }
-
     fn quit(&self) {
         embedded_engine_shared().quit();
     }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         embedded_engine_shared().register_window(title, x, y, width, height)
     }
-
     fn create_button(
         &self,
         parent: u64,
@@ -439,17 +385,14 @@ impl RenderEngine for EmbeddedRenderEngine {
         embedded_engine_shared().register_button(parent, text, x, y, width, height)
     }
 }
-
 /// Set embedded engine target FPS. Returns the applied clamped FPS value.
 pub fn set_embedded_target_fps(fps: u32) -> u32 {
     embedded_engine_shared().set_target_fps(fps)
 }
-
 /// Read embedded engine target FPS.
 pub fn embedded_target_fps() -> u32 {
     embedded_engine_shared().target_fps()
 }
-
 /// Submit a task to execute on the next embedded frame.
 pub fn submit_embedded_task<F>(label: impl Into<String>, action: F) -> u64
 where
@@ -457,12 +400,10 @@ where
 {
     embedded_engine_shared().submit_task(label.into(), action)
 }
-
 /// Return embedded engine runtime stats for diagnostics and test assertions.
 pub fn embedded_engine_stats() -> EmbeddedEngineStats {
     embedded_engine_shared().stats()
 }
-
 /// Build default engine for compile-time profile.
 pub fn default_render_engine() -> Box<dyn RenderEngine> {
     if cfg!(feature = "embedded") {
@@ -471,13 +412,11 @@ pub fn default_render_engine() -> Box<dyn RenderEngine> {
         Box::new(NativeRenderEngine::new())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::thread;
-
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
         GUARD
@@ -485,7 +424,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-
     #[test]
     fn embedded_target_fps_clamps() {
         let _guard = test_guard();
@@ -494,40 +432,33 @@ mod tests {
         assert_eq!(set_embedded_target_fps(72), 72);
         assert_eq!(embedded_target_fps(), 72);
     }
-
     #[test]
     fn embedded_task_executes_in_run_loop() {
         let _guard = test_guard();
         let engine = EmbeddedRenderEngine::new();
         set_embedded_target_fps(120);
-
         let (tx, rx) = mpsc::channel();
         submit_embedded_task("unit-test-task", move |frame| {
             let _ = tx.send(frame);
         });
-
         let runner = engine.clone();
         let handle = thread::spawn(move || {
             runner.run();
         });
-
         let frame = rx
             .recv_timeout(Duration::from_secs(1))
             .expect("embedded task should execute within timeout");
         assert!(frame >= 1);
-
         engine.quit();
         handle
             .join()
             .expect("embedded render loop thread should join");
     }
-
     #[test]
     fn embedded_task_queue_order_is_deterministic() {
         let _guard = test_guard();
         let engine = EmbeddedRenderEngine::new();
         set_embedded_target_fps(120);
-
         let (tx, rx) = mpsc::channel();
         submit_embedded_task("task-1", {
             let tx = tx.clone();
@@ -544,12 +475,10 @@ mod tests {
         submit_embedded_task("task-3", move |_| {
             let _ = tx.send(3u32);
         });
-
         let runner = engine.clone();
         let handle = thread::spawn(move || {
             runner.run();
         });
-
         let first = rx
             .recv_timeout(Duration::from_secs(1))
             .expect("first embedded task should execute within timeout");
@@ -560,24 +489,19 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("third embedded task should execute within timeout");
         assert_eq!([first, second, third], [1, 2, 3]);
-
         engine.quit();
         handle
             .join()
             .expect("embedded render loop thread should join");
     }
-
     #[test]
     fn embedded_resource_registry_tracks_window_and_button() {
         let _guard = test_guard();
         let before = embedded_engine_stats();
-
         let shared = embedded_engine_shared();
         let window_id = shared.register_window("stats", 1, 2, 300, 200);
         let _button_id = shared.register_button(window_id, "ok", 10, 10, 80, 24);
-
         let after = embedded_engine_stats();
-
         assert!(after.window_count > before.window_count);
         assert!(after.button_count > before.button_count);
     }

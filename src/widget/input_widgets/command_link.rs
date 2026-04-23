@@ -4,7 +4,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Command link widget for command link buttons.
 pub struct CommandLink {
     base: BaseWidget,
@@ -16,7 +15,6 @@ pub struct CommandLink {
     /// Emitted when command link is hovered.
     pub hovered: Signal1<bool>,
 }
-
 impl CommandLink {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -28,7 +26,6 @@ impl CommandLink {
             hovered: Signal1::new(),
         }
     }
-
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -38,7 +35,6 @@ impl CommandLink {
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.base.request_redraw();
@@ -51,14 +47,12 @@ impl CommandLink {
         self.enabled = enabled;
         self.base.request_redraw();
     }
-
     pub fn click(&self) {
         if self.enabled {
             self.clicked.emit();
         }
     }
 }
-
 impl Widget for CommandLink {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -157,7 +151,6 @@ impl Widget for CommandLink {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -177,25 +170,20 @@ impl EventHandler for CommandLink {
         }
     }
 }
-
 impl Draw for CommandLink {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-
         let bg_color = style.background_color.unwrap_or(Color::TRANSPARENT);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 102, 204));
         let hover_color = Color::rgb(0, 0, 255);
         let disabled_color = Color::GRAY;
-
         let is_hovered = self.hovered.slot_count() > 0;
         let is_enabled = self.enabled && self.base.is_enabled();
-
         // Draw background (transparent by default)
         if bg_color != Color::TRANSPARENT {
             context.fill_rect(rect, bg_color);
         }
-
         // Determine text color based on state
         let current_text_color = if !is_enabled {
             disabled_color
@@ -204,33 +192,27 @@ impl Draw for CommandLink {
         } else {
             text_color
         };
-
         // Draw main text
         let padding = &style.padding;
-        let text_font = Font::new("Arial", 12.0, false, true);
-
+        let text_font = Font::new("Arial", 12, false, true);
         let text_x = rect.x + padding.left as i32;
         let text_y = rect.y + padding.top as i32 + 12;
-
         context.draw_text(
             Point::new(text_x, text_y),
             &self.text,
             &text_font,
             current_text_color,
         );
-
         // Draw description if present
         if !self.description.is_empty() {
-            let desc_font = Font::new("Arial", 10.0, false, false);
+            let desc_font = Font::new("Arial", 10, false, false);
             let desc_color = if !is_enabled {
                 disabled_color
             } else {
                 Color::GRAY
             };
-
             let desc_x = text_x;
             let desc_y = text_y + 16;
-
             context.draw_text(
                 Point::new(desc_x, desc_y),
                 &self.description,
@@ -238,16 +220,11 @@ impl Draw for CommandLink {
                 desc_color,
             );
         }
-
         // Draw underline for hover state
         if is_hovered && is_enabled {
             let text_metrics = context.measure_text(&self.text, &text_font);
             let underline_y = text_y + text_metrics.height as i32 + 2;
-            context.draw_line(
-                Point::new(text_x, underline_y),
-                Point::new(text_x + text_metrics.width as i32, underline_y),
-                current_text_color,
-            );
+            context.draw_line(Point::new(Point::new(text_x, underline_y)), Point::new(Point::new(text_x + text_metrics.width as i32, underline_y)), current_text_color,);
         }
     }
 }

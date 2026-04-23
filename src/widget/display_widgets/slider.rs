@@ -1,5 +1,4 @@
 //! Slider widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -26,7 +24,6 @@ pub struct Slider {
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
 }
-
 /// Slider orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
@@ -35,13 +32,11 @@ pub enum Orientation {
     /// Vertical slider (bottom to top)
     Vertical,
 }
-
 impl Default for Orientation {
     fn default() -> Self {
         Self::Horizontal
     }
 }
-
 /// Tick mark position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickPosition {
@@ -54,13 +49,11 @@ pub enum TickPosition {
     /// Tick marks on both sides
     TicksBothSides,
 }
-
 impl Default for TickPosition {
     fn default() -> Self {
         Self::NoTicks
     }
 }
-
 impl Slider {
     /// Creates a slider with default range 0-100.
     pub fn new(geometry: Rect) -> Self {
@@ -82,12 +75,10 @@ impl Slider {
             slider_released: GenericSignal::new(),
         }
     }
-
     /// Returns minimum value.
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
-
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
         self.minimum = minimum;
@@ -96,12 +87,10 @@ impl Slider {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
         self.maximum
     }
-
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
         self.maximum = maximum;
@@ -110,19 +99,16 @@ impl Slider {
         }
         self.set_value(self.value); // Re-clamp
     }
-
     /// Sets range.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
         self.set_value(self.value); // Re-clamp
     }
-
     /// Returns current value.
     pub fn value(&self) -> i32 {
         self.value
     }
-
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
         let clamped = value.clamp(self.minimum, self.maximum);
@@ -133,72 +119,58 @@ impl Slider {
         self.slider_position = clamped;
         self.value_changed.emit(self.value);
     }
-
     /// Returns single step value.
     pub fn single_step(&self) -> i32 {
         self.single_step
     }
-
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
     }
-
     /// Returns page step value.
     pub fn page_step(&self) -> i32 {
         self.page_step
     }
-
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
     }
-
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
         self.orientation
     }
-
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
     }
-
     /// Returns tick position.
     pub fn tick_position(&self) -> TickPosition {
         self.tick_position
     }
-
     /// Sets tick position.
     pub fn set_tick_position(&mut self, position: TickPosition) {
         self.tick_position = position;
     }
-
     /// Returns tick interval.
     pub fn tick_interval(&self) -> i32 {
         self.tick_interval
     }
-
     /// Sets tick interval.
     pub fn set_tick_interval(&mut self, interval: i32) {
         self.tick_interval = interval.max(0);
     }
-
     /// Returns whether tracking is enabled.
     pub fn tracking(&self) -> bool {
         self.tracking
     }
-
     /// Sets tracking state.
     pub fn set_tracking(&mut self, tracking: bool) {
         self.tracking = tracking;
     }
-
     /// Returns slider position.
     pub fn slider_position(&self) -> i32 {
         self.slider_position
     }
-
     /// Sets slider position (without emitting signals).
     pub fn set_slider_position(&mut self, position: i32) {
         self.slider_position = position.clamp(self.minimum, self.maximum);
@@ -207,7 +179,6 @@ impl Slider {
         }
         self.slider_moved.emit(self.slider_position);
     }
-
     /// Adds single step to value.
     pub fn trigger_action(&mut self, action: SliderAction) {
         match action {
@@ -234,48 +205,41 @@ impl Slider {
             }
         }
     }
-
     /// Returns value for a given pixel position.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
         let rect = self.geometry();
         let range = (self.maximum - self.minimum) as f32;
-
         match self.orientation {
             Orientation::Horizontal => {
                 let relative = (pos - rect.x) / rect.width;
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
+                let value = self.minimum as f32 + range * relative.clamp(0, 1);
                 value.round() as i32
             }
             Orientation::Vertical => {
-                let relative = 1.0 - (pos - rect.y) / rect.height; // Invert Y axis
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
+                let relative = 1 - (pos - rect.y) / rect.height; // Invert Y axis
+                let value = self.minimum as f32 + range * relative.clamp(0, 1);
                 value.round() as i32
             }
         }
     }
-
     /// Returns pixel position for a given value.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let rect = self.geometry();
         let clamped = value.clamp(self.minimum, self.maximum);
         let range = (self.maximum - self.minimum) as f32;
-
-        if range == 0.0 {
+        if range == 0 {
             return match self.orientation {
                 Orientation::Horizontal => rect.x,
-                Orientation::Vertical => rect.y + rect.height / 2.0,
+                Orientation::Vertical => rect.y + rect.height as i32 / 2,
             };
         }
-
         let relative = (clamped - self.minimum) as f32 / range;
-
         match self.orientation {
-            Orientation::Horizontal => rect.x + rect.width * relative,
-            Orientation::Vertical => rect.y + rect.height * (1.0 - relative), // Invert Y axis
+            Orientation::Horizontal => rect.x + rect.width as i32 * relative,
+            Orientation::Vertical => rect.y + rect.height as i32 * (1 - relative), // Invert Y axis
         }
     }
 }
-
 /// Slider actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliderAction {
@@ -294,7 +258,6 @@ pub enum SliderAction {
     /// Move slider to arbitrary position
     SliderMove,
 }
-
 // Implement Widget trait
 impl Widget for Slider {
     fn id(&self) -> ObjectId {
@@ -394,14 +357,12 @@ impl Widget for Slider {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Slider {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -473,123 +434,89 @@ impl EventHandler for Slider {
         }
     }
 }
-
 impl Draw for Slider {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
-        let slider_size = 16.0;
-
+        let slider_size = 16;
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
-                let groove_y = rect.y + rect.height / 2.0;
-                let groove_height = 4.0;
-
+                let groove_y = rect.y + rect.height as i32 / 2;
+                let groove_height = 4;
                 // Draw groove
                 context.fill_rect(
                     rect.x,
-                    groove_y - groove_height / 2.0,
+                    groove_y - groove_height / 2,
                     rect.width,
                     groove_height,
                     Color::from_rgb(200, 200, 200),
                 );
-
                 // Draw slider handle
                 context.fill_rect(
-                    slider_pos - slider_size / 2.0,
+                    slider_pos - slider_size / 2,
                     rect.y,
                     slider_size,
                     rect.height,
                     Color::from_rgb(0, 120, 215),
                 );
-
                 // Draw ticks if enabled
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
-                    let tick_height = 6.0;
+                    let tick_height = 6;
                     for value in (self.minimum..=self.maximum).step_by(self.tick_interval as usize)
                     {
                         let tick_x = self.value_to_pixel_pos(value);
-
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(
-                                tick_x,
-                                rect.y,
-                                tick_x,
-                                rect.y + tick_height,
-                                Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(tick_x, rect.y), Point::new(tick_x, rect.y + tick_height), Color::from_rgb(100, 100, 100),
                             );
                         }
-
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(
-                                tick_x,
-                                rect.y + rect.height - tick_height,
-                                tick_x,
-                                rect.y + rect.height,
-                                Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(tick_x, rect.y + rect.height as i32 - tick_height), Point::new(tick_x, rect.y + rect.height as i32), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }
                 }
             }
             Orientation::Vertical => {
-                let groove_x = rect.x + rect.width / 2.0;
-                let groove_width = 4.0;
-
+                let groove_x = rect.x + rect.width as i32 / 2;
+                let groove_width = 4;
                 // Draw groove
                 context.fill_rect(
-                    groove_x - groove_width / 2.0,
+                    groove_x - groove_width / 2,
                     rect.y,
                     groove_width,
                     rect.height,
                     Color::from_rgb(200, 200, 200),
                 );
-
                 // Draw slider handle
                 context.fill_rect(
                     rect.x,
-                    slider_pos - slider_size / 2.0,
+                    slider_pos - slider_size / 2,
                     rect.width,
                     slider_size,
                     Color::from_rgb(0, 120, 215),
                 );
-
                 // Draw ticks if enabled
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
-                    let tick_width = 6.0;
+                    let tick_width = 6;
                     for value in (self.minimum..=self.maximum).step_by(self.tick_interval as usize)
                     {
                         let tick_y = self.value_to_pixel_pos(value);
-
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(
-                                rect.x,
-                                tick_y,
-                                rect.x + tick_width,
-                                tick_y,
-                                Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(rect.x, tick_y), Point::new(rect.x + tick_width, tick_y), Color::from_rgb(100, 100, 100),
                             );
                         }
-
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(
-                                rect.x + rect.width - tick_width,
-                                tick_y,
-                                rect.x + rect.width,
-                                tick_y,
-                                Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(rect.x + rect.width as i32 - tick_width, tick_y), Point::new(rect.x + rect.width as i32, tick_y), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }

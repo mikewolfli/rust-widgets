@@ -1,5 +1,4 @@
 //! List box widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// List box widget.
 pub struct ListBox {
     base: BaseWidget,
@@ -20,7 +18,6 @@ pub struct ListBox {
     pub item_activated: Signal1<usize>,
     pub selection_changed: GenericSignal,
 }
-
 /// Selection mode for list box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
@@ -33,13 +30,11 @@ pub enum SelectionMode {
     /// Extended selection with shift/ctrl
     ExtendedSelection,
 }
-
 impl Default for SelectionMode {
     fn default() -> Self {
         Self::SingleSelection
     }
 }
-
 impl ListBox {
     /// Creates an empty list box.
     pub fn new(geometry: Rect) -> Self {
@@ -49,38 +44,32 @@ impl ListBox {
             selected_indices: Vec::new(),
             selection_mode: SelectionMode::SingleSelection,
             current_row: None,
-            item_height: 20.0,
+            item_height: 20,
             item_selected: Signal1::new(),
             item_activated: Signal1::new(),
             selection_changed: GenericSignal::new(),
         }
     }
-
     /// Returns number of items.
     pub fn count(&self) -> usize {
         self.items.len()
     }
-
     /// Returns whether the list box is empty.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
-
     /// Returns item at specified index.
     pub fn item(&self, index: usize) -> Option<&str> {
         self.items.get(index).map(|s| s.as_str())
     }
-
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
     }
-
     /// Adds multiple items.
     pub fn add_items(&mut self, items: Vec<String>) {
         self.items.extend(items);
     }
-
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
@@ -99,7 +88,6 @@ impl ListBox {
             }
         }
     }
-
     /// Removes item at specified index.
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
@@ -123,7 +111,6 @@ impl ListBox {
             self.selection_changed.emit();
         }
     }
-
     /// Clears all items.
     pub fn clear(&mut self) {
         self.items.clear();
@@ -131,12 +118,10 @@ impl ListBox {
         self.current_row = None;
         self.selection_changed.emit();
     }
-
     /// Returns selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
         self.selection_mode
     }
-
     /// Sets selection mode.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
         self.selection_mode = mode;
@@ -156,23 +141,19 @@ impl ListBox {
             _ => {}
         }
     }
-
     /// Returns selected indices.
     pub fn selected_indices(&self) -> &[usize] {
         &self.selected_indices
     }
-
     /// Returns whether an item is selected.
     pub fn is_selected(&self, index: usize) -> bool {
         self.selected_indices.contains(&index)
     }
-
     /// Selects an item.
     pub fn select(&mut self, index: usize) {
         if index >= self.items.len() {
             return;
         }
-
         match self.selection_mode {
             SelectionMode::NoSelection => return,
             SelectionMode::SingleSelection => {
@@ -201,7 +182,6 @@ impl ListBox {
             }
         }
     }
-
     /// Deselects an item.
     pub fn deselect(&mut self, index: usize) {
         if let Some(pos) = self.selected_indices.iter().position(|&i| i == index) {
@@ -212,7 +192,6 @@ impl ListBox {
             self.selection_changed.emit();
         }
     }
-
     /// Clears selection.
     pub fn clear_selection(&mut self) {
         if !self.selected_indices.is_empty() {
@@ -221,13 +200,11 @@ impl ListBox {
             self.selection_changed.emit();
         }
     }
-
     /// Selects all items.
     pub fn select_all(&mut self) {
         if self.selection_mode == SelectionMode::NoSelection {
             return;
         }
-
         self.selected_indices.clear();
         for i in 0..self.items.len() {
             self.selected_indices.push(i);
@@ -237,12 +214,10 @@ impl ListBox {
         }
         self.selection_changed.emit();
     }
-
     /// Returns current row.
     pub fn current_row(&self) -> Option<usize> {
         self.current_row
     }
-
     /// Sets current row.
     pub fn set_current_row(&mut self, row: Option<usize>) {
         if let Some(r) = row {
@@ -253,22 +228,18 @@ impl ListBox {
             self.current_row = None;
         }
     }
-
     /// Returns item height.
     pub fn item_height(&self) -> f32 {
         self.item_height
     }
-
     /// Sets item height.
     pub fn set_item_height(&mut self, height: f32) {
-        self.item_height = height.max(1.0);
+        self.item_height = height.max(1);
     }
-
     /// Returns all items.
     pub fn items(&self) -> &[String] {
         &self.items
     }
-
     /// Returns visible item range based on scroll position.
     fn visible_range(&self) -> (usize, usize) {
         let rect = self.geometry();
@@ -278,7 +249,6 @@ impl ListBox {
         (start, end)
     }
 }
-
 // Implement Widget trait
 impl Widget for ListBox {
     fn id(&self) -> ObjectId {
@@ -378,14 +348,12 @@ impl Widget for ListBox {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for ListBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -458,15 +426,11 @@ impl EventHandler for ListBox {
         }
     }
 }
-
 impl Draw for ListBox {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
-        let padding = 2.0;
-
+        let padding = 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -475,7 +439,6 @@ impl Draw for ListBox {
             rect.height,
             Color::from_rgb(255, 255, 255),
         );
-
         // Draw border
         context.draw_rect(
             rect.x,
@@ -484,13 +447,11 @@ impl Draw for ListBox {
             rect.height,
             Color::from_rgb(200, 200, 200),
         );
-
         // Draw items
         let (start, end) = self.visible_range();
         for i in start..end {
             let item_y = rect.y + (i as f32 * self.item_height);
             let item_rect = Rect::new(rect.x, item_y, rect.width, self.item_height);
-
             // Draw item background
             if self.is_selected(i) {
                 context.fill_rect(
@@ -509,7 +470,6 @@ impl Draw for ListBox {
                     Color::from_rgb(240, 240, 240),
                 );
             }
-
             // Draw item text
             if let Some(text) = self.item(i) {
                 let text_color = if self.is_selected(i) {
@@ -517,25 +477,18 @@ impl Draw for ListBox {
                 } else {
                     Color::from_rgb(0, 0, 0)
                 };
-
                 context.draw_text(
                     item_rect.x + padding,
-                    item_rect.y + self.item_height / 2.0,
+                    item_rect.y + self.item_height / 2,
                     text,
                     &Font::default(),
                     text_color,
                     Alignment::Left,
                 );
             }
-
             // Draw item separator
             if i < end - 1 {
-                context.draw_line(
-                    item_rect.x,
-                    item_rect.y + item_rect.height,
-                    item_rect.x + item_rect.width,
-                    item_rect.y + item_rect.height,
-                    Color::from_rgb(230, 230, 230),
+                context.draw_line(Point::new(item_rect.x, item_rect.y + item_rect.height), Point::new(item_rect.x + item_rect.width, item_rect.y + item_rect.height), Color::from_rgb(230, 230, 230),
                 );
             }
         }

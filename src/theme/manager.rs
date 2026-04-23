@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
-
 use crate::core::{Color, Font};
 use crate::style::{Margin, Padding, Shadow, WidgetStyle};
-
 use super::{Borders, Colors, Fonts, Spacing, Theme};
-
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
     /// Registered themes keyed by theme name.
@@ -13,7 +10,6 @@ pub struct ThemeManager {
     /// Active theme name.
     current_theme: String,
 }
-
 impl ThemeManager {
     /// Creates a theme manager seeded with the default theme.
     pub fn new() -> Self {
@@ -26,7 +22,6 @@ impl ThemeManager {
             current_theme,
         }
     }
-
     /// Loads and registers a theme from a JSON file path.
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -34,12 +29,10 @@ impl ThemeManager {
         self.themes.insert(theme.name.clone(), theme);
         Ok(())
     }
-
     /// Registers a theme in memory.
     pub fn register_theme(&mut self, theme: Theme) {
         self.themes.insert(theme.name.clone(), theme);
     }
-
     /// Selects active theme by name.
     pub fn set_theme(&mut self, name: &str) -> bool {
         if self.themes.contains_key(name) {
@@ -48,23 +41,19 @@ impl ThemeManager {
         }
         false
     }
-
     /// Returns currently active theme.
     pub fn current_theme(&self) -> Option<&Theme> {
         self.themes.get(&self.current_theme)
     }
-
     /// Returns a registered theme by name.
     pub fn get_theme(&self, name: &str) -> Option<&Theme> {
         self.themes.get(name)
     }
-
     /// Resolves a widget style for a class using current theme tokens.
     pub fn resolve_style(&self, class_name: &str) -> WidgetStyle {
         let Some(theme) = self.current_theme() else {
             return WidgetStyle::default();
         };
-
         let shadow = if theme.borders.shadow {
             Some(Shadow {
                 x: 0,
@@ -75,7 +64,6 @@ impl ThemeManager {
         } else {
             None
         };
-
         let (background_color, text_color) = if class_name == "button" {
             (
                 Some(theme.colors.primary),
@@ -84,7 +72,6 @@ impl ThemeManager {
         } else {
             (Some(theme.colors.background), Some(theme.colors.foreground))
         };
-
         WidgetStyle {
             background_color,
             text_color,
@@ -98,13 +85,11 @@ impl ThemeManager {
         }
     }
 }
-
 impl Default for ThemeManager {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Default for Theme {
     fn default() -> Self {
         Self {

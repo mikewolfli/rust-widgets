@@ -4,7 +4,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LCDNumberMode {
@@ -17,7 +16,6 @@ pub enum LCDNumberMode {
     /// Display binary numbers.
     Bin,
 }
-
 /// LCD segment style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentStyle {
@@ -28,7 +26,6 @@ pub enum SegmentStyle {
     /// Flat style.
     Flat,
 }
-
 /// LCD number widget.
 pub struct LCDNumber {
     base: BaseWidget,
@@ -44,14 +41,13 @@ pub struct LCDNumber {
     /// Emitted when the display is overflowed.
     pub overflow: GenericSignal,
 }
-
 impl LCDNumber {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::LCDNumber, geometry, "LCDNumber"),
-            value: 0.0,
-            min_value: -999999.0,
-            max_value: 999999.0,
+            value: 0,
+            min_value: -999999,
+            max_value: 999999,
             num_digits: 6,
             small_decimal_point: false,
             mode: LCDNumberMode::Dec,
@@ -60,7 +56,6 @@ impl LCDNumber {
             overflow: GenericSignal::new(),
         }
     }
-
     pub fn value(&self) -> f64 {
         self.value
     }
@@ -82,7 +77,6 @@ impl LCDNumber {
     pub fn segment_style(&self) -> SegmentStyle {
         self.segment_style
     }
-
     pub fn set_value(&mut self, value: f64) {
         let clamped = value.clamp(self.min_value, self.max_value);
         if self.value != clamped {
@@ -115,11 +109,9 @@ impl LCDNumber {
         self.segment_style = style;
         self.base.request_redraw();
     }
-
     pub fn check_overflow(&self) -> bool {
         self.value < self.min_value || self.value > self.max_value
     }
-
     pub fn display_text(&self) -> String {
         match self.mode {
             LCDNumberMode::Hex => format!("{:X}", self.value as i64),
@@ -129,7 +121,6 @@ impl LCDNumber {
         }
     }
 }
-
 impl Widget for LCDNumber {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -228,31 +219,25 @@ impl Widget for LCDNumber {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for LCDNumber {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
     }
 }
-
 impl Draw for LCDNumber {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-
         let bg_color = style.background_color.unwrap_or(Color::BLACK);
         let fg_color = style.text_color.unwrap_or(Color::rgb(255, 0, 0));
-
         context.fill_rect(rect, bg_color);
-
         let display_text = self.display_text();
-        let digit_width = rect.width / (self.num_digits as f64).max(1.0) as u32;
+        let digit_width = rect.width / (self.num_digits as f64).max(1) as u32;
         let digit_height = rect.height * 7 / 10;
         let segment_width = digit_width / 8;
         let start_x =
             rect.x + ((rect.width as i32 - digit_width as i32 * display_text.len() as i32) / 2);
         let start_y = rect.y + ((rect.height as i32 - digit_height as i32) / 2);
-
         for (i, ch) in display_text.chars().enumerate() {
             let digit_x = (start_x + i as i32 * digit_width as i32) as u32;
             let digit_y = start_y as u32;
@@ -267,14 +252,12 @@ impl Draw for LCDNumber {
                 fg_color,
             );
         }
-
         if self.check_overflow() {
             let overflow_color = Color::rgb(255, 255, 0);
-            context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);
+            context.fill_circle(Point::new(Point::new(rect.x + 10, rect.y + 10)), 5 as u32, overflow_color);
         }
     }
 }
-
 impl LCDNumber {
     fn draw_digit(
         &self,
@@ -289,14 +272,12 @@ impl LCDNumber {
     ) {
         let segments = self.get_segments(ch);
         let hw = (segment_width / 2) as i32;
-
         // let mid_x = x as i32 + width as i32 / 2;
         let mid_y = y as i32 + height as i32 / 2;
         let top_y = y as i32;
         let bottom_y = y as i32 + height as i32;
         let left_x = x as i32;
         let right_x = x as i32 + width as i32;
-
         if segments[0] {
             self.draw_horizontal_segment(
                 context,
@@ -368,7 +349,6 @@ impl LCDNumber {
             );
         }
     }
-
     fn draw_horizontal_segment(
         &self,
         context: &mut RenderContext,
@@ -385,14 +365,13 @@ impl LCDNumber {
                 context.draw_rect_stroke(Rect::new(x1, y1, width, height), color, 1);
             }
             SegmentStyle::Filled => {
-                context.fill_rect(Rect::new(x1, y1, width, height), color);
+                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
             }
             SegmentStyle::Flat => {
-                context.fill_rect(Rect::new(x1, y1, width, height), color);
+                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
             }
         }
     }
-
     fn draw_vertical_segment(
         &self,
         context: &mut RenderContext,
@@ -409,14 +388,13 @@ impl LCDNumber {
                 context.draw_rect_stroke(Rect::new(x1, y1, width, height), color, 1);
             }
             SegmentStyle::Filled => {
-                context.fill_rect(Rect::new(x1, y1, width, height), color);
+                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
             }
             SegmentStyle::Flat => {
-                context.fill_rect(Rect::new(x1, y1, width, height), color);
+                context.fill_rect(Rect::new(Rect::new(x1, y1, width, height)), color);
             }
         }
     }
-
     fn get_segments(&self, ch: char) -> [bool; 7] {
         match ch.to_ascii_uppercase() {
             '0' => [true, true, true, true, true, true, false],

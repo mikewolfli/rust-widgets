@@ -1,8 +1,6 @@
 use std::fmt::Debug;
-
 /// Stable numeric identifier used for widgets and objects.
 pub type ObjectId = u64;
-
 /// Runtime profile controlling feature and backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeProfile {
@@ -11,7 +9,6 @@ pub enum RuntimeProfile {
     /// Reduced profile intended for constrained environments.
     Embedded,
 }
-
 /// Platform family classification for backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformFamily {
@@ -22,7 +19,6 @@ pub enum PlatformFamily {
     /// Mobile runtime targets.
     Mobile,
 }
-
 /// Common trait implemented by id-addressable core objects.
 pub trait CoreObject: Debug + Send + Sync {
     /// Get stable object id.

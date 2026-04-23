@@ -1,24 +1,20 @@
 use crate::core::{Color, Point};
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GradientType {
     Linear,
     Radial,
     Conic,
 }
-
 impl Default for GradientType {
     fn default() -> Self {
         Self::Linear
     }
 }
-
 #[derive(Debug, Clone, Copy)]
 pub struct GradientStop {
     pub position: f32,
     pub color: Color,
 }
-
 impl GradientStop {
     pub fn new(position: f32, color: Color) -> Self {
         Self {
@@ -27,7 +23,6 @@ impl GradientStop {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct Gradient {
     pub gradient_type: GradientType,
@@ -38,7 +33,6 @@ pub struct Gradient {
     pub center: Point,
     pub radius: f32,
 }
-
 impl Gradient {
     pub fn linear(start: Point, end: Point) -> Self {
         Self {
@@ -51,7 +45,6 @@ impl Gradient {
             radius: 0.0,
         }
     }
-
     pub fn radial(center: Point, radius: f32) -> Self {
         Self {
             gradient_type: GradientType::Radial,
@@ -63,7 +56,6 @@ impl Gradient {
             radius,
         }
     }
-
     pub fn conic(center: Point, angle: f32) -> Self {
         Self {
             gradient_type: GradientType::Conic,
@@ -75,58 +67,46 @@ impl Gradient {
             radius: 0.0,
         }
     }
-
     pub fn with_angle(mut self, angle: f32) -> Self {
         self.angle = angle;
         self
     }
-
     pub fn add_stop(mut self, position: f32, color: Color) -> Self {
         self.stops.push(GradientStop::new(position, color));
         self.stops
             .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         self
     }
-
     pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
         self.stops = stops;
         self.stops
             .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         self
     }
-
     pub fn interpolate(&self, position: f32) -> Color {
         let position = position.clamp(0.0, 1.0);
-
         if self.stops.is_empty() {
             return Color::TRANSPARENT;
         }
-
         if self.stops.len() == 1 {
             return self.stops[0].color;
         }
-
         if position <= self.stops[0].position {
             return self.stops[0].color;
         }
-
         if position >= self.stops[self.stops.len() - 1].position {
             return self.stops[self.stops.len() - 1].color;
         }
-
         for i in 0..self.stops.len() - 1 {
             let current = &self.stops[i];
             let next = &self.stops[i + 1];
-
             if position >= current.position && position <= next.position {
                 let t = (position - current.position) / (next.position - current.position);
                 return Self::interpolate_color(current.color, next.color, t);
             }
         }
-
         self.stops[self.stops.len() - 1].color
     }
-
     fn interpolate_color(from: Color, to: Color, t: f32) -> Color {
         let t = t.clamp(0.0, 1.0);
         let r = ((1.0 - t) * from.r as f32 + t * to.r as f32) as u8;
@@ -135,7 +115,6 @@ impl Gradient {
         let a = ((1.0 - t) * from.a as f32 + t * to.a as f32) as u8;
         Color::rgba(r, g, b, a)
     }
-
     pub fn reverse(&self) -> Self {
         let mut reversed = self.clone();
         reversed.stops.reverse();
@@ -144,46 +123,38 @@ impl Gradient {
         }
         reversed
     }
-
     pub fn is_valid(&self) -> bool {
         self.stops.len() >= 2
     }
 }
-
 impl Default for Gradient {
     fn default() -> Self {
         Self::linear(Point::new(0, 0), Point::new(100, 0))
     }
 }
-
 pub struct GradientBuilder {
     gradient: Gradient,
 }
-
 impl GradientBuilder {
     pub fn linear(start: Point, end: Point) -> Self {
         Self {
             gradient: Gradient::linear(start, end),
         }
     }
-
     pub fn radial(center: Point, radius: f32) -> Self {
         Self {
             gradient: Gradient::radial(center, radius),
         }
     }
-
     pub fn conic(center: Point, angle: f32) -> Self {
         Self {
             gradient: Gradient::conic(center, angle),
         }
     }
-
     pub fn stop(mut self, position: f32, color: Color) -> Self {
         self.gradient.stops.push(GradientStop::new(position, color));
         self
     }
-
     pub fn build(mut self) -> Gradient {
         self.gradient
             .stops
@@ -191,21 +162,17 @@ impl GradientBuilder {
         self.gradient
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_gradient_creation() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
             .add_stop(0.0, Color::RED)
             .add_stop(1.0, Color::BLUE);
-
         assert_eq!(gradient.gradient_type, GradientType::Linear);
         assert_eq!(gradient.stops.len(), 2);
     }
-
     #[test]
     fn test_gradient_interpolation() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
@@ -227,24 +194,20 @@ mod tests {
                     a: 255,
                 },
             );
-
         let mid_color = gradient.interpolate(0.5);
         assert_eq!(mid_color.r, 127);
         assert_eq!(mid_color.g, 0);
         assert_eq!(mid_color.b, 127);
     }
-
     #[test]
     fn test_gradient_reverse() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
             .add_stop(0.0, Color::RED)
             .add_stop(1.0, Color::BLUE);
-
         let reversed = gradient.reverse();
         assert_eq!(reversed.stops[0].color, Color::BLUE);
         assert_eq!(reversed.stops[1].color, Color::RED);
     }
-
     #[test]
     fn test_gradient_builder() {
         let gradient = GradientBuilder::linear(Point::new(0, 0), Point::new(100, 100))
@@ -252,7 +215,6 @@ mod tests {
             .stop(0.5, Color::GRAY)
             .stop(1.0, Color::BLACK)
             .build();
-
         assert_eq!(gradient.stops.len(), 3);
     }
 }

@@ -1,7 +1,5 @@
 use crate::gpu::{GpuAdapter, GpuType};
-
 use super::{HardwareCapabilities, PerformanceLevel, UserOverrides};
-
 /// Menu system configuration with hardware-adaptive features.
 #[derive(Debug, Clone)]
 pub struct MenuConfig {
@@ -26,7 +24,6 @@ pub struct MenuConfig {
     /// Auto-detected hardware capabilities.
     pub(crate) hardware_caps: HardwareCapabilities,
 }
-
 impl MenuConfig {
     /// Creates a new menu configuration with auto-detection.
     pub fn new() -> Self {
@@ -46,16 +43,13 @@ impl MenuConfig {
         config.apply_hardware_defaults();
         config
     }
-
     fn detect_hardware_capabilities() -> HardwareCapabilities {
         let gpu_type = GpuAdapter::detect_primary_gpu_type().unwrap_or(GpuType::Integrated);
-
         let gpu_memory_mb = Self::detect_gpu_memory();
         let gpu_performance_score = Self::estimate_gpu_performance(&gpu_type, gpu_memory_mb);
         let system_ram_mb = Self::detect_system_memory();
         let cpu_performance_score = Self::estimate_cpu_performance();
         let on_battery = Self::detect_battery_status();
-
         let performance_level = if gpu_performance_score >= 70 && !on_battery {
             PerformanceLevel::High
         } else if gpu_performance_score >= 40 {
@@ -63,7 +57,6 @@ impl MenuConfig {
         } else {
             PerformanceLevel::Low
         };
-
         HardwareCapabilities {
             gpu_type,
             gpu_memory_mb,
@@ -74,11 +67,9 @@ impl MenuConfig {
             performance_level,
         }
     }
-
     fn detect_gpu_memory() -> u32 {
         512
     }
-
     fn estimate_gpu_performance(gpu_type: &GpuType, memory_mb: u32) -> u32 {
         match gpu_type {
             GpuType::Discrete => {
@@ -94,19 +85,15 @@ impl MenuConfig {
             GpuType::Cpu => 20,
         }
     }
-
     fn detect_system_memory() -> u64 {
         4096
     }
-
     fn estimate_cpu_performance() -> u32 {
         50
     }
-
     fn detect_battery_status() -> bool {
         false
     }
-
     fn apply_hardware_defaults(&mut self) {
         match self.hardware_caps.performance_level {
             PerformanceLevel::High => {
@@ -141,7 +128,6 @@ impl MenuConfig {
             }
         }
     }
-
     /// Applies user overrides to the configuration.
     pub fn apply_user_overrides(&mut self) {
         if let Some(animations) = self.user_overrides.animations {
@@ -166,88 +152,69 @@ impl MenuConfig {
             self.hardware_acceleration = hw_accel;
         }
     }
-
     /// Resets to hardware defaults, clearing user overrides.
     pub fn reset_to_defaults(&mut self) {
         self.user_overrides = UserOverrides::default();
         self.apply_hardware_defaults();
     }
-
     pub fn animations_enabled(&self) -> bool {
         self.animations_enabled
     }
-
     pub fn transparency_enabled(&self) -> bool {
         self.transparency_enabled
     }
-
     pub fn shadows_enabled(&self) -> bool {
         self.shadows_enabled
     }
-
     pub fn blur_enabled(&self) -> bool {
         self.blur_enabled
     }
-
     pub fn animation_speed(&self) -> f32 {
         self.animation_speed
     }
-
     pub fn max_visible_items(&self) -> u32 {
         self.max_visible_items
     }
-
     pub fn hardware_acceleration(&self) -> bool {
         self.hardware_acceleration
     }
-
     pub fn caching_enabled(&self) -> bool {
         self.caching_enabled
     }
-
     pub fn hardware_caps(&self) -> &HardwareCapabilities {
         &self.hardware_caps
     }
-
     pub fn user_overrides(&self) -> &UserOverrides {
         &self.user_overrides
     }
-
     pub fn set_animations_enabled(&mut self, enabled: bool) {
         self.user_overrides.animations = Some(enabled);
         self.animations_enabled = enabled;
     }
-
     pub fn set_transparency_enabled(&mut self, enabled: bool) {
         self.user_overrides.transparency = Some(enabled);
         self.transparency_enabled = enabled;
     }
-
     pub fn set_shadows_enabled(&mut self, enabled: bool) {
         self.user_overrides.shadows = Some(enabled);
         self.shadows_enabled = enabled;
     }
-
     pub fn set_blur_enabled(&mut self, enabled: bool) {
         self.user_overrides.blur = Some(enabled);
         self.blur_enabled = enabled;
     }
-
     pub fn set_animation_speed(&mut self, speed: f32) {
         self.user_overrides.animation_speed = Some(speed.clamp(0.1, 3.0));
         self.animation_speed = speed.clamp(0.1, 3.0);
     }
-
     pub fn set_max_visible_items(&mut self, max: u32) {
         self.user_overrides.max_visible_items = Some(max.max(5));
         self.max_visible_items = max.max(5);
     }
-
     pub fn set_hardware_acceleration(&mut self, enabled: bool) {
         self.user_overrides.hardware_acceleration = Some(enabled);
         self.hardware_acceleration = enabled;
     }
-
     /// Returns a user-friendly description of current settings.
     pub fn settings_summary(&self) -> String {
         format!(
@@ -278,7 +245,6 @@ impl MenuConfig {
             self.hardware_caps.performance_level
         )
     }
-
     /// Returns true if any user overrides are active.
     pub fn has_user_overrides(&self) -> bool {
         self.user_overrides.animations.is_some()
@@ -289,7 +255,6 @@ impl MenuConfig {
             || self.user_overrides.max_visible_items.is_some()
             || self.user_overrides.hardware_acceleration.is_some()
     }
-
     pub(crate) fn apply_battery_adaptive_reduction(&mut self) {
         if self.user_overrides.animations.is_none() {
             self.animations_enabled = false;
@@ -302,7 +267,6 @@ impl MenuConfig {
         }
     }
 }
-
 impl Default for MenuConfig {
     fn default() -> Self {
         Self::new()

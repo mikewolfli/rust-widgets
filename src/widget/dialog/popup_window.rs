@@ -1,13 +1,11 @@
 //! Popup window widget.
-
 use crate::core::Rect;
 use crate::widget::base::{BaseWidget, Widget, WidgetKind};
-
+use crate::render::RenderContext;
 /// Popup window widget.
 pub struct PopupWindow {
     base: BaseWidget,
 }
-
 impl PopupWindow {
     /// Creates a popup window with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -16,27 +14,23 @@ impl PopupWindow {
         }
     }
 }
-
 impl Widget for PopupWindow {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
-
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 }
-
 impl crate::widget::base::Draw for PopupWindow {
-    fn draw(&self, canvas: &mut dyn crate::render::Canvas) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Default drawing implementation
         // Popup window is drawn by the renderer
     }
 }
-
 impl crate::event::EventHandler for PopupWindow {
-    fn handle_event(&mut self, event: &crate::event::Event) -> bool {
+    fn handle_event(&mut self, event: &crate::event::Event) {
         // Default event handling
-        false
+        let _ = event;
     }
 }

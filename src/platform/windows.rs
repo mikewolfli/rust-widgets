@@ -79,13 +79,11 @@ pub fn try_create_slider(
         None
     }
 }
-
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
     WidgetTriggerEvent, WidgetTriggerKind,
 };
-
 impl Platform for WindowsPlatform {
     fn show_widget(&self, widget_id: ObjectId) {
         self.state.set_visible(widget_id, true);
@@ -236,7 +234,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
             };
-
             self.runtime_running.store(true, Ordering::SeqCst);
             while self.runtime_running.load(Ordering::SeqCst) {
                 let mut msg: MSG = std::mem::zeroed();
@@ -273,7 +270,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, ShowWindow, UpdateWindow, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             };
-
             ensure_window_class_registered();
             let class_name = Self::to_wide("RustWidgetsWindowClass");
             let title_wide = Self::to_wide(title);
@@ -332,7 +328,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, BS_PUSHBUTTON, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -411,7 +406,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, BS_AUTOCHECKBOX, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -468,7 +462,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, BS_AUTORADIOBUTTON, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -526,7 +519,6 @@ impl Platform for WindowsPlatform {
                 CreateWindowExW, ES_AUTOVSCROLL, ES_LEFT, ES_MULTILINE, WS_BORDER, WS_CHILD,
                 WS_TABSTOP, WS_VISIBLE,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -613,7 +605,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_ADDSTRING, CB_ERR};
-
             let hwnd = match self.get_native_handle(combo_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -633,7 +624,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_RESETCONTENT};
-
             let hwnd = match self.get_native_handle(combo_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -653,7 +643,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETCURSEL, CB_SETCURSEL};
-
             let hwnd = match self.get_native_handle(combo_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -663,7 +652,6 @@ impl Platform for WindowsPlatform {
             if result == CB_ERR as isize {
                 return false;
             }
-
             if result != previous {
                 let _ = self
                     .inject_widget_trigger_event(combo_box, WidgetTriggerKind::SelectionChanged);
@@ -682,7 +670,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETCURSEL};
-
             let hwnd = self.get_native_handle(combo_box)?;
             let result = unsafe { SendMessageW(hwnd, CB_GETCURSEL, 0, 0) };
             if result == CB_ERR as isize {
@@ -701,7 +688,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETCOUNT};
-
             let hwnd = match self.get_native_handle(combo_box) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -723,7 +709,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETLBTEXT, CB_GETLBTEXTLEN};
-
             let hwnd = self.get_native_handle(combo_box)?;
             let len = unsafe { SendMessageW(hwnd, CB_GETLBTEXTLEN, index, 0) };
             if len == CB_ERR as isize || len < 0 {
@@ -758,7 +743,6 @@ impl Platform for WindowsPlatform {
                 CreateWindowExW, LBS_NOTIFY, WS_BORDER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
                 WS_VSCROLL,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -808,7 +792,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_ADDSTRING, LB_ERR};
-
             let hwnd = match self.get_native_handle(list_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -828,7 +811,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_DELETESTRING, LB_ERR};
-
             let hwnd = match self.get_native_handle(list_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -846,7 +828,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_RESETCONTENT};
-
             let hwnd = match self.get_native_handle(list_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -866,7 +847,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_SETCURSEL};
-
             let hwnd = match self.get_native_handle(list_box) {
                 Some(hwnd) => hwnd,
                 None => return false,
@@ -888,7 +868,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_GETCURSEL};
-
             let hwnd = self.get_native_handle(list_box)?;
             let result = unsafe { SendMessageW(hwnd, LB_GETCURSEL, 0, 0) };
             if result == LB_ERR as isize {
@@ -907,7 +886,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_GETCOUNT};
-
             let hwnd = match self.get_native_handle(list_box) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -929,7 +907,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_GETTEXT, LB_GETTEXTLEN};
-
             let hwnd = self.get_native_handle(list_box)?;
             let len = unsafe { SendMessageW(hwnd, LB_GETTEXTLEN, index, 0) };
             if len == LB_ERR as isize || len < 0 {
@@ -954,7 +931,6 @@ impl Platform for WindowsPlatform {
         {
             use std::ptr::null_mut;
             use winapi::um::winuser::{CreateWindowExW, WS_BORDER, WS_CHILD, WS_VISIBLE};
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -1003,7 +979,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::CreateMenu;
-
             let _ = (parent, x, y, width, height);
             let menu_bar_handle = unsafe { CreateMenu() };
             if menu_bar_handle.is_null() {
@@ -1044,7 +1019,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{AppendMenuW, CreatePopupMenu, DrawMenuBar, MF_POPUP};
-
             let parent_menu = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
@@ -1060,13 +1034,11 @@ impl Platform for WindowsPlatform {
                     }
                 }
             };
-
             let submenu_handle = unsafe { CreatePopupMenu() };
             if submenu_handle.is_null() {
                 eprintln!("[rust_widgets][windows] create_menu failed (parent={parent})");
                 return 0;
             }
-
             let text_wide = Self::to_wide(text);
             let append_ok = unsafe {
                 AppendMenuW(
@@ -1082,7 +1054,6 @@ impl Platform for WindowsPlatform {
                 );
                 return 0;
             }
-
             let widget_id =
                 self.state
                     .create_widget(WindowsHandleKind::Menu, text, x, y, width, height);
@@ -1117,7 +1088,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{DrawMenuBar, SetMenu};
-
             let hwnd = match self.get_native_handle(window) {
                 Some(hwnd) => hwnd,
                 None => {
@@ -1127,7 +1097,6 @@ impl Platform for WindowsPlatform {
                     return false;
                 }
             };
-
             let menu_handle = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
@@ -1143,7 +1112,6 @@ impl Platform for WindowsPlatform {
                     }
                 }
             };
-
             let set_ok = unsafe { SetMenu(hwnd, menu_handle as HMENU) };
             if set_ok == 0 {
                 eprintln!(
@@ -1171,7 +1139,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{AppendMenuW, DrawMenuBar, MF_STRING};
-
             let parent_handle = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
@@ -1187,7 +1154,6 @@ impl Platform for WindowsPlatform {
                     }
                 }
             };
-
             let command_id = self
                 .menu_state
                 .next_command_id
@@ -1207,15 +1173,12 @@ impl Platform for WindowsPlatform {
                 );
                 return 0;
             }
-
             let item_id = self
                 .state
                 .create_widget(WindowsHandleKind::Menu, text, 0, 0, 0, 0);
-
             if let Ok(mut map) = self.menu_state.menu_command_to_item.lock() {
                 map.insert(command_id, item_id);
             }
-
             let owner_window = self
                 .menu_state
                 .menu_owner_window
@@ -1232,7 +1195,6 @@ impl Platform for WindowsPlatform {
                     }
                 }
             }
-
             item_id
         }
         #[cfg(not(target_os = "windows"))]
@@ -1321,7 +1283,6 @@ impl Platform for WindowsPlatform {
         {
             use std::ptr::null_mut;
             use winapi::um::winuser::{CreateWindowExW, WS_CHILD, WS_VISIBLE};
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -1379,7 +1340,6 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, SS_LEFT, SS_NOPREFIX, WS_CHILD, WS_VISIBLE,
             };
-
             let parent_hwnd = match self.get_native_handle(parent) {
                 Some(hwnd) => hwnd,
                 None => return 0,
@@ -1419,7 +1379,6 @@ impl Platform for WindowsPlatform {
         }
     }
     // ...implement other required methods as stubs...
-
     fn create_message_box(
         &self,
         _parent: ObjectId,
@@ -1441,7 +1400,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_file_dialog(
         &self,
         _parent: ObjectId,
@@ -1461,7 +1419,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_color_dialog(
         &self,
         _parent: ObjectId,
@@ -1481,7 +1438,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_font_dialog(
         &self,
         _parent: ObjectId,
@@ -1501,7 +1457,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_spin_box(
         &self,
         _parent: ObjectId,
@@ -1521,7 +1476,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_list_view(
         &self,
         _parent: ObjectId,
@@ -1541,7 +1495,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn create_scroll_area(
         &self,
         _parent: ObjectId,
@@ -1561,7 +1514,6 @@ impl Platform for WindowsPlatform {
             0
         }
     }
-
     fn set_clipboard_text(&self, _text: &str) -> bool {
         #[cfg(target_os = "windows")]
         {
@@ -1574,7 +1526,6 @@ impl Platform for WindowsPlatform {
             false
         }
     }
-
     fn get_clipboard_text(&self) -> String {
         #[cfg(target_os = "windows")]
         {
@@ -1586,7 +1537,6 @@ impl Platform for WindowsPlatform {
             String::new()
         }
     }
-
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
         #[cfg(target_os = "windows")]
         {
@@ -1599,7 +1549,6 @@ impl Platform for WindowsPlatform {
             false
         }
     }
-
     fn poll_drop_event(&self) -> Option<DropEvent> {
         #[cfg(target_os = "windows")]
         {
@@ -1611,7 +1560,6 @@ impl Platform for WindowsPlatform {
             None
         }
     }
-
     fn inject_drop_event(&self, _event: DropEvent) -> bool {
         #[cfg(target_os = "windows")]
         {
@@ -1646,7 +1594,6 @@ pub enum WindowsHandleKind {
     ComboBox,
     // Add other widget kinds as needed
 }
-
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn rust_widgets_wnd_proc(
     hwnd: HWND,
@@ -1658,7 +1605,6 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
     use winapi::um::winuser::{
         DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY, WM_NOTIFY,
     };
-
     match msg {
         WM_COMMAND => {
             let command_id = (wparam & 0xFFFF) as u32;
@@ -1682,7 +1628,6 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
                         }
                     }
                 }
-
                 if lparam != 0 {
                     let hwnd_from = lparam as HWND;
                     let fallback_command_id = unsafe { GetDlgCtrlID(hwnd_from) } as u32;
@@ -1729,7 +1674,6 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
-
 #[cfg(target_os = "windows")]
 fn ensure_window_class_registered() {
     unsafe extern "system" {
@@ -1741,7 +1685,6 @@ fn ensure_window_class_registered() {
         use winapi::um::winuser::{
             LoadCursorW, RegisterClassW, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, WNDCLASSW,
         };
-
         let class_name = WindowsPlatform::to_wide("RustWidgetsWindowClass");
         let hinstance = GetModuleHandleW(std::ptr::null());
         let mut wnd_class: WNDCLASSW = std::mem::zeroed();
@@ -1753,10 +1696,8 @@ fn ensure_window_class_registered() {
         let _ = RegisterClassW(&wnd_class);
     });
 }
-
 #[cfg(target_os = "windows")]
 static ACTIVE_WINDOWS_PLATFORM: OnceLock<usize> = OnceLock::new();
-
 #[cfg(target_os = "windows")]
 fn active_windows_platform() -> Option<&'static WindowsPlatform> {
     let ptr = *ACTIVE_WINDOWS_PLATFORM.get()? as *const WindowsPlatform;
@@ -1766,7 +1707,6 @@ fn active_windows_platform() -> Option<&'static WindowsPlatform> {
         Some(unsafe { &*ptr })
     }
 }
-
 #[cfg(target_os = "windows")]
 fn control_notify_kind_for_widget(
     kind: WindowsHandleKind,
@@ -1777,7 +1717,6 @@ fn control_notify_kind_for_widget(
     const CBN_EDITCHANGE: u32 = 5;
     const EN_CHANGE: u32 = 0x0300;
     const LBN_SELCHANGE: u32 = 1;
-
     match kind {
         WindowsHandleKind::Button
         | WindowsHandleKind::CheckBox
@@ -1814,7 +1753,6 @@ fn control_notify_kind_for_widget(
         _ => None,
     }
 }
-
 #[cfg(target_os = "windows")]
 fn enqueue_control_notify_event(
     platform: &WindowsPlatform,
@@ -1825,12 +1763,10 @@ fn enqueue_control_notify_event(
         Some(kind) => kind,
         None => return false,
     };
-
     let kind = match control_notify_kind_for_widget(widget_kind, notify_code) {
         Some(kind) => kind,
         None => return false,
     };
-
     if let Ok(mut events) = platform.menu_state.pending_widget_events.lock() {
         events.push_back(WidgetTriggerEvent { widget_id, kind });
         if widget_kind == WindowsHandleKind::ComboBox && kind == WidgetTriggerKind::SelectionChanged
@@ -1844,7 +1780,6 @@ fn enqueue_control_notify_event(
     }
     false
 }
-
 #[cfg(target_os = "windows")]
 fn notify_kind_for_widget(kind: WindowsHandleKind, notify_code: u32) -> Option<WidgetTriggerKind> {
     if kind == WindowsHandleKind::Slider {
@@ -1855,7 +1790,6 @@ fn notify_kind_for_widget(kind: WindowsHandleKind, notify_code: u32) -> Option<W
     }
     None
 }
-
 // Helper to convert &str to wide string for Win32 API
 impl WindowsPlatform {
     pub fn to_wide(s: &str) -> Vec<u16> {
@@ -1887,25 +1821,20 @@ impl WindowsPlatform {
             }
         }
     }
-
     #[cfg(target_os = "windows")]
     pub unsafe fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
         use winapi::um::winuser::{SetWindowLongPtrW, GWLP_ID};
-
         let command_id = self
             .menu_state
             .next_command_id
             .fetch_add(1, Ordering::SeqCst) as u32;
-
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_ID, command_id as isize);
         }
-
         if let Ok(mut map) = self.menu_state.control_command_to_widget.lock() {
             map.insert(command_id, widget_id);
         }
     }
-
     #[cfg(target_os = "windows")]
     pub fn widget_id_by_native_handle(&self, hwnd: HWND) -> Option<u64> {
         let handles = self.menu_state.handles.lock().ok()?;
@@ -1914,12 +1843,10 @@ impl WindowsPlatform {
             .find_map(|(widget_id, native)| ((*native as HWND) == hwnd).then_some(*widget_id))
     }
 }
-
 // Extension trait for downcasting Platform trait object to WindowsPlatform
 pub trait PlatformDowncast {
     fn downcast_ref<T: 'static>(&self) -> Option<&T>;
 }
-
 impl PlatformDowncast for dyn super::Platform {
     fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         // This is a stub; actual implementation may use Any or other trait object logic
@@ -1927,7 +1854,6 @@ impl PlatformDowncast for dyn super::Platform {
     }
 }
 // Removed unresolved import crate::state::BackendState
-
 // Win32 API types and functions
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::HMENU;
@@ -1936,7 +1862,6 @@ use winapi::shared::windef::HWND;
 #[cfg(not(target_os = "windows"))]
 type HWND = *mut std::ffi::c_void;
 // Windows backend shell.
-
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -1947,7 +1872,6 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 // ...existing code...
 // ...existing code...
-
 /// Windows platform backend struct definition
 pub struct WindowsPlatform {
     pub state: BackendState<WindowsHandleKind>,
@@ -1957,7 +1881,6 @@ pub struct WindowsPlatform {
     pub menu_state: Win32MenuState,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
 }
-
 #[allow(dead_code)]
 pub struct Win32MenuState {
     // SAFETY: HWND is only used on the main thread, and Win32MenuState is not shared across threads in this context.
@@ -1969,7 +1892,6 @@ pub struct Win32MenuState {
     pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
     next_command_id: AtomicU64,
 }
-
 #[cfg(target_os = "windows")]
 impl Win32MenuState {
     fn new() -> Self {
@@ -1984,9 +1906,7 @@ impl Win32MenuState {
         }
     }
 }
-
 #[cfg(target_os = "windows")]
-
 // Extension trait for native Win32 Slider (Trackbar) integration
 // Stub trait for native Win32 ProgressBar integration
 pub fn try_create_progress_bar(
@@ -2004,7 +1924,6 @@ pub fn try_create_progress_bar(
         use std::ptr::null_mut;
         use winapi::um::commctrl::{InitCommonControls, PROGRESS_CLASS};
         use winapi::um::winuser::{CreateWindowExW, WS_BORDER, WS_CHILD, WS_VISIBLE};
-
         unsafe {
             InitCommonControls();
             // Get platform instance and parent HWND
@@ -2051,7 +1970,6 @@ pub fn try_create_progress_bar(
         None
     }
 }
-
 // Stub trait for native Win32 ComboBox integration
 pub fn try_create_combo_box(
     platform: &dyn super::Platform,
@@ -2069,7 +1987,6 @@ pub fn try_create_combo_box(
             CreateWindowExW, CBS_DROPDOWNLIST, CBS_HASSTRINGS, WS_BORDER, WS_CHILD, WS_TABSTOP,
             WS_VISIBLE, WS_VSCROLL,
         };
-
         unsafe {
             InitCommonControls();
             let platform_instance =
@@ -2130,7 +2047,6 @@ impl WindowsPlatform {
         }
     }
 }
-
 impl Default for WindowsPlatform {
     fn default() -> Self {
         Self::new()
@@ -2146,7 +2062,6 @@ pub trait WindowsPlatformExtSlider {
         height: u32,
     ) -> Option<u64>;
 }
-
 impl WindowsPlatformExtSlider for WindowsPlatform {
     fn try_create_slider(
         platform: &dyn super::Platform,
@@ -2174,7 +2089,6 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
             use std::ptr::null_mut;
             use winapi::um::commctrl::TRACKBAR_CLASS;
             use winapi::um::winuser::CreateWindowExW;
-
             let parent_hwnd = this.get_native_handle(parent)?;
             let class: Vec<u16> = OsStr::new(TRACKBAR_CLASS)
                 .encode_wide()
@@ -2212,35 +2126,29 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
         }
     }
 }
-
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
-
     #[test]
     fn control_notify_mapping_button_click_routes_clicked() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::Button, 0);
         assert_eq!(kind, Some(WidgetTriggerKind::Clicked));
     }
-
     #[test]
     fn control_notify_mapping_line_edit_change_routes_value_changed() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::LineEdit, 0x0300);
         assert_eq!(kind, Some(WidgetTriggerKind::ValueChanged));
     }
-
     #[test]
     fn control_notify_mapping_combo_selection_routes_selection_changed() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::ComboBox, 1);
         assert_eq!(kind, Some(WidgetTriggerKind::SelectionChanged));
     }
-
     #[test]
     fn control_notify_mapping_combo_edit_change_routes_value_changed() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::ComboBox, 5);
         assert_eq!(kind, Some(WidgetTriggerKind::ValueChanged));
     }
-
     #[test]
     fn combo_selection_notify_enqueues_selection_and_value_events() {
         let platform = WindowsPlatform::new();
@@ -2248,9 +2156,7 @@ mod tests {
             platform
                 .state
                 .create_widget(WindowsHandleKind::ComboBox, "ComboBox", 0, 0, 120, 24);
-
         assert!(enqueue_control_notify_event(&platform, combo, 1));
-
         let mut queue = platform
             .menu_state
             .pending_widget_events

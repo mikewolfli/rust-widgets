@@ -1,5 +1,4 @@
 //! Time editor widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Time value (hour, minute, second, millisecond).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time {
@@ -16,7 +14,6 @@ pub struct Time {
     pub second: u8, // 0-59
     pub msec: u16,  // 0-999
 }
-
 impl Time {
     pub fn new(hour: u8, minute: u8, second: u8, msec: u16) -> Self {
         Self {
@@ -26,23 +23,19 @@ impl Time {
             msec: msec.min(999),
         }
     }
-
     pub fn is_valid(&self) -> bool {
         self.hour <= 23 && self.minute <= 59 && self.second <= 59 && self.msec <= 999
     }
-
     pub fn to_msecs_since_midnight(&self) -> u32 {
         (self.hour as u32 * 3600 + self.minute as u32 * 60 + self.second as u32) * 1000
             + self.msec as u32
     }
 }
-
 impl std::fmt::Display for Time {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
-
 /// Time editor widget.
 pub struct TimeEdit {
     base: BaseWidget,
@@ -52,11 +45,10 @@ pub struct TimeEdit {
     display_format: String,
     pub time_changed: Signal1<Time>,
 }
-
 impl TimeEdit {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::TimeEdit, geometry, "TimeEdit"),
+            base: BaseWidget::new(WidgetKind::TimePicker, geometry, "TimeEdit"),
             time: Time::new(0, 0, 0, 0),
             minimum: Time::new(0, 0, 0, 0),
             maximum: Time::new(23, 59, 59, 999),
@@ -64,7 +56,6 @@ impl TimeEdit {
             time_changed: Signal1::new(),
         }
     }
-
     pub fn time(&self) -> Time {
         self.time
     }
@@ -77,14 +68,12 @@ impl TimeEdit {
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
-
     pub fn set_time(&mut self, time: Time) {
         if time.is_valid() && time >= self.minimum && time <= self.maximum && self.time != time {
             self.time = time;
             self.time_changed.emit(time);
         }
     }
-
     pub fn set_minimum_time(&mut self, time: Time) {
         self.minimum = time;
     }
@@ -98,7 +87,6 @@ impl TimeEdit {
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
     }
-
     pub fn step_up(&mut self) {
         let mut t = self.time;
         t.second += 1;
@@ -114,7 +102,6 @@ impl TimeEdit {
         }
         self.set_time(t);
     }
-
     pub fn step_down(&mut self) {
         let mut t = self.time;
         if t.second > 0 {
@@ -133,7 +120,6 @@ impl TimeEdit {
         self.set_time(t);
     }
 }
-
 impl Widget for TimeEdit {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -232,7 +218,6 @@ impl Widget for TimeEdit {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for TimeEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -249,82 +234,20 @@ impl EventHandler for TimeEdit {
         }
     }
 }
-
 impl Draw for TimeEdit {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let spin_width = 16.0;
-
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width - spin_width,
-            rect.height,
-            Color::from_rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.draw_rect(rect, Color::from_rgb(150, 150, 150));
+        let text = self.time.to_string();
         context.draw_text(
-            rect.x + 4.0,
-            rect.y + rect.height / 2.0,
-            &self.time.to_string(),
+            Point {
+                x: rect.x + 6,
+                y: rect.y + (rect.height as i32 / 2),
+            },
+            &text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
-        );
-
-        let btn_x = rect.x + rect.width - spin_width;
-        let btn_h = rect.height / 2.0;
-        context.fill_rect(
-            btn_x,
-            rect.y,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.fill_rect(
-            btn_x,
-            rect.y + btn_h,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y,
-            btn_x,
-            rect.y + rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y + btn_h,
-            rect.x + rect.width,
-            rect.y + btn_h,
-            Color::from_rgb(150, 150, 150),
-        );
-        let mid_x = btn_x + spin_width / 2.0;
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h / 2.0,
-            "▲",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
-        );
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h + btn_h / 2.0,
-            "▼",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
         );
     }
 }

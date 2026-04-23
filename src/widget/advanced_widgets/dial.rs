@@ -1,5 +1,4 @@
 //! Dial (knob) widget.
-
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Dial (rotary knob) widget.
 pub struct Dial {
     base: BaseWidget,
@@ -24,7 +22,6 @@ pub struct Dial {
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
 }
-
 impl Dial {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -43,7 +40,6 @@ impl Dial {
             slider_released: GenericSignal::new(),
         }
     }
-
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
@@ -68,23 +64,19 @@ impl Dial {
     pub fn wrapping(&self) -> bool {
         self.wrapping
     }
-
     pub fn set_minimum(&mut self, min: i32) {
         self.minimum = min;
         self.set_value(self.value);
     }
-
     pub fn set_maximum(&mut self, max: i32) {
         self.maximum = max;
         self.set_value(self.value);
     }
-
     pub fn set_range(&mut self, min: i32, max: i32) {
         self.minimum = min;
         self.maximum = max.max(min);
         self.set_value(self.value);
     }
-
     pub fn set_value(&mut self, value: i32) {
         let clamped = if self.wrapping {
             let range = self.maximum - self.minimum + 1;
@@ -102,7 +94,6 @@ impl Dial {
             self.value_changed.emit(clamped);
         }
     }
-
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
     }
@@ -118,7 +109,6 @@ impl Dial {
     pub fn set_wrapping(&mut self, wrapping: bool) {
         self.wrapping = wrapping;
     }
-
     /// Returns value as angle in radians (from -135° to +135°, or full circle if wrapping).
     fn value_angle(&self) -> f64 {
         let range = (self.maximum - self.minimum) as f64;
@@ -127,13 +117,12 @@ impl Dial {
         }
         let ratio = (self.value - self.minimum) as f64 / range;
         if self.wrapping {
-            ratio * 2.0 * std::f64::consts::PI - std::f64::consts::PI
+            ratio * 2 * std::f64::consts::PI - std::f64::consts::PI
         } else {
             -std::f64::consts::PI * 0.75 + ratio * std::f64::consts::PI * 1.5
         }
     }
 }
-
 impl Widget for Dial {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -232,7 +221,6 @@ impl Widget for Dial {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Dial {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -259,40 +247,24 @@ impl EventHandler for Dial {
         }
     }
 }
-
 impl Draw for Dial {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let cx = rect.x + rect.width / 2.0;
-        let cy = rect.y + rect.height / 2.0;
-        let r = (rect.width.min(rect.height) / 2.0) - 4.0;
-
-        // Draw dial background circle
-        context.fill_circle(cx, cy, r, Color::from_rgb(230, 230, 230));
-        context.draw_circle(cx, cy, r, Color::from_rgb(150, 150, 150));
-
-        // Draw notches if visible
-        if self.notches_visible {
-            let steps = ((self.maximum - self.minimum) as f64 / self.notch_target).round() as i32;
-            for i in 0..=steps {
-                let ratio = i as f64 / steps.max(1) as f64;
-                let angle = -std::f64::consts::PI * 0.75 + ratio * std::f64::consts::PI * 1.5;
-                let nx = cx + (r - 6.0) * angle.cos() as f32;
-                let ny = cy + (r - 6.0) * angle.sin() as f32;
-                let nx2 = cx + (r - 2.0) * angle.cos() as f32;
-                let ny2 = cy + (r - 2.0) * angle.sin() as f32;
-                context.draw_line(nx, ny, nx2, ny2, Color::from_rgb(100, 100, 100));
-            }
-        }
-
-        // Draw needle
+        let center = Point {
+            x: rect.x + rect.width as i32 as i32 / 2,
+            y: rect.y + rect.height as i32 as i32 / 2,
+        };
+        let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
+        context.fill_circle(center, radius as u32, Color::from_rgb(230, 230, 230));
+        context.draw_circle(center, radius as u32, Color::from_rgb(150, 150, 150));
+        // Draw a simple value needle.
         let angle = self.value_angle();
-        let nx = cx + (r * 0.7) * angle.cos() as f32;
-        let ny = cy + (r * 0.7) * angle.sin() as f32;
-        context.draw_line(cx, cy, nx, ny, Color::from_rgb(0, 0, 0));
-
-        // Draw center dot
-        context.fill_circle(cx, cy, 4.0, Color::from_rgb(80, 80, 80));
+        let needle_len = (radius as f32 * 0.7) as i32;
+        let to = Point {
+            x: center.x + (needle_len as f32 * angle.cos() as f32 as f32) as i32,
+            y: center.y + (needle_len as f32 * angle.sin() as f32 as f32) as i32,
+        };
+        context.draw_line(center, to, Color::from_rgb(0, 0, 0));
+        context.fill_circle(center, 3, Color::from_rgb(80, 80, 80));
     }
 }

@@ -1,5 +1,4 @@
 //! Dock widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
-
 /// Dock widget.
 pub struct DockWidget {
     base: BaseWidget,
@@ -21,7 +19,6 @@ pub struct DockWidget {
     pub features_changed: Signal1<DockWidgetFeatures>,
     pub top_level_changed: Signal1<bool>,
 }
-
 /// Dock widget features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DockWidgetFeatures {
@@ -38,7 +35,6 @@ pub struct DockWidgetFeatures {
     /// No features
     pub dock_widget_no_features: bool,
 }
-
 impl Default for DockWidgetFeatures {
     fn default() -> Self {
         Self {
@@ -51,7 +47,6 @@ impl Default for DockWidgetFeatures {
         }
     }
 }
-
 impl DockWidgetFeatures {
     /// Creates features with all flags set.
     pub fn all() -> Self {
@@ -64,7 +59,6 @@ impl DockWidgetFeatures {
             dock_widget_no_features: false,
         }
     }
-
     /// Creates features with no flags set.
     pub fn none() -> Self {
         Self {
@@ -77,7 +71,6 @@ impl DockWidgetFeatures {
         }
     }
 }
-
 /// Dock widget areas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DockWidgetAreas {
@@ -94,7 +87,6 @@ pub struct DockWidgetAreas {
     /// No dock areas
     pub no_dock_widget_areas: bool,
 }
-
 impl Default for DockWidgetAreas {
     fn default() -> Self {
         Self {
@@ -107,7 +99,6 @@ impl Default for DockWidgetAreas {
         }
     }
 }
-
 impl DockWidgetAreas {
     /// Creates areas with all flags set.
     pub fn all() -> Self {
@@ -120,7 +111,6 @@ impl DockWidgetAreas {
             no_dock_widget_areas: false,
         }
     }
-
     /// Creates areas with no flags set.
     pub fn none() -> Self {
         Self {
@@ -133,7 +123,6 @@ impl DockWidgetAreas {
         }
     }
 }
-
 /// Dock widget area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockWidgetArea {
@@ -148,7 +137,6 @@ pub enum DockWidgetArea {
     /// No dock area
     NoDockWidgetArea,
 }
-
 impl DockWidget {
     /// Creates a dock widget.
     pub fn new(geometry: Rect) -> Self {
@@ -165,17 +153,14 @@ impl DockWidget {
             top_level_changed: Signal1::new(),
         }
     }
-
     /// Returns title.
     pub fn title(&self) -> &str {
         &self.title
     }
-
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     /// Sets widget.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
         self.widget = widget;
@@ -183,17 +168,14 @@ impl DockWidget {
             self.base.add_child(widget_id);
         }
     }
-
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {
         self.widget
     }
-
     /// Returns features.
     pub fn features(&self) -> DockWidgetFeatures {
         self.features
     }
-
     /// Sets features.
     pub fn set_features(&mut self, features: DockWidgetFeatures) {
         if self.features.dock_widget_all_features != features.dock_widget_all_features
@@ -208,22 +190,18 @@ impl DockWidget {
             self.features_changed.emit(features);
         }
     }
-
     /// Returns allowed areas.
     pub fn allowed_areas(&self) -> DockWidgetAreas {
         self.allowed_areas
     }
-
     /// Sets allowed areas.
     pub fn set_allowed_areas(&mut self, areas: DockWidgetAreas) {
         self.allowed_areas = areas;
     }
-
     /// Returns whether dock widget is floating.
     pub fn is_floating(&self) -> bool {
         self.floating
     }
-
     /// Sets floating state.
     pub fn set_floating(&mut self, floating: bool) {
         if self.floating != floating {
@@ -231,35 +209,28 @@ impl DockWidget {
             self.top_level_changed.emit(floating);
         }
     }
-
     /// Returns whether dock widget is docked.
     pub fn is_docked(&self) -> bool {
         self.docked
     }
-
     /// Sets docked state.
     pub fn set_docked(&mut self, docked: bool) {
         self.docked = docked;
     }
-
     /// Toggles floating state.
     pub fn toggle_floating(&mut self) {
         self.set_floating(!self.floating);
     }
-
     /// Returns title bar rectangle.
     fn title_bar_rect(&self) -> Rect {
         let rect = self.geometry();
-        let title_bar_height = 24.0;
-
+        let title_bar_height = 24;
         Rect::new(rect.x, rect.y, rect.width, title_bar_height)
     }
-
     /// Returns content rectangle.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let title_bar_height = 24.0;
-
+        let title_bar_height = 24;
         Rect::new(
             rect.x,
             rect.y + title_bar_height,
@@ -267,51 +238,43 @@ impl DockWidget {
             rect.height - title_bar_height,
         )
     }
-
     /// Returns close button rectangle.
     fn close_button_rect(&self) -> Option<Rect> {
         if !self.features.dock_widget_closable {
             return None;
         }
-
         let title_bar = self.title_bar_rect();
-        let button_size = 16.0;
-
+        let button_size = 16;
         Some(Rect::new(
-            title_bar.x + title_bar.width - button_size - 5.0,
-            title_bar.y + (title_bar.height - button_size) / 2.0,
+            title_bar.x + title_bar.width - button_size - 5,
+            title_bar.y + (title_bar.height - button_size) / 2,
             button_size,
             button_size,
         ))
     }
-
     /// Returns float button rectangle.
     fn float_button_rect(&self) -> Option<Rect> {
         if !self.features.dock_widget_floatable {
             return None;
         }
-
         let title_bar = self.title_bar_rect();
-        let button_size = 16.0;
+        let button_size = 16;
         let close_button_width = if self.features.dock_widget_closable {
-            button_size + 5.0
+            button_size + 5
         } else {
-            0.0
+            0
         };
-
         Some(Rect::new(
-            title_bar.x + title_bar.width - button_size - 5.0 - close_button_width,
-            title_bar.y + (title_bar.height - button_size) / 2.0,
+            title_bar.x + title_bar.width - button_size - 5 - close_button_width,
+            title_bar.y + (title_bar.height - button_size) / 2,
             button_size,
             button_size,
         ))
     }
-
     /// Returns whether point is in title bar.
     fn is_in_title_bar(&self, pos: Point) -> bool {
         self.title_bar_rect().contains(pos)
     }
-
     /// Returns whether point is in close button.
     fn is_in_close_button(&self, pos: Point) -> bool {
         if let Some(close_rect) = self.close_button_rect() {
@@ -320,7 +283,6 @@ impl DockWidget {
             false
         }
     }
-
     /// Returns whether point is in float button.
     fn is_in_float_button(&self, pos: Point) -> bool {
         if let Some(float_rect) = self.float_button_rect() {
@@ -330,7 +292,6 @@ impl DockWidget {
         }
     }
 }
-
 // Implement Widget trait
 impl Widget for DockWidget {
     fn id(&self) -> ObjectId {
@@ -430,15 +391,12 @@ impl Widget for DockWidget {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for DockWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-
         if !self.base.is_enabled() {
             return;
         }
-
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -466,56 +424,34 @@ impl EventHandler for DockWidget {
             }
             _ => {}
         }
-
         // Forward events to widget
         if let Some(widget_id) = self.widget {
             // TODO: Forward event to widget
         }
     }
 }
-
 impl Draw for DockWidget {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        self.base.draw(context);
-
         let rect = self.geometry();
         let title_bar = self.title_bar_rect();
         let content = self.content_rect();
-
         // Draw title bar
         let title_bar_color = if self.floating {
             Color::from_rgb(220, 220, 255)
         } else {
             Color::from_rgb(200, 200, 200)
         };
-        context.fill_rect(
-            title_bar.x,
-            title_bar.y,
-            title_bar.width,
-            title_bar.height,
-            title_bar_color,
-        );
-
+        context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
-        context.draw_rect(
-            title_bar.x,
-            title_bar.y,
-            title_bar.width,
-            title_bar.height,
-            Color::from_rgb(150, 150, 150),
-        );
-
+        context.draw_rect(title_bar, Color::from_rgb(150, 150, 150));
         // Draw title text
         context.draw_text(
-            title_bar.x + 5.0,
-            title_bar.y + title_bar.height / 2.0,
+            Point::new(title_bar.x + 5, title_bar.y + title_bar.height as i32 / 2),
             &self.title,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
         );
-
         // Draw close button if enabled
         if self.features.dock_widget_closable {
             if let Some(close_rect) = self.close_button_rect() {
@@ -524,24 +460,10 @@ impl Draw for DockWidget {
                 } else {
                     Color::from_rgb(200, 200, 200)
                 };
-
-                context.draw_line(
-                    close_rect.x,
-                    close_rect.y,
-                    close_rect.x + close_rect.width,
-                    close_rect.y + close_rect.height,
-                    close_color,
-                );
-                context.draw_line(
-                    close_rect.x + close_rect.width,
-                    close_rect.y,
-                    close_rect.x,
-                    close_rect.y + close_rect.height,
-                    close_color,
-                );
+                context.draw_line(Point::new(close_rect.x, close_rect.y), Point::new(close_rect.x + close_rect.width, close_rect.y + close_rect.height), close_color,);
+                context.draw_line(Point::new(close_rect.x + close_rect.width, close_rect.y), Point::new(close_rect.x, close_rect.y + close_rect.height), close_color,);
             }
         }
-
         // Draw float button if enabled
         if self.features.dock_widget_floatable {
             if let Some(float_rect) = self.float_button_rect() {
@@ -552,96 +474,28 @@ impl Draw for DockWidget {
                 } else {
                     Color::from_rgb(200, 200, 200)
                 };
-
                 // Draw float icon (four arrows)
-                let center_x = float_rect.x + float_rect.width / 2.0;
-                let center_y = float_rect.y + float_rect.height / 2.0;
-                let arrow_size = 4.0;
-
+                let center_x = float_rect.x + float_rect.width as i32 / 2;
+                let center_y = float_rect.y + float_rect.height as i32 / 2;
+                let arrow_size = 4;
                 // Up arrow
-                context.draw_line(
-                    center_x,
-                    float_rect.y + 2.0,
-                    center_x,
-                    float_rect.y + 2.0 + arrow_size,
-                    float_color,
-                );
-                context.draw_line(
-                    center_x - arrow_size / 2.0,
-                    float_rect.y + 2.0 + arrow_size / 2.0,
-                    center_x + arrow_size / 2.0,
-                    float_rect.y + 2.0 + arrow_size / 2.0,
-                    float_color,
-                );
-
+                context.draw_line(Point::new(center_x, float_rect.y + 2), Point::new(center_x, float_rect.y + 2 + arrow_size), float_color,);
+                context.draw_line(Point::new(center_x - arrow_size / 2, float_rect.y + 2 + arrow_size / 2), Point::new(center_x + arrow_size / 2, float_rect.y + 2 + arrow_size / 2), float_color,);
                 // Down arrow
-                context.draw_line(
-                    center_x,
-                    float_rect.y + float_rect.height - 2.0 - arrow_size,
-                    center_x,
-                    float_rect.y + float_rect.height - 2.0,
-                    float_color,
-                );
-                context.draw_line(
-                    center_x - arrow_size / 2.0,
-                    float_rect.y + float_rect.height - 2.0 - arrow_size / 2.0,
-                    center_x + arrow_size / 2.0,
-                    float_rect.y + float_rect.height - 2.0 - arrow_size / 2.0,
-                    float_color,
-                );
-
+                context.draw_line(Point::new(center_x, float_rect.y + float_rect.height - 2 - arrow_size), Point::new(center_x, float_rect.y + float_rect.height - 2), float_color,);
+                context.draw_line(Point::new(center_x - arrow_size / 2, float_rect.y + float_rect.height - 2 - arrow_size / 2), Point::new(center_x + arrow_size / 2, float_rect.y + float_rect.height - 2 - arrow_size / 2), float_color,);
                 // Left arrow
-                context.draw_line(
-                    float_rect.x + 2.0,
-                    center_y,
-                    float_rect.x + 2.0 + arrow_size,
-                    center_y,
-                    float_color,
-                );
-                context.draw_line(
-                    float_rect.x + 2.0 + arrow_size / 2.0,
-                    center_y - arrow_size / 2.0,
-                    float_rect.x + 2.0 + arrow_size / 2.0,
-                    center_y + arrow_size / 2.0,
-                    float_color,
-                );
-
+                context.draw_line(Point::new(float_rect.x + 2, center_y), Point::new(float_rect.x + 2 + arrow_size, center_y), float_color,);
+                context.draw_line(Point::new(float_rect.x + 2 + arrow_size / 2, center_y - arrow_size / 2), Point::new(float_rect.x + 2 + arrow_size / 2, center_y + arrow_size / 2), float_color,);
                 // Right arrow
-                context.draw_line(
-                    float_rect.x + float_rect.width - 2.0 - arrow_size,
-                    center_y,
-                    float_rect.x + float_rect.width - 2.0,
-                    center_y,
-                    float_color,
-                );
-                context.draw_line(
-                    float_rect.x + float_rect.width - 2.0 - arrow_size / 2.0,
-                    center_y - arrow_size / 2.0,
-                    float_rect.x + float_rect.width - 2.0 - arrow_size / 2.0,
-                    center_y + arrow_size / 2.0,
-                    float_color,
-                );
+                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size, center_y), Point::new(float_rect.x + float_rect.width - 2, center_y), float_color,);
+                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2, center_y - arrow_size / 2), Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2, center_y + arrow_size / 2), float_color,);
             }
         }
-
         // Draw content background
-        context.fill_rect(
-            content.x,
-            content.y,
-            content.width,
-            content.height,
-            Color::from_rgb(255, 255, 255),
-        );
-
+        context.fill_rect(content, Color::from_rgb(255, 255, 255));
         // Draw content border
-        context.draw_rect(
-            content.x,
-            content.y,
-            content.width,
-            content.height,
-            Color::from_rgb(200, 200, 200),
-        );
-
+        context.draw_rect(content, Color::from_rgb(200, 200, 200));
         // Draw widget
         if let Some(widget_id) = self.widget {
             // TODO: Draw widget in content area

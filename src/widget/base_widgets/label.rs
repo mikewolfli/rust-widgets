@@ -1,19 +1,16 @@
 //! Label widget implementation.
-
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Label widget for displaying text.
 pub struct Label {
     base: BaseWidget,
     text: String,
     alignment: crate::core::Alignment,
 }
-
 impl Label {
     /// Creates a label with initial text and geometry.
     pub fn new(text: String, geometry: Rect) -> Self {
@@ -23,30 +20,25 @@ impl Label {
             alignment: crate::core::Alignment::Left,
         }
     }
-
     /// Returns label text.
     pub fn text(&self) -> &str {
         &self.text
     }
-
     /// Sets label text.
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.base.request_redraw();
     }
-
     /// Returns text alignment.
     pub fn alignment(&self) -> crate::core::Alignment {
         self.alignment
     }
-
     /// Sets text alignment.
     pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
         self.alignment = alignment;
         self.base.request_redraw();
     }
 }
-
 impl Widget for Label {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -145,32 +137,27 @@ impl Widget for Label {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Label {
-    fn handle_event(&mut self, event: &Event) -> bool {
-        self.base.handle_event(event)
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
     }
 }
-
 impl Draw for Label {
     fn draw(&mut self, context: &mut RenderContext) {
         // Label rendering logic
         let rect = self.geometry();
-
         // Draw background if specified
         if let Some(bg_color) = self.style().background_color {
             context.fill_rect(rect, bg_color);
         }
-
         // Draw text
         if !self.text.is_empty() {
             let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-            context.draw_text_aligned(rect, &self.text, text_color, self.alignment);
+            context.draw_text(rect, &self.text, text_color);
         }
-
         // Draw border if specified
         if let Some(border_color) = self.style().border_color {
-            context.draw_rect(rect, border_color, self.style().border_width);
+            context.draw_rect(rect, border_color);
         }
     }
 }

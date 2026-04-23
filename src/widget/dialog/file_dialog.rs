@@ -1,5 +1,4 @@
 //! File dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDialogMode {
@@ -16,14 +14,12 @@ pub enum FileDialogMode {
     SaveFile,
     SelectDirectory,
 }
-
 /// File name filter entry.
 #[derive(Debug, Clone)]
 pub struct FileFilter {
     pub description: String,
     pub extensions: Vec<String>,
 }
-
 impl FileFilter {
     pub fn new(description: impl Into<String>, extensions: Vec<impl Into<String>>) -> Self {
         Self {
@@ -31,19 +27,16 @@ impl FileFilter {
             extensions: extensions.into_iter().map(|e| e.into()).collect(),
         }
     }
-
     pub fn all_files() -> Self {
         Self::new("All Files (*)", vec!["*"])
     }
 }
-
 impl std::fmt::Display for FileFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let exts: Vec<String> = self.extensions.iter().map(|e| format!("*.{}", e)).collect();
         write!(f, "{} ({})", self.description, exts.join(" "))
     }
 }
-
 /// File dialog widget.
 pub struct FileDialog {
     base: BaseWidget,
@@ -59,7 +52,6 @@ pub struct FileDialog {
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
 }
-
 impl FileDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -77,21 +69,18 @@ impl FileDialog {
             rejected: GenericSignal::new(),
         }
     }
-
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::OpenFile;
         d.title = "Open File".to_string();
         d
     }
-
     pub fn save_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::SaveFile;
         d.title = "Save File".to_string();
         d
     }
-
     pub fn mode(&self) -> FileDialogMode {
         self.mode
     }
@@ -113,7 +102,6 @@ impl FileDialog {
     pub fn current_filter(&self) -> Option<&FileFilter> {
         self.name_filters.get(self.current_filter)
     }
-
     pub fn set_mode(&mut self, mode: FileDialogMode) {
         self.mode = mode;
         self.title = match mode {
@@ -123,7 +111,6 @@ impl FileDialog {
         }
         .to_string();
     }
-
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
     }
@@ -134,13 +121,11 @@ impl FileDialog {
         self.name_filters = filters;
         self.current_filter = 0;
     }
-
     pub fn select_file(&mut self, path: impl Into<String>) {
         let path = path.into();
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
     }
-
     pub fn accept(&mut self) {
         if !self.selected_files.is_empty() {
             self.files_selected.emit(self.selected_files.clone());
@@ -148,14 +133,12 @@ impl FileDialog {
         self.accepted.emit();
         self.hide();
     }
-
     pub fn reject(&mut self) {
         self.selected_files.clear();
         self.rejected.emit();
         self.hide();
     }
 }
-
 impl Widget for FileDialog {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -254,7 +237,6 @@ impl Widget for FileDialog {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for FileDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -273,12 +255,9 @@ impl EventHandler for FileDialog {
         }
     }
 }
-
 impl Draw for FileDialog {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         context.fill_rect(
             rect.x,
             rect.y,
@@ -297,49 +276,47 @@ impl Draw for FileDialog {
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
         // File list area
-        let list_y = rect.y + 38.0;
-        let list_h = rect.height - 120.0;
+        let list_y = rect.y + 38;
+        let list_h = rect.height - 120;
         context.fill_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             list_y,
-            rect.width - 20.0,
+            rect.width - 20,
             list_h,
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 10.0,
+            rect.x + 10,
             list_y,
-            rect.width - 20.0,
+            rect.width - 20,
             list_h,
             Color::from_rgb(150, 150, 150),
         );
         context.draw_text(
-            rect.x + 16.0,
-            list_y + 20.0,
+            rect.x + 16,
+            list_y + 20,
             "(file list)",
             &Font::default(),
             Color::from_rgb(150, 150, 150),
             Alignment::Left,
         );
-
         // Selected files display
-        let sel_y = list_y + list_h + 8.0;
+        let sel_y = list_y + list_h + 8;
         context.draw_text(
-            rect.x + 10.0,
-            sel_y + 10.0,
+            rect.x + 10,
+            sel_y + 10,
             "File name:",
             &Font::default(),
             Color::from_rgb(0, 0, 0),
@@ -347,68 +324,67 @@ impl Draw for FileDialog {
         );
         let fname = self.selected_file().unwrap_or("");
         context.fill_rect(
-            rect.x + 80.0,
+            rect.x + 80,
             sel_y,
-            rect.width - 90.0,
-            22.0,
+            rect.width - 90,
+            22,
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 80.0,
+            rect.x + 80,
             sel_y,
-            rect.width - 90.0,
-            22.0,
+            rect.width - 90,
+            22,
             Color::from_rgb(150, 150, 150),
         );
         context.draw_text(
-            rect.x + 84.0,
-            sel_y + 11.0,
+            rect.x + 84,
+            sel_y + 11,
             fname,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // OK/Cancel buttons
-        let btn_y = rect.y + rect.height - 40.0;
-        let btn_w = 80.0;
+        let btn_y = rect.y + rect.height as i32 - 40;
+        let btn_w = 80;
         let ok_label = if self.mode == FileDialogMode::SaveFile {
             "Save"
         } else {
             "Open"
         };
         context.fill_rect(
-            rect.x + rect.width - 176.0,
+            rect.x + rect.width as i32 - 176,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width - 136.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 136,
+            btn_y + 14,
             ok_label,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
             btn_w,
-            28.0,
+            28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width - 48.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 48,
+            btn_y + 14,
             "Cancel",
             &Font::default(),
             Color::from_rgb(0, 0, 0),

@@ -1,12 +1,10 @@
 //! Window widget and platform integration.
-
 use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Main application window.
 pub struct Window {
     base: BaseWidget,
@@ -14,7 +12,6 @@ pub struct Window {
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }
-
 impl Window {
     /// Creates a new window with title and geometry.
     pub fn new(title: String, geometry: Rect) -> Self {
@@ -24,28 +21,23 @@ impl Window {
             closed: GenericSignal::new(),
         }
     }
-
     /// Adds a child widget to the window.
     pub fn add_child(&mut self, child: ObjectId) {
         self.base.add_child(child);
     }
-
     /// Returns window title.
     pub fn title(&self) -> &str {
         &self.title
     }
-
     /// Updates window title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
-
     /// Emits the window closed signal.
     pub fn close(&mut self) {
         self.closed.emit();
     }
 }
-
 impl Widget for Window {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -144,7 +136,6 @@ impl Widget for Window {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -153,26 +144,21 @@ impl EventHandler for Window {
         }
     }
 }
-
 impl Draw for Window {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         let border_color = style.border_color.unwrap_or(Color::GRAY);
         let title_bar_color = Color::rgb(53, 53, 53);
         let title_text_color = Color::WHITE;
         let border_width = style.border_width;
-
         // Draw window background
         context.fill_rect(rect, bg_color);
-
         // Draw title bar
         let title_bar_height = 32;
         let title_bar_rect = Rect::new(rect.x, rect.y, rect.width, title_bar_height);
         context.fill_rect(title_bar_rect, title_bar_color);
-
         // Draw title text
         let title_font = Font::new("Arial", 12.0, false, false);
         let title_x = rect.x + 10;
@@ -183,24 +169,20 @@ impl Draw for Window {
             &title_font,
             title_text_color,
         );
-
         // Draw window border
         if border_width > 0 {
             context.draw_rect_stroke(rect, border_color, border_width);
         }
-
         // Draw window controls (close button)
         let close_button_size = 14;
         let close_button_rect = Rect::new(
-            rect.x + rect.width as i32 - close_button_size as i32 - 10,
+            rect.x + rect.width as i32 as i32 - close_button_size as i32 - 10,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
         );
-
         // Draw close button background
-        context.fill_rect(close_button_rect, Color::rgba(232, 17, 35, 255));
-
+        context.fill_rect(Rect::new(close_button_rect, Color::rgba(232, 17, 35), 255));
         // Draw close button X
         let padding = 3;
         let x1 = Point::new(
@@ -219,39 +201,31 @@ impl Draw for Window {
             close_button_rect.x + padding as i32,
             close_button_rect.y + close_button_rect.height as i32 - padding as i32,
         );
-
         context.draw_line(x1, x2, Color::WHITE);
         context.draw_line(x3, x4, Color::WHITE);
-
         // Draw minimize button
         let minimize_button_rect = Rect::new(
-            rect.x + rect.width as i32 - close_button_size as i32 - 30,
+            rect.x + rect.width as i32 - close_button_size as i32 - 100,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
         );
-        context.fill_rect(minimize_button_rect, Color::rgba(255, 255, 255, 50));
-
+        context.fill_rect(Rect::new(minimize_button_rect, Color::rgba(255, 255, 255), 50));
         // Draw minimize line
         let minimize_y = minimize_button_rect.y + minimize_button_rect.height as i32 / 2;
         context.draw_line(
             Point::new(minimize_button_rect.x + 2, minimize_y),
-            Point::new(
-                minimize_button_rect.x + minimize_button_rect.width as i32 - 2,
-                minimize_y,
-            ),
+            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2, minimize_y),
             Color::WHITE,
         );
-
         // Draw maximize button
         let maximize_button_rect = Rect::new(
-            rect.x + rect.width as i32 - close_button_size as i32 - 50,
+            rect.x + rect.width as i32 as i32 - close_button_size as i32 - 50,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
         );
-        context.fill_rect(maximize_button_rect, Color::rgba(255, 255, 255, 50));
-
+        context.fill_rect(Rect::new(maximize_button_rect, Color::rgba(255, 255, 255), 50));
         // Draw maximize square
         let max_padding = 3;
         context.draw_rect_stroke(
@@ -266,7 +240,6 @@ impl Draw for Window {
         );
     }
 }
-
 // NOTE: The show() method is now handled by platform backend.
 // For full application integration, use the platform event loop via crate::run().
 // The platform backend (macOS: NSApp().run(), Windows: message loop, etc.)

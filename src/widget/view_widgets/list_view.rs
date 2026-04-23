@@ -1,31 +1,25 @@
 //! List view widget.
-
 use crate::core::Rect;
-use crate::object::Object;
+use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::base::{BaseWidget, Widget, WidgetKind};
-use crate::widget::base_widgets::frame::Frame;
 use std::sync::Arc;
-
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
     /// Number of rows exposed by model.
     fn row_count(&self) -> usize;
     /// Data for row index, if present.
     fn data(&self, row: usize) -> Option<String>;
-
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
     }
 }
-
 /// In-memory list model backed by a vector of strings.
 pub struct VecListModel {
     items: Vec<String>,
     data_changed: GenericSignal,
 }
-
 impl VecListModel {
     /// Creates a new vector list model.
     pub fn new(items: Vec<String>) -> Self {
@@ -34,13 +28,11 @@ impl VecListModel {
             data_changed: GenericSignal::new(),
         }
     }
-
     /// Appends an item to the model.
     pub fn append(&mut self, item: String) {
         self.items.push(item);
         self.data_changed.emit();
     }
-
     /// Removes an item at given index.
     pub fn remove(&mut self, index: usize) -> Option<String> {
         if index < self.items.len() {
@@ -51,28 +43,23 @@ impl VecListModel {
             None
         }
     }
-
     /// Clears all items.
     pub fn clear(&mut self) {
         self.items.clear();
         self.data_changed.emit();
     }
 }
-
 impl ListModel for VecListModel {
     fn row_count(&self) -> usize {
         self.items.len()
     }
-
     fn data(&self, row: usize) -> Option<String> {
         self.items.get(row).cloned()
     }
-
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         Some(&self.data_changed)
     }
 }
-
 /// Selection state for list/tree/table views.
 pub struct SelectionModel {
     /// Current selection mode.
@@ -82,7 +69,6 @@ pub struct SelectionModel {
     /// Currently focused row.
     current_row: Option<usize>,
 }
-
 impl SelectionModel {
     /// Creates a new selection model.
     pub fn new() -> Self {
@@ -92,18 +78,15 @@ impl SelectionModel {
             current_row: None,
         }
     }
-
     /// Sets selection mode.
     pub fn set_mode(&mut self, mode: SelectionMode) {
         self.mode = mode;
         self.normalize();
     }
-
     /// Returns current selection mode.
     pub fn mode(&self) -> SelectionMode {
         self.mode
     }
-
     /// Selects a row.
     pub fn select_row(&mut self, row: usize) {
         match self.mode {
@@ -125,23 +108,19 @@ impl SelectionModel {
             }
         }
     }
-
     /// Clears selection.
     pub fn clear(&mut self) {
         self.selected_rows.clear();
         self.current_row = None;
     }
-
     /// Returns current row.
     pub fn current_row(&self) -> Option<usize> {
         self.current_row
     }
-
     /// Returns all selected rows.
     pub fn rows(&self) -> Vec<usize> {
         self.selected_rows.clone()
     }
-
     fn normalize(&mut self) {
         match self.mode {
             SelectionMode::Single => {
@@ -157,7 +136,6 @@ impl SelectionModel {
         }
     }
 }
-
 /// Selection mode for list/tree/table views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
@@ -168,7 +146,6 @@ pub enum SelectionMode {
     /// Extended selection (Ctrl+Click, Shift+Click).
     Extended,
 }
-
 /// List view widget.
 pub struct ListView {
     base: BaseWidget,
@@ -185,7 +162,6 @@ pub struct ListView {
     /// Emitted when focused row changes.
     pub focused_row_changed: Signal1<Option<usize>>,
 }
-
 impl ListView {
     /// Creates an empty list view.
     pub fn new(geometry: Rect) -> Self {
@@ -199,7 +175,6 @@ impl ListView {
             focused_row_changed: Signal1::new(),
         }
     }
-
     /// Binds an external list model.
     pub fn set_model(&mut self, model: Arc<dyn ListModel>) {
         self.model_connection_scope = ConnectionScope::new();
@@ -216,17 +191,14 @@ impl ListView {
         self.base.request_layout();
         self.base.request_redraw();
     }
-
     /// Returns visible row count.
     pub fn row_count(&self) -> usize {
         self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
     }
-
     /// Returns item text by row index.
     pub fn item(&self, row: usize) -> Option<String> {
         self.model.as_ref().and_then(|m| m.data(row))
     }
-
     /// Select one row in the current view projection.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
@@ -238,12 +210,10 @@ impl ListView {
             false
         }
     }
-
     /// Clear current row selection.
     pub fn clear_selection(&mut self) {
         self.selection.clear();
     }
-
     /// Sets focused row in current projection.
     pub fn set_focused_row(&mut self, row: usize) -> bool {
         if row >= self.row_count() {
@@ -256,7 +226,6 @@ impl ListView {
         self.focused_row_changed.emit(self.focused_row);
         true
     }
-
     /// Clears focused row.
     pub fn clear_focused_row(&mut self) {
         if self.focused_row.is_none() {
@@ -265,19 +234,16 @@ impl ListView {
         self.focused_row = None;
         self.focused_row_changed.emit(None);
     }
-
     /// Returns focused row when still visible in projection.
     pub fn focused_row(&self) -> Option<usize> {
         self.focused_row.filter(|row| *row < self.row_count())
     }
-
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
         self.selection
             .current_row()
             .filter(|row| *row < self.row_count())
     }
-
     /// All selected rows in stable order.
     pub fn selected_rows(&self) -> Vec<usize> {
         self.selection
@@ -286,17 +252,14 @@ impl ListView {
             .filter(|row| *row < self.row_count())
             .collect()
     }
-
     /// Sets row selection mode.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
         self.selection.set_mode(mode);
     }
-
     /// Returns current selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
         self.selection.mode()
     }
-
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
         self.selection.selected_rows.retain(|row| *row < row_count);
@@ -304,27 +267,23 @@ impl ListView {
         self.focused_row = self.focused_row.filter(|row| *row < row_count);
     }
 }
-
 impl Widget for ListView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
-
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 }
-
 impl crate::widget::base::Draw for ListView {
-    fn draw(&self, canvas: &mut dyn crate::render::Canvas) {
-        // Default drawing implementation
-        Frame::draw_frame(canvas, self.base().geometry());
+    fn draw(&mut self, context: &mut RenderContext) {
+        self.base.request_redraw();
+        let _ = context;
     }
 }
-
 impl crate::event::EventHandler for ListView {
-    fn handle_event(&mut self, event: &crate::event::Event) -> bool {
+    fn handle_event(&mut self, event: &crate::event::Event) {
         // Default event handling
-        false
+        let _ = event;
     }
 }

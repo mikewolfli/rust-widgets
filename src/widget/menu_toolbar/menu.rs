@@ -1,5 +1,4 @@
 //! Menu widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// A single item in a menu.
 #[derive(Debug, Clone)]
 pub struct MenuItem {
@@ -19,7 +17,6 @@ pub struct MenuItem {
     pub separator: bool,
     pub has_submenu: bool,
 }
-
 impl MenuItem {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
@@ -32,19 +29,16 @@ impl MenuItem {
             has_submenu: false,
         }
     }
-
     pub fn separator() -> Self {
         let mut m = Self::new("");
         m.separator = true;
         m
     }
-
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = shortcut.into();
         self
     }
 }
-
 /// Menu widget.
 pub struct Menu {
     base: BaseWidget,
@@ -55,13 +49,12 @@ pub struct Menu {
     pub about_to_show: GenericSignal,
     pub about_to_hide: GenericSignal,
 }
-
 impl Menu {
     pub fn new(title: impl Into<String>, geometry: Rect) -> Self {
-        let title = title.into();
+        let title_str = title.into();
         Self {
-            base: BaseWidget::new(WidgetKind::Menu, geometry, &title),
-            title: title,
+            base: BaseWidget::new(WidgetKind::Menu, geometry, &title_str.clone()),
+            title: title_str,
             items: Vec::new(),
             hovered_index: None,
             triggered: Signal1::new(),
@@ -69,7 +62,6 @@ impl Menu {
             about_to_hide: GenericSignal::new(),
         }
     }
-
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -79,20 +71,17 @@ impl Menu {
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
     }
-
     pub fn add_item(&mut self, item: MenuItem) {
         self.items.push(item);
     }
     pub fn add_separator(&mut self) {
         self.items.push(MenuItem::separator());
     }
-
     pub fn add_action(&mut self, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(MenuItem::new(text));
         idx
     }
-
     pub fn add_action_with_shortcut(
         &mut self,
         text: impl Into<String>,
@@ -102,13 +91,11 @@ impl Menu {
         self.items.push(MenuItem::new(text).with_shortcut(shortcut));
         idx
     }
-
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
             item.enabled = enabled;
         }
     }
-
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
             if item.checkable {
@@ -116,18 +103,15 @@ impl Menu {
             }
         }
     }
-
     pub fn clear(&mut self) {
         self.items.clear();
     }
-
     fn item_height() -> f32 {
-        22.0
+        22
     }
     fn separator_height() -> f32 {
-        6.0
+        6
     }
-
     fn item_rect(&self, index: usize, base_y: f32) -> Rect {
         let rect = self.geometry();
         let mut y = base_y;
@@ -140,21 +124,20 @@ impl Menu {
             if i == index {
                 return Rect {
                     x: rect.x,
-                    y,
+                    y: y as i32,
                     width: rect.width,
-                    height: h,
+                    height: h as u32,
                 };
             }
             y += h;
         }
         Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
         }
     }
-
     fn popup_height(&self) -> f32 {
         self.items
             .iter()
@@ -166,10 +149,9 @@ impl Menu {
                 }
             })
             .sum::<f32>()
-            + 4.0
+            + 4
     }
 }
-
 impl Widget for Menu {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -270,7 +252,6 @@ impl Widget for Menu {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for Menu {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -278,35 +259,36 @@ impl EventHandler for Menu {
             return;
         }
         match event {
-            Event::MouseMove { position } => {
+            Event::MouseMove { pos } => {
                 let rect = self.geometry();
-                let mut y = rect.y + 2.0;
+                let mut y = rect.y as f32 + 2;
                 for (i, item) in self.items.iter().enumerate() {
                     let h = if item.separator {
                         Self::separator_height()
                     } else {
                         Self::item_height()
                     };
-                    if !item.separator && position.y >= y && position.y < y + h {
+                    if !item.separator && pos.y >= y as i32 && pos.y < (y + h) as i32 {
                         self.hovered_index = Some(i);
                         break;
                     }
                     y += h;
                 }
             }
-            Event::MousePress {
-                position,
-                button: 1,
-            } => {
+            Event::MousePress { pos, button: 1 } => {
                 let rect = self.geometry();
-                let mut y = rect.y + 2.0;
+                let mut y = rect.y as f32 + 2;
                 for (i, item) in self.items.iter().enumerate() {
                     let h = if item.separator {
                         Self::separator_height()
                     } else {
                         Self::item_height()
                     };
-                    if !item.separator && item.enabled && position.y >= y && position.y < y + h {
+                    if !item.separator
+                        && item.enabled
+                        && pos.y >= y as i32
+                        && pos.y < (y + h) as i32
+                    {
                         let text = item.text.clone();
                         self.triggered.emit(text);
                         self.hide();
@@ -337,57 +319,42 @@ impl EventHandler for Menu {
         }
     }
 }
-
 impl Draw for Menu {
-    fn draw(&self, context: &mut RenderContext) {
+    fn draw(&mut self, context: &mut RenderContext) {
         if !self.is_visible() {
             return;
         }
-        self.base.draw(context);
         let rect = self.geometry();
         let popup_h = self.popup_height();
-
         context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            popup_h,
+            Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
             Color::from_rgb(250, 250, 250),
         );
         context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            popup_h,
+            Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
             Color::from_rgb(160, 160, 160),
         );
-
-        let mut y = rect.y + 2.0;
+        let mut y = rect.y as f32 + 2;
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
-                let sep_y = y + Self::separator_height() / 2.0;
-                context.draw_line(
-                    rect.x + 4.0,
-                    sep_y,
-                    rect.x + rect.width - 4.0,
-                    sep_y,
-                    Color::from_rgb(200, 200, 200),
+                let sep_y = y + Self::separator_height() / 2;
+                context.draw_line(Point::new(Point::new(rect.x + 4, sep_y as i32)), Point::new(Point::new(rect.x + rect.width as i32 as i32 - 4, sep_y as i32)), Color::from_rgb(200, 200, 200),
                 );
                 y += Self::separator_height();
                 continue;
             }
-
             let is_hovered = self.hovered_index == Some(i);
             if is_hovered {
                 context.fill_rect(
-                    rect.x + 2.0,
-                    y,
-                    rect.width - 4.0,
-                    Self::item_height(),
+                    Rect::new(
+                        rect.x + 2,
+                        y as i32,
+                        rect.width - 4,
+                        Self::item_height() as u32,
+                    ),
                     Color::from_rgb(0, 120, 215),
                 );
             }
-
             let fg = if !item.enabled {
                 Color::from_rgb(150, 150, 150)
             } else if is_hovered {
@@ -395,49 +362,43 @@ impl Draw for Menu {
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-
             if item.checkable {
                 let check_sym = if item.checked { "✓" } else { " " };
                 context.draw_text(
-                    rect.x + 8.0,
-                    y + Self::item_height() / 2.0,
+                    Point::new(rect.x + 8, (y + Self::item_height() / 2) as i32),
                     check_sym,
                     &Font::default(),
                     fg,
-                    Alignment::Left,
                 );
             }
             context.draw_text(
-                rect.x + 28.0,
-                y + Self::item_height() / 2.0,
+                Point::new(rect.x + 28, (y + Self::item_height() / 2) as i32),
                 &item.text,
                 &Font::default(),
                 fg,
-                Alignment::Left,
             );
-
             if !item.shortcut.is_empty() {
                 context.draw_text(
-                    rect.x + rect.width - 8.0,
-                    y + Self::item_height() / 2.0,
+                    Point::new(
+                        rect.x + rect.width as i32 as i32 - 8,
+                        (y + Self::item_height() / 2) as i32,
+                    ),
                     &item.shortcut,
                     &Font::default(),
                     fg,
-                    Alignment::Right,
                 );
             }
-
             if item.has_submenu {
                 context.draw_text(
-                    rect.x + rect.width - 4.0,
-                    y + Self::item_height() / 2.0,
+                    Point::new(
+                        rect.x + rect.width as i32 as i32 - 4,
+                        (y + Self::item_height() / 2) as i32,
+                    ),
                     "▶",
                     &Font::default(),
                     fg,
-                    Alignment::Right,
                 );
             }
-
             y += Self::item_height();
         }
     }

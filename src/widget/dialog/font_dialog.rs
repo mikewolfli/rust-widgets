@@ -1,5 +1,4 @@
 //! Font dialog widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -7,7 +6,6 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Font selection dialog.
 pub struct FontDialog {
     base: BaseWidget,
@@ -16,7 +14,6 @@ pub struct FontDialog {
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
 }
-
 impl FontDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -27,32 +24,26 @@ impl FontDialog {
             rejected: GenericSignal::new(),
         }
     }
-
     pub fn current_font(&self) -> &Font {
         &self.current_font
     }
-
     pub fn set_current_font(&mut self, font: Font) {
         self.current_font = font.clone();
         self.font_selected.emit(font);
     }
-
     pub fn accept(&mut self) {
         self.font_selected.emit(self.current_font.clone());
         self.accepted.emit();
         self.hide();
     }
-
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();
     }
-
     pub fn get_font(&self) -> Font {
         self.current_font.clone()
     }
 }
-
 impl Widget for FontDialog {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -151,7 +142,6 @@ impl Widget for FontDialog {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for FontDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -170,12 +160,9 @@ impl EventHandler for FontDialog {
         }
     }
 }
-
 impl Draw for FontDialog {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
         context.fill_rect(
             rect.x,
             rect.y,
@@ -194,96 +181,92 @@ impl Draw for FontDialog {
             rect.x,
             rect.y,
             rect.width,
-            28.0,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + 8.0,
-            rect.y + 14.0,
+            rect.x + 8,
+            rect.y + 14,
             "Select Font",
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Left,
         );
-
-        let col_w = rect.width / 3.0 - 6.0;
-        let list_y = rect.y + 38.0;
-        let list_h = rect.height - 120.0;
-
+        let col_w = rect.width / 3 - 6;
+        let list_y = rect.y + 38;
+        let list_h = rect.height - 120;
         // Family, Style, Size columns
         for (i, label) in ["Font Family", "Style", "Size"].iter().enumerate() {
-            let col_x = rect.x + 4.0 + i as f32 * (col_w + 4.0);
+            let col_x = rect.x + 4 + i as f32 * (col_w + 4);
             context.draw_text(
                 col_x,
-                list_y - 10.0,
+                list_y - 10,
                 label,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
                 Alignment::Left,
             );
-            context.fill_rect(col_x, list_y, col_w, list_h, Color::from_rgb(255, 255, 255));
-            context.draw_rect(col_x, list_y, col_w, list_h, Color::from_rgb(150, 150, 150));
+            context.fill_rect(Rect::new(col_x, list_y, col_w, list_h), Color::from_rgb(255, 255, 255));
+            context.draw_rect(Rect::new(col_x, list_y), Color::from_rgb(150, 150, 150));
         }
-
         // Preview area
-        let prev_y = list_y + list_h + 8.0;
+        let prev_y = list_y + list_h + 8;
         context.fill_rect(
-            rect.x + 4.0,
+            rect.x + 4,
             prev_y,
-            rect.width - 8.0,
-            36.0,
+            rect.width - 8,
+            36,
             Color::from_rgb(255, 255, 255),
         );
         context.draw_rect(
-            rect.x + 4.0,
+            rect.x + 4,
             prev_y,
-            rect.width - 8.0,
-            36.0,
+            rect.width - 8,
+            36,
             Color::from_rgb(150, 150, 150),
         );
         context.draw_text(
-            rect.x + 10.0,
-            prev_y + 18.0,
+            rect.x + 10,
+            prev_y + 18,
             "AaBbYyZz 0123",
             &self.current_font,
             Color::from_rgb(0, 0, 0),
             Alignment::Left,
         );
-
         // OK/Cancel
-        let btn_y = rect.y + rect.height - 40.0;
+        let btn_y = rect.y + rect.height as i32 - 40;
         context.fill_rect(
-            rect.x + rect.width - 176.0,
+            rect.x + rect.width as i32 - 176,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width - 136.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 136,
+            btn_y + 14,
             "OK",
             &Font::default(),
             Color::from_rgb(255, 255, 255),
             Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width - 88.0,
+            rect.x + rect.width as i32 - 88,
             btn_y,
-            80.0,
-            28.0,
+            80,
+            28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width - 48.0,
-            btn_y + 14.0,
+            rect.x + rect.width as i32 - 48,
+            btn_y + 14,
             "Cancel",
             &Font::default(),
             Color::from_rgb(0, 0, 0),

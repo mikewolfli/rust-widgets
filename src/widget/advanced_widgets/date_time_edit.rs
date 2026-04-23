@@ -1,5 +1,4 @@
 //! Date-time editor widget.
-
 use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
@@ -8,30 +7,25 @@ use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
 /// Combined date-time value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
     pub date: Date,
     pub time: Time,
 }
-
 impl DateTime {
     pub fn new(date: Date, time: Time) -> Self {
         Self { date, time }
     }
-
     pub fn is_valid(&self) -> bool {
         self.date.is_valid() && self.time.is_valid()
     }
 }
-
 impl std::fmt::Display for DateTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.date, self.time)
     }
 }
-
 /// Date-time editor widget.
 pub struct DateTimeEdit {
     base: BaseWidget,
@@ -42,14 +36,13 @@ pub struct DateTimeEdit {
     calendar_popup: bool,
     pub datetime_changed: Signal1<DateTime>,
 }
-
 impl DateTimeEdit {
     pub fn new(geometry: Rect) -> Self {
         let min_dt = DateTime::new(Date::new(1752, 9, 14), Time::new(0, 0, 0, 0));
         let max_dt = DateTime::new(Date::new(9999, 12, 31), Time::new(23, 59, 59, 999));
         let now = DateTime::new(Date::today(), Time::new(0, 0, 0, 0));
         Self {
-            base: BaseWidget::new(WidgetKind::DateTimeEdit, geometry, "DateTimeEdit"),
+            base: BaseWidget::new(WidgetKind::DateTimePicker, geometry, "DateTimeEdit"),
             datetime: now,
             minimum: min_dt,
             maximum: max_dt,
@@ -58,7 +51,6 @@ impl DateTimeEdit {
             datetime_changed: Signal1::new(),
         }
     }
-
     pub fn datetime(&self) -> DateTime {
         self.datetime
     }
@@ -80,22 +72,18 @@ impl DateTimeEdit {
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
     }
-
     pub fn set_datetime(&mut self, dt: DateTime) {
         if dt.is_valid() && dt >= self.minimum && dt <= self.maximum && self.datetime != dt {
             self.datetime = dt;
             self.datetime_changed.emit(dt);
         }
     }
-
     pub fn set_date(&mut self, date: Date) {
         self.set_datetime(DateTime::new(date, self.datetime.time));
     }
-
     pub fn set_time(&mut self, time: Time) {
         self.set_datetime(DateTime::new(self.datetime.date, time));
     }
-
     pub fn set_minimum_datetime(&mut self, dt: DateTime) {
         self.minimum = dt;
     }
@@ -108,7 +96,6 @@ impl DateTimeEdit {
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
     }
-
     pub fn step_up(&mut self) {
         let mut t = self.datetime.time;
         t.second += 1;
@@ -138,7 +125,6 @@ impl DateTimeEdit {
         }
         self.set_time(t);
     }
-
     pub fn step_down(&mut self) {
         let mut t = self.datetime.time;
         if t.second > 0 {
@@ -173,7 +159,6 @@ impl DateTimeEdit {
         self.set_time(t);
     }
 }
-
 impl Widget for DateTimeEdit {
     fn id(&self) -> ObjectId {
         self.base.id()
@@ -272,7 +257,6 @@ impl Widget for DateTimeEdit {
         self.base.layout_requested_signal()
     }
 }
-
 impl EventHandler for DateTimeEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -289,82 +273,20 @@ impl EventHandler for DateTimeEdit {
         }
     }
 }
-
 impl Draw for DateTimeEdit {
-    fn draw(&self, context: &mut RenderContext) {
-        self.base.draw(context);
+    fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let spin_width = 16.0;
-
-        context.fill_rect(
-            rect.x,
-            rect.y,
-            rect.width - spin_width,
-            rect.height,
-            Color::from_rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.draw_rect(rect, Color::from_rgb(150, 150, 150));
+        let text = self.datetime.to_string();
         context.draw_text(
-            rect.x + 4.0,
-            rect.y + rect.height / 2.0,
-            &self.datetime.to_string(),
+            Point {
+                x: rect.x + 6,
+                y: rect.y + (rect.height as i32 / 2),
+            },
+            &text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
-            Alignment::Left,
-        );
-
-        let btn_x = rect.x + rect.width - spin_width;
-        let btn_h = rect.height / 2.0;
-        context.fill_rect(
-            btn_x,
-            rect.y,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.fill_rect(
-            btn_x,
-            rect.y + btn_h,
-            spin_width,
-            btn_h,
-            Color::from_rgb(240, 240, 240),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y,
-            btn_x,
-            rect.y + rect.height,
-            Color::from_rgb(150, 150, 150),
-        );
-        context.draw_line(
-            btn_x,
-            rect.y + btn_h,
-            rect.x + rect.width,
-            rect.y + btn_h,
-            Color::from_rgb(150, 150, 150),
-        );
-        let mid_x = btn_x + spin_width / 2.0;
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h / 2.0,
-            "▲",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
-        );
-        context.draw_text(
-            mid_x,
-            rect.y + btn_h + btn_h / 2.0,
-            "▼",
-            &Font::default(),
-            Color::from_rgb(80, 80, 80),
-            Alignment::Center,
         );
     }
 }

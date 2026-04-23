@@ -1,17 +1,12 @@
 //! Shared backend state model used by platform adapters.
-
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-
 use crate::core::ObjectId;
-
 use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
-
 /// Generic widget state record owned by backend state model.
 use serde::{Deserialize, Serialize};
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
@@ -35,7 +30,6 @@ pub struct WidgetRecord<K> {
     /// Geometry height.
     pub height: u32,
 }
-
 /// Thread-safe state model split from native handle adapters.
 #[derive(Serialize, Deserialize)]
 pub struct BackendState<K> {
@@ -46,7 +40,6 @@ pub struct BackendState<K> {
     clipboard_text: Mutex<String>,
     drop_events: Mutex<VecDeque<DropEvent>>,
 }
-
 impl<K> BackendState<K>
 where
     K: Copy + Eq + Hash,
@@ -62,7 +55,6 @@ where
             drop_events: Mutex::new(VecDeque::new()),
         }
     }
-
     /// Insert one widget record and return allocated logical id.
     pub fn create_widget(
         &self,
@@ -94,7 +86,6 @@ where
             );
         id
     }
-
     /// Return `true` when widget exists.
     pub fn contains_widget(&self, widget_id: ObjectId) -> bool {
         self.widgets
@@ -102,7 +93,6 @@ where
             .expect("backend state widget lock poisoned")
             .contains_key(&widget_id)
     }
-
     /// Return kind for an existing widget.
     pub fn kind_of(&self, widget_id: ObjectId) -> Option<K> {
         self.widgets
@@ -111,13 +101,11 @@ where
             .get(&widget_id)
             .map(|widget| widget.kind)
     }
-
     /// Return `true` when widget exists and kind matches.
     #[allow(dead_code)]
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
         self.kind_of(widget_id).map(|k| k == kind).unwrap_or(false)
     }
-
     /// Set visibility for a widget.
     pub fn set_visible(&self, widget_id: ObjectId, visible: bool) {
         if let Some(widget) = self
@@ -129,7 +117,6 @@ where
             widget.visible = visible;
         }
     }
-
     /// Return visibility for a widget.
     pub fn visible(&self, widget_id: ObjectId) -> bool {
         self.widgets
@@ -139,7 +126,6 @@ where
             .map(|widget| widget.visible)
             .unwrap_or(false)
     }
-
     /// Set enabled state for a widget.
     pub fn set_enabled(&self, widget_id: ObjectId, enabled: bool) {
         if let Some(widget) = self
@@ -151,7 +137,6 @@ where
             widget.enabled = enabled;
         }
     }
-
     /// Return enabled state for a widget.
     pub fn enabled(&self, widget_id: ObjectId) -> bool {
         self.widgets
@@ -161,7 +146,6 @@ where
             .map(|widget| widget.enabled)
             .unwrap_or(false)
     }
-
     /// Set geometry for a widget.
     pub fn set_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
         if let Some(widget) = self
@@ -176,7 +160,6 @@ where
             widget.height = height;
         }
     }
-
     /// Set text for a widget.
     pub fn set_text(&self, widget_id: ObjectId, text: &str) -> bool {
         if let Some(widget) = self
@@ -190,7 +173,6 @@ where
         }
         false
     }
-
     /// Return text for a widget.
     pub fn text(&self, widget_id: ObjectId) -> String {
         self.widgets
@@ -200,7 +182,6 @@ where
             .map(|widget| widget.text.clone())
             .unwrap_or_default()
     }
-
     /// Set IME enabled state for a widget.
     pub fn set_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
         if let Some(widget) = self
@@ -214,7 +195,6 @@ where
         }
         false
     }
-
     /// Return IME enabled state for a widget.
     pub fn ime_enabled(&self, widget_id: ObjectId) -> bool {
         self.widgets
@@ -224,7 +204,6 @@ where
             .map(|widget| widget.ime_enabled)
             .unwrap_or(false)
     }
-
     /// Set accessibility label for a widget.
     pub fn set_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
         if let Some(widget) = self
@@ -238,7 +217,6 @@ where
         }
         false
     }
-
     /// Return accessibility label for a widget.
     pub fn accessibility_name(&self, widget_id: ObjectId) -> String {
         self.widgets
@@ -248,7 +226,6 @@ where
             .map(|widget| widget.accessibility_name.clone())
             .unwrap_or_default()
     }
-
     /// Push menu trigger event.
     #[allow(dead_code)]
     pub fn push_menu_event(&self, item_id: ObjectId) {
@@ -257,7 +234,6 @@ where
             .expect("backend state menu lock poisoned")
             .push_back(item_id);
     }
-
     /// Pop menu trigger event.
     #[allow(dead_code)]
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
@@ -266,7 +242,6 @@ where
             .expect("backend state menu lock poisoned")
             .pop_front()
     }
-
     /// Push typed widget trigger event.
     #[allow(dead_code)]
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
@@ -275,7 +250,6 @@ where
             .expect("backend state widget-event lock poisoned")
             .push_back(event);
     }
-
     /// Pop typed widget trigger event.
     #[allow(dead_code)]
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
@@ -284,7 +258,6 @@ where
             .expect("backend state widget-event lock poisoned")
             .pop_front()
     }
-
     /// Set clipboard text.
     pub fn set_clipboard_text(&self, text: &str) -> bool {
         *self
@@ -293,7 +266,6 @@ where
             .expect("backend state clipboard lock poisoned") = text.to_string();
         true
     }
-
     /// Get clipboard text.
     pub fn clipboard_text(&self) -> String {
         self.clipboard_text
@@ -301,7 +273,6 @@ where
             .expect("backend state clipboard lock poisoned")
             .clone()
     }
-
     /// Begin drag event for existing source widget.
     pub fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         if !self.contains_widget(source_widget_id) {
@@ -318,7 +289,6 @@ where
             });
         true
     }
-
     /// Pop one drop event.
     pub fn pop_drop_event(&self) -> Option<DropEvent> {
         self.drop_events
@@ -326,7 +296,6 @@ where
             .expect("backend state drop lock poisoned")
             .pop_front()
     }
-
     /// Inject drop event when target widget exists.
     pub fn inject_drop_event(&self, event: DropEvent) -> bool {
         if !self.contains_widget(event.target_widget_id) {
@@ -338,7 +307,6 @@ where
             .push_back(event);
         true
     }
-
     /// Inject menu trigger event.
     pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
         if !self.contains_widget(menu_item_id) {
@@ -347,17 +315,14 @@ where
         self.push_menu_event(menu_item_id);
         true
     }
-
     /// Pop widget trigger event.
     pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
         self.pop_menu_event()
     }
-
     /// Pop typed widget trigger event.
     pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.pop_widget_event()
     }
-
     /// Inject widget trigger event.
     pub fn inject_widget_trigger_event(
         &self,

@@ -1,7 +1,6 @@
 use crate::core::{Color, Font};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
 /// High-level theme definition used by runtime style resolution.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Theme {
@@ -16,7 +15,6 @@ pub struct Theme {
     /// Border/elevation tokens.
     pub borders: Borders,
 }
-
 /// Semantic color palette tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Colors {
@@ -39,7 +37,6 @@ pub struct Colors {
     /// Disabled-state color.
     pub disabled: Color,
 }
-
 /// Font token set used by theme consumers.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Fonts {
@@ -52,7 +49,6 @@ pub struct Fonts {
     /// Monospace font token.
     pub monospace: Font,
 }
-
 /// Spacing scale tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Spacing {
@@ -65,7 +61,6 @@ pub struct Spacing {
     /// Extra-large spacing unit.
     pub extra_large: u32,
 }
-
 /// Border and elevation behavior tokens.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Borders {
@@ -76,14 +71,12 @@ pub struct Borders {
     /// Whether drop shadows are enabled.
     pub shadow: bool,
 }
-
 /// Style override map used for class-level theme customization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeOverrides {
     /// Overrides keyed by style/class name.
     pub styles: HashMap<String, ThemeStyleToken>,
 }
-
 /// Optional style tokens used to override resolved widget styles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeStyleToken {
