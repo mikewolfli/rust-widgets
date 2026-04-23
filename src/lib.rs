@@ -70,6 +70,10 @@ pub mod pdf;
 #[cfg(feature = "chart")]
 /// Charting primitives.
 pub mod chart;
+/// Application lifecycle wrapper and type-safe widget handles.
+pub mod app;
+/// Index-based widget registry for runtime lookup.
+pub mod index;
 /// Initialize global platform and i18n subsystems.
 pub fn init() {
     trace_runtime_route("init");
