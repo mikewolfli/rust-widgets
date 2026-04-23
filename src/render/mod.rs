@@ -4832,7 +4832,7 @@ mod tests {
         tool_bar.add_action("cut".to_string(), "Cut".to_string());
         tool_bar.add_action("copy".to_string(), "Copy".to_string());
         tool_bar.add_action("paste".to_string(), "Paste".to_string());
-        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
+        let status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
         let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
         tabs.add_tab("Tab 1".to_string(), None);
         tabs.add_tab("Tab 2".to_string(), None);
@@ -4871,7 +4871,7 @@ mod tests {
         let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
         tool_bar.add_action("cut".to_string(), "Cut".to_string());
         tool_bar.add_action("copy".to_string(), "Copy".to_string());
-        let mut status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
+        let status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
         let mut tabs = TabWidget::new(Rect::new(140, 120, 120, 32));
         tabs.add_tab("Tab 1".to_string(), None);
         tabs.add_tab("Tab 2".to_string(), None);

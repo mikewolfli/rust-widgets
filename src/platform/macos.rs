@@ -268,7 +268,7 @@ impl Default for MacOSPlatform {
 impl MacOSPlatform {
     fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
         NSRect::new(
-            NSPoint::new(x as f64 as f32, y as f64 as f32),
+            NSPoint::new(x as f64, y as f64),
             NSSize::new(width as f64, height as f64),
         )
     }
@@ -398,7 +398,7 @@ impl Platform for MacOSPlatform {
             let content_view =
                 NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(0, 0, width, height));
             let _: () = msg_send![window, setContentView: content_view];
-            window.cascadeTopLeftFromPoint_(NSPoint::new(20.0 as f32, 20.0 as f32));
+            window.cascadeTopLeftFromPoint_(NSPoint::new(20.0, 20.0));
             NSWindow::setTitle_(window, NSString::alloc(nil).init_str(title));
             window.makeKeyAndOrderFront_(nil);
             let _: () = msg_send![window, display];
