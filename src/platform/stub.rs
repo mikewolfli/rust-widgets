@@ -2,9 +2,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use crate::core::ObjectId;
+use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::types::*;
-use serde::{Deserialize, Serialize};
 pub struct StubPlatform {
     backend: &'static str,
     family: PlatformFamily,
@@ -103,6 +102,196 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         self.create_widget_state(text, x, y, width, height)
     }
+    fn create_menu_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.is_embedded_profile() {
+            return self.embedded_unsupported_id("create_menu_bar");
+        }
+        let id = self.create_button(parent, "MenuBar", x, y, width, height);
+        self.menu_nodes
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(
+                id,
+                MenuNodeState {
+                    text: "MenuBar".to_string(),
+                },
+            );
+        id
+    }
+    fn create_checkbox(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+    fn create_line_edit(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+    fn create_label(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+    fn create_radio_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state(text, x, y, width, height)
+    }
+    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("Slider", x, y, width, height)
+    }
+    fn create_progress_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = parent;
+        self.create_widget_state("ProgressBar", x, y, width, height)
+    }
+    fn create_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let id = self.create_button(parent, "ComboBox", x, y, width, height);
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, Vec::new());
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, None);
+        id
+    }
+    fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool {
+        let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
+        let list = match items.get_mut(&combo_box) {
+            Some(list) => list,
+            None => return false,
+        };
+        list.push(_text.to_string());
+        true
+    }
+    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
+        let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
+        if let Some(list) = items.get_mut(&combo_box) {
+            list.clear();
+            self.combo_box_selection
+                .lock()
+                .expect("platform lock poisoned")
+                .insert(combo_box, None);
+            return true;
+        }
+        false
+    }
+    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
+        let items = self.combo_box_items.lock().expect("platform lock poisoned");
+        let len = match items.get(&combo_box) {
+            Some(list) => list.len(),
+            None => return false,
+        };
+        if index >= len {
+            return false;
+        }
+        drop(items);
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(combo_box, Some(index));
+        true
+    }
+    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .and_then(|index| *index)
+    }
+    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .map(|items| items.len())
+            .unwrap_or(0)
+    }
+    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
+        self.combo_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .get(&combo_box)
+            .and_then(|items| items.get(index).cloned())
+    }
+    fn create_list_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let id = self.create_button(parent, "ListBox", x, y, width, height);
+        self.list_box_items
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, Vec::new());
+        self.list_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(id, None);
+        id
+    }
+    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
+        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+        let list = match items.get_mut(&list_box) {
+            Some(list) => list,
+            None => return false,
+        };
+        list.push(text.to_string());
         true
     }
     fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {

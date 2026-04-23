@@ -1,4 +1,9 @@
 //! Platform abstraction types and capability contracts.
+
+use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WidgetTriggerKind {
     /// No concrete trigger semantic is known.
     Unknown = 0,
@@ -11,7 +16,6 @@ pub enum WidgetTriggerKind {
     /// Widget/window closed lifecycle trigger.
     Closed = 4,
 }
-use serde::{Deserialize, Serialize};
 /// Typed widget trigger event with source widget id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidgetTriggerEvent {
@@ -394,17 +398,17 @@ pub trait MobilePlatformExtension: Send + Sync {
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
 }
 #[derive(Default)]
-struct WidgetState {
-    text: String,
-    visible: bool,
-    enabled: bool,
-    ime_enabled: bool,
-    accessibility_name: String,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+pub(crate) struct WidgetState {
+    pub(crate) text: String,
+    pub(crate) visible: bool,
+    pub(crate) enabled: bool,
+    pub(crate) ime_enabled: bool,
+    pub(crate) accessibility_name: String,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
-struct MenuNodeState {
-    text: String,
+pub(crate) struct MenuNodeState {
+    pub(crate) text: String,
 }

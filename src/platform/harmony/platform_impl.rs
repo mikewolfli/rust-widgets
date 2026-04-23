@@ -1,92 +1,10 @@
-//! Harmony desktop backend shell.
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use crate::core::PlatformFamily;
-use super::state::BackendState;
-use super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum HarmonyHandleKind {
-    Window,
-    Button,
-    CheckBox,
-    LineEdit,
-    Label,
-    RadioButton,
-    Slider,
-    ProgressBar,
-    ComboBox,
-    ListBox,
-    Panel,
-    MenuBar,
-    Menu,
-    MenuItem,
-    ToolBar,
-    StatusBar,
-}
-#[derive(Default)]
-struct HarmonyMenuState {
-    /// Tracks menu bar attachment by window id.
-    attached_menu_bar: HashMap<u64, u64>,
-    /// Maintains menu tree relationships for backend-side validation.
-    menu_children: HashMap<u64, Vec<u64>>,
-    /// FIFO menu trigger queue, filled by native bridge injection APIs.
-    pending_menu_events: VecDeque<u64>,
-    /// FIFO typed widget trigger queue, filled by bridge callbacks and local fallbacks.
-    pending_widget_events: VecDeque<WidgetTriggerEvent>,
-}
-struct HarmonyRuntimeState {
-    initialized: AtomicBool,
-    running: AtomicBool,
-}
-impl HarmonyRuntimeState {
-    fn new() -> Self {
-        Self {
-            initialized: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }
-    }
-}
-/// Harmony backend platform adapter.
-pub struct HarmonyPlatform {
-    state: BackendState<HarmonyHandleKind>,
-    menus: Mutex<HarmonyMenuState>,
-    runtime: HarmonyRuntimeState,
-}
-impl HarmonyPlatform {
-    /// Creates a new Harmony platform adapter.
-    pub fn new() -> Self {
-        Self {
-            state: BackendState::new(),
-            menus: Mutex::new(HarmonyMenuState::default()),
-            runtime: HarmonyRuntimeState::new(),
-        }
-    }
-}
-impl Default for HarmonyPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl HarmonyPlatform {
-    /// Insert widget state and return allocated logical id.
-    fn insert_widget(
-        &self,
-        kind: HarmonyHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        self.state.create_widget(kind, text, x, y, width, height)
-    }
-    fn kind_of(&self, id: u64) -> Option<HarmonyHandleKind> {
-        self.state.kind_of(id)
-    }
-}
+use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use super::types::*;
+
 impl Platform for HarmonyPlatform {
     fn backend_name(&self) -> &'static str {
         "harmony-desktop"

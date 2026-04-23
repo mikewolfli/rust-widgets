@@ -19,3 +19,17 @@ pub struct PdfMetadata {
     /// Last modification timestamp string.
     pub modification_date: Option<String>,
 }
+impl Default for PdfMetadata {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            author: String::new(),
+            subject: String::new(),
+            keywords: Vec::new(),
+            creator: "Rust Widgets PDF".to_string(),
+            producer: "Rust Widgets PDF Library".to_string(),
+            creation_date: None,
+            modification_date: None,
+        }
+    }
+}

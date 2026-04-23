@@ -1,5 +1,6 @@
 use crate::core::{Color, Point, Rect};
-use crate::render::{push_widget_fill_and_border, RenderCommand, SceneLayer};
+use crate::render::{RenderCommand, SceneLayer};
+use super::engine::push_widget_fill_and_border;
 use crate::widget::{web_view::WebView, Widget};
 /// Append visual commands for a `WebView` baseline representation.
 pub fn append_web_view_visual_commands(layer: &mut SceneLayer, web_view: &WebView) {

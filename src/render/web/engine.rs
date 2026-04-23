@@ -5,7 +5,7 @@ use crate::widget::{
     WebEngineDownloadItem, WebEngineFindTextResult, WebEngineNotification, WebEnginePage,
     WebEngineScriptDialog, WebEngineSettings, WebEngineWebChannel, Widget,
 };
-fn push_widget_fill_and_border(
+pub(crate) fn push_widget_fill_and_border(
     layer: &mut SceneLayer,
     widget: &dyn Widget,
     background: Option<Color>,
