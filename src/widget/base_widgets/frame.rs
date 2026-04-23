@@ -271,10 +271,10 @@ impl Frame {
             rect.width - 2,
             rect.height - 2,
         );
-        context.draw_line(Point::new(inner_rect.x as f32, inner_rect.y as f32), Point::new(inner_rect.x as f32 + inner_rect.width as f32, inner_rect.y as f32), light_color);
-        context.draw_line(Point::new(inner_rect.x as f32, inner_rect.y as f32), Point::new(inner_rect.x as f32, inner_rect.y as f32 + inner_rect.height as f32), light_color);
-        context.draw_line(Point::new(inner_rect.x as f32, inner_rect.y as f32 + inner_rect.height as f32), Point::new(inner_rect.x as f32 + inner_rect.width as f32, inner_rect.y as f32 + inner_rect.height as f32), dark_color);
-        context.draw_line(Point::new(inner_rect.x as f32 + inner_rect.width as f32, inner_rect.y as f32), Point::new(inner_rect.x as f32 + inner_rect.width as f32, inner_rect.y as f32 + inner_rect.height as f32), dark_color);
+        context.draw_line(Point::new(inner_rect.x, inner_rect.y), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y), light_color);
+        context.draw_line(Point::new(inner_rect.x, inner_rect.y), Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32), light_color);
+        context.draw_line(Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32), dark_color);
+        context.draw_line(Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y), Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y + inner_rect.height as i32), dark_color);
     }
 }
 // Implement Widget trait

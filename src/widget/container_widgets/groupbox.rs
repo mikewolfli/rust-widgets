@@ -1,11 +1,10 @@
 //! Group box widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Group box widget.
 pub struct GroupBox {
     base: BaseWidget,
@@ -71,8 +70,10 @@ impl GroupBox {
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
         let font = Font::default();
-        let text_width = font.measure_text(&self.title);
-        let text_height = font.height();
+        // Note: measure_text需要通过RenderContext调用
+        // 这里暂时使用估算值
+        let text_width = self.title.len() as u32 * 8; // 估算宽度
+        let text_height = 16; // 估算高度
         let x = match self.alignment {
             Alignment::Left => rect.x + 10,
             Alignment::Center => rect.x + (rect.width - text_width) / 2,

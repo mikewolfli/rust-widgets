@@ -41,7 +41,7 @@ impl Gradient {
             start_point: start,
             end_point: end,
             angle: 0.0,
-            center: Point::new(0 as f32, 0 as f32),
+            center: Point::new(0, 0),
             radius: 0.0,
         }
     }
@@ -49,8 +49,8 @@ impl Gradient {
         Self {
             gradient_type: GradientType::Radial,
             stops: Vec::new(),
-            start_point: Point::new(0 as f32, 0 as f32),
-            end_point: Point::new(0 as f32, 0 as f32),
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
             angle: 0.0,
             center,
             radius,
@@ -60,8 +60,8 @@ impl Gradient {
         Self {
             gradient_type: GradientType::Conic,
             stops: Vec::new(),
-            start_point: Point::new(0 as f32, 0 as f32),
-            end_point: Point::new(0 as f32, 0 as f32),
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
             angle,
             center,
             radius: 0.0,
@@ -129,7 +129,7 @@ impl Gradient {
 }
 impl Default for Gradient {
     fn default() -> Self {
-        Self::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 0 as f32))
+        Self::linear(Point::new(0, 0), Point::new(100, 0))
     }
 }
 pub struct GradientBuilder {

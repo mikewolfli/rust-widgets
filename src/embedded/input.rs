@@ -27,7 +27,7 @@ impl TouchPoint {
     pub fn new(id: u32, x: i32, y: i32) -> Self {
         Self {
             id,
-            position: Point::new(x as f32, y as f32),
+            position: Point::new(x, y),
             pressure: 1.0,
             size: 1.0,
         }

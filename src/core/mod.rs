@@ -42,4 +42,7 @@ pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
 pub use geometry::{Point, Rect, Size};
-pub use types::{CoreObject, ObjectId, PlatformFamily, RuntimeProfile};
+pub use types::{
+    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily,
+    RuntimeProfile, Version,
+};

@@ -1,11 +1,10 @@
 //! Tab widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::{Margin, Padding, WidgetStyle};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::style::WidgetStyle;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Tab widget.
 pub struct TabWidget {
     base: BaseWidget,
@@ -232,11 +231,11 @@ impl TabWidget {
         let spacing = 2;
         match self.tab_position {
             TabPosition::North => {
-                let x = rect.x + (tab_width + spacing) * index as f32;
+                let x = rect.x + (tab_width + spacing) as i32 * index as i32;
                 Some(Rect::new(x, rect.y, tab_width, tab_height))
             }
             TabPosition::South => {
-                let x = rect.x + (tab_width + spacing) * index as f32;
+                let x = rect.x + (tab_width + spacing) as i32 * index as i32;
                 Some(Rect::new(
                     x,
                     rect.y + rect.height as f32 - tab_height,
@@ -245,13 +244,13 @@ impl TabWidget {
                 ))
             }
             TabPosition::West => {
-                let y = rect.y + (tab_height + spacing) * index as f32;
+                let y = rect.y + (tab_height + spacing) as i32 * index as i32;
                 Some(Rect::new(rect.x, y, tab_width, tab_height))
             }
             TabPosition::East => {
-                let y = rect.y + (tab_height + spacing) * index as f32;
+                let y = rect.y + (tab_height + spacing) as i32 * index as i32;
                 Some(Rect::new(
-                    rect.x + rect.width as f32 - tab_width,
+                    rect.x + rect.width as i32 - tab_width,
                     y,
                     tab_width,
                     tab_height,

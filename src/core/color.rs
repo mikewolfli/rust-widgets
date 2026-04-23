@@ -27,6 +27,61 @@ impl Color {
     pub const fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self::rgba(r, g, b, a)
     }
+    /// Creates a color from f32 values (0.0-1.0 range).
+    pub fn from_f32(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self {
+            r: (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            g: (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            b: (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            a: (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        }
+    }
+    /// Creates a color from f32 RGB values with full alpha.
+    pub fn from_f32_rgb(r: f32, g: f32, b: f32) -> Self {
+        Self::from_f32(r, g, b, 1.0)
+    }
+    /// Creates a color from i32 values (0-255 range).
+    pub fn from_i32(r: i32, g: i32, b: i32, a: i32) -> Self {
+        Self {
+            r: r.clamp(0, 255) as u8,
+            g: g.clamp(0, 255) as u8,
+            b: b.clamp(0, 255) as u8,
+            a: a.clamp(0, 255) as u8,
+        }
+    }
+    /// Creates a color from i32 RGB values with full alpha.
+    pub fn from_i32_rgb(r: i32, g: i32, b: i32) -> Self {
+        Self::from_i32(r, g, b, 255)
+    }
+    /// Creates a color from u32 values (0xRRGGBBAA format).
+    pub const fn from_u32_rgba(value: u32) -> Self {
+        Self {
+            r: ((value >> 24) & 0xFF) as u8,
+            g: ((value >> 16) & 0xFF) as u8,
+            b: ((value >> 8) & 0xFF) as u8,
+            a: (value & 0xFF) as u8,
+        }
+    }
+    /// Creates a color from u32 values (0xRRGGBB format, full alpha).
+    pub const fn from_u32_rgb(value: u32) -> Self {
+        Self::from_u32_rgba((value << 8) | 0xFF)
+    }
+    /// Creates a color from tuple of u8 (r, g, b, a).
+    pub const fn from_u8_tuple((r, g, b, a): (u8, u8, u8, u8)) -> Self {
+        Self::rgba(r, g, b, a)
+    }
+    /// Creates a color from tuple of u8 (r, g, b) with full alpha.
+    pub const fn from_u8_rgb_tuple((r, g, b): (u8, u8, u8)) -> Self {
+        Self::rgb(r, g, b)
+    }
+    /// Creates a color from tuple of f32 (r, g, b, a) in 0.0-1.0 range.
+    pub fn from_f32_tuple((r, g, b, a): (f32, f32, f32, f32)) -> Self {
+        Self::from_f32(r, g, b, a)
+    }
+    /// Creates a color from tuple of f32 (r, g, b) with full alpha.
+    pub fn from_f32_rgb_tuple((r, g, b): (f32, f32, f32)) -> Self {
+        Self::from_f32_rgb(r, g, b)
+    }
     /// Common color constants.
     pub const BLACK: Self = Self::rgb(0, 0, 0);
     pub const WHITE: Self = Self::rgb(255, 255, 255);
@@ -169,6 +224,68 @@ impl Color {
             (value & 0xFF) as u8,
         )
     }
+    /// Creates color from tuple of i32 (r, g, b, a) in 0-255 range.
+    pub fn from_i32_tuple((r, g, b, a): (i32, i32, i32, i32)) -> Self {
+        Self::from_i32(r, g, b, a)
+    }
+    /// Converts color to f32 tuple (r, g, b, a) in 0.0-1.0 range.
+    pub fn to_f32(&self) -> (f32, f32, f32, f32) {
+        (
+            self.r as f32 / 255.0,
+            self.g as f32 / 255.0,
+            self.b as f32 / 255.0,
+            self.a as f32 / 255.0,
+        )
+    }
+    /// Converts color to i32 tuple (r, g, b, a) in 0-255 range.
+    pub fn to_i32(&self) -> (i32, i32, i32, i32) {
+        (self.r as i32, self.g as i32, self.b as i32, self.a as i32)
+    }
+    /// Creates a color with modified alpha.
+    pub fn with_alpha(&self, alpha: u8) -> Self {
+        Self::rgba(self.r, self.g, self.b, alpha)
+    }
+    /// Creates a color with modified alpha (f32 in 0.0-1.0 range).
+    pub fn with_alpha_f32(&self, alpha: f32) -> Self {
+        Self::rgba(
+            self.r,
+            self.g,
+            self.b,
+            (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+        )
+    }
+    /// Blends two colors with given weight (0.0 = self, 1.0 = other).
+    pub fn blend(&self, other: &Self, weight: f32) -> Self {
+        let w = weight.clamp(0.0, 1.0);
+        let inv_w = 1.0 - w;
+        Self::from_f32(
+            self.r as f32 / 255.0 * inv_w + other.r as f32 / 255.0 * w,
+            self.g as f32 / 255.0 * inv_w + other.g as f32 / 255.0 * w,
+            self.b as f32 / 255.0 * inv_w + other.b as f32 / 255.0 * w,
+            self.a as f32 / 255.0 * inv_w + other.a as f32 / 255.0 * w,
+        )
+    }
+    /// Returns luminance (perceived brightness) in 0.0-1.0 range.
+    pub fn luminance(&self) -> f32 {
+        // Standard luminance formula
+        (0.299 * self.r as f32 + 0.587 * self.g as f32 + 0.114 * self.b as f32) / 255.0
+    }
+    /// Returns whether the color is dark (luminance < 0.5).
+    pub fn is_dark(&self) -> bool {
+        self.luminance() < 0.5
+    }
+    /// Returns whether the color is light (luminance >= 0.5).
+    pub fn is_light(&self) -> bool {
+        !self.is_dark()
+    }
+    /// Creates a contrasting color (black for light colors, white for dark colors).
+    pub fn contrast_color(&self) -> Self {
+        if self.is_dark() {
+            Self::WHITE
+        } else {
+            Self::BLACK
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -203,5 +320,111 @@ mod tests {
         let packed = color.to_rgba_u32();
         assert_eq!(packed, 0x01234567);
         assert_eq!(Color::from_rgba_u32(packed), color);
+    }
+    #[test]
+    fn color_constructors_from_different_types() {
+        let c1 = Color::from_f32(0.5, 0.25, 0.75, 1.0);
+        assert_eq!(c1, Color::rgba(128, 64, 191, 255));
+        
+        let c2 = Color::from_f32_rgb(0.5, 0.25, 0.75);
+        assert_eq!(c2, Color::rgba(128, 64, 191, 255));
+        
+        let c3 = Color::from_i32(128, 64, 191, 255);
+        assert_eq!(c3, Color::rgba(128, 64, 191, 255));
+        
+        let c4 = Color::from_i32(-10, 300, 128, 255);
+        assert_eq!(c4, Color::rgba(0, 255, 128, 255));
+    }
+    #[test]
+    fn color_tuple_constructors() {
+        let c1 = Color::from_u8_tuple((128, 64, 191, 255));
+        assert_eq!(c1, Color::rgba(128, 64, 191, 255));
+        
+        let c2 = Color::from_f32_tuple((0.5, 0.25, 0.75, 1.0));
+        assert_eq!(c2, Color::rgba(128, 64, 191, 255));
+        
+        let c3 = Color::from_i32_tuple((128, 64, 191, 255));
+        assert_eq!(c3, Color::rgba(128, 64, 191, 255));
+    }
+    #[test]
+    fn color_conversion_methods() {
+        let color = Color::rgba(128, 64, 191, 255);
+        
+        let (r, g, b, a) = color.to_f32();
+        assert!((r - 0.50196).abs() < 0.01);
+        assert!((g - 0.25098).abs() < 0.01);
+        assert!((b - 0.74902).abs() < 0.01);
+        assert!((a - 1.0).abs() < 0.01);
+        
+        let (r, g, b, a) = color.to_i32();
+        assert_eq!(r, 128);
+        assert_eq!(g, 64);
+        assert_eq!(b, 191);
+        assert_eq!(a, 255);
+    }
+    #[test]
+    fn color_with_alpha() {
+        let color = Color::rgba(128, 64, 191, 255);
+        
+        let color2 = color.with_alpha(128);
+        assert_eq!(color2, Color::rgba(128, 64, 191, 128));
+        
+        let color3 = color.with_alpha_f32(0.5);
+        assert_eq!(color3, Color::rgba(128, 64, 191, 128));
+    }
+    #[test]
+    fn color_blending() {
+        let black = Color::BLACK;
+        let white = Color::WHITE;
+        
+        let gray = black.blend(&white, 0.5);
+        assert_eq!(gray, Color::rgba(128, 128, 128, 255));
+        
+        let quarter = black.blend(&white, 0.25);
+        assert_eq!(quarter, Color::rgba(64, 64, 64, 255));
+        
+        let three_quarters = black.blend(&white, 0.75);
+        assert_eq!(three_quarters, Color::rgba(191, 191, 191, 255));
+    }
+    #[test]
+    fn color_luminance_and_contrast() {
+        let black = Color::BLACK;
+        let white = Color::WHITE;
+        let gray = Color::rgba(128, 128, 128, 255);
+        let red = Color::RED;
+        let green = Color::GREEN;
+        let blue = Color::BLUE;
+        
+        assert_eq!(black.luminance(), 0.0);
+        assert_eq!(white.luminance(), 1.0);
+        assert!((gray.luminance() - 0.5).abs() < 0.01);
+        
+        assert!(black.is_dark());
+        assert!(!black.is_light());
+        assert!(white.is_light());
+        assert!(!white.is_dark());
+        
+        assert_eq!(black.contrast_color(), Color::WHITE);
+        assert_eq!(white.contrast_color(), Color::BLACK);
+        assert_eq!(gray.contrast_color(), Color::BLACK);
+        
+        assert!(red.is_dark());
+        assert!(green.is_dark());
+        assert!(blue.is_dark());
+    }
+    #[test]
+    fn predefined_colors() {
+        assert_eq!(Color::TRANSPARENT, Color::rgba(0, 0, 0, 0));
+        assert_eq!(Color::BLACK, Color::rgba(0, 0, 0, 255));
+        assert_eq!(Color::WHITE, Color::rgba(255, 255, 255, 255));
+        assert_eq!(Color::RED, Color::rgba(255, 0, 0, 255));
+        assert_eq!(Color::GREEN, Color::rgba(0, 255, 0, 255));
+        assert_eq!(Color::BLUE, Color::rgba(0, 0, 255, 255));
+        assert_eq!(Color::YELLOW, Color::rgba(255, 255, 0, 255));
+        assert_eq!(Color::CYAN, Color::rgba(0, 255, 255, 255));
+        assert_eq!(Color::MAGENTA, Color::rgba(255, 0, 255, 255));
+        assert_eq!(Color::GRAY, Color::rgba(128, 128, 128, 255));
+        assert_eq!(Color::LIGHT_GRAY, Color::rgba(192, 192, 192, 255));
+        assert_eq!(Color::DARK_GRAY, Color::rgba(64, 64, 64, 255));
     }
 }

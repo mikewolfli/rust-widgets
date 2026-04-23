@@ -105,13 +105,13 @@ impl ScrollArea {
         let mut new_viewport = self.viewport;
         if rect.x < new_viewport.x {
             new_viewport.x = rect.x;
-        } else if rect.x + rect.width as f32 > new_viewport.x + new_viewport.width {
-            new_viewport.x = rect.x + rect.width as f32 - new_viewport.width;
+        } else if rect.x as f32 + rect.width as f32 > new_viewport.x as f32 + new_viewport.width as f32 {
+            new_viewport.x = (rect.x as f32 + rect.width as f32 - new_viewport.width as f32) as i32;
         }
         if rect.y < new_viewport.y {
             new_viewport.y = rect.y;
-        } else if rect.y + rect.height as f32 > new_viewport.y + new_viewport.height {
-            new_viewport.y = rect.y + rect.height as f32 - new_viewport.height;
+        } else if rect.y as f32 + rect.height as f32 > new_viewport.y as f32 + new_viewport.height as f32 {
+            new_viewport.y = (rect.y as f32 + rect.height as f32 - new_viewport.height as f32) as i32;
         }
         self.viewport = new_viewport;
     }

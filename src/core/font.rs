@@ -46,6 +46,46 @@ impl Font {
             italic,
         }
     }
+    /// Creates a font descriptor from i32 size.
+    pub fn with_i32_size(family: impl Into<String>, size: i32, bold: bool, italic: bool) -> Self {
+        Self::new(family, size as f32, bold, italic)
+    }
+    /// Creates a font descriptor from u32 size.
+    pub fn with_u32_size(family: impl Into<String>, size: u32, bold: bool, italic: bool) -> Self {
+        Self::new(family, size as f32, bold, italic)
+    }
+    /// Creates a font descriptor from f64 size.
+    pub fn with_f64_size(family: impl Into<String>, size: f64, bold: bool, italic: bool) -> Self {
+        Self::new(family, size as f32, bold, italic)
+    }
+    /// Creates a font descriptor with only family and size (regular, non-italic).
+    pub fn simple(family: impl Into<String>, size: f32) -> Self {
+        Self::new(family, size, false, false)
+    }
+    /// Creates a bold font descriptor.
+    pub fn bold(family: impl Into<String>, size: f32) -> Self {
+        Self::new(family, size, true, false)
+    }
+    /// Creates an italic font descriptor.
+    pub fn italic(family: impl Into<String>, size: f32) -> Self {
+        Self::new(family, size, false, true)
+    }
+    /// Creates a bold italic font descriptor.
+    pub fn bold_italic(family: impl Into<String>, size: f32) -> Self {
+        Self::new(family, size, true, true)
+    }
+    /// Creates a font descriptor from tuple (family, size).
+    pub fn from_tuple(family: impl Into<String>, size: f32) -> Self {
+        Self::simple(family, size)
+    }
+    /// Creates a font descriptor from tuple (family, size, bold).
+    pub fn from_tuple_with_bold(family: impl Into<String>, size: f32, bold: bool) -> Self {
+        Self::new(family, size, bold, false)
+    }
+    /// Creates a font descriptor from tuple (family, size, bold, italic).
+    pub fn from_full_tuple(family: impl Into<String>, size: f32, bold: bool, italic: bool) -> Self {
+        Self::new(family, size, bold, italic)
+    }
     /// Returns the shared default UI font descriptor.
     pub fn default_ui() -> Self {
         Self::with_weight("Arial", 14.0, Self::REGULAR_WEIGHT, false)
@@ -73,6 +113,92 @@ impl Font {
             && self.weight >= 100
             && self.weight <= 900
             && self.weight.is_multiple_of(100)
+    }
+    /// Creates a font with modified size.
+    pub fn with_size(&self, size: f32) -> Self {
+        Self::with_weight(&self.family, size, self.weight, self.italic)
+    }
+    /// Creates a font with modified weight.
+    pub fn with_weight_value(&self, weight: u16) -> Self {
+        Self::with_weight(&self.family, self.size, weight, self.italic)
+    }
+    /// Creates a font with bold style.
+    pub fn with_bold(&self, bold: bool) -> Self {
+        let weight = if bold {
+            Self::BOLD_WEIGHT
+        } else {
+            Self::REGULAR_WEIGHT
+        };
+        Self::with_weight(&self.family, self.size, weight, self.italic)
+    }
+    /// Creates a font with italic style.
+    pub fn with_italic(&self, italic: bool) -> Self {
+        Self::with_weight(&self.family, self.size, self.weight, italic)
+    }
+    /// Creates a font with modified family.
+    pub fn with_family(&self, family: impl Into<String>) -> Self {
+        Self::with_weight(family, self.size, self.weight, self.italic)
+    }
+    /// Returns font size as i32 (rounded).
+    pub fn size_i32(&self) -> i32 {
+        self.size.round() as i32
+    }
+    /// Returns font size as u32 (rounded and clamped to positive).
+    pub fn size_u32(&self) -> u32 {
+        self.size.round().max(0.0) as u32
+    }
+    /// Creates a larger font by scaling the size.
+    pub fn scaled(&self, scale: f32) -> Self {
+        Self::with_weight(&self.family, self.size * scale, self.weight, self.italic)
+    }
+    /// Creates a smaller font by scaling the size.
+    pub fn scaled_down(&self, scale: f32) -> Self {
+        Self::with_weight(&self.family, self.size / scale, self.weight, self.italic)
+    }
+    /// Returns whether the font is bold (weight >= 700).
+    pub fn is_bold(&self) -> bool {
+        self.weight >= Self::BOLD_WEIGHT
+    }
+    /// Returns whether the font is regular weight (400).
+    pub fn is_regular(&self) -> bool {
+        self.weight == Self::REGULAR_WEIGHT
+    }
+    /// Returns whether the font is light weight (<= 300).
+    pub fn is_light(&self) -> bool {
+        self.weight <= 300
+    }
+    /// Returns CSS-like font weight string.
+    pub fn weight_css(&self) -> &'static str {
+        match self.weight {
+            100 => "100",
+            200 => "200",
+            300 => "300",
+            400 => "400",
+            500 => "500",
+            600 => "600",
+            700 => "700",
+            800 => "800",
+            900 => "900",
+            _ => "400",
+        }
+    }
+    /// Returns CSS-like font style string.
+    pub fn style_css(&self) -> &'static str {
+        if self.italic {
+            "italic"
+        } else {
+            "normal"
+        }
+    }
+    /// Returns CSS font shorthand string.
+    pub fn to_css(&self) -> String {
+        format!(
+            "{} {} {}px {}",
+            self.style_css(),
+            self.weight_css(),
+            self.size,
+            self.family
+        )
     }
 }
 impl Default for Font {
