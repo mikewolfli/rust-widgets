@@ -246,9 +246,9 @@ fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout)
         b: 90,
         a: 255,
     };
-    context.draw_line(Point::new(layout.plot_x, layout.plot_y + layout.plot_h), Point::new(layout.plot_x + layout.plot_w, layout.plot_y + layout.plot_h), 1.0,
+    context.draw_line(Point::new(layout.plot_x as f32, layout.plot_y + layout.plot_h as f32), Point::new(layout.plot_x + layout.plot_w as f32, layout.plot_y + layout.plot_h as f32), 1.0,
         axis_color,);
-    context.draw_line(Point::new(layout.plot_x, layout.plot_y), Point::new(layout.plot_x, layout.plot_y + layout.plot_h), 1.0,
+    context.draw_line(Point::new(layout.plot_x as f32, layout.plot_y as f32), Point::new(layout.plot_x as f32, layout.plot_y + layout.plot_h as f32), 1.0,
         axis_color,);
 }
 fn draw_y_ticks(
@@ -282,10 +282,10 @@ fn draw_y_ticks(
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
         if draw_grid {
-            context.draw_line(Point::new(layout.plot_x, y), Point::new(layout.plot_x + layout.plot_w, y), 1.0,
+            context.draw_line(Point::new(layout.plot_x as f32, y as f32), Point::new(layout.plot_x + layout.plot_w as f32, y as f32), 1.0,
                 grid_color,);
         }
-        context.draw_line(Point::new(Point::new(Point::new(layout.plot_x - 4.0, y))), Point::new(Point::new(Point::new(layout.plot_x, y))), 1.0, axis_color);
+        context.draw_line(Point::new(Point::new(Point::new(layout.plot_x - 4.0 as f32, y as f32))), Point::new(Point::new(Point::new(layout.plot_x as f32, y as f32))), 1.0, axis_color);
         let value = min_y + (max_y - min_y) * t as f64;
         context.draw_text(
             &format!("{value:.1}"),
@@ -327,10 +327,10 @@ fn draw_x_ticks(
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
         if draw_grid {
-            context.draw_line(Point::new(x, layout.plot_y), Point::new(x, layout.plot_y + layout.plot_h), 1.0,
+            context.draw_line(Point::new(x as f32, layout.plot_y as f32), Point::new(x as f32, layout.plot_y + layout.plot_h as f32), 1.0,
                 grid_color,);
         }
-        context.draw_line(Point::new(x, layout.plot_y + layout.plot_h), Point::new(x, layout.plot_y + layout.plot_h + 4.0), 1.0,
+        context.draw_line(Point::new(x as f32, layout.plot_y + layout.plot_h as f32), Point::new(x as f32, layout.plot_y + layout.plot_h + 4.0 as f32), 1.0,
             axis_color,);
         let value = min_x + (max_x - min_x) * t as f64;
         context.draw_text(
@@ -352,7 +352,7 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
     let max_label_chars = 20usize;
     let mut cursor_y = layout.legend_y;
     for item in series.iter().take(max_items) {
-        context.draw_line(Point::new(layout.legend_x, cursor_y), Point::new(layout.legend_x + 20.0, cursor_y), 3.0,
+        context.draw_line(Point::new(layout.legend_x as f32, cursor_y as f32), Point::new(layout.legend_x + 20.0 as f32, cursor_y as f32), 3.0,
             item.color,);
         context.draw_text(
             &truncate_legend_label(&item.name, max_label_chars),
@@ -551,7 +551,7 @@ impl Chart for LineChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(Point::new(Point::new(Point::new(x1, y1))), Point::new(Point::new(Point::new(x2, y2))), 2.0, series.color);
+                context.draw_line(Point::new(Point::new(Point::new(x1 as f32, y1 as f32))), Point::new(Point::new(Point::new(x2 as f32, y2 as f32))), 2.0, series.color);
             }
         }
         draw_legend(context, &layout, &visible_series);
@@ -783,8 +783,8 @@ impl Chart for PieChart {
             },
         );
         let center = Point {
-            x: rect.x + rect.width as i32 as i32 / 2,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            x: rect.x + rect.width as f32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 3) as f32;
         for series in &self.series {
@@ -1142,7 +1142,7 @@ impl Chart for AreaChart {
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y2 = layout.plot_y + layout.plot_h
                     - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(Point::new(Point::new(Point::new(x1, y1))), Point::new(Point::new(Point::new(x2, y2))), 2.0, series.color);
+                context.draw_line(Point::new(Point::new(Point::new(x1 as f32, y1 as f32))), Point::new(Point::new(Point::new(x2 as f32, y2 as f32))), 2.0, series.color);
             }
         }
         draw_legend(context, &layout, &visible_series);

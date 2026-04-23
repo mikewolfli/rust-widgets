@@ -843,8 +843,8 @@ fn serialize_pdf_form_field_widget(field: &PdfFormField) -> String {
 fn pdf_rect(rect: &Rect) -> String {
     let x1 = rect.x;
     let y1 = rect.y;
-    let x2 = rect.x + rect.width as i32 as i32;
-    let y2 = rect.y + rect.height as i32 as i32;
+    let x2 = rect.x + rect.width as f32 as i32;
+    let y2 = rect.y + rect.height as f32 as i32;
     format!("{} {} {} {}", x1, y1, x2, y2)
 }
 fn pdf_form_field_name(field: &PdfFormField) -> &str {

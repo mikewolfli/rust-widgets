@@ -230,13 +230,13 @@ impl Slider {
         if range == 0 {
             return match self.orientation {
                 Orientation::Horizontal => rect.x,
-                Orientation::Vertical => rect.y + rect.height as i32 / 2,
+                Orientation::Vertical => rect.y + rect.height as f32 / 2,
             };
         }
         let relative = (clamped - self.minimum) as f32 / range;
         match self.orientation {
-            Orientation::Horizontal => rect.x + rect.width as i32 * relative,
-            Orientation::Vertical => rect.y + rect.height as i32 * (1 - relative), // Invert Y axis
+            Orientation::Horizontal => rect.x + rect.width as f32 * relative,
+            Orientation::Vertical => rect.y + rect.height as f32 * (1 - relative), // Invert Y axis
         }
     }
 }
@@ -443,7 +443,7 @@ impl Draw for Slider {
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
-                let groove_y = rect.y + rect.height as i32 / 2;
+                let groove_y = rect.y + rect.height as f32 / 2;
                 let groove_height = 4;
                 // Draw groove
                 context.fill_rect(
@@ -470,20 +470,20 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(tick_x, rect.y), Point::new(tick_x, rect.y + tick_height), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(tick_x as f32, rect.y as f32), Point::new(tick_x as f32, rect.y + tick_height as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(tick_x, rect.y + rect.height as i32 - tick_height), Point::new(tick_x, rect.y + rect.height as i32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(tick_x as f32, rect.y + rect.height as f32 - tick_height as f32), Point::new(tick_x as f32, rect.y + rect.height as f32 as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }
                 }
             }
             Orientation::Vertical => {
-                let groove_x = rect.x + rect.width as i32 / 2;
+                let groove_x = rect.x + rect.width as f32 / 2;
                 let groove_width = 4;
                 // Draw groove
                 context.fill_rect(
@@ -510,13 +510,13 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(rect.x, tick_y), Point::new(rect.x + tick_width, tick_y), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(rect.x as f32, tick_y as f32), Point::new(rect.x + tick_width as f32, tick_y as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::new(rect.x + rect.width as i32 - tick_width, tick_y), Point::new(rect.x + rect.width as i32, tick_y), Color::from_rgb(100, 100, 100),
+                            context.draw_line(Point::new(rect.x + rect.width as f32 - tick_width as f32, tick_y as f32), Point::new(rect.x + rect.width as f32 as f32, tick_y as f32), Color::from_rgb(100, 100, 100),
                             );
                         }
                     }

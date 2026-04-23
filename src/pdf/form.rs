@@ -140,7 +140,7 @@ impl FormField {
         }
     }
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        self.rect.contains_point(crate::core::Point::new(x, y))
+        self.rect.contains_point(crate::core::Point::new(x as f32, y as f32))
     }
 }
 #[derive(Debug, Clone)]

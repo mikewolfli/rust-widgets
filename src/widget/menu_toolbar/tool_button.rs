@@ -275,13 +275,13 @@ impl Draw for ToolButton {
         let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
             || self.popup_mode == ToolButtonPopupMode::InstantPopup;
         let text_right = if has_popup {
-            rect.x + rect.width as i32 - 12
+            rect.x + rect.width as f32 - 12
         } else {
-            rect.x + rect.width as i32
+            rect.x + rect.width as f32
         };
         context.draw_text(
             rect.x + (text_right - rect.x) / 2,
-            rect.y + rect.height as i32 / 2,
+            rect.y + rect.height as f32 / 2,
             label,
             &Font::default(),
             fg,
@@ -289,8 +289,8 @@ impl Draw for ToolButton {
         );
         if has_popup {
             context.draw_text(
-                rect.x + rect.width as i32 - 8,
-                rect.y + rect.height as i32 - 6,
+                rect.x + rect.width as f32 - 8,
+                rect.y + rect.height as f32 - 6,
                 "▾",
                 &Font::default(),
                 fg,

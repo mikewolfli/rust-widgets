@@ -310,14 +310,14 @@ impl Draw for FontComboBox {
         if !current_text.is_empty() {
             let font = &self.current_font;
             context.draw_text(
-                Point::new(text_rect.x, text_rect.y + text_rect.height as i32 / 2),
+                Point::new(text_rect.x as f32, text_rect.y + text_rect.height as i32 / 2 as f32),
                 &current_text,
                 font,
                 text_color,
             );
         }
         // Draw dropdown arrow button
-        let arrow_rect = Rect::new(rect.x + rect.width as i32 as i32 - 24, rect.y, 24, rect.height);
+        let arrow_rect = Rect::new(rect.x + rect.width as f32 as i32 - 24, rect.y, 24, rect.height);
         let arrow_color = if self.base.is_enabled() {
             text_color
         } else {
@@ -329,8 +329,8 @@ impl Draw for FontComboBox {
         let arrow_x = arrow_rect.x + arrow_rect.width as i32 / 2;
         let arrow_y = arrow_rect.y + arrow_rect.height as i32 / 2;
         let arrow_size = 6;
-        context.draw_line(Point::new(Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2)), Point::new(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2)), arrow_color,);
-        context.draw_line(Point::new(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2)), Point::new(Point::new(arrow_x, arrow_y + arrow_size / 2)), arrow_color,);
-        context.draw_line(Point::new(Point::new(arrow_x, arrow_y + arrow_size / 2)), Point::new(Point::new(arrow_x - arrow_size, arrow_y - arrow_size / 2)), arrow_color,);
+        context.draw_line(Point::new(Point::new(arrow_x - arrow_size as f32, arrow_y - arrow_size / 2 as f32)), Point::new(Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32)), arrow_color,);
+        context.draw_line(Point::new(Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32)), Point::new(Point::new(arrow_x as f32, arrow_y + arrow_size / 2 as f32)), arrow_color,);
+        context.draw_line(Point::new(Point::new(arrow_x as f32, arrow_y + arrow_size / 2 as f32)), Point::new(Point::new(arrow_x - arrow_size as f32, arrow_y - arrow_size / 2 as f32)), arrow_color,);
     }
 }

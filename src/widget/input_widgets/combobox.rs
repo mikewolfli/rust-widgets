@@ -319,7 +319,7 @@ impl Draw for ComboBox {
         let rect = self.geometry();
         let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as i32 / 2;
+        let text_y = rect.y + rect.height as f32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -338,14 +338,14 @@ impl Draw for ComboBox {
         );
         // Draw dropdown arrow
         let arrow_size = 8;
-        let arrow_x = rect.x + rect.width as i32 - padding - arrow_size;
-        let arrow_y = rect.y + rect.height as i32 / 2;
+        let arrow_x = rect.x + rect.width as f32 - padding - arrow_size;
+        let arrow_y = rect.y + rect.height as f32 / 2;
         // Draw arrow (triangle)
-        context.draw_line(Point::new(arrow_x, arrow_y - arrow_size / 2), Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x as f32, arrow_y - arrow_size / 2 as f32), Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(arrow_x + arrow_size, arrow_y - arrow_size / 2), Point::new(arrow_x + arrow_size / 2, arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x + arrow_size as f32, arrow_y - arrow_size / 2 as f32), Point::new(arrow_x + arrow_size / 2 as f32, arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(arrow_x + arrow_size / 2, arrow_y + arrow_size / 2), Point::new(arrow_x, arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(arrow_x + arrow_size / 2 as f32, arrow_y + arrow_size / 2 as f32), Point::new(arrow_x as f32, arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
         // Draw current text
         let current_text = self.current_text();

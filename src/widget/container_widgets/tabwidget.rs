@@ -239,7 +239,7 @@ impl TabWidget {
                 let x = rect.x + (tab_width + spacing) * index as f32;
                 Some(Rect::new(
                     x,
-                    rect.y + rect.height as i32 - tab_height,
+                    rect.y + rect.height as f32 - tab_height,
                     tab_width,
                     tab_height,
                 ))
@@ -251,7 +251,7 @@ impl TabWidget {
             TabPosition::East => {
                 let y = rect.y + (tab_height + spacing) * index as f32;
                 Some(Rect::new(
-                    rect.x + rect.width as i32 - tab_width,
+                    rect.x + rect.width as f32 - tab_width,
                     y,
                     tab_width,
                     tab_height,
@@ -468,9 +468,9 @@ impl Draw for TabWidget {
                     let close_size = 12;
                     let close_x = tab_rect.x + tab_rect.width - close_size - 5;
                     let close_y = tab_rect.y + (tab_rect.height - close_size) / 2;
-                    context.draw_line(Point::new(Point::new(close_x, close_y)), Point::new(Point::new(close_x + close_size, close_y + close_size)), Color::from_rgb(100, 100, 100),
+                    context.draw_line(Point::new(Point::new(close_x as f32, close_y as f32)), Point::new(Point::new(close_x + close_size as f32, close_y + close_size as f32)), Color::from_rgb(100, 100, 100),
                     );
-                    context.draw_line(Point::new(Point::new(close_x + close_size, close_y)), Point::new(Point::new(close_x, close_y + close_size)), Color::from_rgb(100, 100, 100),
+                    context.draw_line(Point::new(Point::new(close_x + close_size as f32, close_y as f32)), Point::new(Point::new(close_x as f32, close_y + close_size as f32)), Color::from_rgb(100, 100, 100),
                     );
                 }
             }

@@ -27,8 +27,8 @@ impl RadioButtonRenderer {
         radio_button: &RadioButton,
         rect: Rect,
     ) {
-        let center_x = rect.x + rect.width as i32 / 2.0;
-        let center_y = rect.y + rect.height as i32 / 2.0;
+        let center_x = rect.x + rect.width as f32 / 2.0;
+        let center_y = rect.y + rect.height as f32 / 2.0;
         let radius = rect.height.min(rect.width) / 4.0;
         // Draw outer circle with anti-aliasing
         context.draw_circle_aa(
@@ -58,11 +58,11 @@ impl RadioButtonRenderer {
         radio_button: &RadioButton,
         rect: Rect,
     ) {
-        let center_x = rect.x + rect.width as i32 / 2.0;
-        let center_y = rect.y + rect.height as i32 / 2.0;
+        let center_x = rect.x + rect.width as f32 / 2.0;
+        let center_y = rect.y + rect.height as f32 / 2.0;
         let radius = rect.height.min(rect.width) / 4.0;
         // Draw outer circle
-        context.draw_circle(Point::new(center_x, center_y), radius as u32, Color::from_rgb(100, 100, 100));
+        context.draw_circle(Point::new(center_x as f32, center_y as f32), radius as u32, Color::from_rgb(100, 100, 100));
         // Draw inner circle if checked
         if radio_button.is_checked() {
             let inner_radius = radius / 2.0;

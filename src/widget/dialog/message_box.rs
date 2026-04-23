@@ -361,9 +361,9 @@ impl Draw for MessageBox {
         // Buttons
         let btn_h = 28;
         let btn_w = 80;
-        let btn_y = rect.y + rect.height as i32 - btn_h - 12;
+        let btn_y = rect.y + rect.height as f32 - btn_h - 12;
         let total_btn_w = self.buttons.len() as f32 * (btn_w + 8);
-        let mut btn_x = rect.x + rect.width as i32 - total_btn_w;
+        let mut btn_x = rect.x + rect.width as f32 - total_btn_w;
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
             let bg = if is_default {

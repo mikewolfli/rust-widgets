@@ -600,7 +600,7 @@ mod tests {
         let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
         layout.add_widget(42, 1);
         let mut out = None;
-        layout.update_from_position_size(Point::new(9, 11), Size::new(30, 12), &mut |id, rect| {
+        layout.update_from_position_size(Point::new(9 as f32, 11 as f32), Size::new(30, 12), &mut |id, rect| {
             if id == 42 {
                 out = Some(rect);
             }

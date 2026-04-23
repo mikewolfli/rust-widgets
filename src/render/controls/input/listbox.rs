@@ -12,7 +12,7 @@ impl ListBoxRenderer {
         context.draw_rect(Rect::new(rect, Color::rgba(160, 160, 160), 255));
         if let Some(item) = list_box.current_item() {
             context.draw_text(
-                Point::new(rect.x + 6, rect.y + 6),
+                Point::new(rect.x + 6 as f32, rect.y + 6 as f32),
                 item,
                 &Font::default_ui(),
                 Color::rgba(26, 28, 32, 255),

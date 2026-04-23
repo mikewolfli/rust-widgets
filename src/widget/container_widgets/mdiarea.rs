@@ -492,10 +492,7 @@ impl Draw for MdiArea {
             }
             Background::Plain => {
                 context.fill_rect(
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    rect.height,
+                    rect,
                     Color::from_rgb(240, 240, 240),
                 );
             }
@@ -508,7 +505,7 @@ impl Draw for MdiArea {
                         (240 * (1 - ratio) + 200 * ratio) as u8,
                         (240 * (1 - ratio) + 200 * ratio) as u8,
                     );
-                    context.draw_line(Point::new(rect.x, rect.y + y as f32), Point::new(rect.x + rect.width as i32, rect.y + y as f32), color,);
+                    context.draw_line(Point::new(rect.x as f32, rect.y + y as f32 as f32), Point::new(rect.x + rect.width as f32 as f32, rect.y + y as f32 as f32), color,);
                 }
             }
             Background::Pattern => {
@@ -522,10 +519,12 @@ impl Draw for MdiArea {
                             Color::from_rgb(235, 235, 235)
                         };
                         context.fill_rect(
-                            rect.x + x as f32 * pattern_size,
-                            rect.y + y as f32 * pattern_size,
-                            pattern_size,
-                            pattern_size,
+                            Rect::new(
+                                (rect.x as f32 + x as f32 * pattern_size) as i32,
+                                (rect.y as f32 + y as f32 * pattern_size) as i32,
+                                pattern_size as u32,
+                                pattern_size as u32,
+                            ),
                             color,
                         );
                     }
@@ -548,10 +547,7 @@ impl Draw for MdiArea {
                 Color::from_rgb(250, 250, 250)
             };
             context.fill_rect(
-                frame_rect.x,
-                frame_rect.y,
-                frame_rect.width,
-                frame_rect.height,
+                frame_rect,
                 bg_color,
             );
             // Draw frame border
@@ -561,10 +557,7 @@ impl Draw for MdiArea {
                 Color::from_rgb(200, 200, 200)
             };
             context.draw_rect(
-                frame_rect.x,
-                frame_rect.y,
-                frame_rect.width,
-                frame_rect.height,
+                frame_rect,
                 border_color,
             );
             // Draw title bar
@@ -602,8 +595,8 @@ impl Draw for MdiArea {
                 } else {
                     Color::from_rgb(100, 100, 100)
                 };
-                context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), close_color,);
-                context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), close_color,);
+                context.draw_line(Point::new(close_x as f32, close_y as f32), Point::new(close_x + close_size as f32, close_y + close_size as f32), close_color,);
+                context.draw_line(Point::new(close_x + close_size as f32, close_y as f32), Point::new(close_x as f32, close_y + close_size as f32), close_color,);
             }
             // Draw widget content
             let content_rect = Rect::new(

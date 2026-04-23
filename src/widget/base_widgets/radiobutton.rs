@@ -194,8 +194,8 @@ impl Draw for RadioButton {
         // Draw radio button
         let rect = self.geometry();
         let center = Point::new(
-            rect.x + rect.width as i32 as i32 / 2,
-            rect.y + rect.height as i32 as i32 / 2,
+            rect.x + rect.width as i32 / 2,
+            rect.y + rect.height as i32 / 2,
         );
         let radius = (rect.height.min(rect.width) / 4) as u32;
         // Draw outer circle

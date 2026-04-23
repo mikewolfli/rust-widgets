@@ -76,7 +76,7 @@ impl GroupBox {
         let x = match self.alignment {
             Alignment::Left => rect.x + 10,
             Alignment::Center => rect.x + (rect.width - text_width) / 2,
-            Alignment::Right => rect.x + rect.width as i32 - text_width - 10,
+            Alignment::Right => rect.x + rect.width as f32 - text_width - 10,
         };
         Rect::new(x, rect.y - text_height / 2, text_width, text_height)
     }
@@ -236,13 +236,13 @@ impl Draw for GroupBox {
                 // Draw checkmark if checked
                 if self.checked {
                     context.draw_line(
-                        Point::new(checkbox_rect.x + 2, checkbox_rect.y + checkbox_rect.height as i32 / 2),
-                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2, checkbox_rect.y + checkbox_rect.height - 2),
+                        Point::new(checkbox_rect.x + 2 as f32, checkbox_rect.y + checkbox_rect.height as i32 / 2 as f32),
+                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2 as f32, checkbox_rect.y + checkbox_rect.height - 2 as f32),
                         Color::from_rgb(0, 0, 0),
                     );
                     context.draw_line(
-                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2, checkbox_rect.y + checkbox_rect.height - 2),
-                        Point::new(checkbox_rect.x + checkbox_rect.width - 2, checkbox_rect.y + 2),
+                        Point::new(checkbox_rect.x + checkbox_rect.width as i32 / 2 as f32, checkbox_rect.y + checkbox_rect.height - 2 as f32),
+                        Point::new(checkbox_rect.x + checkbox_rect.width - 2 as f32, checkbox_rect.y + 2 as f32),
                         Color::from_rgb(0, 0, 0),
                     );
                 }
@@ -256,7 +256,7 @@ impl Draw for GroupBox {
                 Color::from_rgb(150, 150, 150)
             };
             context.draw_text(
-                Point::new(title_rect.x, title_rect.y),
+                Point::new(title_rect.x as f32, title_rect.y as f32),
                 &self.title,
                 &Font::default(),
                 text_color,

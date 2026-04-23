@@ -105,13 +105,13 @@ impl ScrollArea {
         let mut new_viewport = self.viewport;
         if rect.x < new_viewport.x {
             new_viewport.x = rect.x;
-        } else if rect.x + rect.width as i32 > new_viewport.x + new_viewport.width {
-            new_viewport.x = rect.x + rect.width as i32 - new_viewport.width;
+        } else if rect.x + rect.width as f32 > new_viewport.x + new_viewport.width {
+            new_viewport.x = rect.x + rect.width as f32 - new_viewport.width;
         }
         if rect.y < new_viewport.y {
             new_viewport.y = rect.y;
-        } else if rect.y + rect.height as i32 > new_viewport.y + new_viewport.height {
-            new_viewport.y = rect.y + rect.height as i32 - new_viewport.height;
+        } else if rect.y + rect.height as f32 > new_viewport.y + new_viewport.height {
+            new_viewport.y = rect.y + rect.height as f32 - new_viewport.height;
         }
         self.viewport = new_viewport;
     }
@@ -305,7 +305,7 @@ impl Draw for ScrollArea {
         if h_scroll_visible {
             // Draw horizontal scroll bar
             let scroll_bar_height = 16;
-            let scroll_bar_y = rect.y + rect.height as i32 - scroll_bar_height;
+            let scroll_bar_y = rect.y + rect.height as f32 - scroll_bar_height;
             context.fill_rect(
                 Rect::new(rect.x, scroll_bar_y, rect.width, scroll_bar_height as u32),
                 Color::from_rgb(240, 240, 240),
@@ -331,7 +331,7 @@ impl Draw for ScrollArea {
         if v_scroll_visible {
             // Draw vertical scroll bar
             let scroll_bar_width = 16;
-            let scroll_bar_x = rect.x + rect.width as i32 - scroll_bar_width;
+            let scroll_bar_x = rect.x + rect.width as f32 - scroll_bar_width;
             context.fill_rect(
                 Rect::new(scroll_bar_x, rect.y, scroll_bar_width as u32, rect.height),
                 Color::from_rgb(240, 240, 240),
@@ -357,8 +357,8 @@ impl Draw for ScrollArea {
         // Draw corner between scroll bars
         if h_scroll_visible && v_scroll_visible {
             let corner_size = 16;
-            let corner_x = rect.x + rect.width as i32 - corner_size;
-            let corner_y = rect.y + rect.height as i32 - corner_size;
+            let corner_x = rect.x + rect.width as f32 - corner_size;
+            let corner_y = rect.y + rect.height as f32 - corner_size;
             context.fill_rect(
                 Rect::new(corner_x, corner_y, corner_size as u32, corner_size as u32),
                 Color::from_rgb(240, 240, 240),

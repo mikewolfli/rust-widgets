@@ -118,7 +118,7 @@ impl LabelRenderer {
                 )
             }
             Alignment::Right => {
-                let x = rect.x + rect.width as i32 as i32 - text_width - 2;
+                let x = rect.x + rect.width as f32 as i32 - text_width - 2;
                 Rect::new(
                     x,
                     rect.y + (rect.height as i32 - text_height) / 2,
@@ -149,7 +149,7 @@ impl LabelRenderer {
                 )
             }
             Alignment::Right => {
-                let x = rect.x + rect.width as i32 as i32 - text_width - 2;
+                let x = rect.x + rect.width as f32 as i32 - text_width - 2;
                 Rect::new(
                     x,
                     rect.y + (rect.height as i32 - text_height) / 2,

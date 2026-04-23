@@ -13,7 +13,7 @@ impl LineEditRenderer {
         let text = line_edit.text();
         if !text.is_empty() {
             context.draw_text(
-                Point::new(rect.x + 6, rect.y + 6),
+                Point::new(rect.x + 6 as f32, rect.y + 6 as f32),
                 text,
                 &Font::default_ui(),
                 Color::rgba(26, 28, 32, 255),

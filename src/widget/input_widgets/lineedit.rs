@@ -441,7 +441,7 @@ impl Draw for LineEdit {
         let rect = self.geometry();
         let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as i32 / 2;
+        let text_y = rect.y + rect.height as f32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,

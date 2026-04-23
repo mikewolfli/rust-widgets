@@ -117,7 +117,7 @@ impl Dial {
         }
         let ratio = (self.value - self.minimum) as f64 / range;
         if self.wrapping {
-            ratio * 2 * std::f64::consts::PI - std::f64::consts::PI
+            ratio * 2.0 * std::f64::consts::PI - std::f64::consts::PI
         } else {
             -std::f64::consts::PI * 0.75 + ratio * std::f64::consts::PI * 1.5
         }
@@ -251,8 +251,8 @@ impl Draw for Dial {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let center = Point {
-            x: rect.x + rect.width as i32 as i32 / 2,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            x: rect.x + rect.width as f32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
         context.fill_circle(center, radius as u32, Color::from_rgb(230, 230, 230));

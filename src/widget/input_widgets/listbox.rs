@@ -488,7 +488,7 @@ impl Draw for ListBox {
             }
             // Draw item separator
             if i < end - 1 {
-                context.draw_line(Point::new(item_rect.x, item_rect.y + item_rect.height), Point::new(item_rect.x + item_rect.width, item_rect.y + item_rect.height), Color::from_rgb(230, 230, 230),
+                context.draw_line(Point::new(item_rect.x as f32, item_rect.y + item_rect.height as f32), Point::new(item_rect.x + item_rect.width as f32, item_rect.y + item_rect.height as f32), Color::from_rgb(230, 230, 230),
                 );
             }
         }

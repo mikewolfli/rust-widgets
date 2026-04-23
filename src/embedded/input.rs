@@ -27,7 +27,7 @@ impl TouchPoint {
     pub fn new(id: u32, x: i32, y: i32) -> Self {
         Self {
             id,
-            position: Point::new(x, y),
+            position: Point::new(x as f32, y as f32),
             pressure: 1.0,
             size: 1.0,
         }
@@ -267,7 +267,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_touch_point() {
-        let point = TouchPoint::new(1, 100, 200).with_pressure(0.8);
+        let point = TouchPoint::new(1 as f32, 100, 200 as f32).with_pressure(0.8);
         assert_eq!(point.id, 1);
         assert_eq!(point.position.x, 100);
         assert_eq!(point.position.y, 200);
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn test_hardware_input_manager() {
         let mut manager = HardwareInputManager::new();
-        let point = TouchPoint::new(1, 100, 100);
+        let point = TouchPoint::new(1 as f32, 100, 100 as f32);
         manager.process_touch(TouchEvent::Down, point);
         assert_eq!(manager.touch_point_count(), 1);
         manager.process_button(0, true);
@@ -287,13 +287,13 @@ mod tests {
     #[test]
     fn test_input_filter() {
         let mut filter = InputFilter::new().with_dead_zone(10);
-        let point1 = TouchPoint::new(1, 100, 100);
+        let point1 = TouchPoint::new(1 as f32, 100, 100 as f32);
         let result1 = filter.filter_touch(&point1);
         assert!(result1.is_some());
-        let point2 = TouchPoint::new(1, 105, 105);
+        let point2 = TouchPoint::new(1 as f32, 105, 105 as f32);
         let result2 = filter.filter_touch(&point2);
         assert!(result2.is_none());
-        let point3 = TouchPoint::new(1, 120, 120);
+        let point3 = TouchPoint::new(1 as f32, 120, 120 as f32);
         let result3 = filter.filter_touch(&point3);
         assert!(result3.is_some());
     }

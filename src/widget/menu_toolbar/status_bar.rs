@@ -158,12 +158,12 @@ impl Draw for StatusBar {
         let rect = self.geometry();
         // Background
         context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-        context.draw_line(Point::new(Point::new(rect.x, rect.y)), Point::new(Point::new(rect.x + rect.width as i32 as i32, rect.y)), Color::from_rgb(200, 200, 200),
+        context.draw_line(Point::new(Point::new(rect.x as f32, rect.y as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 as f32, rect.y as f32)), Color::from_rgb(200, 200, 200),
         );
         // Temporary message (left side)
         if !self.message.is_empty() {
             context.draw_text(
-                Point::new(rect.x + 6, rect.y + (rect.height as i32) / 2),
+                Point::new(rect.x + 6 as f32, rect.y + (rect.height as i32 as f32) / 2),
                 &self.message,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
@@ -172,12 +172,12 @@ impl Draw for StatusBar {
         // Permanent message (right side, before size grip)
         if !self.permanent_message.is_empty() {
             let right_x = if self.size_grip_enabled {
-                rect.x + rect.width as i32 as i32 - 20
+                rect.x + rect.width as f32 as i32 - 20
             } else {
-                rect.x + rect.width as i32 as i32 - 4
+                rect.x + rect.width as f32 as i32 - 4
             };
             context.draw_text(
-                Point::new(right_x, rect.y + (rect.height as i32) / 2),
+                Point::new(right_x as f32, rect.y + (rect.height as i32 as f32) / 2),
                 &self.permanent_message,
                 &Font::default(),
                 Color::from_rgb(80, 80, 80),
@@ -185,11 +185,11 @@ impl Draw for StatusBar {
         }
         // Size grip (bottom-right corner)
         if self.size_grip_enabled {
-            let gx = rect.x + rect.width as i32 as i32 - 14;
-            let gy = rect.y + rect.height as i32 as i32 - 14;
+            let gx = rect.x + rect.width as f32 as i32 - 14;
+            let gy = rect.y + rect.height as f32 as i32 - 14;
             for i in 0..3 {
                 let offset = i * 4;
-                context.draw_line(Point::new(Point::new(gx + offset, gy + 12)), Point::new(Point::new(gx + 12, gy + offset)), Color::from_rgb(160, 160, 160),
+                context.draw_line(Point::new(Point::new(gx + offset as f32, gy + 12 as f32)), Point::new(Point::new(gx + 12 as f32, gy + offset as f32)), Color::from_rgb(160, 160, 160),
                 );
             }
         }

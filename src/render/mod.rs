@@ -1083,7 +1083,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
     });
     let arrow_width = 14u32.min(rect.width);
     let arrow_rect = Rect {
-        x: rect.x + rect.width as i32 as i32 - arrow_width as i32,
+        x: rect.x + rect.width as f32 as i32 - arrow_width as i32,
         y: rect.y,
         width: arrow_width,
         height: rect.height,
@@ -1113,7 +1113,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
         let row_height = rect.height.max(16);
         let popup_rect = Rect {
             x: rect.x,
-            y: rect.y + rect.height as i32 as i32,
+            y: rect.y + rect.height as f32 as i32,
             width: rect.width,
             height: row_height.saturating_mul(popup_rows),
         };
@@ -1227,14 +1227,14 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     });
     let ratio = normalized_progress_i32(slider.value(), slider.minimum(), slider.maximum());
     if rect.width >= rect.height {
-        let track_y = rect.y + rect.height as i32 as i32 / 2;
+        let track_y = rect.y + rect.height as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point {
                 x: rect.x + 4,
                 y: track_y,
             },
             to: Point {
-                x: rect.x + rect.width as i32 as i32 - 4,
+                x: rect.x + rect.width as f32 as i32 - 4,
                 y: track_y,
             },
             color: slider
@@ -1254,7 +1254,7 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
                 .unwrap_or(Color::rgba(70, 140, 248, 255)),
         });
     } else {
-        let track_x = rect.x + rect.width as i32 as i32 / 2;
+        let track_x = rect.x + rect.width as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point {
                 x: track_x,
@@ -1262,7 +1262,7 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
             },
             to: Point {
                 x: track_x,
-                y: rect.y + rect.height as i32 as i32 - 4,
+                y: rect.y + rect.height as f32 as i32 - 4,
             },
             color: slider
                 .border_color()
@@ -1432,7 +1432,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
                     y: row_y + (row_height / 2) as i32,
                 },
                 to: Point {
-                    x: rect.x + rect.width as i32 as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - 8,
                     y: row_y + (row_height / 2) as i32,
                 },
                 color: Color::rgba(180, 186, 196, 255),
@@ -1475,7 +1475,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             if !item.shortcut.is_empty() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
-                        x: rect.x + rect.width as i32 as i32 - shortcut_width,
+                        x: rect.x + rect.width as f32 as i32 - shortcut_width,
                         y: row_y + 4,
                     },
                     text: item.shortcut.clone(),
@@ -1487,7 +1487,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             if item.has_submenu {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
-                        x: rect.x + rect.width as i32 as i32 - 16,
+                        x: rect.x + rect.width as f32 as i32 - 16,
                         y: row_y + 4,
                     },
                     text: "▶".to_string(),
@@ -1540,7 +1540,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
                     y: row_y + (row_height / 2) as i32,
                 },
                 to: Point {
-                    x: rect.x + rect.width as i32 as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - 8,
                     y: row_y + (row_height / 2) as i32,
                 },
                 color: Color::rgba(180, 186, 196, 255),
@@ -1584,7 +1584,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             if !item.shortcut.is_empty() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
-                        x: rect.x + rect.width as i32 as i32 - shortcut_width,
+                        x: rect.x + rect.width as f32 as i32 - shortcut_width,
                         y: row_y + 4,
                     },
                     text: item.shortcut.clone(),
@@ -1596,7 +1596,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             if item.has_submenu {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
-                        x: rect.x + rect.width as i32 as i32 - 16,
+                        x: rect.x + rect.width as f32 as i32 - 16,
                         y: row_y + 4,
                     },
                     text: "▶".to_string(),
@@ -1677,7 +1677,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             });
         }
         cursor_x += button_width as i32 + 4;
-        if cursor_x >= rect.x + rect.width as i32 as i32 {
+        if cursor_x >= rect.x + rect.width as f32 as i32 {
             break;
         }
     }
@@ -1933,7 +1933,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     let visible_rows = data_height / row_height;
     for row in 0..visible_rows.min(10) {
         let y = rect.y + header_height as i32 + (row * row_height) as i32;
-        if y + row_height as i32 > rect.y + rect.height as i32 as i32 {
+        if y + row_height as i32 > rect.y + rect.height as f32 as i32 {
             break;
         }
         // Row background (alternating)
@@ -1952,7 +1952,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x: rect.x, y },
             to: Point {
-                x: rect.x + rect.width as i32 as i32,
+                x: rect.x + rect.width as f32 as i32,
                 y,
             },
             color: Color::rgba(230, 232, 238, 255),
@@ -1983,7 +1983,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x: rect.x, y },
             to: Point {
-                x: rect.x + rect.width as i32 as i32,
+                x: rect.x + rect.width as f32 as i32,
                 y,
             },
             color: Color::rgba(210, 215, 225, 255),
@@ -1997,7 +1997,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
             from: Point { x, y: rect.y },
             to: Point {
                 x,
-                y: rect.y + rect.height as i32 as i32,
+                y: rect.y + rect.height as f32 as i32,
             },
             color: Color::rgba(210, 215, 225, 255),
             width: 1,
@@ -2098,8 +2098,8 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
         return;
     }
     // Draw dock area dividers
-    let center_x = rect.x + rect.width as i32 as i32 / 2;
-    let center_y = rect.y + rect.height as i32 as i32 / 2;
+    let center_x = rect.x + rect.width as f32 as i32 / 2;
+    let center_y = rect.y + rect.height as f32 as i32 / 2;
     // Vertical center divider
     layer.push(RenderCommand::DrawLineStroke {
         from: Point {
@@ -2108,7 +2108,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
         },
         to: Point {
             x: center_x,
-            y: rect.y + rect.height as i32 as i32 - 4,
+            y: rect.y + rect.height as f32 as i32 - 4,
         },
         color: Color::rgba(200, 205, 215, 255),
         width: 2,
@@ -2120,7 +2120,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
             y: center_y,
         },
         to: Point {
-            x: rect.x + rect.width as i32 as i32 - 4,
+            x: rect.x + rect.width as f32 as i32 - 4,
             y: center_y,
         },
         color: Color::rgba(200, 205, 215, 255),
@@ -2181,7 +2181,7 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
     let is_horizontal = rect.width > rect.height;
     if is_horizontal {
         // Horizontal splitter - vertical gripper line
-        let center_x = rect.x + rect.width as i32 as i32 / 2;
+        let center_x = rect.x + rect.width as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point {
                 x: center_x,
@@ -2189,21 +2189,21 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
             },
             to: Point {
                 x: center_x,
-                y: rect.y + rect.height as i32 as i32 - 4,
+                y: rect.y + rect.height as f32 as i32 - 4,
             },
             color: Color::rgba(160, 165, 175, 255),
             width: 2,
         });
     } else {
         // Vertical splitter - horizontal gripper line
-        let center_y = rect.y + rect.height as i32 as i32 / 2;
+        let center_y = rect.y + rect.height as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point {
                 x: rect.x + 4,
                 y: center_y,
             },
             to: Point {
-                x: rect.x + rect.width as i32 as i32 - 4,
+                x: rect.x + rect.width as f32 as i32 - 4,
                 y: center_y,
             },
             color: Color::rgba(160, 165, 175, 255),
@@ -2312,7 +2312,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
         text: value_text,
         origin: Point {
             x: rect.x + padding,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
         },
         font: spin_box.font().cloned().unwrap_or_default(),
         color: text_color,
@@ -2329,7 +2329,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
         color: Color::rgba(240, 242, 245, 255),
     });
     // Draw up arrow
-    let arrow_center_y = rect.y + rect.height as i32 as i32 / 4;
+    let arrow_center_y = rect.y + rect.height as f32 as i32 / 4;
     let arrow_color = Color::rgba(80, 84, 92, 255);
     layer.push(RenderCommand::DrawLineStroke {
         from: Point {
@@ -2359,14 +2359,14 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     layer.push(RenderCommand::FillRect {
         rect: Rect {
             x: button_x,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
             width: button_width,
             height: rect.height / 2,
         },
         color: Color::rgba(240, 242, 245, 255),
     });
     // Draw down arrow
-    let arrow_center_y2 = rect.y + rect.height as i32 as i32 * 3 / 4;
+    let arrow_center_y2 = rect.y + rect.height as f32 as i32 * 3 / 4;
     layer.push(RenderCommand::DrawLineStroke {
         from: Point {
             x: button_x + button_width as i32 / 2 - 3,
@@ -2399,7 +2399,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
         },
         to: Point {
             x: button_x,
-            y: rect.y + rect.height as i32 as i32,
+            y: rect.y + rect.height as f32 as i32,
         },
         color: Color::rgba(160, 168, 180, 255),
         width: 1,
@@ -2407,11 +2407,11 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     layer.push(RenderCommand::DrawLineStroke {
         from: Point {
             x: button_x,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
         },
         to: Point {
             x: button_x + button_width as i32,
-            y: rect.y + rect.height as i32 as i32 / 2,
+            y: rect.y + rect.height as f32 as i32 / 2,
         },
         color: Color::rgba(160, 168, 180, 255),
         width: 1,
@@ -2513,7 +2513,7 @@ pub fn append_scroll_area_visual_commands(
     let scrollbar_size = 12u32;
     // Horizontal scrollbar
     if needs_h_scroll {
-        let h_track_y = rect.y + rect.height as i32 as i32 - scrollbar_size as i32;
+        let h_track_y = rect.y + rect.height as f32 as i32 - scrollbar_size as i32;
         let h_track_width = if needs_v_scroll {
             rect.width.saturating_sub(scrollbar_size)
         } else {
@@ -2551,7 +2551,7 @@ pub fn append_scroll_area_visual_commands(
     }
     // Vertical scrollbar
     if needs_v_scroll {
-        let v_track_x = rect.x + rect.width as i32 as i32 - scrollbar_size as i32;
+        let v_track_x = rect.x + rect.width as f32 as i32 - scrollbar_size as i32;
         let v_track_height = if needs_h_scroll {
             rect.height.saturating_sub(scrollbar_size)
         } else {
@@ -2591,8 +2591,8 @@ pub fn append_scroll_area_visual_commands(
     if needs_h_scroll && needs_v_scroll {
         layer.push(RenderCommand::FillRect {
             rect: Rect {
-                x: rect.x + rect.width as i32 as i32 - scrollbar_size as i32,
-                y: rect.y + rect.height as i32 as i32 - scrollbar_size as i32,
+                x: rect.x + rect.width as f32 as i32 - scrollbar_size as i32,
+                y: rect.y + rect.height as f32 as i32 - scrollbar_size as i32,
                 width: scrollbar_size,
                 height: scrollbar_size,
             },
@@ -2713,8 +2713,8 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;
-        let x1 = (rect.x + rect.width as i32 as i32).max(0) as u32;
-        let y1 = (rect.y + rect.height as i32 as i32).max(0) as u32;
+        let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
+        let y1 = (rect.y + rect.height as f32 as i32).max(0) as u32;
         let x1 = x1.min(size.width);
         let y1 = y1.min(size.height);
         let frame = self.buffer.back_mut();
@@ -2738,8 +2738,8 @@ impl SoftwareSurface {
         }
         let x0 = rect.x;
         let y0 = rect.y;
-        let x1 = rect.x + rect.width as i32 as i32 - 1;
-        let y1 = rect.y + rect.height as i32 as i32 - 1;
+        let x1 = rect.x + rect.width as f32 as i32 - 1;
+        let y1 = rect.y + rect.height as f32 as i32 - 1;
         self.draw_line_with_width(
             Point { x: x0, y: y0 },
             Point { x: x1, y: y0 },
@@ -2776,8 +2776,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as i32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as i32 as i32 - 1).min(height - 1);
+        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
+        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         for py in y0..=y1 {
             for px in x0..=x1 {
@@ -2800,8 +2800,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as i32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as i32 as i32 - 1).min(height - 1);
+        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
+        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         for py in y0..=y1 {
             for px in x0..=x1 {
@@ -2830,8 +2830,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as i32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as i32 as i32 - 1).min(height - 1);
+        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
+        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         let inner = inset_rect(rect, stroke_width as i32);
         let has_inner = inner.width > 0 && inner.height > 0;
@@ -2879,8 +2879,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as i32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as i32 as i32 - 1).min(height - 1);
+        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
+        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         let inner = inset_rect(rect, stroke_width as i32);
         let has_inner = inner.width > 0 && inner.height > 0;
@@ -5496,7 +5496,7 @@ pub fn append_double_spin_box_visual_commands(
     // Up button
     layer.push(RenderCommand::DrawRectStroke {
         rect: Rect {
-            x: rect.x + rect.width as i32 as i32 - button_width as i32,
+            x: rect.x + rect.width as f32 as i32 - button_width as i32,
             y: rect.y,
             width: button_width,
             height: button_height,
@@ -5507,7 +5507,7 @@ pub fn append_double_spin_box_visual_commands(
     // Down button
     layer.push(RenderCommand::DrawRectStroke {
         rect: Rect {
-            x: rect.x + rect.width as i32 as i32 - button_width as i32,
+            x: rect.x + rect.width as f32 as i32 - button_width as i32,
             y: rect.y + button_height as i32,
             width: button_width,
             height: button_height,
@@ -5529,8 +5529,8 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
         return;
     }
     let center = Point {
-        x: rect.x + rect.width as i32 as i32 / 2,
-        y: rect.y + rect.height as i32 as i32 / 2,
+        x: rect.x + rect.width as f32 as i32 / 2,
+        y: rect.y + rect.height as f32 as i32 / 2,
     };
     let radius = (rect.width.min(rect.height) / 2 - 4) as u32;
     // Draw dial background
@@ -5627,8 +5627,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             // Back button
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 * 2 - 16,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 * 2 - 16,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 },
@@ -5636,8 +5636,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 * 2 - 16,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 * 2 - 16,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 },
@@ -5646,8 +5646,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             });
             layer.push(RenderCommand::DrawText {
                 origin: centered_text_origin(Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 * 2 - 16,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 * 2 - 16,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 }),
@@ -5660,8 +5660,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             // Next button
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 - 8,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 - 8,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 },
@@ -5669,8 +5669,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 - 8,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 - 8,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 },
@@ -5679,8 +5679,8 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
             });
             layer.push(RenderCommand::DrawText {
                 origin: centered_text_origin(Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 - 8,
-                    y: rect.y + rect.height as i32 as i32 - button_height as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 - 8,
+                    y: rect.y + rect.height as f32 as i32 - button_height as i32 - 8,
                     width: button_width,
                     height: button_height,
                 }),

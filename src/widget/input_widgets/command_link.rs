@@ -198,7 +198,7 @@ impl Draw for CommandLink {
         let text_x = rect.x + padding.left as i32;
         let text_y = rect.y + padding.top as i32 + 12;
         context.draw_text(
-            Point::new(text_x, text_y),
+            Point::new(text_x as f32, text_y as f32),
             &self.text,
             &text_font,
             current_text_color,
@@ -214,7 +214,7 @@ impl Draw for CommandLink {
             let desc_x = text_x;
             let desc_y = text_y + 16;
             context.draw_text(
-                Point::new(desc_x, desc_y),
+                Point::new(desc_x as f32, desc_y as f32),
                 &self.description,
                 &desc_font,
                 desc_color,
@@ -224,7 +224,7 @@ impl Draw for CommandLink {
         if is_hovered && is_enabled {
             let text_metrics = context.measure_text(&self.text, &text_font);
             let underline_y = text_y + text_metrics.height as i32 + 2;
-            context.draw_line(Point::new(Point::new(text_x, underline_y)), Point::new(Point::new(text_x + text_metrics.width as i32, underline_y)), current_text_color,);
+            context.draw_line(Point::new(Point::new(text_x as f32, underline_y as f32)), Point::new(Point::new(text_x + text_metrics.width as i32 as f32, underline_y as f32)), current_text_color,);
         }
     }
 }

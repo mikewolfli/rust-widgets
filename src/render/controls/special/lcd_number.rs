@@ -46,7 +46,7 @@ pub fn append_lcd_number_visual_commands(layer: &mut SceneLayer, lcd_number: &LC
             layer.push(RenderCommand::DrawText {
                 origin: Point {
                     x: rect.x + 24,
-                    y: rect.y + rect.height as i32 as i32 / 2 + 8,
+                    y: rect.y + rect.height as f32 as i32 / 2 + 8,
                 },
                 text: "12:34:56".to_string(),
                 font: lcd_number.font().cloned().unwrap_or_default(),

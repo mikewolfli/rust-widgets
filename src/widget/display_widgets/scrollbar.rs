@@ -452,21 +452,21 @@ impl Draw for ScrollBar {
                 // Left arrow
                 context.fill_triangle(
                     rect.x + arrow_size / 2,
-                    rect.y + rect.height as i32 / 2,
+                    rect.y + rect.height as f32 / 2,
                     rect.x + arrow_size,
-                    rect.y + rect.height as i32 / 4,
+                    rect.y + rect.height as f32 / 4,
                     rect.x + arrow_size,
-                    rect.y + rect.height as i32 * 3 / 4,
+                    rect.y + rect.height as f32 * 3 / 4,
                     Color::from_rgb(100, 100, 100),
                 );
                 // Right arrow
                 context.fill_triangle(
-                    rect.x + rect.width as i32 - arrow_size / 2,
-                    rect.y + rect.height as i32 / 2,
-                    rect.x + rect.width as i32 - arrow_size,
-                    rect.y + rect.height as i32 / 4,
-                    rect.x + rect.width as i32 - arrow_size,
-                    rect.y + rect.height as i32 * 3 / 4,
+                    rect.x + rect.width as f32 - arrow_size / 2,
+                    rect.y + rect.height as f32 / 2,
+                    rect.x + rect.width as f32 - arrow_size,
+                    rect.y + rect.height as f32 / 4,
+                    rect.x + rect.width as f32 - arrow_size,
+                    rect.y + rect.height as f32 * 3 / 4,
                     Color::from_rgb(100, 100, 100),
                 );
             }
@@ -491,22 +491,22 @@ impl Draw for ScrollBar {
                 let arrow_size = rect.width.min(rect.height * 0.2);
                 // Up arrow
                 context.fill_triangle(
-                    rect.x + rect.width as i32 / 2,
+                    rect.x + rect.width as f32 / 2,
                     rect.y + arrow_size / 2,
-                    rect.x + rect.width as i32 / 4,
+                    rect.x + rect.width as f32 / 4,
                     rect.y + arrow_size,
-                    rect.x + rect.width as i32 * 3 / 4,
+                    rect.x + rect.width as f32 * 3 / 4,
                     rect.y + arrow_size,
                     Color::from_rgb(100, 100, 100),
                 );
                 // Down arrow
                 context.fill_triangle(
-                    rect.x + rect.width as i32 / 2,
-                    rect.y + rect.height as i32 - arrow_size / 2,
-                    rect.x + rect.width as i32 / 4,
-                    rect.y + rect.height as i32 - arrow_size,
-                    rect.x + rect.width as i32 * 3 / 4,
-                    rect.y + rect.height as i32 - arrow_size,
+                    rect.x + rect.width as f32 / 2,
+                    rect.y + rect.height as f32 - arrow_size / 2,
+                    rect.x + rect.width as f32 / 4,
+                    rect.y + rect.height as f32 - arrow_size,
+                    rect.x + rect.width as f32 * 3 / 4,
+                    rect.y + rect.height as f32 - arrow_size,
                     Color::from_rgb(100, 100, 100),
                 );
             }

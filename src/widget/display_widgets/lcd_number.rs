@@ -254,7 +254,7 @@ impl Draw for LCDNumber {
         }
         if self.check_overflow() {
             let overflow_color = Color::rgb(255, 255, 0);
-            context.fill_circle(Point::new(Point::new(rect.x + 10, rect.y + 10)), 5 as u32, overflow_color);
+            context.fill_circle(Point::new(Point::new(rect.x + 10 as f32, rect.y + 10 as f32)), 5 as u32, overflow_color);
         }
     }
 }

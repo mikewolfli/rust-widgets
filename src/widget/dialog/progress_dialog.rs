@@ -301,24 +301,24 @@ impl Draw for ProgressDialog {
             Alignment::Center,
         );
         // Cancel button
-        let btn_y = rect.y + rect.height as i32 - 40;
+        let btn_y = rect.y + rect.height as f32 - 40;
         let btn_w = 80;
         context.fill_rect(
-            rect.x + rect.width as i32 / 2 - btn_w / 2,
+            rect.x + rect.width as f32 / 2 - btn_w / 2,
             btn_y,
             btn_w,
             28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width as i32 / 2 - btn_w / 2,
+            rect.x + rect.width as f32 / 2 - btn_w / 2,
             btn_y,
             btn_w,
             28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width as i32 / 2,
+            rect.x + rect.width as f32 / 2,
             btn_y + 14,
             &self.cancel_button_text,
             &Font::default(),

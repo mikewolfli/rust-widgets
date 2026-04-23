@@ -313,8 +313,8 @@ impl Draw for ToolBar {
             Color::from_rgb(245, 245, 245),
         );
         // Draw bottom border line
-        let y = rect.y + rect.height as i32 as i32 - 1;
-        context.draw_line(Point::new(Point::new(rect.x, y)), Point::new(Point::new(rect.x + rect.width as i32 as i32, y)), Color::from_rgb(200, 200, 200),
+        let y = rect.y + rect.height as f32 as i32 - 1;
+        context.draw_line(Point::new(Point::new(rect.x as f32, y as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 as f32, y as f32)), Color::from_rgb(200, 200, 200),
         );
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
@@ -323,12 +323,12 @@ impl Draw for ToolBar {
                 match self.orientation {
                     ToolBarOrientation::Horizontal => {
                         let mid_x = item_r.x + (item_r.width as i32) / 2;
-                        context.draw_line(Point::new(Point::new(mid_x, rect.y + 4)), Point::new(Point::new(mid_x, rect.y + rect.height as i32 as i32 - 4)), Color::from_rgb(200, 200, 200),
+                        context.draw_line(Point::new(Point::new(mid_x as f32, rect.y + 4 as f32)), Point::new(Point::new(mid_x as f32, rect.y + rect.height as f32 as i32 - 4 as f32)), Color::from_rgb(200, 200, 200),
                         );
                     }
                     ToolBarOrientation::Vertical => {
                         let mid_y = item_r.y + item_r.height as i32 / 2;
-                        context.draw_line(Point::new(rect.x + 4, mid_y), Point::new(rect.x + rect.width as i32 - 4, mid_y), Color::from_rgb(200, 200, 200),
+                        context.draw_line(Point::new(rect.x + 4 as f32, mid_y as f32), Point::new(rect.x + rect.width as f32 - 4 as f32, mid_y as f32), Color::from_rgb(200, 200, 200),
                         );
                     }
                 }

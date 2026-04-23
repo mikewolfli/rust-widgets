@@ -22,12 +22,12 @@ pub fn from_pdf_y(pdf_y: f32, height: f32) -> f32 {
 /// Converts a point from Cartesian to screen coordinates.
 #[inline]
 pub fn point_to_screen(point: Point, height: i32) -> Point {
-    Point::new(point.x, height - point.y)
+    Point::new(point.x as f32, height as f32 - point.y as f32)
 }
 /// Converts a point from screen to Cartesian coordinates.
 #[inline]
 pub fn point_to_cartesian(point: Point, height: i32) -> Point {
-    Point::new(point.x, height - point.y)
+    Point::new(point.x as f32, height as f32 - point.y as f32)
 }
 /// Converts a rectangle from Cartesian to screen coordinates.
 #[inline]
@@ -57,7 +57,7 @@ pub fn flip_y(y: f32, height: f32) -> f32 {
 /// Flips a point's Y coordinate around the center of a given height.
 #[inline]
 pub fn flip_point_y(point: Point, height: i32) -> Point {
-    Point::new(point.x, height - point.y)
+    Point::new(point.x as f32, height as f32 - point.y as f32)
 }
 /// Flips a rectangle's Y coordinates around the center of a given height.
 #[inline]
@@ -98,23 +98,23 @@ mod tests {
     }
     #[test]
     fn test_point_to_screen() {
-        assert_eq!(point_to_screen(Point::new(10, 0), 100), Point::new(10, 100));
-        assert_eq!(point_to_screen(Point::new(10, 50), 100), Point::new(10, 50));
-        assert_eq!(point_to_screen(Point::new(10, 100), 100), Point::new(10, 0));
+        assert_eq!(point_to_screen(Point::new(10 as f32, 0 as f32), 100), Point::new(10 as f32, 100 as f32));
+        assert_eq!(point_to_screen(Point::new(10 as f32, 50 as f32), 100), Point::new(10 as f32, 50 as f32));
+        assert_eq!(point_to_screen(Point::new(10 as f32, 100 as f32), 100), Point::new(10 as f32, 0 as f32));
     }
     #[test]
     fn test_point_to_cartesian() {
         assert_eq!(
-            point_to_cartesian(Point::new(10, 0), 100),
-            Point::new(10, 100)
+            point_to_cartesian(Point::new(10 as f32, 0 as f32), 100),
+            Point::new(10 as f32, 100 as f32)
         );
         assert_eq!(
-            point_to_cartesian(Point::new(10, 50), 100),
-            Point::new(10, 50)
+            point_to_cartesian(Point::new(10 as f32, 50 as f32), 100),
+            Point::new(10 as f32, 50 as f32)
         );
         assert_eq!(
-            point_to_cartesian(Point::new(10, 100), 100),
-            Point::new(10, 0)
+            point_to_cartesian(Point::new(10 as f32, 100 as f32), 100),
+            Point::new(10 as f32, 0 as f32)
         );
     }
     #[test]
@@ -143,9 +143,9 @@ mod tests {
     }
     #[test]
     fn test_flip_point_y() {
-        assert_eq!(flip_point_y(Point::new(10, 0), 100), Point::new(10, 100));
-        assert_eq!(flip_point_y(Point::new(10, 50), 100), Point::new(10, 50));
-        assert_eq!(flip_point_y(Point::new(10, 100), 100), Point::new(10, 0));
+        assert_eq!(flip_point_y(Point::new(10 as f32, 0 as f32), 100), Point::new(10 as f32, 100 as f32));
+        assert_eq!(flip_point_y(Point::new(10 as f32, 50 as f32), 100), Point::new(10 as f32, 50 as f32));
+        assert_eq!(flip_point_y(Point::new(10 as f32, 100 as f32), 100), Point::new(10 as f32, 0 as f32));
     }
     #[test]
     fn test_flip_rect_y() {

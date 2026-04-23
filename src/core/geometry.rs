@@ -131,7 +131,7 @@ mod tests {
     use super::*;
     #[test]
     fn point_and_size_constructors_are_stable() {
-        let point = Point::new(10, -3);
+        let point = Point::new(10 as f32, -3 as f32);
         let size = Size::new(80, 24);
         assert_eq!(point, Point { x: 10, y: -3 });
         assert_eq!(
@@ -146,7 +146,7 @@ mod tests {
     }
     #[test]
     fn rect_roundtrip_position_size_is_deterministic() {
-        let position = Point::new(5, 7);
+        let position = Point::new(5 as f32, 7 as f32);
         let size = Size::new(120, 40);
         let rect = Rect::from_position_size(position, size);
         assert_eq!(rect.position(), position);
@@ -158,9 +158,9 @@ mod tests {
     #[test]
     fn rect_contains_point_uses_exclusive_max_edge() {
         let rect = Rect::new(10, 10, 4, 4);
-        assert!(rect.contains_point(Point::new(10, 10)));
-        assert!(rect.contains_point(Point::new(13, 13)));
-        assert!(!rect.contains_point(Point::new(14, 13)));
-        assert!(!rect.contains_point(Point::new(13, 14)));
+        assert!(rect.contains_point(Point::new(10 as f32, 10 as f32)));
+        assert!(rect.contains_point(Point::new(13 as f32, 13 as f32)));
+        assert!(!rect.contains_point(Point::new(14 as f32, 13 as f32)));
+        assert!(!rect.contains_point(Point::new(13 as f32, 14 as f32)));
     }
 }

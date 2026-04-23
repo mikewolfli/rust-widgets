@@ -89,7 +89,7 @@ pub fn append_font_combo_box_visual_commands(
             let button_width = 24u32;
             layer.push(RenderCommand::FillRect {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 - 8,
                     y: rect.y + 24,
                     width: button_width,
                     height: 28,
@@ -98,7 +98,7 @@ pub fn append_font_combo_box_visual_commands(
             });
             layer.push(RenderCommand::DrawRectStroke {
                 rect: Rect {
-                    x: rect.x + rect.width as i32 as i32 - button_width as i32 - 8,
+                    x: rect.x + rect.width as f32 as i32 - button_width as i32 - 8,
                     y: rect.y + 24,
                     width: button_width,
                     height: 28,
@@ -107,7 +107,7 @@ pub fn append_font_combo_box_visual_commands(
                 width: 1,
             });
             // Draw dropdown arrow
-            let arrow_center_x = rect.x + rect.width as i32 as i32 - button_width as i32 / 2 - 8;
+            let arrow_center_x = rect.x + rect.width as f32 as i32 - button_width as i32 / 2 - 8;
             let arrow_center_y = rect.y + 38;
             let arrow_size = 4;
             layer.push(RenderCommand::DrawLineStroke {
@@ -139,7 +139,7 @@ pub fn append_font_combo_box_visual_commands(
                 let sample_fonts = vec!["Arial", "Times New Roman", "Courier New", "Helvetica"];
                 for (i, font_name) in sample_fonts.iter().enumerate() {
                     let y = rect.y + 60 + (i as i32 * 24);
-                    if y + 20 < rect.y + rect.height as i32 as i32 {
+                    if y + 20 < rect.y + rect.height as f32 as i32 {
                         layer.push(RenderCommand::FillRect {
                             rect: Rect {
                                 x: rect.x + 8,

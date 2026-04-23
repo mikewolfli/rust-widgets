@@ -153,7 +153,12 @@ impl Draw for Label {
         // Draw text
         if !self.text.is_empty() {
             let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-            context.draw_text(rect, &self.text, text_color);
+            context.draw_text(
+                Point::new(rect.x, rect.y),
+                &self.text,
+                &self.font().cloned().unwrap_or_default(),
+                text_color,
+            );
         }
         // Draw border if specified
         if let Some(border_color) = self.style().border_color {

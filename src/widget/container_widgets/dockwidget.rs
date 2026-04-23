@@ -235,7 +235,7 @@ impl DockWidget {
             rect.x,
             rect.y + title_bar_height,
             rect.width,
-            rect.height - title_bar_height,
+            rect.height as i32 - title_bar_height,
         )
     }
     /// Returns close button rectangle.
@@ -246,7 +246,7 @@ impl DockWidget {
         let title_bar = self.title_bar_rect();
         let button_size = 16;
         Some(Rect::new(
-            title_bar.x + title_bar.width - button_size - 5,
+            title_bar.x + title_bar.width as i32 - button_size - 5,
             title_bar.y + (title_bar.height - button_size) / 2,
             button_size,
             button_size,
@@ -265,8 +265,8 @@ impl DockWidget {
             0
         };
         Some(Rect::new(
-            title_bar.x + title_bar.width - button_size - 5 - close_button_width,
-            title_bar.y + (title_bar.height - button_size) / 2,
+            title_bar.x + title_bar.width as i32 - button_size - 5 - close_button_width,
+            title_bar.y + (title_bar.height as i32 - button_size) / 2,
             button_size,
             button_size,
         ))
@@ -447,7 +447,7 @@ impl Draw for DockWidget {
         context.draw_rect(title_bar, Color::from_rgb(150, 150, 150));
         // Draw title text
         context.draw_text(
-            Point::new(title_bar.x + 5, title_bar.y + title_bar.height as i32 / 2),
+            Point::new(title_bar.x + 5 as f32, title_bar.y + title_bar.height as i32 / 2 as f32),
             &self.title,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
@@ -460,8 +460,8 @@ impl Draw for DockWidget {
                 } else {
                     Color::from_rgb(200, 200, 200)
                 };
-                context.draw_line(Point::new(close_rect.x, close_rect.y), Point::new(close_rect.x + close_rect.width, close_rect.y + close_rect.height), close_color,);
-                context.draw_line(Point::new(close_rect.x + close_rect.width, close_rect.y), Point::new(close_rect.x, close_rect.y + close_rect.height), close_color,);
+                context.draw_line(Point::new(close_rect.x as f32, close_rect.y as f32), Point::new(close_rect.x + close_rect.width as f32, close_rect.y + close_rect.height as f32), close_color,);
+                context.draw_line(Point::new(close_rect.x + close_rect.width as f32, close_rect.y as f32), Point::new(close_rect.x as f32, close_rect.y + close_rect.height as f32), close_color,);
             }
         }
         // Draw float button if enabled
@@ -479,17 +479,17 @@ impl Draw for DockWidget {
                 let center_y = float_rect.y + float_rect.height as i32 / 2;
                 let arrow_size = 4;
                 // Up arrow
-                context.draw_line(Point::new(center_x, float_rect.y + 2), Point::new(center_x, float_rect.y + 2 + arrow_size), float_color,);
-                context.draw_line(Point::new(center_x - arrow_size / 2, float_rect.y + 2 + arrow_size / 2), Point::new(center_x + arrow_size / 2, float_rect.y + 2 + arrow_size / 2), float_color,);
+                context.draw_line(Point::new(center_x as f32, float_rect.y + 2 as f32), Point::new(center_x as f32, float_rect.y + 2 + arrow_size as f32), float_color,);
+                context.draw_line(Point::new(center_x - arrow_size / 2 as f32, float_rect.y + 2 + arrow_size / 2 as f32), Point::new(center_x + arrow_size / 2 as f32, float_rect.y + 2 + arrow_size / 2 as f32), float_color,);
                 // Down arrow
-                context.draw_line(Point::new(center_x, float_rect.y + float_rect.height - 2 - arrow_size), Point::new(center_x, float_rect.y + float_rect.height - 2), float_color,);
-                context.draw_line(Point::new(center_x - arrow_size / 2, float_rect.y + float_rect.height - 2 - arrow_size / 2), Point::new(center_x + arrow_size / 2, float_rect.y + float_rect.height - 2 - arrow_size / 2), float_color,);
+                context.draw_line(Point::new(center_x as f32, float_rect.y + float_rect.height - 2 - arrow_size as f32), Point::new(center_x as f32, float_rect.y + float_rect.height - 2 as f32), float_color,);
+                context.draw_line(Point::new(center_x - arrow_size / 2 as f32, float_rect.y + float_rect.height - 2 - arrow_size / 2 as f32), Point::new(center_x + arrow_size / 2 as f32, float_rect.y + float_rect.height - 2 - arrow_size / 2 as f32), float_color,);
                 // Left arrow
-                context.draw_line(Point::new(float_rect.x + 2, center_y), Point::new(float_rect.x + 2 + arrow_size, center_y), float_color,);
-                context.draw_line(Point::new(float_rect.x + 2 + arrow_size / 2, center_y - arrow_size / 2), Point::new(float_rect.x + 2 + arrow_size / 2, center_y + arrow_size / 2), float_color,);
+                context.draw_line(Point::new(float_rect.x + 2 as f32, center_y as f32), Point::new(float_rect.x + 2 + arrow_size as f32, center_y as f32), float_color,);
+                context.draw_line(Point::new(float_rect.x + 2 + arrow_size / 2 as f32, center_y - arrow_size / 2 as f32), Point::new(float_rect.x + 2 + arrow_size / 2 as f32, center_y + arrow_size / 2 as f32), float_color,);
                 // Right arrow
-                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size, center_y), Point::new(float_rect.x + float_rect.width - 2, center_y), float_color,);
-                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2, center_y - arrow_size / 2), Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2, center_y + arrow_size / 2), float_color,);
+                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size as f32, center_y as f32), Point::new(float_rect.x + float_rect.width - 2 as f32, center_y as f32), float_color,);
+                context.draw_line(Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2 as f32, center_y - arrow_size / 2 as f32), Point::new(float_rect.x + float_rect.width - 2 - arrow_size / 2 as f32, center_y + arrow_size / 2 as f32), float_color,);
             }
         }
         // Draw content background

@@ -158,9 +158,9 @@ impl CheckBoxRenderer {
             let center_x = checkbox_rect.x + checkbox_rect.width as i32 / 2;
             let center_y = checkbox_rect.y + checkbox_rect.height as i32 / 2;
             let size = 4;
-            context.draw_line(Point::new(center_x - size, center_y - size), Point::new(center_x + size, center_y + size), check_color,
+            context.draw_line(Point::new(center_x - size as f32, center_y - size as f32), Point::new(center_x + size as f32, center_y + size as f32), check_color,
                 1,);
-            context.draw_line(Point::new(center_x + size, center_y - size), Point::new(center_x - size, center_y + size), check_color,
+            context.draw_line(Point::new(center_x + size as f32, center_y - size as f32), Point::new(center_x - size as f32, center_y + size as f32), check_color,
                 1,);
         } else if state == CheckState::PartiallyChecked {
             // Simple horizontal line for partial check
@@ -170,7 +170,7 @@ impl CheckBoxRenderer {
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-            context.draw_line(Point::new(checkbox_rect.x + 3, line_y), Point::new(checkbox_rect.right() - 3, line_y), line_color,
+            context.draw_line(Point::new(checkbox_rect.x + 3 as f32, line_y as f32), Point::new(checkbox_rect.right() - 3 as f32, line_y as f32), line_color,
                 2,);
         }
     }
@@ -204,12 +204,12 @@ impl CheckBoxRenderer {
     /// Draw simple checkmark.
     fn draw_simple_checkmark(context: &mut RenderContext, rect: Rect, color: Color) {
         // Draw checkmark using straight lines
-        context.draw_line(Point::new(Point::new(Point::new(rect.x + 4, rect.y + 8))), Point::new(Point::new(Point::new(rect.x + 7, rect.y + 11))), color, 2);
-        context.draw_line(Point::new(Point::new(Point::new(rect.x + 7, rect.y + 11))), Point::new(Point::new(Point::new(rect.x + 12, rect.y + 6))), color, 2);
+        context.draw_line(Point::new(Point::new(Point::new(rect.x + 4 as f32, rect.y + 8 as f32))), Point::new(Point::new(Point::new(rect.x + 7 as f32, rect.y + 11 as f32))), color, 2);
+        context.draw_line(Point::new(Point::new(Point::new(rect.x + 7 as f32, rect.y + 11 as f32))), Point::new(Point::new(Point::new(rect.x + 12 as f32, rect.y + 6 as f32))), color, 2);
     }
     /// Draw smooth partial check (minus sign).
     fn draw_smooth_partial_check(context: &mut RenderContext, rect: Rect, color: Color) {
-        let y = rect.y + rect.height as i32 as i32 / 2;
+        let y = rect.y + rect.height as f32 as i32 / 2;
         let x1 = rect.x + 4;
         let x2 = rect.right() - 4;
         // Draw anti-aliased line
@@ -219,8 +219,8 @@ impl CheckBoxRenderer {
     }
     /// Draw simple partial check.
     fn draw_simple_partial_check(context: &mut RenderContext, rect: Rect, color: Color) {
-        let y = rect.y + rect.height as i32 as i32 / 2;
-        context.draw_line(Point::new(Point::new(Point::new(rect.x + 4, y))), Point::new(Point::new(Point::new(rect.right() - 4, y))), color, 2);
+        let y = rect.y + rect.height as f32 as i32 / 2;
+        context.draw_line(Point::new(Point::new(Point::new(rect.x + 4 as f32, y as f32))), Point::new(Point::new(Point::new(rect.right() - 4 as f32, y as f32))), color, 2);
     }
     /// Batch render multiple checkboxes for performance.
     pub fn batch_draw(context: &mut RenderContext, checkboxes: &[(Rect, CheckState, bool)]) {

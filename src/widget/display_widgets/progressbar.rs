@@ -262,7 +262,7 @@ impl Draw for ProgressBar {
             Orientation::Horizontal => {
                 let progress_width = rect.width * progress;
                 let x = if self.inverted_appearance {
-                    rect.x + rect.width as i32 - progress_width
+                    rect.x + rect.width as f32 - progress_width
                 } else {
                     rect.x
                 };
@@ -279,7 +279,7 @@ impl Draw for ProgressBar {
                 let y = if self.inverted_appearance {
                     rect.y
                 } else {
-                    rect.y + rect.height as i32 - progress_height
+                    rect.y + rect.height as f32 - progress_height
                 };
                 context.fill_rect(
                     rect.x,
@@ -294,8 +294,8 @@ impl Draw for ProgressBar {
         let text = self.format_text();
         if !text.is_empty() {
             context.draw_text(
-                rect.x + rect.width as i32 / 2,
-                rect.y + rect.height as i32 / 2,
+                rect.x + rect.width as f32 / 2,
+                rect.y + rect.height as f32 / 2,
                 &text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),

@@ -338,7 +338,7 @@ impl Draw for Menu {
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
                 let sep_y = y + Self::separator_height() / 2;
-                context.draw_line(Point::new(Point::new(rect.x + 4, sep_y as i32)), Point::new(Point::new(rect.x + rect.width as i32 as i32 - 4, sep_y as i32)), Color::from_rgb(200, 200, 200),
+                context.draw_line(Point::new(Point::new(rect.x + 4 as f32, sep_y as i32 as f32)), Point::new(Point::new(rect.x + rect.width as f32 as i32 - 4 as f32, sep_y as i32 as f32)), Color::from_rgb(200, 200, 200),
                 );
                 y += Self::separator_height();
                 continue;
@@ -365,14 +365,14 @@ impl Draw for Menu {
             if item.checkable {
                 let check_sym = if item.checked { "✓" } else { " " };
                 context.draw_text(
-                    Point::new(rect.x + 8, (y + Self::item_height() / 2) as i32),
+                    Point::new(rect.x + 8.0, (y + Self::item_height() as f32 / 2.0) as i32),
                     check_sym,
                     &Font::default(),
                     fg,
                 );
             }
             context.draw_text(
-                Point::new(rect.x + 28, (y + Self::item_height() / 2) as i32),
+                Point::new(rect.x + 28.0, (y + Self::item_height() as f32 / 2.0) as i32),
                 &item.text,
                 &Font::default(),
                 fg,
@@ -380,7 +380,7 @@ impl Draw for Menu {
             if !item.shortcut.is_empty() {
                 context.draw_text(
                     Point::new(
-                        rect.x + rect.width as i32 as i32 - 8,
+                        rect.x + rect.width as f32 as i32 - 8,
                         (y + Self::item_height() / 2) as i32,
                     ),
                     &item.shortcut,
@@ -391,7 +391,7 @@ impl Draw for Menu {
             if item.has_submenu {
                 context.draw_text(
                     Point::new(
-                        rect.x + rect.width as i32 as i32 - 4,
+                        rect.x + rect.width as f32 as i32 - 4,
                         (y + Self::item_height() / 2) as i32,
                     ),
                     "▶",

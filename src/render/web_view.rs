@@ -89,7 +89,7 @@ pub fn append_web_view_visual_commands(layer: &mut SceneLayer, web_view: &WebVie
         if web_view.is_loading() {
             layer.push(RenderCommand::DrawText {
                 origin: Point {
-                    x: rect.x + rect.width as i32 as i32 - 80,
+                    x: rect.x + rect.width as f32 as i32 - 80,
                     y: rect.y + 24,
                 },
                 text: "Loading...".to_string(),

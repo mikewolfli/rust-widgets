@@ -242,7 +242,7 @@ impl Draw for Button {
             context.draw_text(
                 Point {
                     x: rect.x + 6,
-                    y: rect.y + rect.height as i32 as i32 / 2,
+                    y: rect.y + rect.height as i32 / 2,
                 },
                 &self.text,
                 &self.font().cloned().unwrap_or_default(),

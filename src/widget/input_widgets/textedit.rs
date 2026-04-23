@@ -278,7 +278,7 @@ impl Draw for TextEdit {
         if !display_text.is_empty() {
             // Simple text drawing - in real implementation would handle line wrapping
             context.draw_text(
-                Point::new(text_x, text_y),
+                Point::new(text_x as f32, text_y as f32),
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),

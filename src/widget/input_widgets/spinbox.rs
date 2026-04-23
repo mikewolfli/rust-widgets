@@ -266,8 +266,8 @@ impl EventHandler for SpinBox {
                 let button_width = 20;
                 if *button == 1 {
                     // Check if click is on up/down buttons
-                    if pos.x >= rect.x + rect.width as i32 - button_width * 2 {
-                        if pos.x < rect.x + rect.width as i32 - button_width {
+                    if pos.x >= rect.x + rect.width as f32 - button_width * 2 {
+                        if pos.x < rect.x + rect.width as f32 - button_width {
                             // Down button
                             self.step_down();
                         } else {
@@ -313,7 +313,7 @@ impl Draw for SpinBox {
         let padding = 4;
         let button_width = 20;
         let text_x = rect.x + padding;
-        let text_y = rect.y + rect.height as i32 / 2;
+        let text_y = rect.y + rect.height as f32 / 2;
         // Draw background
         context.fill_rect(
             rect.x,
@@ -331,8 +331,8 @@ impl Draw for SpinBox {
             Color::from_rgb(200, 200, 200),
         );
         // Draw up/down buttons
-        let down_button_x = rect.x + rect.width as i32 - button_width * 2;
-        let up_button_x = rect.x + rect.width as i32 - button_width;
+        let down_button_x = rect.x + rect.width as f32 - button_width * 2;
+        let up_button_x = rect.x + rect.width as f32 - button_width;
         // Down button
         context.fill_rect(
             down_button_x,
@@ -350,13 +350,13 @@ impl Draw for SpinBox {
         );
         // Down arrow
         let down_arrow_x = down_button_x + button_width / 2;
-        let down_arrow_y = rect.y + rect.height as i32 / 2;
+        let down_arrow_y = rect.y + rect.height as f32 / 2;
         let arrow_size = 4;
-        context.draw_line(Point::new(down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2), Point::new(down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(down_arrow_x - arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Point::new(down_arrow_x + arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(down_arrow_x + arrow_size, down_arrow_y - arrow_size / 2), Point::new(down_arrow_x, down_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(down_arrow_x + arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Point::new(down_arrow_x as f32, down_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(down_arrow_x, down_arrow_y + arrow_size / 2), Point::new(down_arrow_x - arrow_size, down_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(down_arrow_x as f32, down_arrow_y + arrow_size / 2 as f32), Point::new(down_arrow_x - arrow_size as f32, down_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
         // Up button
         context.fill_rect(
@@ -375,12 +375,12 @@ impl Draw for SpinBox {
         );
         // Up arrow
         let up_arrow_x = up_button_x + button_width / 2;
-        let up_arrow_y = rect.y + rect.height as i32 / 2;
-        context.draw_line(Point::new(up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2), Point::new(up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
+        let up_arrow_y = rect.y + rect.height as f32 / 2;
+        context.draw_line(Point::new(up_arrow_x - arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Point::new(up_arrow_x + arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(up_arrow_x + arrow_size, up_arrow_y + arrow_size / 2), Point::new(up_arrow_x, up_arrow_y - arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(up_arrow_x + arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Point::new(up_arrow_x as f32, up_arrow_y - arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
-        context.draw_line(Point::new(up_arrow_x, up_arrow_y - arrow_size / 2), Point::new(up_arrow_x - arrow_size, up_arrow_y + arrow_size / 2), Color::from_rgb(100, 100, 100),
+        context.draw_line(Point::new(up_arrow_x as f32, up_arrow_y - arrow_size / 2 as f32), Point::new(up_arrow_x - arrow_size as f32, up_arrow_y + arrow_size / 2 as f32), Color::from_rgb(100, 100, 100),
         );
         // Draw text
         let display_text = self.display_text();

@@ -343,16 +343,16 @@ impl Draw for InputDialog {
             Alignment::Left,
         );
         // OK/Cancel
-        let btn_y = rect.y + rect.height as i32 - 40;
+        let btn_y = rect.y + rect.height as f32 - 40;
         context.fill_rect(
-            rect.x + rect.width as i32 - 176,
+            rect.x + rect.width as f32 - 176,
             btn_y,
             80,
             28,
             Color::from_rgb(0, 120, 215),
         );
         context.draw_text(
-            rect.x + rect.width as i32 - 136,
+            rect.x + rect.width as f32 - 136,
             btn_y + 14,
             "OK",
             &Font::default(),
@@ -360,21 +360,21 @@ impl Draw for InputDialog {
             Alignment::Center,
         );
         context.fill_rect(
-            rect.x + rect.width as i32 - 88,
+            rect.x + rect.width as f32 - 88,
             btn_y,
             80,
             28,
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            rect.x + rect.width as i32 - 88,
+            rect.x + rect.width as f32 - 88,
             btn_y,
             80,
             28,
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(
-            rect.x + rect.width as i32 - 48,
+            rect.x + rect.width as f32 - 48,
             btn_y + 14,
             "Cancel",
             &Font::default(),

@@ -41,7 +41,7 @@ impl Gradient {
             start_point: start,
             end_point: end,
             angle: 0.0,
-            center: Point::new(0, 0),
+            center: Point::new(0 as f32, 0 as f32),
             radius: 0.0,
         }
     }
@@ -49,8 +49,8 @@ impl Gradient {
         Self {
             gradient_type: GradientType::Radial,
             stops: Vec::new(),
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point::new(0 as f32, 0 as f32),
+            end_point: Point::new(0 as f32, 0 as f32),
             angle: 0.0,
             center,
             radius,
@@ -60,8 +60,8 @@ impl Gradient {
         Self {
             gradient_type: GradientType::Conic,
             stops: Vec::new(),
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point::new(0 as f32, 0 as f32),
+            end_point: Point::new(0 as f32, 0 as f32),
             angle,
             center,
             radius: 0.0,
@@ -129,7 +129,7 @@ impl Gradient {
 }
 impl Default for Gradient {
     fn default() -> Self {
-        Self::linear(Point::new(0, 0), Point::new(100, 0))
+        Self::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 0 as f32))
     }
 }
 pub struct GradientBuilder {
@@ -167,7 +167,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_gradient_creation() {
-        let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+        let gradient = Gradient::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 0 as f32))
             .add_stop(0.0, Color::RED)
             .add_stop(1.0, Color::BLUE);
         assert_eq!(gradient.gradient_type, GradientType::Linear);
@@ -175,7 +175,7 @@ mod tests {
     }
     #[test]
     fn test_gradient_interpolation() {
-        let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+        let gradient = Gradient::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 0 as f32))
             .add_stop(
                 0.0,
                 Color {
@@ -201,7 +201,7 @@ mod tests {
     }
     #[test]
     fn test_gradient_reverse() {
-        let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+        let gradient = Gradient::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 0 as f32))
             .add_stop(0.0, Color::RED)
             .add_stop(1.0, Color::BLUE);
         let reversed = gradient.reverse();
@@ -210,7 +210,7 @@ mod tests {
     }
     #[test]
     fn test_gradient_builder() {
-        let gradient = GradientBuilder::linear(Point::new(0, 0), Point::new(100, 100))
+        let gradient = GradientBuilder::linear(Point::new(0 as f32, 0 as f32), Point::new(100 as f32, 100 as f32))
             .stop(0.0, Color::WHITE)
             .stop(0.5, Color::GRAY)
             .stop(1.0, Color::BLACK)
