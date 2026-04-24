@@ -4,11 +4,9 @@ use crate::core::{Color, Point, Rect};
 use crate::render::{SceneLayer, RenderCommand};
 use crate::render::is_empty_rect;
 use crate::widget::{
-    ActivityIndicator, Button, ButtonState, Canvas, ChartWidget, CheckBox, CheckState, ColorDialog,
-    ComboBox, ContextMenu, Dialog, DirectoryDialog, DockPanel, FileDialog, FontDialog, GridWidget,
-    GroupBox, Label, LineEdit, ListBox, MdiArea, Menu, MenuBar, MessageBox, Panel, PopupWindow,
-    ProgressBar, RadioButton, RichEdit, ScrollBar, Slider, Splitter, StatusBar, TabWidget,
-    TableWidget, TextEdit, ToolBar, TreeView, Widget,
+    Button, ButtonState, CheckBox, CheckState, ComboBox,
+    Label, LineEdit, ListBox, Panel,
+    ProgressBar, RadioButton, ScrollBar, Slider, Widget,
 };
 use crate::window::Window;
 

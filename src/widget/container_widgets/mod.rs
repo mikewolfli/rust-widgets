@@ -12,7 +12,7 @@ pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
 pub use mdiarea::MdiArea;
 pub use scrollarea::ScrollArea;
-pub use splitter::{Splitter, SplitterOrientation};
+pub use splitter::Splitter;
 pub use stackedwidget::StackedWidget;
 pub use tabwidget::TabWidget;
 pub use toolbox::ToolBox;

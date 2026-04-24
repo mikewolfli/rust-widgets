@@ -34,8 +34,7 @@ impl ConnectionScope {
     }
     fn track(&self, disconnector: Box<dyn FnOnce() + Send + 'static>) {
         self.disconnectors
-            .lock()
-            .expect("connection scope lock poisoned")
+            .lock().unwrap_or_else(|e| e.into_inner())
             .push(disconnector);
     }
 }
@@ -43,8 +42,7 @@ impl Drop for ConnectionScope {
     fn drop(&mut self) {
         let mut disconnectors = self
             .disconnectors
-            .lock()
-            .expect("connection scope lock poisoned");
+            .lock().unwrap_or_else(|e| e.into_inner());
         while let Some(disconnector) = disconnectors.pop() {
             disconnector();
         }

@@ -1,10 +1,8 @@
 //! PDF data types and structures.
 
-use crate::core::{Color, Rect, Size};
-use std::collections::HashMap;
-
+use crate::core::{Rect, Size};
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PdfSecurity {
+pub struct PdfSecurity {
     /// Optional password required to open the document.
     pub user_password: Option<String>,
     /// Optional owner password for privilege changes.
@@ -19,7 +17,6 @@ pub(crate) struct PdfSecurity {
     pub annotation_permission: bool,
 }
 impl Default for PdfSecurity {
-
     fn default() -> Self {
         Self {
             user_password: None,

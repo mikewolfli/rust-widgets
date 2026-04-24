@@ -37,11 +37,12 @@ mod color;
 pub mod coords;
 mod font;
 mod geometry;
+pub mod rect_merge;
 mod types;
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
-pub use geometry::{Point, Rect, Size};
+pub use geometry::{Orientation, Point, Rect, Size};
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily,
     RuntimeProfile, Version,

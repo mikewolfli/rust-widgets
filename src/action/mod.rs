@@ -1,6 +1,8 @@
 //! Action/shortcut/command framework.
+mod app;
 mod manager;
 mod types;
+pub use app::ActionRouter;
 pub use manager::ActionManager;
 pub(crate) use types::normalize_shortcut;
 pub use types::{Action, ActionBinding, ActionHostKind};

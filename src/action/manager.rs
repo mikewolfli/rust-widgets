@@ -1,6 +1,7 @@
-use std::collections::HashMap;
-use crate::core::ObjectId;
 use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
+use crate::core::ObjectId;
+use crate::shortcut::Shortcut;
+use std::collections::HashMap;
 /// Registry for actions, shortcuts, and menu/toolbar bindings.
 pub struct ActionManager {
     actions: HashMap<String, Action>,
@@ -41,7 +42,7 @@ impl ActionManager {
         action.set_enabled(enabled);
         true
     }
-    /// Binds a keyboard shortcut to an existing action id.
+    /// Binds a keyboard shortcut to an existing action id (string-based).
     pub fn bind_shortcut(
         &mut self,
         shortcut: impl Into<String>,
@@ -55,7 +56,21 @@ impl ActionManager {
             .insert(normalize_shortcut(&shortcut.into()), action_id);
         true
     }
-    /// Resolves and triggers an action by shortcut.
+    /// Binds a `Shortcut` type to an existing action id. Bridges `shortcut` module with `action`.
+    pub fn bind_shortcut_type(
+        &mut self,
+        shortcut: &Shortcut,
+        action_id: impl Into<String>,
+    ) -> bool {
+        let action_id = action_id.into();
+        if !self.actions.contains_key(&action_id) {
+            return false;
+        }
+        self.shortcut_to_action
+            .insert(shortcut.to_string().to_lowercase(), action_id);
+        true
+    }
+    /// Resolves and triggers an action by shortcut string.
     pub fn trigger_shortcut(&mut self, shortcut: &str) -> bool {
         let Some(action_id) = self.shortcut_to_action.get(&normalize_shortcut(shortcut)) else {
             return false;

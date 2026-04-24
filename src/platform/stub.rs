@@ -85,9 +85,15 @@ impl Platform for StubPlatform {
     fn family(&self) -> PlatformFamily {
         self.family
     }
-    fn init(&self) {}
-    fn run(&self) {}
-    fn quit(&self) {}
+    fn init(&self) {
+        // no-op platform stub
+    }
+    fn run(&self) {
+        // no-op platform stub
+    }
+    fn quit(&self) {
+        // no-op platform stub
+    }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.create_widget_state(title, x, y, width, height)
     }

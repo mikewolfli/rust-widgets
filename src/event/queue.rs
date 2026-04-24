@@ -241,21 +241,21 @@ impl<T> BlockingQueue<T> {
         }
     }
     pub fn push(&self, item: T) -> Result<(), QueueError> {
-        if *self.closed.lock().unwrap() {
+        if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
             return Err(QueueError::Closed);
         }
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.push_back(item);
         self.condvar.notify_one();
         Ok(())
     }
     pub fn pop(&self) -> Result<T, QueueError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap() {
+            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar.wait(queue).unwrap();
@@ -263,12 +263,12 @@ impl<T> BlockingQueue<T> {
     }
     pub fn pop_timeout(&self, timeout: Duration) -> Result<T, QueueError> {
         let start = Instant::now();
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap() {
+            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
             let elapsed = start.elapsed();
@@ -281,24 +281,24 @@ impl<T> BlockingQueue<T> {
         }
     }
     pub fn try_pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.pop_front()
     }
     pub fn close(&self) {
-        *self.closed.lock().unwrap() = true;
+        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.condvar.notify_all();
     }
     pub fn is_closed(&self) -> bool {
-        *self.closed.lock().unwrap()
+        *self.closed.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
     pub fn clear(&self) {
-        self.queue.lock().unwrap().clear();
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 impl<T> Default for BlockingQueue<T> {
@@ -324,9 +324,9 @@ impl<T> BoundedQueue<T> {
         }
     }
     pub fn push(&self, item: T) -> Result<(), QueueError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         while queue.len() >= self.capacity {
-            if *self.closed.lock().unwrap() {
+            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar_not_full.wait(queue).unwrap();
@@ -336,10 +336,10 @@ impl<T> BoundedQueue<T> {
         Ok(())
     }
     pub fn try_push(&self, item: T) -> Result<(), QueueError> {
-        if *self.closed.lock().unwrap() {
+        if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
             return Err(QueueError::Closed);
         }
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if queue.len() >= self.capacity {
             return Err(QueueError::Full);
         }
@@ -348,20 +348,20 @@ impl<T> BoundedQueue<T> {
         Ok(())
     }
     pub fn pop(&self) -> Result<T, QueueError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(item) = queue.pop_front() {
                 self.condvar_not_full.notify_one();
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap() {
+            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar_not_empty.wait(queue).unwrap();
         }
     }
     pub fn try_pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         let item = queue.pop_front();
         if item.is_some() {
             self.condvar_not_full.notify_one();
@@ -369,27 +369,27 @@ impl<T> BoundedQueue<T> {
         item
     }
     pub fn close(&self) {
-        *self.closed.lock().unwrap() = true;
+        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.condvar_not_full.notify_all();
         self.condvar_not_empty.notify_all();
     }
     pub fn is_closed(&self) -> bool {
-        *self.closed.lock().unwrap()
+        *self.closed.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
     pub fn is_full(&self) -> bool {
-        self.queue.lock().unwrap().len() >= self.capacity
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len() >= self.capacity
     }
     pub fn capacity(&self) -> usize {
         self.capacity
     }
     pub fn clear(&self) {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.clear();
         self.condvar_not_full.notify_all();
     }

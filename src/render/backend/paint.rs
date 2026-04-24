@@ -1,6 +1,8 @@
 //! Paint backend trait and software implementation.
-use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::{RenderCommand, TextMetrics, ShapedText, SoftwareSurface, SoftwareRenderConfig};
+use crate::core::{Color, Font, Size};
+use crate::render::{
+    RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+};
 
 /// Pluggable paint backend strategy used by render scene composition.
 pub trait PaintBackend {

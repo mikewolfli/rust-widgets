@@ -1,6 +1,6 @@
 //! Platform abstraction types and capability contracts.
 
-use crate::core::{ObjectId, PlatformFamily, RuntimeProfile};
+use crate::core::{ObjectId, PlatformFamily};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

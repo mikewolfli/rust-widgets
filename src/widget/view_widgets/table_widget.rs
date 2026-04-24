@@ -2,7 +2,7 @@
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 /// Table model abstraction for table-like views.
@@ -203,15 +203,86 @@ impl Widget for TableWidget {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for TableWidget {
+impl Draw for TableWidget {
     fn draw(&mut self, context: &mut RenderContext) {
-        self.base.request_redraw();
-        let _ = context;
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw background
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        // Draw border
+        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        // Draw grid from model
+        if let Some(ref model) = self.model {
+            let row_h = 20;
+            let col_w = if model.column_count() > 0 {
+                (rect.width / model.column_count() as u32).max(40)
+            } else {
+                rect.width
+            };
+            let row_count = model.row_count();
+            let col_count = model.column_count();
+            let current_row = self.focused_row;
+            for r in 0..row_count {
+                let y = rect.y + (row_h as i32) * r as i32;
+                if y + row_h as i32 > rect.y + rect.height as i32 {
+                    break;
+                }
+                if Some(r) == current_row {
+                    context.fill_rect(
+                        crate::core::Rect::new(rect.x, y, rect.width, row_h as u32),
+                        Color::from_rgb(200, 220, 255),
+                    );
+                }
+                for c in 0..col_count {
+                    let x = rect.x + (col_w as i32) * c as i32;
+                    if let Some(text) = model.data(r, c) {
+                        context.draw_text(
+                            crate::core::Point::new(x + 2, y + row_h / 2),
+                            &text,
+                            &crate::core::Font::default(),
+                            Color::from_rgb(0, 0, 0),
+                        );
+                    }
+                    // Draw column separator
+                    if c < col_count - 1 {
+                        context.draw_line(
+                            crate::core::Point::new(x + col_w as i32, y),
+                            crate::core::Point::new(x + col_w as i32, y + row_h),
+                            Color::from_rgb(220, 220, 220),
+                        );
+                    }
+                }
+                // Draw row separator
+                if r < row_count - 1 {
+                    context.draw_line(
+                        crate::core::Point::new(rect.x, y + row_h),
+                        crate::core::Point::new(rect.x + rect.width as i32, y + row_h),
+                        Color::from_rgb(220, 220, 220),
+                    );
+                }
+            }
+        }
     }
 }
 impl crate::event::EventHandler for TableWidget {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos, button } => {
+                if *button == 1 {
+                    let rect = self.base.geometry();
+                    let row_h = 20;
+                    if pos.y >= rect.y {
+                        let index = ((pos.y - rect.y) / row_h) as usize;
+                        if index < self.row_count() {
+                            self.select_row(index);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

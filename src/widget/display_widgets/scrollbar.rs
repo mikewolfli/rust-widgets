@@ -1,5 +1,5 @@
 //! Scroll bar widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -19,19 +19,6 @@ pub struct ScrollBar {
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
     mouse_pressed: bool,
-}
-/// Scroll bar orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Orientation {
-    /// Horizontal scroll bar (left to right)
-    Horizontal,
-    /// Vertical scroll bar (top to bottom)
-    Vertical,
-}
-impl Default for Orientation {
-    fn default() -> Self {
-        Self::Horizontal
-    }
 }
 impl ScrollBar {
     /// Creates a scroll bar with default range 0-100.

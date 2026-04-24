@@ -86,13 +86,13 @@ impl<T: Poolable + Send> SharedPool<T> {
         }
     }
     pub fn acquire(&self) -> T {
-        self.pool.lock().unwrap().acquire()
+        self.pool.lock().unwrap_or_else(|e| e.into_inner()).acquire()
     }
     pub fn release(&self, obj: T) {
-        self.pool.lock().unwrap().release(obj);
+        self.pool.lock().unwrap_or_else(|e| e.into_inner()).release(obj);
     }
     pub fn stats(&self) -> PoolStats {
-        let pool = self.pool.lock().unwrap();
+        let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         PoolStats {
             available: pool.available(),
             allocated: pool.allocated(),

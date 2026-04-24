@@ -1,6 +1,4 @@
 //! PDF metadata, security, and pagination support.
-use crate::core::Size;
-use std::collections::HashMap;
 pub struct PdfMetadata {
     /// Document title.
     pub title: String,

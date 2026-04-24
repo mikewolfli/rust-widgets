@@ -1,10 +1,11 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
-use crate::control_backend::types::{ControlBackendKind, CustomControlState, CustomWidgetProperties};
 use crate::control_backend::trait_def::ControlBackend;
+use crate::control_backend::types::{
+    ControlBackendKind, CustomControlState, CustomWidgetProperties,
+};
 use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 use crate::widget::WidgetKind;
+use std::sync::Mutex;
 /// Custom-painted control backend scaffold.
 pub struct CustomPaintControlBackend {
     state: Mutex<CustomControlState>,

@@ -9,11 +9,10 @@ pub mod document;
 pub mod page;
 
 pub use crate::pdf::types::*;
-pub use crate::pdf::security::*;
 pub use crate::pdf::writer::*;
 pub use crate::pdf::reader::*;
 pub(crate) use crate::pdf::document::*;
-pub(crate) use crate::pdf::page::*;
+// pub(crate) use crate::pdf::page::*;
 
 use crate::core::{Rect, Size, Color};
 use crate::pdf::metadata::PdfMetadata;

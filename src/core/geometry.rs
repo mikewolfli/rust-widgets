@@ -494,6 +494,14 @@ impl Rect {
         self.contains_point(point)
     }
 }
+/// Direction used by directional widgets and layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    /// Main axis is horizontal.
+    Horizontal,
+    /// Main axis is vertical.
+    Vertical,
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,9 +1,9 @@
+use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use super::types::*;
+use crate::core::PlatformFamily;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
-use crate::core::PlatformFamily;
-use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-use super::types::*;
 
 impl Platform for HarmonyPlatform {
     fn backend_name(&self) -> &'static str {
@@ -14,9 +14,6 @@ impl Platform for HarmonyPlatform {
     }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
-        eprintln!(
-            "[rust_widgets][harmony] preview runtime mode (state loop, native desktop window rendering not wired yet)"
-        );
     }
     fn run(&self) {
         if !self.runtime.initialized.load(Ordering::SeqCst) {
@@ -135,59 +132,42 @@ impl Platform for HarmonyPlatform {
         self.insert_widget(HarmonyHandleKind::ListBox, "ListBox", x, y, width, height)
     }
     fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][harmony] list_box_add_item unsupported in preview backend");
         false
     }
     fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!("[rust_widgets][harmony] list_box_remove_item unsupported in preview backend");
         false
     }
     fn list_box_clear_items(&self, _list_box: u64) -> bool {
-        eprintln!("[rust_widgets][harmony] list_box_clear_items unsupported in preview backend");
         false
     }
     fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][harmony] list_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
-        eprintln!("[rust_widgets][harmony] list_box_current_index unsupported in preview backend");
         None
     }
     fn list_box_item_count(&self, _list_box: u64) -> usize {
-        eprintln!("[rust_widgets][harmony] list_box_item_count unsupported in preview backend");
         0
     }
     fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][harmony] list_box_item_text unsupported in preview backend");
         None
     }
     fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][harmony] combo_box_add_item unsupported in preview backend");
         false
     }
     fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
-        eprintln!("[rust_widgets][harmony] combo_box_clear_items unsupported in preview backend");
         false
     }
     fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][harmony] combo_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
-        eprintln!("[rust_widgets][harmony] combo_box_current_index unsupported in preview backend");
         None
     }
     fn combo_box_item_count(&self, _combo_box: u64) -> usize {
-        eprintln!("[rust_widgets][harmony] combo_box_item_count unsupported in preview backend");
         0
     }
     fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][harmony] combo_box_item_text unsupported in preview backend");
         None
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -388,11 +368,9 @@ impl Platform for HarmonyPlatform {
         _width: u32,
         _height: u32,
     ) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_message_box unsupported in preview backend");
         0
     }
     fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_file_dialog unsupported in preview backend");
         0
     }
     fn create_color_dialog(
@@ -403,23 +381,18 @@ impl Platform for HarmonyPlatform {
         _width: u32,
         _height: u32,
     ) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_color_dialog unsupported in preview backend");
         0
     }
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_font_dialog unsupported in preview backend");
         0
     }
     fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_spin_box unsupported in preview backend");
         0
     }
     fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_list_view unsupported in preview backend");
         0
     }
     fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][harmony] create_scroll_area unsupported in preview backend");
         0
     }
 }

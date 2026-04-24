@@ -1,5 +1,5 @@
 //! Slider widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -23,19 +23,6 @@ pub struct Slider {
     pub slider_moved: Signal1<i32>,
     pub slider_pressed: GenericSignal,
     pub slider_released: GenericSignal,
-}
-/// Slider orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Orientation {
-    /// Horizontal slider (left to right)
-    Horizontal,
-    /// Vertical slider (bottom to top)
-    Vertical,
-}
-impl Default for Orientation {
-    fn default() -> Self {
-        Self::Horizontal
-    }
 }
 /// Tick mark position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::sync::Arc;
 /// Tree model abstraction for tree-like views.
 pub trait TreeModel: Send + Sync {
@@ -179,15 +179,61 @@ impl Widget for TreeView {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for TreeView {
+impl Draw for TreeView {
     fn draw(&mut self, context: &mut RenderContext) {
-        self.base.request_redraw();
-        let _ = context;
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw background
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        // Draw border
+        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        // Draw nodes from model
+        if let Some(ref model) = self.model {
+            let item_height = 20;
+            let indent = 15;
+            let node_count = model.node_count();
+            for i in 0..node_count {
+                let y = rect.y + (item_height as i32) * i as i32;
+                if y + item_height as i32 > rect.y + rect.height as i32 {
+                    break;
+                }
+                if Some(i) == self.focused_node {
+                    context.fill_rect(
+                        crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
+                        Color::from_rgb(200, 220, 255),
+                    );
+                }
+                if let Some(path) = model.node_path(i) {
+                    context.draw_text(
+                        crate::core::Point::new(rect.x + indent, y + item_height / 2),
+                        &path,
+                        &crate::core::Font::default(),
+                        Color::from_rgb(0, 0, 0),
+                    );
+                }
+            }
+        }
     }
 }
 impl crate::event::EventHandler for TreeView {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos, button } => {
+                if *button == 1 {
+                    let rect = self.base.geometry();
+                    let item_height = 20;
+                    if pos.y >= rect.y {
+                        let index = ((pos.y - rect.y) / item_height) as usize;
+                        if index < self.node_count() {
+                            self.select_node(index);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

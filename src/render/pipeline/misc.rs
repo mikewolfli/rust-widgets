@@ -1,12 +1,10 @@
 //! Miscellaneous widgets: activity_indicator, toggle_button, check_list_box,
 //! double_spin_box, dial, wizard.
 use crate::core::{Color, Font, Point, Rect};
-use crate::render::{SceneLayer, RenderCommand};
 use crate::render::is_empty_rect;
-use crate::render::pipeline::controls::{push_widget_fill_and_border, centered_text_origin};
-use crate::widget::{
-    ActivityIndicator, CheckListBox, Dial, DoubleSpinBox, ToggleButton, Widget, Wizard,
-};
+use crate::render::pipeline::controls::{centered_text_origin, push_widget_fill_and_border};
+use crate::render::{RenderCommand, SceneLayer};
+use crate::widget::{ActivityIndicator, Widget};
 
 pub fn append_activity_indicator_visual_commands(
     layer: &mut SceneLayer,

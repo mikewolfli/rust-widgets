@@ -1,16 +1,14 @@
 //! PDF document implementation.
 
-use crate::core::{Color, Rect};
-use crate::pdf::types::*;
+use crate::core::Size;
 use crate::pdf::metadata::PdfMetadata;
 use crate::pdf::page::PdfPageImpl;
+use crate::pdf::types::*;
 use crate::pdf::writer::{build_minimal_pdf_bytes, sanitize_pdf_font_name};
 use crate::pdf::PdfDocument;
 use crate::pdf::PdfPage;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Error, ErrorKind};
-use crate::core::Size;
 
 pub(crate) struct PdfDocumentImpl {
     /// Ordered page list.
@@ -154,4 +152,3 @@ impl PdfDocument for PdfDocumentImpl {
         build_minimal_pdf_bytes(self)
     }
 }
-

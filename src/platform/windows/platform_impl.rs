@@ -1315,7 +1315,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_message_box not implemented");
+            // TODO: Implement native Windows MessageBox (MessageBoxW API)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1334,7 +1334,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_file_dialog not implemented");
+            // TODO: Implement native Windows file dialog (IFileOpenDialog/IFileSaveDialog)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1353,7 +1353,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_color_dialog not implemented");
+            // TODO: Implement native Windows color dialog (CHOOSECOLORW)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1372,7 +1372,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_font_dialog not implemented");
+            // TODO: Implement native Windows font dialog (CHOOSEFONTW)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1391,7 +1391,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_spin_box not implemented");
+            // TODO: Implement native Windows spin box (Up-Down control)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1410,7 +1410,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_list_view not implemented");
+            // TODO: Implement native Windows list view (SysListView32)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1429,7 +1429,7 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] create_scroll_area not implemented");
+            // TODO: Implement native Windows scroll area (WS_HSCROLL/WS_VSCROLL)
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1441,20 +1441,77 @@ impl Platform for WindowsPlatform {
     fn set_clipboard_text(&self, _text: &str) -> bool {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] set_clipboard_text not implemented");
-            false
+            use winapi::um::winbase::GlobalAlloc;
+            use winapi::um::winbase::{GlobalLock, GlobalUnlock, GHND};
+            use winapi::um::winuser::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT};
+
+            let text_utf16: Vec<u16> = _text.encode_utf16().chain(std::iter::once(0)).collect();
+            let byte_size = text_utf16.len() * 2;
+            // SAFETY: Win32 clipboard API calls with proper error checking.
+            let result = unsafe {
+                if OpenClipboard(std::ptr::null_mut()) == 0 {
+                    return false;
+                }
+                if EmptyClipboard() == 0 {
+                    CloseClipboard();
+                    return false;
+                }
+                let h_mem = GlobalAlloc(GHND, byte_size);
+                if h_mem.is_null() {
+                    CloseClipboard();
+                    return false;
+                }
+                let p_dest = GlobalLock(h_mem) as *mut u16;
+                if p_dest.is_null() {
+                    GlobalUnlock(h_mem);
+                    CloseClipboard();
+                    return false;
+                }
+                std::ptr::copy_nonoverlapping(text_utf16.as_ptr(), p_dest, text_utf16.len());
+                GlobalUnlock(h_mem);
+                let ret = SetClipboardData(CF_UNICODETEXT, h_mem as _);
+                CloseClipboard();
+                ret as isize != 0
+            };
+            result
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = text;
+            let _ = _text;
             false
         }
     }
     fn get_clipboard_text(&self) -> String {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] get_clipboard_text not implemented");
-            String::new()
+            use winapi::um::winbase::GlobalLock;
+            use winapi::um::winuser::{CloseClipboard, OpenClipboard, GetClipboardData, CF_UNICODETEXT};
+
+            // SAFETY: Win32 clipboard API calls with proper error checking.
+            let result = unsafe {
+                if OpenClipboard(std::ptr::null_mut()) == 0 {
+                    return String::new();
+                }
+                let h_mem = GetClipboardData(CF_UNICODETEXT);
+                if h_mem.is_null() {
+                    CloseClipboard();
+                    return String::new();
+                }
+                let p_src = GlobalLock(h_mem) as *const u16;
+                if p_src.is_null() {
+                    CloseClipboard();
+                    return String::new();
+                }
+                let mut len = 0;
+                while *p_src.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(p_src, len);
+                let text = String::from_utf16_lossy(slice);
+                CloseClipboard();
+                text
+            };
+            result
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1464,19 +1521,21 @@ impl Platform for WindowsPlatform {
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] begin_drag not implemented");
+            // TODO: Implement OLE drag-drop (IDropSource/IDropTarget)
+            // Requires: DoDragDrop, OleInitialize, RegisterDragDrop, RevokeDragDrop
+            // See: https://learn.microsoft.com/en-us/windows/win32/shell/dragdrop
             false
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (source_widget_id, mime, payload);
+            let _ = (_source_widget_id, _mime, _payload);
             false
         }
     }
     fn poll_drop_event(&self) -> Option<DropEvent> {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] poll_drop_event not implemented");
+            // TODO: Implement OLE drag-drop event polling
             None
         }
         #[cfg(not(target_os = "windows"))]
@@ -1487,12 +1546,12 @@ impl Platform for WindowsPlatform {
     fn inject_drop_event(&self, _event: DropEvent) -> bool {
         #[cfg(target_os = "windows")]
         {
-            eprintln!("[rust_widgets][windows] inject_drop_event not implemented");
+            // TODO: Implement OLE drag-drop event injection
             false
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = event;
+            let _ = _event;
             false
         }
     }

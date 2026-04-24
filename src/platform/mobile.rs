@@ -1,12 +1,12 @@
 //! Mobile phase-1 platform slice (Android baseline).
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
-use crate::core::{ObjectId, PlatformFamily};
 use super::state::BackendState;
 use super::{
     MobileBackend, MobilePlatformExtension, Platform, WidgetTriggerEvent, WidgetTriggerKind,
 };
+use crate::core::{ObjectId, PlatformFamily};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 /// Logical handle kinds used by mobile baseline state model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum MobileHandleKind {
@@ -103,15 +103,13 @@ impl Platform for AndroidMobilePlatform {
         PlatformFamily::Mobile
     }
     fn init(&self) {
-        eprintln!(
-            "[rust_widgets][android-mobile] preview backend (no native app lifecycle bridge is active in desktop run mode)"
-        );
+        // android-mobile preview backend: no-op init
     }
     fn run(&self) {
-        eprintln!("[rust_widgets][android-mobile] run is a stub in current preview backend");
+        // android-mobile preview backend: no-op run
     }
     fn quit(&self) {
-        eprintln!("[rust_widgets][android-mobile] quit called");
+        // android-mobile preview backend: no-op quit
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)
@@ -261,59 +259,42 @@ impl Platform for AndroidMobilePlatform {
         )
     }
     fn list_box_add_item(&self, _list_box: ObjectId, _text: &str) -> bool {
-        eprintln!("[rust_widgets][mobile] list_box_add_item unsupported in preview backend");
         false
     }
     fn list_box_remove_item(&self, _list_box: ObjectId, _index: usize) -> bool {
-        eprintln!("[rust_widgets][mobile] list_box_remove_item unsupported in preview backend");
         false
     }
     fn list_box_clear_items(&self, _list_box: ObjectId) -> bool {
-        eprintln!("[rust_widgets][mobile] list_box_clear_items unsupported in preview backend");
         false
     }
     fn list_box_set_current_index(&self, _list_box: ObjectId, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][mobile] list_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn list_box_current_index(&self, _list_box: ObjectId) -> Option<usize> {
-        eprintln!("[rust_widgets][mobile] list_box_current_index unsupported in preview backend");
         None
     }
     fn list_box_item_count(&self, _list_box: ObjectId) -> usize {
-        eprintln!("[rust_widgets][mobile] list_box_item_count unsupported in preview backend");
         0
     }
     fn list_box_item_text(&self, _list_box: ObjectId, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][mobile] list_box_item_text unsupported in preview backend");
         None
     }
     fn combo_box_add_item(&self, _combo_box: ObjectId, _text: &str) -> bool {
-        eprintln!("[rust_widgets][mobile] combo_box_add_item unsupported in preview backend");
         false
     }
     fn combo_box_clear_items(&self, _combo_box: ObjectId) -> bool {
-        eprintln!("[rust_widgets][mobile] combo_box_clear_items unsupported in preview backend");
         false
     }
     fn combo_box_set_current_index(&self, _combo_box: ObjectId, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][mobile] combo_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn combo_box_current_index(&self, _combo_box: ObjectId) -> Option<usize> {
-        eprintln!("[rust_widgets][mobile] combo_box_current_index unsupported in preview backend");
         None
     }
     fn combo_box_item_count(&self, _combo_box: ObjectId) -> usize {
-        eprintln!("[rust_widgets][mobile] combo_box_item_count unsupported in preview backend");
         0
     }
     fn combo_box_item_text(&self, _combo_box: ObjectId, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][mobile] combo_box_item_text unsupported in preview backend");
         None
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {

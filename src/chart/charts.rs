@@ -1,8 +1,7 @@
 //! Chart implementations: Line, Bar, Pie, Scatter, Area.
 
 use crate::chart::types::*;
-use crate::chart::svg::*;
-use crate::chart::layout::*;
+// svg used for chart rendering
 use crate::core::{Color, Point, Rect};
 
 pub struct LineChart {

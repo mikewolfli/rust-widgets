@@ -1,5 +1,4 @@
 //! Core rendering data types for text and geometry.
-use crate::core::Font;
 
 pub struct TextMetrics {
     /// Measured text width in logical pixels.

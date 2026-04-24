@@ -1,10 +1,12 @@
 //! MDI area widget.
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
 /// MDI area widget.
 pub struct MdiArea {
     base: BaseWidget,
@@ -14,6 +16,8 @@ pub struct MdiArea {
     background: Background,
     activation_order: ActivationOrder,
     pub subwindow_activated: Signal1<ObjectId>,
+    /// Optional shared registry for child widget forwarding.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 /// MDI sub-window.
 pub struct MdiSubWindow {
@@ -177,7 +181,16 @@ impl MdiArea {
             background: Background::Plain,
             activation_order: ActivationOrder::StackingOrder,
             subwindow_activated: Signal1::new(),
+            registry: None,
         }
+    }
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
     }
     /// Adds a sub-window.
     pub fn add_sub_window(&mut self, widget: ObjectId, geometry: Rect) -> usize {
@@ -474,9 +487,11 @@ impl EventHandler for MdiArea {
             }
             _ => {}
         }
-        // Forward events to active sub-window
-        if self.active_sub_window().is_some() {
-            // TODO: Forward event to active sub-window
+        // Forward events to active sub-window via registry
+        if let Some(widget_id) = self.active_sub_window() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().forward_event(widget_id, event);
+            }
         }
     }
 }
@@ -595,15 +610,17 @@ impl Draw for MdiArea {
                 context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), close_color);
                 context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), close_color);
             }
-            // Draw widget content
-            let _content_rect = Rect::new(
+            // Draw widget content via registry
+            let content_rect = Rect::new(
                 frame_rect.x,
                 frame_rect.y + title_bar_height,
                 frame_rect.width,
                 frame_rect.height - title_bar_height as u32,
             );
-            // TODO: Draw widget in content area
-            // widget.draw(context);
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().draw_widget(subwindow.widget, context);
+            }
+            let _content_rect = content_rect;
         }
     }
 }

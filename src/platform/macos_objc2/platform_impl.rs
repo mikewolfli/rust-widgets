@@ -16,9 +16,6 @@ impl Platform for MacOSObjc2Platform {
         // Marker keeps objc2 dependency wired even before native event-loop bridging lands.
         let _ = self.objc2_runtime_marker();
         self.runtime.initialized.store(true, Ordering::SeqCst);
-        eprintln!(
-            "[rust_widgets][macos-objc2-preview] preview runtime mode enabled (poll loop backend)"
-        );
     }
     fn run(&self) {
         if !self.runtime.initialized.load(Ordering::SeqCst) {
@@ -152,71 +149,42 @@ impl Platform for MacOSObjc2Platform {
         self.insert_widget(MacObjc2HandleKind::ListBox, "ListBox", x, y, width, height)
     }
     fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][macos-objc2] list_box_add_item unsupported in preview backend");
         false
     }
     fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][macos-objc2] list_box_remove_item unsupported in preview backend"
-        );
         false
     }
     fn list_box_clear_items(&self, _list_box: u64) -> bool {
-        eprintln!(
-            "[rust_widgets][macos-objc2] list_box_clear_items unsupported in preview backend"
-        );
         false
     }
     fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][macos-objc2] list_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
-        eprintln!(
-            "[rust_widgets][macos-objc2] list_box_current_index unsupported in preview backend"
-        );
         None
     }
     fn list_box_item_count(&self, _list_box: u64) -> usize {
-        eprintln!("[rust_widgets][macos-objc2] list_box_item_count unsupported in preview backend");
         0
     }
     fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][macos-objc2] list_box_item_text unsupported in preview backend");
         None
     }
     fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][macos-objc2] combo_box_add_item unsupported in preview backend");
         false
     }
     fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
-        eprintln!(
-            "[rust_widgets][macos-objc2] combo_box_clear_items unsupported in preview backend"
-        );
         false
     }
     fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][macos-objc2] combo_box_set_current_index unsupported in preview backend"
-        );
         false
     }
     fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
-        eprintln!(
-            "[rust_widgets][macos-objc2] combo_box_current_index unsupported in preview backend"
-        );
         None
     }
     fn combo_box_item_count(&self, _combo_box: u64) -> usize {
-        eprintln!(
-            "[rust_widgets][macos-objc2] combo_box_item_count unsupported in preview backend"
-        );
         0
     }
     fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][macos-objc2] combo_box_item_text unsupported in preview backend");
         None
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {

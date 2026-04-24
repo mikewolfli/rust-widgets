@@ -1,8 +1,8 @@
 //! Toggle button widget.
 use crate::core::Rect;
-use crate::signal::{GenericSignal, Signal1};
 use crate::render::RenderContext;
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::signal::{GenericSignal, Signal1};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Toggle button state enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleButtonState {
@@ -106,15 +106,63 @@ impl Widget for ToggleButton {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for ToggleButton {
-    fn draw(&mut self, _context: &mut RenderContext) {
-        // Default drawing implementation
-        // Toggle button is drawn by the renderer
+impl Draw for ToggleButton {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw background based on state
+        let bg_color = if !self.base.is_enabled() {
+            Color::from_rgb(220, 220, 220)
+        } else if self.checked {
+            Color::from_rgb(200, 220, 255)
+        } else {
+            Color::from_rgb(240, 240, 240)
+        };
+        context.fill_rect(rect, bg_color);
+        // Draw border
+        let border_color = if self.checked {
+            Color::from_rgb(80, 120, 200)
+        } else {
+            Color::from_rgb(180, 180, 180)
+        };
+        context.draw_rect(rect, border_color);
+        // Draw text centered
+        let text_color = if !self.base.is_enabled() {
+            Color::from_rgb(150, 150, 150)
+        } else {
+            Color::from_rgb(0, 0, 0)
+        };
+        context.draw_text(
+            crate::core::Point::new(
+                rect.x + rect.width as i32 / 2,
+                rect.y + rect.height as i32 / 2,
+            ),
+            &self.text,
+            &crate::core::Font::default(),
+            text_color,
+        );
     }
 }
 impl crate::event::EventHandler for ToggleButton {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.set_pressed(true);
+                }
+            }
+            crate::event::Event::MouseRelease { pos: _, button } => {
+                if *button == 1 {
+                    if self.pressed {
+                        self.toggle();
+                    }
+                    self.set_pressed(false);
+                }
+            }
+            _ => {}
+        }
     }
 }

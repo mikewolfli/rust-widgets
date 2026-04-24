@@ -9,19 +9,18 @@ use crate::render::{BackBuffer, SceneLayer, RenderCommand, ShapedText, SoftwareR
 use crate::render::{default_software_render_config, is_empty_rect};
 use crate::render::pipeline::controls::{
     push_widget_fill_and_border, centered_text_origin,
-    normalized_progress_u32, normalized_progress_i32,
 };
 use crate::render::pipeline::pixel_ops::{fill_pixels, blend_pixel, set_pixel,
     circle_fill_coverage_grid, circle_stroke_coverage_grid, line_stroke_coverage_grid,
-    rounded_rect_coverage_grid, draw_bitmap_glyph, glyph_bitmap,
-    cluster_ends_with_zwj, is_combining_mark, is_variation_selector, is_wide_scalar,
-    estimate_cluster_advance, pixel_bytes_len,
-    rounded_rect_effective_radius, inset_rect, point_in_rounded_rect_f32,
+    rounded_rect_coverage_grid, draw_bitmap_glyph,
+    cluster_ends_with_zwj, is_combining_mark, is_variation_selector,
+    estimate_cluster_advance,
+    rounded_rect_effective_radius, inset_rect,
     rounded_rect_coverage,
 };
 use crate::widget::{
-    Canvas, ChartWidget, DockPanel, GridWidget, GroupBox, ListView, MdiArea,
-    RichEdit, ScrollArea, SpinBox, Splitter, TabWidget, TableWidget, TextEdit, TreeView, Widget,
+    Canvas, ChartWidget, DockPanel, GridWidget, GroupBox, MdiArea,
+    RichEdit, Splitter, TabWidget, TableWidget, TextEdit, TreeView, Widget,
 };
 
 pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &TabWidget) {

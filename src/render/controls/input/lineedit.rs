@@ -1,22 +1,22 @@
-//! LineEdit renderer facade.
+//! LineEdit renderer.
 use crate::core::{Color, Font, Point};
 use crate::render::RenderContext;
-use crate::widget::LineEdit;
-/// Lightweight line edit renderer.
+use crate::widget::{LineEdit, Widget};
+/// LineEdit renderer.
 pub struct LineEditRenderer;
 impl LineEditRenderer {
-    /// Draw a minimal line edit representation.
+    /// Draw a line edit.
     pub fn draw(context: &mut RenderContext, line_edit: &LineEdit) {
         let rect = line_edit.geometry();
-        context.fill_rect(Rect::new(rect, Color::rgba(255, 255, 255), 255));
-        context.draw_rect(Rect::new(rect, Color::rgba(160, 160, 160), 255));
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.draw_rect(rect, Color::from_rgb(160, 160, 160));
         let text = line_edit.text();
         if !text.is_empty() {
             context.draw_text(
-                Point::new(rect.x + 6 as f32, rect.y + 6 as f32),
-                text,
-                &Font::default_ui(),
-                Color::rgba(26, 28, 32, 255),
+                Point::new(rect.x + 6, rect.y + 6),
+                &text,
+                &Font::default(),
+                Color::from_rgb(26, 28, 32),
             );
         }
     }

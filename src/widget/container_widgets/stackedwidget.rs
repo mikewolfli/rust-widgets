@@ -4,13 +4,17 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Stacked widget.
 pub struct StackedWidget {
     base: BaseWidget,
     widgets: Vec<ObjectId>,
     current_index: usize,
     pub current_changed: Signal1<usize>,
+    /// Optional shared registry for child widget forwarding.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 impl StackedWidget {
     /// Creates a stacked widget.
@@ -20,7 +24,16 @@ impl StackedWidget {
             widgets: Vec::new(),
             current_index: 0,
             current_changed: Signal1::new(),
+            registry: None,
         }
+    }
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
     }
     /// Adds a widget.
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
@@ -179,9 +192,11 @@ impl Widget for StackedWidget {
 impl EventHandler for StackedWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        // Forward events to current widget
-        if self.current_widget().is_some() {
-            // TODO: Forward event to current widget
+        // Forward events to current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().forward_event(widget_id, event);
+            }
         }
     }
 }
@@ -191,9 +206,11 @@ impl Draw for StackedWidget {
         let rect = self.geometry();
         // Draw background
         context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        // Draw current widget
-        if self.current_widget().is_some() {
-            // TODO: Draw current widget
+        // Draw current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().draw_widget(widget_id, context);
+            }
         }
     }
 }

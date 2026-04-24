@@ -1,6 +1,10 @@
 //! Widget models and controls.
 // Base widget types
 pub mod base;
+pub mod draw;
+pub mod image;
+pub mod kind;
+pub mod widget_trait;
 // Widget subfolders
 pub mod advanced_widgets;
 pub mod base_widgets;
@@ -9,6 +13,7 @@ pub mod dialog;
 pub mod display_widgets;
 pub mod input_widgets;
 pub mod menu_toolbar;
+pub mod registry;
 pub mod special_widgets;
 pub mod view_widgets;
 pub mod web_widgets;
@@ -21,7 +26,12 @@ pub use input_widgets::font_combo_box;
 pub use web_widgets::web_engine;
 pub use web_widgets::web_view;
 // Re-export base types
-pub use base::{BaseWidget, Draw, Image, Widget, WidgetKind};
+pub use base::BaseWidget;
+pub use draw::Draw;
+pub use image::Image;
+pub use kind::WidgetKind;
+pub use registry::SimpleRegistry;
+pub use widget_trait::Widget;
 // Re-export widget types from subfolders
 pub use base_widgets::{
     button::{Button, ButtonState},
@@ -42,14 +52,8 @@ pub use input_widgets::{
 };
 // Re-export container widgets
 pub use container_widgets::{
-    dockwidget::DockWidget,
-    groupbox::GroupBox,
-    mdiarea::MdiArea,
-    scrollarea::ScrollArea,
-    splitter::{Splitter, SplitterOrientation},
-    stackedwidget::StackedWidget,
-    tabwidget::TabWidget,
-    toolbox::ToolBox,
+    dockwidget::DockWidget, groupbox::GroupBox, mdiarea::MdiArea, scrollarea::ScrollArea,
+    splitter::Splitter, stackedwidget::StackedWidget, tabwidget::TabWidget, toolbox::ToolBox,
 };
 pub type Panel = GroupBox;
 pub type DockPanel = DockWidget;

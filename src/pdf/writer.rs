@@ -1,10 +1,10 @@
 //! PDF writer for document generation.
 
-use crate::core::{Color, Rect, Size};
-use crate::pdf::types::*;
-use crate::pdf::document::PdfDocumentImpl;
-use crate::pdf::PdfDocument;
+use crate::core::{Rect, Size};
 use crate::pdf::security::serialize_security_diagnostics_entries;
+use crate::pdf::types::*;
+use crate::pdf::PdfDocument;
+use crate::pdf::PdfDocumentImpl;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -363,5 +363,3 @@ pub(crate) fn sanitize_pdf_font_name(name: &str) -> String {
         })
         .collect()
 }
-
-

@@ -12,6 +12,8 @@ pub mod control_backend;
 pub mod core;
 /// Embedded system optimizations and support.
 pub mod embedded;
+/// Unified error system (ErrorId, RwError, c_try!).
+pub mod error;
 /// Event types and dispatch helpers.
 pub mod event;
 /// Hardware-adaptive GPU management.

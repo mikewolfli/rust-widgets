@@ -1,13 +1,13 @@
-use std::thread;
-use std::time::Duration;
-use std::sync::atomic::Ordering;
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use super::types::LinuxNativeState;
+use super::types::{LinuxHandleKind, LinuxPlatform};
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
-use super::types::{LinuxPlatform, LinuxHandleKind};
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
-use super::types::LinuxNativeState;
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::Duration;
 
 impl Platform for LinuxPlatform {
     fn backend_name(&self) -> &'static str {
@@ -25,9 +25,7 @@ impl Platform for LinuxPlatform {
         }
         #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
         {
-            eprintln!(
-                "[rust_widgets][linux] running in non-gtk-native preview mode (state loop only, no native window rendering)"
-            );
+            // linux non-gtk-native preview mode: no-op
         }
     }
     fn run(&self) {
@@ -411,65 +409,42 @@ impl Platform for LinuxPlatform {
         id
     }
     fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][linux] list_box_add_item unsupported in current backend path");
         false
     }
     fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!("[rust_widgets][linux] list_box_remove_item unsupported in current backend path");
         false
     }
     fn list_box_clear_items(&self, _list_box: u64) -> bool {
-        eprintln!("[rust_widgets][linux] list_box_clear_items unsupported in current backend path");
         false
     }
     fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][linux] list_box_set_current_index unsupported in current backend path"
-        );
         false
     }
     fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
-        eprintln!(
-            "[rust_widgets][linux] list_box_current_index unsupported in current backend path"
-        );
         None
     }
     fn list_box_item_count(&self, _list_box: u64) -> usize {
-        eprintln!("[rust_widgets][linux] list_box_item_count unsupported in current backend path");
         0
     }
     fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][linux] list_box_item_text unsupported in current backend path");
         None
     }
     fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
-        eprintln!("[rust_widgets][linux] combo_box_add_item unsupported in current backend path");
         false
     }
     fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
-        eprintln!(
-            "[rust_widgets][linux] combo_box_clear_items unsupported in current backend path"
-        );
         false
     }
     fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
-        eprintln!(
-            "[rust_widgets][linux] combo_box_set_current_index unsupported in current backend path"
-        );
         false
     }
     fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
-        eprintln!(
-            "[rust_widgets][linux] combo_box_current_index unsupported in current backend path"
-        );
         None
     }
     fn combo_box_item_count(&self, _combo_box: u64) -> usize {
-        eprintln!("[rust_widgets][linux] combo_box_item_count unsupported in current backend path");
         0
     }
     fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
-        eprintln!("[rust_widgets][linux] combo_box_item_text unsupported in current backend path");
         None
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -872,11 +847,9 @@ impl Platform for LinuxPlatform {
         _width: u32,
         _height: u32,
     ) -> u64 {
-        eprintln!("[rust_widgets][linux] create_message_box unsupported in current backend path");
         0
     }
     fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][linux] create_file_dialog unsupported in current backend path");
         0
     }
     fn create_color_dialog(
@@ -887,23 +860,18 @@ impl Platform for LinuxPlatform {
         _width: u32,
         _height: u32,
     ) -> u64 {
-        eprintln!("[rust_widgets][linux] create_color_dialog unsupported in current backend path");
         0
     }
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][linux] create_font_dialog unsupported in current backend path");
         0
     }
     fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][linux] create_spin_box unsupported in current backend path");
         0
     }
     fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][linux] create_list_view unsupported in current backend path");
         0
     }
     fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        eprintln!("[rust_widgets][linux] create_scroll_area unsupported in current backend path");
         0
     }
 }

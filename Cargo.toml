@@ -42,7 +42,7 @@ notify = "6.1"
 dirs = "5.0"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "commctrl"] }
+winapi = { version = "0.3", features = ["winuser", "commctrl", "winbase", "synchapi"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
@@ -60,41 +60,7 @@ gtk = { version = "0.18", optional = true }
 version = "0.16"
 optional = true
 
-[[example]]
-name = "demo_basic"
-path = "demos/demo_basic.rs"
 
-[[example]]
-name = "demo_treeview"
-path = "demos/demo_treeview.rs"
-
-[[example]]
-name = "demo_tableview"
-path = "demos/demo_tableview.rs"
-
-[[example]]
-name = "demo_listview"
-path = "demos/demo_listview.rs"
-
-[[example]]
-name = "demo_tabwidget"
-path = "demos/demo_tabwidget.rs"
-
-[[example]]
-name = "demo_splitter"
-path = "demos/demo_splitter.rs"
-
-[[example]]
-name = "demo_dockpanel"
-path = "demos/demo_dockpanel.rs"
-
-[[example]]
-name = "demo_mdiarea"
-path = "demos/demo_mdiarea.rs"
-
-[[example]]
-name = "demo_quality"
-path = "demos/demo_quality.rs"
 
 [dev-dependencies]
 criterion = "0.8.2"

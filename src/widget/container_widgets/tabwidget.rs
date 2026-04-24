@@ -1,11 +1,13 @@
 //! Tab widget.
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
-use crate::widget::Image;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::Image;
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Tab widget.
 pub struct TabWidget {
     base: BaseWidget,
@@ -17,6 +19,8 @@ pub struct TabWidget {
     movable: bool,
     pub current_changed: Signal1<usize>,
     pub tab_close_requested: Signal1<usize>,
+    /// Optional shared registry for child widget forwarding.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 /// Tab information.
 pub struct Tab {
@@ -123,7 +127,16 @@ impl TabWidget {
             movable: false,
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
+            registry: None,
         }
+    }
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
     }
     /// Adds a tab.
     pub fn add_tab(&mut self, title: String, widget: Option<ObjectId>) -> usize {
@@ -270,14 +283,18 @@ impl TabWidget {
                 rect.width,
                 rect.height - tab_height as u32,
             ),
-            TabPosition::South => Rect::new(rect.x, rect.y, rect.width, rect.height - tab_height as u32),
+            TabPosition::South => {
+                Rect::new(rect.x, rect.y, rect.width, rect.height - tab_height as u32)
+            }
             TabPosition::West => Rect::new(
                 rect.x + tab_height,
                 rect.y,
                 rect.width - tab_height as u32,
                 rect.height,
             ),
-            TabPosition::East => Rect::new(rect.x, rect.y, rect.width - tab_height as u32, rect.height),
+            TabPosition::East => {
+                Rect::new(rect.x, rect.y, rect.width - tab_height as u32, rect.height)
+            }
         }
     }
     /// Returns index of tab at position.
@@ -409,9 +426,11 @@ impl EventHandler for TabWidget {
             }
             _ => {}
         }
-        // Forward events to current widget
-        if self.current_widget().is_some() {
-            // TODO: Forward event to current widget
+        // Forward events to current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().forward_event(widget_id, event);
+            }
         }
     }
 }
@@ -468,16 +487,24 @@ impl Draw for TabWidget {
                     let close_size = 12;
                     let close_x = tab_rect.x + tab_rect.width as i32 - close_size - 5;
                     let close_y = tab_rect.y + (tab_rect.height as i32 - close_size) / 2;
-                    context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), Color::from_rgb(100, 100, 100),
+                    context.draw_line(
+                        Point::new(close_x, close_y),
+                        Point::new(close_x + close_size, close_y + close_size),
+                        Color::from_rgb(100, 100, 100),
                     );
-                    context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), Color::from_rgb(100, 100, 100),
+                    context.draw_line(
+                        Point::new(close_x + close_size, close_y),
+                        Point::new(close_x, close_y + close_size),
+                        Color::from_rgb(100, 100, 100),
                     );
                 }
             }
         }
-        // Draw current widget
-        if self.current_widget().is_some() {
-            // TODO: Draw current widget in content area
+        // Draw current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().draw_widget(widget_id, context);
+            }
         }
     }
 }

@@ -328,8 +328,6 @@ pub fn embedded_engine_stats() -> EmbeddedEngineStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use std::thread;
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();

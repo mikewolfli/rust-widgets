@@ -39,84 +39,86 @@
 mod core;
 // Rendering backends
 mod backend;
-// Widget controls (basic/input/special)
-// (controls/ is a pre-grouped sub-directory)
+// Widget controls (basic/input/special) — reserved for future pipeline integration
+#[allow(dead_code)]
+mod controls;
 // Visual command pipeline for all widget types
 mod pipeline;
 // Web rendering
 mod web;
+// GPU-accelerated rendering backend (reserved, uses `#[cfg(feature = "wgpu")]` internally)
+// (gpu/ is not yet integrated into build — enable when wgpu feature is activated)
 // Adaptive quality
 pub mod quality;
 // Text caching
-pub mod text_cache;
 #[cfg(test)]
 mod tests;
+pub mod text_cache;
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 // Core
-pub use core::{TextMetrics, TextCluster, ShapedText, RenderCommand};
+pub use core::{RenderCommand, ShapedText, TextCluster, TextMetrics};
 
 // Backend
-pub use backend::{BackBuffer, RenderContext, SoftwareSurface, SoftwareRenderConfig,
-    set_default_software_render_config, default_software_render_config,
-    PaintBackend, SoftwarePaintBackend,
-    BatchId,
-    SceneLayer, RenderScene, AutoRenderBackend,
-    last_auto_render_backend,
-    current_quality_level, set_quality_level, current_fps, average_frame_time};
+pub use backend::{
+    average_frame_time, current_fps, current_quality_level, default_software_render_config,
+    last_auto_render_backend, set_default_software_render_config, set_quality_level,
+    AutoRenderBackend, BackBuffer, PaintBackend, RenderContext, RenderScene, SceneLayer,
+    SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface,
+};
 
 // Pipeline — all append_* functions
 pub use pipeline::{
-    // Pixel ops
-    fill_pixels,
-    blend_pixel,
-    // Widget drawing commands
-    append_window_visual_commands,
-    append_panel_visual_commands,
-    append_label_visual_commands,
+    append_activity_indicator_visual_commands,
     append_button_visual_commands,
+    append_canvas_visual_commands,
+    append_chart_widget_visual_commands,
+    append_check_list_box_visual_commands,
     append_checkbox_visual_commands,
-    append_radiobutton_visual_commands,
-    append_line_edit_visual_commands,
+    append_color_dialog_visual_commands,
     append_combo_box_visual_commands,
+    append_context_menu_visual_commands,
+    append_dial_visual_commands,
+    append_dialog_visual_commands,
+    append_directory_dialog_visual_commands,
+    append_dock_panel_visual_commands,
+    append_double_spin_box_visual_commands,
+    append_file_dialog_visual_commands,
+    append_font_dialog_visual_commands,
+    append_grid_widget_visual_commands,
+    append_group_box_visual_commands,
+    append_label_visual_commands,
+    append_line_edit_visual_commands,
     append_list_box_visual_commands,
-    append_progress_bar_visual_commands,
-    append_slider_visual_commands,
-    append_scroll_bar_visual_commands,
+    append_list_view_visual_commands,
+    append_mdi_area_visual_commands,
     append_menu_bar_visual_commands,
     append_menu_visual_commands,
-    append_context_menu_visual_commands,
-    append_tool_bar_visual_commands,
+    append_message_box_visual_commands,
+    append_panel_visual_commands,
+    append_popup_window_visual_commands,
+    append_progress_bar_visual_commands,
+    append_radiobutton_visual_commands,
+    append_rich_edit_visual_commands,
+    append_scroll_area_visual_commands,
+    append_scroll_bar_visual_commands,
+    append_slider_visual_commands,
+    append_spin_box_visual_commands,
+    append_splitter_visual_commands,
     append_status_bar_visual_commands,
     append_tab_widget_visual_commands,
-    append_text_edit_visual_commands,
-    append_rich_edit_visual_commands,
-    append_tree_view_visual_commands,
     append_table_widget_visual_commands,
-    append_grid_widget_visual_commands,
-    append_chart_widget_visual_commands,
-    append_dock_panel_visual_commands,
-    append_group_box_visual_commands,
-    append_splitter_visual_commands,
-    append_mdi_area_visual_commands,
-    append_canvas_visual_commands,
-    append_spin_box_visual_commands,
-    append_list_view_visual_commands,
-    append_scroll_area_visual_commands,
-    append_dialog_visual_commands,
-    append_message_box_visual_commands,
-    append_file_dialog_visual_commands,
-    append_color_dialog_visual_commands,
-    append_font_dialog_visual_commands,
-    append_popup_window_visual_commands,
-    append_directory_dialog_visual_commands,
-    append_activity_indicator_visual_commands,
+    append_text_edit_visual_commands,
     append_toggle_button_visual_commands,
-    append_check_list_box_visual_commands,
-    append_double_spin_box_visual_commands,
-    append_dial_visual_commands,
+    append_tool_bar_visual_commands,
+    append_tree_view_visual_commands,
+    // Widget drawing commands
+    append_window_visual_commands,
     append_wizard_visual_commands,
+    blend_pixel,
+    // Pixel ops
+    fill_pixels,
 };
 
 // ─── Internal helpers ────────────────────────────────────────────────────────

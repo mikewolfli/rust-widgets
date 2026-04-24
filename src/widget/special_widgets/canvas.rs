@@ -1,7 +1,7 @@
 //! Canvas widget.
 use crate::core::Rect;
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
 use crate::render::RenderContext;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Canvas widget for custom drawing.
 pub struct Canvas {
     base: BaseWidget,
@@ -22,15 +22,33 @@ impl Widget for Canvas {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for Canvas {
-    fn draw(&mut self, _context: &mut RenderContext) {
-        // Default drawing implementation
-        // Canvas is drawn by the renderer
+impl Draw for Canvas {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw canvas background
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        // Draw border to make canvas area visible
+        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
     }
 }
 impl crate::event::EventHandler for Canvas {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.base.set_mouse_pressed(true);
+                }
+            }
+            crate::event::Event::MouseRelease { pos: _, button } => {
+                if *button == 1 {
+                    self.base.set_mouse_pressed(false);
+                }
+            }
+            _ => {}
+        }
     }
 }

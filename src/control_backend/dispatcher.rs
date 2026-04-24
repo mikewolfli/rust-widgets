@@ -5,7 +5,7 @@ use crate::control_backend::custom::CustomPaintControlBackend;
 #[cfg(feature = "controls-native")]
 use crate::control_backend::native::NativeControlBackend;
 use crate::control_backend::trait_def::ControlBackend;
-use crate::control_backend::types::{ControlBackendKind, ControlRoutePreference};
+use crate::control_backend::types::ControlRoutePreference;
 use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::widget::WidgetKind;
 fn native_control_backend() -> &'static NativeControlBackend {

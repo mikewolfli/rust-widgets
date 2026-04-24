@@ -2,7 +2,7 @@
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::sync::Arc;
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
@@ -275,15 +275,67 @@ impl Widget for ListView {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for ListView {
+impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
-        self.base.request_redraw();
-        let _ = context;
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw background
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        // Draw border
+        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        // Draw items from model
+        if let Some(ref model) = self.model {
+            let item_height = 20;
+            let row_count = model.row_count();
+            let current_row = self.focused_row;
+            for i in 0..row_count {
+                let y = rect.y + (item_height as i32) * i as i32;
+                if y + item_height as i32 > rect.y + rect.height as i32 {
+                    break;
+                }
+                if Some(i) == current_row {
+                    context.fill_rect(
+                        crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
+                        Color::from_rgb(200, 220, 255),
+                    );
+                }
+                if let Some(text) = model.data(i) {
+                    context.draw_text(
+                        crate::core::Point::new(rect.x + 2, y + item_height / 2),
+                        &text,
+                        &crate::core::Font::default(),
+                        Color::from_rgb(0, 0, 0),
+                    );
+                }
+            }
+        }
     }
 }
 impl crate::event::EventHandler for ListView {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos, button } => {
+                if *button == 1 {
+                    let rect = self.base.geometry();
+                    let item_height = 20;
+                    if pos.y >= rect.y {
+                        let index = ((pos.y - rect.y) / item_height) as usize;
+                        let row_count = self.row_count();
+                        if index < row_count {
+                            self.focused_row = Some(index);
+                            self.selection.select_row(index);
+                            if let Some(row) = self.focused_row {
+                                self.selection_changed.emit(row);
+                                self.focused_row_changed.emit(Some(row));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

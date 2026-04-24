@@ -1,5 +1,5 @@
 //! Progress bar widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -15,19 +15,6 @@ pub struct ProgressBar {
     orientation: Orientation,
     inverted_appearance: bool,
     pub value_changed: Signal1<i32>,
-}
-/// Progress bar orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Orientation {
-    /// Horizontal progress bar (left to right)
-    Horizontal,
-    /// Vertical progress bar (bottom to top)
-    Vertical,
-}
-impl Default for Orientation {
-    fn default() -> Self {
-        Self::Horizontal
-    }
 }
 impl ProgressBar {
     /// Creates a progress bar with default range 0-100.

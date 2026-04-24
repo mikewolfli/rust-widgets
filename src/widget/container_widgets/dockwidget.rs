@@ -1,10 +1,12 @@
 //! Dock widget.
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 /// Dock widget.
 pub struct DockWidget {
     base: BaseWidget,
@@ -17,6 +19,8 @@ pub struct DockWidget {
     pub dock_location_changed: Signal1<DockWidgetArea>,
     pub features_changed: Signal1<DockWidgetFeatures>,
     pub top_level_changed: Signal1<bool>,
+    /// Optional shared registry for child widget forwarding.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 /// Dock widget features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +154,16 @@ impl DockWidget {
             dock_location_changed: Signal1::new(),
             features_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
+            registry: None,
         }
+    }
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
     }
     /// Returns title.
     pub fn title(&self) -> &str {
@@ -423,9 +436,11 @@ impl EventHandler for DockWidget {
             }
             _ => {}
         }
-        // Forward events to widget
-        if self.widget.is_some() {
-            // TODO: Forward event to widget
+        // Forward events to widget via registry
+        if let Some(widget_id) = self.widget {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().forward_event(widget_id, event);
+            }
         }
     }
 }
@@ -500,9 +515,11 @@ impl Draw for DockWidget {
         context.fill_rect(content, Color::from_rgb(255, 255, 255));
         // Draw content border
         context.draw_rect(content, Color::from_rgb(200, 200, 200));
-        // Draw widget
-        if self.widget.is_some() {
-            // TODO: Draw widget in content area
+        // Draw widget via registry
+        if let Some(widget_id) = self.widget {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().draw_widget(widget_id, context);
+            }
         }
     }
 }

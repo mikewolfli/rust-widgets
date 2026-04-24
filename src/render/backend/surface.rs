@@ -1,6 +1,6 @@
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::{PaintBackend, RenderCommand, TextMetrics, TextCluster, ShapedText};
+use crate::render::{PaintBackend, RenderCommand, TextMetrics, ShapedText};
 use crate::render::pixel_bytes_len;
 use std::sync::{Mutex, OnceLock};
 

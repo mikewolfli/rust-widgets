@@ -2,35 +2,12 @@
 pub mod animation;
 pub mod gradient;
 pub mod theme_state;
+use crate::core::{Color, Font};
 pub use animation::*;
 pub use gradient::*;
 pub use theme_state::*;
-use crate::core::{Color, Font};
-/// Insets for top/right/bottom/left spacing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EdgeInsets {
-    /// Top inset.
-    pub top: u32,
-    /// Right inset.
-    pub right: u32,
-    /// Bottom inset.
-    pub bottom: u32,
-    /// Left inset.
-    pub left: u32,
-}
-impl EdgeInsets {
-    /// Create equal inset values on all sides.
-    pub const fn all(value: u32) -> Self {
-        Self {
-            top: value,
-            right: value,
-            bottom: value,
-            left: value,
-        }
-    }
-}
 /// Per-side padding values around widget content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Padding {
     /// Top padding.
     pub top: u32,
@@ -68,14 +45,9 @@ impl Padding {
             normalize_side(left),
         )
     }
-    /// Converts to shared edge-insets representation.
-    pub const fn to_insets(&self) -> EdgeInsets {
-        EdgeInsets {
-            top: self.top,
-            right: self.right,
-            bottom: self.bottom,
-            left: self.left,
-        }
+    /// Returns self as a `Padding` value (identity conversion).
+    pub const fn to_padding(&self) -> Padding {
+        *self
     }
 }
 /// Per-side outer spacing values around a widget.
@@ -117,9 +89,9 @@ impl Margin {
             normalize_side(left),
         )
     }
-    /// Converts to shared edge-insets representation.
-    pub const fn to_insets(&self) -> EdgeInsets {
-        EdgeInsets {
+    /// Returns self as a `Padding` value (identity conversion).
+    pub const fn to_padding(&self) -> Padding {
+        Padding {
             top: self.top,
             right: self.right,
             bottom: self.bottom,
@@ -135,16 +107,6 @@ impl Default for Padding {
 impl Default for Margin {
     fn default() -> Self {
         Self::all(0)
-    }
-}
-impl From<Padding> for EdgeInsets {
-    fn from(value: Padding) -> Self {
-        value.to_insets()
-    }
-}
-impl From<Margin> for EdgeInsets {
-    fn from(value: Margin) -> Self {
-        value.to_insets()
     }
 }
 const fn normalize_side(value: i32) -> u32 {

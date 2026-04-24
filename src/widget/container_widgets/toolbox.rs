@@ -1,10 +1,12 @@
 //! Tool box widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Tool box widget.
 pub struct ToolBox {
     base: BaseWidget,
@@ -12,6 +14,8 @@ pub struct ToolBox {
     current_index: usize,
     orientation: Orientation,
     pub current_changed: Signal1<usize>,
+    /// Optional shared registry for child widget forwarding.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 /// Tool box item.
 pub struct ToolBoxItem {
@@ -20,19 +24,6 @@ pub struct ToolBoxItem {
     tooltip: String,
     enabled: bool,
     widget: Option<ObjectId>,
-}
-/// Tool box orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Orientation {
-    /// Horizontal tool box
-    Horizontal,
-    /// Vertical tool box
-    Vertical,
-}
-impl Default for Orientation {
-    fn default() -> Self {
-        Self::Vertical
-    }
 }
 impl ToolBoxItem {
     /// Creates a new tool box item.
@@ -95,6 +86,7 @@ impl ToolBox {
             current_index: 0,
             orientation: Orientation::Vertical,
             current_changed: Signal1::new(),
+            registry: None,
         }
     }
     /// Adds an item.
@@ -196,7 +188,8 @@ impl ToolBox {
         match self.orientation {
             Orientation::Horizontal => {
                 let item_width = 120;
-                let content_width = (rect.width as f32 - item_width as f32 * self.items.len() as f32).max(0.0);
+                let content_width =
+                    (rect.width as f32 - item_width as f32 * self.items.len() as f32).max(0.0);
                 Rect::new(
                     (rect.x as f32 + item_width as f32 * self.items.len() as f32) as i32,
                     rect.y,
@@ -206,7 +199,8 @@ impl ToolBox {
             }
             Orientation::Vertical => {
                 let item_height = 32;
-                let content_height = (rect.height as f32 - item_height as f32 * self.items.len() as f32).max(0.0);
+                let content_height =
+                    (rect.height as f32 - item_height as f32 * self.items.len() as f32).max(0.0);
                 Rect::new(
                     rect.x,
                     (rect.y as f32 + item_height as f32 * self.items.len() as f32) as i32,
@@ -327,6 +321,16 @@ impl Widget for ToolBox {
         self.base.layout_requested_signal()
     }
 }
+impl ToolBox {
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+}
 impl EventHandler for ToolBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -345,9 +349,11 @@ impl EventHandler for ToolBox {
             }
             _ => {}
         }
-        // Forward events to current widget
-        if self.current_widget().is_some() {
-            // TODO: Forward event to current widget
+        // Forward events to current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().forward_event(widget_id, event);
+            }
         }
     }
 }
@@ -358,12 +364,22 @@ impl Draw for ToolBox {
         let content_rect = self.content_rect();
         // Draw content background
         context.fill_rect(
-            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
+            Rect::new(
+                content_rect.x,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            ),
             Color::from_rgb(255, 255, 255),
         );
         // Draw content border
         context.draw_rect(
-            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
+            Rect::new(
+                content_rect.x,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            ),
             Color::from_rgb(200, 200, 200),
         );
         // Draw items
@@ -404,10 +420,15 @@ impl Draw for ToolBox {
                     item_rect.x + 5
                 };
                 if item.icon.is_some() {
-                    // TODO: Draw icon
-                    // For now, draw a placeholder
+                    // NOTE: Full icon rendering requires draw_image() on RenderContext
+                    // For now, draw a placeholder gray square
                     context.fill_rect(
-                        Rect::new(item_rect.x + 5, item_rect.y + (item_rect.height - icon_size as u32) as i32 / 2, icon_size as u32, icon_size as u32),
+                        Rect::new(
+                            item_rect.x + 5,
+                            item_rect.y + (item_rect.height - icon_size as u32) as i32 / 2,
+                            icon_size as u32,
+                            icon_size as u32,
+                        ),
                         Color::from_rgb(150, 150, 150),
                     );
                 }
@@ -425,9 +446,11 @@ impl Draw for ToolBox {
                 );
             }
         }
-        // Draw current widget
-        if self.current_widget().is_some() {
-            // TODO: Draw current widget in content area
+        // Draw current widget via registry
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().draw_widget(widget_id, context);
+            }
         }
     }
 }

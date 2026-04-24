@@ -1,103 +1,87 @@
 //! Splitter widget.
+use crate::core::Orientation;
 use crate::core::Rect;
+use crate::layout::splitter::SplitterLayout;
 use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
-/// Splitter orientation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SplitterOrientation {
-    Horizontal,
-    Vertical,
-}
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Splitter widget with deterministic pane-ratio distribution contract.
+///
+/// Delegates layout calculations to [`SplitterLayout`].
 pub struct Splitter {
     base: BaseWidget,
-    orientation: SplitterOrientation,
-    panes: Vec<ObjectId>,
-    ratios: Vec<f32>,
+    layout: SplitterLayout,
     pub pane_layout_changed: Signal1<Vec<f32>>,
-    pub orientation_changed: Signal1<SplitterOrientation>,
+    pub orientation_changed: Signal1<Orientation>,
 }
 impl Splitter {
     /// Creates an empty splitter with horizontal orientation.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Splitter, geometry, "Splitter"),
-            orientation: SplitterOrientation::Horizontal,
-            panes: Vec::new(),
-            ratios: Vec::new(),
+            layout: SplitterLayout::new(Orientation::Horizontal, 0),
             pane_layout_changed: Signal1::new(),
             orientation_changed: Signal1::new(),
         }
     }
     /// Returns splitter orientation.
-    pub fn orientation(&self) -> SplitterOrientation {
-        self.orientation
+    pub fn orientation(&self) -> Orientation {
+        self.layout.orientation()
     }
     /// Sets splitter orientation and emits change signal on transition.
-    pub fn set_orientation(&mut self, orientation: SplitterOrientation) {
-        if self.orientation == orientation {
+    pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.layout.orientation() == orientation {
             return;
         }
-        self.orientation = orientation;
+        self.layout.set_orientation(orientation);
         self.orientation_changed.emit(orientation);
     }
     /// Returns pane count.
     pub fn pane_count(&self) -> usize {
-        self.panes.len()
+        self.layout.pane_count()
     }
     /// Returns pane ids in stable order.
     pub fn pane_ids(&self) -> &[ObjectId] {
-        &self.panes
+        self.layout.pane_ids()
     }
     /// Returns ratio for pane index.
     pub fn ratio(&self, index: usize) -> Option<f32> {
-        self.ratios.get(index).copied()
+        self.layout.ratio(index)
     }
     /// Adds one pane and returns assigned index.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
-        self.panes.push(pane_id);
-        self.ratios.push((stretch.max(1)) as f32);
-        self.pane_layout_changed.emit(self.ratios.clone());
-        self.panes.len() - 1
+        let index = self.layout.add_pane(pane_id, stretch);
+        self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        index
     }
     /// Removes one pane by object id.
     pub fn remove_pane(&mut self, pane_id: ObjectId) -> bool {
-        let Some(index) = self.panes.iter().position(|id| *id == pane_id) else {
+        if !self.layout.remove_pane(pane_id) {
             return false;
-        };
-        self.panes.remove(index);
-        self.ratios.remove(index);
-        self.pane_layout_changed.emit(self.ratios.clone());
+        }
+        self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         true
     }
     /// Sets ratio for pane index.
     pub fn set_ratio(&mut self, index: usize, ratio: f32) -> bool {
-        if index >= self.ratios.len() {
+        if !self.layout.set_ratio(index, ratio) {
             return false;
         }
-        self.ratios[index] = ratio.max(0.0);
-        self.pane_layout_changed.emit(self.ratios.clone());
+        self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         true
     }
     /// Sets all pane ratios.
     pub fn set_ratios(&mut self, ratios: Vec<f32>) -> bool {
-        if ratios.len() != self.ratios.len() {
+        if !self.layout.set_ratios(ratios) {
             return false;
         }
-        self.ratios = ratios.into_iter().map(|r| r.max(0.0)).collect();
-        self.pane_layout_changed.emit(self.ratios.clone());
+        self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         true
     }
     /// Normalizes ratios to sum to 1.
     pub fn normalize_ratios(&mut self) {
-        let sum: f32 = self.ratios.iter().sum();
-        if sum > 0.0 {
-            for ratio in &mut self.ratios {
-                *ratio /= sum;
-            }
-        }
+        self.layout.normalize_ratios();
     }
 }
 impl Widget for Splitter {
@@ -108,13 +92,13 @@ impl Widget for Splitter {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for Splitter {
+impl Draw for Splitter {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw splitter handles between panes
         let rect = self.base.geometry();
         let handle_width = 5;
-        match self.orientation {
-            SplitterOrientation::Horizontal => {
+        match self.orientation() {
+            Orientation::Horizontal => {
                 // Draw vertical splitter handles
                 if self.pane_count() > 1 {
                     let total_width = rect.width as f32;
@@ -134,7 +118,7 @@ impl crate::widget::base::Draw for Splitter {
                     }
                 }
             }
-            SplitterOrientation::Vertical => {
+            Orientation::Vertical => {
                 // Draw horizontal splitter handles
                 if self.pane_count() > 1 {
                     let total_height = rect.height as f32;
@@ -159,7 +143,49 @@ impl crate::widget::base::Draw for Splitter {
 }
 impl crate::event::EventHandler for Splitter {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        // Use ratio-based handle dragging
+        let rect = self.base.geometry();
+        let handle_width = 5.0;
+        match event {
+            crate::event::Event::MousePress { pos, button } => {
+                if *button == 1 && self.pane_count() > 1 {
+                    let total = if self.orientation() == Orientation::Horizontal {
+                        rect.width as f32
+                    } else {
+                        rect.height as f32
+                    };
+                    let pos_primary = if self.orientation() == Orientation::Horizontal {
+                        pos.x as f32 - rect.x as f32
+                    } else {
+                        pos.y as f32 - rect.y as f32
+                    };
+                    let mut acc = 0.0;
+                    for i in 0..self.pane_count() - 1 {
+                        if let Some(r) = self.ratio(i) {
+                            acc += r * total;
+                        }
+                        if (pos_primary - acc).abs() <= handle_width / 2.0 {
+                            // Store drag state: negative index-1 to indicate dragging
+                            // and save the initial position for delta calculation
+                            self.layout
+                                .set_ratio(i, self.layout.ratio(i).unwrap_or(1.0));
+                            break;
+                        }
+                    }
+                }
+            }
+            crate::event::Event::MouseRelease { pos: _, button } => {
+                if *button == 1 {
+                    // Drag ended - normalize ratios
+                    self.layout.normalize_ratios();
+                    self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+                }
+            }
+            _ => {}
+        }
     }
 }

@@ -1,11 +1,13 @@
 //! Render scene composition and auto-backend selection.
-use crate::core::{Color, Point, Rect, Size};
-use crate::render::{PaintBackend, RenderCommand, SoftwarePaintBackend, SoftwareSurface, SoftwareRenderConfig};
+use crate::core::Color;
 #[cfg(feature = "quality-management")]
 use crate::quality::QualityManager;
-use std::sync::{Mutex, OnceLock};
+use crate::render::{
+    PaintBackend, RenderCommand, SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface,
+};
 #[cfg(feature = "gpu-wgpu")]
 use crate::wgpu_backend::WgpuRenderer;
+use std::sync::{Mutex, OnceLock};
 
 /// Backend selected by automatic compose path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +204,6 @@ pub enum GpuRenderError {
     SurfaceSizeZero,
     RendererUnavailable,
     UploadFailed(String),
-    Other(String),
 }
 impl std::fmt::Display for GpuRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -212,7 +213,6 @@ impl std::fmt::Display for GpuRenderError {
             }
             GpuRenderError::RendererUnavailable => write!(f, "wgpu renderer unavailable"),
             GpuRenderError::UploadFailed(e) => write!(f, "upload failed: {e}"),
-            GpuRenderError::Other(e) => write!(f, "gpu error: {e}"),
         }
     }
 }

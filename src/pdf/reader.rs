@@ -1,12 +1,12 @@
 //! PDF reader and parsing logic.
 
-use crate::core::{Rect, Size};
-use crate::pdf::types::*;
-use crate::pdf::document::PdfDocumentImpl;
-use crate::pdf::PdfDocument;
+use crate::core::Size;
 use crate::pdf::metadata::PdfMetadata;
 use crate::pdf::page::PdfPageImpl;
 use crate::pdf::security::parse_security_diagnostics;
+use crate::pdf::types::*;
+use crate::pdf::PdfDocument;
+use crate::pdf::PdfDocumentImpl;
 use std::collections::HashMap;
 use std::fs;
 
@@ -181,5 +181,3 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     }
     out
 }
-
-

@@ -1,8 +1,8 @@
 //! Rich text editor widget.
 use crate::core::Rect;
-use crate::signal::Signal1;
 use crate::render::RenderContext;
-use crate::widget::base::{BaseWidget, Widget, WidgetKind};
+use crate::signal::Signal1;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Rich text/code editor baseline widget contract.
 pub struct RichEdit {
     base: BaseWidget,
@@ -101,15 +101,50 @@ impl Widget for RichEdit {
         &mut self.base
     }
 }
-impl crate::widget::base::Draw for RichEdit {
-    fn draw(&mut self, _context: &mut RenderContext) {
-        // Default drawing implementation
-        // Rich edit is drawn by the renderer
+impl Draw for RichEdit {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.base.geometry();
+        use crate::core::Color;
+        // Draw background
+        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        // Draw border
+        context.draw_rect(
+            rect,
+            if self.read_only {
+                Color::from_rgb(220, 220, 220)
+            } else {
+                Color::from_rgb(180, 180, 180)
+            },
+        );
+        // Draw text content (first line only as preview)
+        if !self.text.is_empty() {
+            let line = self.text.lines().next().unwrap_or("");
+            context.draw_text(
+                crate::core::Point::new(rect.x + 2, rect.y + rect.height as i32 / 2),
+                line,
+                &crate::core::Font::default(),
+                Color::from_rgb(0, 0, 0),
+            );
+        }
     }
 }
 impl crate::event::EventHandler for RichEdit {
     fn handle_event(&mut self, event: &crate::event::Event) {
-        // Default event handling
-        let _ = event;
+        if !self.base.is_enabled() || self.read_only {
+            return;
+        }
+        match event {
+            crate::event::Event::MousePress { pos: _, button } => {
+                if *button == 1 {
+                    self.base.set_mouse_pressed(true);
+                }
+            }
+            crate::event::Event::MouseRelease { pos: _, button } => {
+                if *button == 1 {
+                    self.base.set_mouse_pressed(false);
+                }
+            }
+            _ => {}
+        }
     }
 }

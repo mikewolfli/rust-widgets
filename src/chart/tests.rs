@@ -1,8 +1,8 @@
 //! Chart tests.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use crate::chart::{BarChart, ChartSeries, DataPoint, LineChart, MemoryChartContext, SvgChartContext};
+use crate::core::{Color, Rect};
+use crate::chart::*;
     fn stable_hash64(input: &str) -> u64 {
         // FNV-1a 64-bit stable hash for deterministic snapshot checks.
         let mut hash: u64 = 0xcbf29ce484222325;
@@ -409,4 +409,3 @@ mod tests {
         let expected = 13616823873602107208u64;
         assert_eq!(got, expected, "bar snapshot hash changed: {got}");
     }
-}

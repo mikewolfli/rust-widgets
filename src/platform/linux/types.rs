@@ -1,11 +1,11 @@
 //! Linux backend shell.
+use crate::platform::state::BackendState;
+use crate::platform::WidgetTriggerEvent;
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use gtk::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use crate::platform::state::BackendState;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
-use gtk::prelude::*;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LinuxHandleKind {
     Window,

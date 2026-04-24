@@ -1,10 +1,12 @@
 //! Dialog widgets: dialog, message_box, file_dialog, color_dialog, font_dialog,
 //! popup_window, directory_dialog.
 use crate::core::{Color, Point, Rect};
-use crate::render::{SceneLayer, RenderCommand};
-use crate::render::is_empty_rect;
+
 use crate::render::pipeline::controls::push_widget_fill_and_border;
-use crate::widget::{ColorDialog, Dialog, DirectoryDialog, FileDialog, FontDialog, MessageBox, PopupWindow, Widget};
+use crate::render::{RenderCommand, SceneLayer};
+use crate::widget::{
+    ColorDialog, Dialog, DirectoryDialog, FileDialog, FontDialog, MessageBox, PopupWindow, Widget,
+};
 
 pub fn append_dialog_visual_commands(layer: &mut SceneLayer, dialog: &Dialog) {
     push_widget_fill_and_border(
