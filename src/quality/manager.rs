@@ -5,6 +5,19 @@ use super::config::QualityConfig;
 use super::gpu::GpuCapability;
 use super::monitor::FrameTimeMonitor;
 /// Quality manager for dynamic quality adjustment with hysteresis.
+///
+/// # Examples
+///
+/// ```rust
+/// use rust_widgets::quality::{QualityManager, QualityLevel};
+///
+/// let mut manager = QualityManager::new();
+/// assert_eq!(manager.quality_level(), QualityLevel::Medium);
+///
+/// // Record frame durations
+/// manager.finish_frame_secs(0.016); // ~60 FPS
+/// assert_eq!(manager.quality_level(), QualityLevel::Medium);
+/// ```
 #[derive(Debug, Clone)]
 pub struct QualityManager {
     current_level: QualityLevel,

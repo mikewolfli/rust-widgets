@@ -1,4 +1,19 @@
 //! Adaptive rendering quality management for dynamic performance optimization.
+//!
+//! # Example
+//!
+//! ```rust
+//! use rust_widgets::quality::{QualityManager, QualityLevel, QualityConfig};
+//!
+//! // Create a quality manager with default configuration
+//! let manager = QualityManager::new();
+//! // Default gpu capability maps to Medium quality
+//! assert_eq!(manager.quality_level(), QualityLevel::Medium);
+//!
+//! // Check quality level ordering
+//! assert!(QualityLevel::Low < QualityLevel::Medium);
+//! assert!(QualityLevel::Medium < QualityLevel::High);
+//! ```
 mod config;
 mod gpu;
 mod level;

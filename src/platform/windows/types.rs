@@ -192,6 +192,10 @@ pub struct WindowsPlatform {
     pub menu_state: Win32MenuState,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
 }
+/// Win32 menu state holder.
+/// Reserved for Windows platform menu integration — stores HWND handles and
+/// command-to-widget mappings. Only compiled on `cfg(windows)` targets.
+/// Marked `#[allow(dead_code)]` on non-Windows builds where it is never constructed.
 #[allow(dead_code)]
 pub struct Win32MenuState {
     // SAFETY: HWND is only used on the main thread, and Win32MenuState is not shared across threads in this context.

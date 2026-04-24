@@ -71,7 +71,8 @@ pub(crate) use pixel_ops::pixel_bytes_len;
 #[allow(dead_code)]
 
 /// Routing logic for native vs custom widget drawing.
-/// This function provides a framework for routing between native and custom drawing paths.
+/// Reserved for future widget rendering pipeline integration.
+/// Currently unused while the pipeline architecture is being stabilized.
 /// Widgets that implement the Draw trait will use custom drawing, others use native.
 pub fn route_widget_drawing<W>(
     widget: &mut W,
@@ -85,6 +86,7 @@ pub fn route_widget_drawing<W>(
 }
 
 /// Check if a widget uses custom drawing.
+/// Reserved for future pipeline integration — will query the widget's rendering mode.
 #[allow(dead_code)]
 pub fn widget_uses_custom_drawing<W>(_widget: &W) -> bool
 where
@@ -94,6 +96,7 @@ where
 }
 
 /// Render a widget with automatic routing between native and custom drawing.
+/// Reserved for future pipeline integration — currently a thin wrapper.
 #[allow(dead_code)]
 pub fn render_widget<W>(
     widget: &mut W,
@@ -107,6 +110,7 @@ pub fn render_widget<W>(
 }
 
 /// Helper function to render widgets that implement Draw trait.
+/// Reserved for future pipeline integration — will be used when Draw-based rendering is active.
 #[allow(dead_code)]
 pub fn render_custom_widget<W>(widget: &mut W, context: &mut RenderContext)
 where
@@ -116,6 +120,7 @@ where
 }
 
 /// Helper function to render widgets using native platform rendering.
+/// Reserved for future pipeline integration — handles native fallback path.
 #[allow(dead_code)]
 pub fn render_native_widget<W>(widget: &W, context: &mut RenderContext)
 where

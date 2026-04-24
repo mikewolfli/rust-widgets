@@ -2,20 +2,19 @@
 
 #![allow(deprecated)]
 
+use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::macos::types::*;
+use crate::platform::state::BackendState;
+use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationOptions,
-    NSApplicationActivationPolicyRegular, NSBackingStoreBuffered,
-    NSBezelStyle, NSButton, NSControl, NSRunningApplication,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
+    NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
 use cocoa::base::{id, nil, NO, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
-use crate::core::{ObjectId, PlatformFamily};
-use crate::platform::state::BackendState;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 impl Platform for MacOSPlatform {
     fn backend_name(&self) -> &'static str {
@@ -85,9 +84,10 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
-        eprintln!(
+        log::info!(
             "[rust_widgets] MacOSPlatform::create_button called: parent={}, text='{}'",
-            parent, text
+            parent,
+            text
         );
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
@@ -95,7 +95,7 @@ impl Platform for MacOSPlatform {
                 NSButton::alloc(nil),
                 Self::make_rect(x, y, width, height),
             );
-            eprintln!(
+            log::info!(
                 "[rust_widgets] MacOSPlatform::create_button: button created {:?}",
                 button
             );
@@ -103,7 +103,7 @@ impl Platform for MacOSPlatform {
             NSButton::setBezelStyle_(button, NSBezelStyle::NSRoundedBezelStyle);
             // Set button type to momentary push button
             let _: () = msg_send![button, setButtonType: 0u64]; // NSMomentaryPushInButton
-            // Enable the button
+                                                                // Enable the button
             let _: () = msg_send![button, setEnabled: YES];
             // Set button to send action on mouse up and mouse down
             let _: () = msg_send![button, sendActionOn: 2u64]; // NSLeftMouseDownMask
@@ -122,38 +122,39 @@ impl Platform for MacOSPlatform {
                 height,
                 button as usize,
             );
-            eprintln!(
+            log::info!(
                 "[rust_widgets] create_button: created button with id {}",
                 id
             );
             // Set up button click handler using NSButton methods
             let target = shared_button_target();
-            eprintln!("[rust_widgets] create_button: setting target {:?}", target);
+            log::error!("[rust_widgets] create_button: setting target {:?}", target);
             NSButton::setTarget_(button, target);
-            eprintln!("[rust_widgets] create_button: setting action");
+            log::error!("[rust_widgets] create_button: setting action");
             let action_sel = sel!(onButtonClicked:);
-            eprintln!(
+            log::debug!(
                 "[rust_widgets] create_button: action selector = {:?}",
                 action_sel
             );
             NSButton::setAction_(button, action_sel);
             // Test the button action
             let _: () = msg_send![button, performClick: nil];
-            eprintln!("[rust_widgets] create_button: performed test click");
+            log::error!("[rust_widgets] create_button: performed test click");
             // Verify the target and action are set correctly
             let current_target: id = msg_send![button, target];
             let current_action: Sel = msg_send![button, action];
-            eprintln!(
+            log::debug!(
                 "[rust_widgets] create_button: current target = {:?}, current action = {:?}",
-                current_target, current_action
+                current_target,
+                current_action
             );
             // Create NSNumber to store widget id - use numberWithUnsignedLongLong
-            eprintln!("[rust_widgets] create_button: creating token for id {}", id);
+            log::error!("[rust_widgets] create_button: creating token for id {}", id);
             let token: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: id];
             // Retain the token to prevent it from being released
             let _: () = msg_send![token, retain];
             let _: () = msg_send![button, setRepresentedObject: token];
-            eprintln!("[rust_widgets] create_button: done");
+            log::error!("[rust_widgets] create_button: done");
             pool.drain();
             id
         }
@@ -262,7 +263,7 @@ impl Platform for MacOSPlatform {
             let _: () = msg_send![text_view, setEditable: NO];
             let _: () = msg_send![text_view, setSelectable: YES];
             let _: () = msg_send![text_view, setAutoresizingMask: 18u64]; // NSViewWidthSizable | NSViewHeightSizable
-            // Set font
+                                                                          // Set font
             let font: id = msg_send![class!(NSFont), systemFontOfSize: 10.0f64];
             let _: () = msg_send![text_view, setFont: font];
             // Set initial text
@@ -923,28 +924,28 @@ impl Platform for MacOSPlatform {
                     // For non-main thread, we need to dispatch to main thread
                     // Use performSelectorOnMainThread with the control itself
                     let _: () = msg_send![ns_text, retain];
-                    eprintln!("[rust_widgets] set_widget_text: dispatching to main thread, native={:?}, ns_text={:?}", native, ns_text);
+                    log::error!("[rust_widgets] set_widget_text: dispatching to main thread, native={:?}, ns_text={:?}", native, ns_text);
                     // For NSTextField, use setStringValue: selector
                     let selector = sel!(setStringValue:);
                     let result: bool = msg_send![native, respondsToSelector:selector];
-                    eprintln!(
+                    log::debug!(
                         "[rust_widgets] set_widget_text: native responds to setStringValue: ? {}",
                         result
                     );
                     if result {
                         let _: () = msg_send![native, performSelectorOnMainThread:selector withObject:ns_text waitUntilDone:YES];
-                        eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setStringValue:");
+                        log::error!("[rust_widgets] set_widget_text: dispatched to main thread with setStringValue:");
                     } else {
                         // Fallback: try setString: selector (NSTextView)
                         let selector2 = sel!(setString:);
                         let result2: bool = msg_send![native, respondsToSelector:selector2];
-                        eprintln!(
+                        log::debug!(
                             "[rust_widgets] set_widget_text: native responds to setString: ? {}",
                             result2
                         );
                         if result2 {
                             let _: () = msg_send![native, performSelectorOnMainThread:selector2 withObject:ns_text waitUntilDone:YES];
-                            eprintln!("[rust_widgets] set_widget_text: dispatched to main thread with setString:");
+                            log::error!("[rust_widgets] set_widget_text: dispatched to main thread with setString:");
                         }
                     }
                 } else {
@@ -1056,13 +1057,13 @@ impl Platform for MacOSPlatform {
         if let Ok(mut events) = widget_events().lock() {
             let len = events.len();
             if len > 0 {
-                eprintln!(
+                log::debug!(
                     "[rust_widgets] poll_widget_trigger_event: queue has {} events",
                     len
                 );
             }
             if let Some(event) = events.pop() {
-                eprintln!(
+                log::debug!(
                     "[rust_widgets] poll_widget_trigger_event: returning event for widget {}",
                     event.widget_id
                 );
@@ -1155,4 +1156,3 @@ impl Platform for MacOSPlatform {
             .create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
     }
 }
-

@@ -61,6 +61,19 @@ impl ErrorId {
 // ---------------------------------------------------------------------------
 
 /// Rich error carrying an [`ErrorId`] and a human‑readable message.
+///
+/// # Examples
+///
+/// ```rust
+/// use rust_widgets::error::{RwError, ErrorId};
+///
+/// let err = RwError::new(ErrorId::INVALID_ARGUMENT, "bad input");
+/// assert_eq!(err.id, ErrorId::INVALID_ARGUMENT);
+/// assert!(err.message.contains("bad input"));
+///
+/// let not_impl = RwError::not_implemented("my_feature");
+/// assert_eq!(not_impl.id, ErrorId::NOT_IMPLEMENTED);
+/// ```
 #[derive(Debug, Clone)]
 pub struct RwError {
     pub id: ErrorId,
@@ -130,7 +143,7 @@ where
 
 /// Convert an `RwResult<T>` into an `ErrorId` (i32) for C callers.
 ///
-/// Logs the error via `eprintln!` for debugging.
+/// Logs the error via `log::error!` for debugging.
 // ---------------------------------------------------------------------------
 // FFI safety — c_try! macro and helpers
 // ---------------------------------------------------------------------------
@@ -141,7 +154,7 @@ pub fn to_error_id(result: RwResult<()>) -> i32 {
     match result {
         Ok(()) => ErrorId::SUCCESS.0,
         Err(e) => {
-            eprintln!("[rust_widgets] {}", e);
+            log::error!("[rust_widgets] {}", e);
             e.id.0
         }
     }

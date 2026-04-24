@@ -21,6 +21,8 @@ pub mod gpu;
 #[cfg(not(feature = "embedded"))]
 /// Internationalization module for desktop runtime.
 pub mod i18n;
+/// Declarative JSON window engine (QML-like).
+pub mod json;
 /// Layout managers.
 pub mod layout;
 /// Memory management utilities.
@@ -60,22 +62,19 @@ pub mod wgpu_backend;
 pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
-#[cfg(not(feature = "embedded"))]
-/// XML utilities for desktop runtime.
-pub mod xml;
-#[cfg(feature = "print")]
-/// Print and preview support.
-pub mod print;
-#[cfg(feature = "pdf")]
-/// PDF rendering/export support.
-pub mod pdf;
+/// Application lifecycle wrapper and type-safe widget handles.
+pub mod app;
 #[cfg(feature = "chart")]
 /// Charting primitives.
 pub mod chart;
-/// Application lifecycle wrapper and type-safe widget handles.
-pub mod app;
 /// Index-based widget registry for runtime lookup.
 pub mod index;
+#[cfg(feature = "pdf")]
+/// PDF rendering/export support.
+pub mod pdf;
+#[cfg(feature = "print")]
+/// Print and preview support.
+pub mod print;
 /// Initialize global platform and i18n subsystems.
 pub fn init() {
     trace_runtime_route("init");
@@ -179,12 +178,7 @@ pub fn create_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    eprintln!(
-        "[rust_widgets] lib::create_button called: parent={}, text='{}'",
-        parent, text
-    );
     let result = platform::get_platform().create_button(parent, text, x, y, width, height);
-    eprintln!("[rust_widgets] lib::create_button returning: {}", result);
     result
 }
 /// Create a checkbox control as a child of specified parent.
@@ -413,11 +407,6 @@ pub fn set_widget_geometry(
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
-    eprintln!(
-        "[rust_widgets] set_widget_text called: widget_id={}, text_len={}",
-        widget_id,
-        text.len()
-    );
     platform::get_platform().set_widget_text(widget_id, text);
 }
 /// Get text of a widget.

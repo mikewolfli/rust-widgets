@@ -13,7 +13,7 @@ pub trait Widget: EventHandler {
         // All real widgets override this. The default is only reached
         // if a widget type omits the override AND something calls a
         // delegated method. Log a diagnostic so it can be fixed.
-        eprintln!("[rust_widgets] ERROR: Widget::base() not implemented — aborting");
+        log::error!("[rust_widgets] Widget::base() not implemented — aborting");
         std::process::abort();
     }
     /// Returns mutable base widget state for default trait delegation.
@@ -21,7 +21,7 @@ pub trait Widget: EventHandler {
         // All real widgets override this. The default is only reached
         // if a widget type omits the override AND something calls a
         // delegated method. Log a diagnostic so it can be fixed.
-        eprintln!("[rust_widgets] ERROR: Widget::base_mut() not implemented — aborting");
+        log::error!("[rust_widgets] Widget::base_mut() not implemented — aborting");
         std::process::abort();
     }
     /// Get stable widget id.

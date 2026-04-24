@@ -4,6 +4,7 @@ pub mod box_layout;
 pub mod flow;
 pub mod form;
 pub mod grid;
+pub mod inspector;
 pub mod splitter;
 pub mod stack;
 pub use crate::core::Orientation;
@@ -56,6 +57,9 @@ pub trait Layout {
     ) {
         self.update(Rect::from_position_size(position, size), widgets);
     }
+    /// Enables downcasting from `dyn Layout` to concrete types.
+    /// Required by the layout inspector for introspection.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 #[cfg(test)]
 mod tests {

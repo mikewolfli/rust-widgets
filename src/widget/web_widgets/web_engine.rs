@@ -304,9 +304,8 @@ impl EventHandler for WebEngineView {
         }
         match event {
             Event::MousePress { pos: _, button } => {
-                // 处理鼠标点击，可能用于链接点击或页面交互
+                // Handle mouse click — simulate link navigation
                 if *button == 1 {
-                    // 模拟链接点击，更新URL
                     let new_url = format!("https://example.com/{}", 12345);
                     self.set_url(new_url);
                 }
@@ -314,19 +313,19 @@ impl EventHandler for WebEngineView {
             Event::KeyPress { key, modifiers } => {
                 match *key {
                     37 => {
-                        // 左箭头
+                        // Left arrow — go back
                         self.go_back();
                     }
                     39 => {
-                        // 右箭头
+                        // Right arrow — go forward
                         self.go_forward();
                     }
                     116 => {
-                        // F5
+                        // F5 — reload
                         self.reload();
                     }
                     82 => {
-                        // R键（Ctrl+R）
+                        // Ctrl+R — reload
                         if *modifiers == 1 {
                             self.reload();
                         }

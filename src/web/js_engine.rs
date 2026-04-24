@@ -176,7 +176,7 @@ impl SimpleJsEngine {
         }
     }
     fn parse_value(&self, s: &str) -> JsValue {
-        let s = s.trim();
+        let s = s.trim().trim_end_matches(';');
         if s == "undefined" {
             return JsValue::Undefined;
         }

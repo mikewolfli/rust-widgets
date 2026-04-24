@@ -2,8 +2,9 @@
 
 #![allow(deprecated)]
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use crate::core::{ObjectId, PlatformFamily};
+use crate::platform::state::BackendState;
+use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
@@ -14,9 +15,8 @@ use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
-use crate::core::{ObjectId, PlatformFamily};
-use crate::platform::state::BackendState;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HandleKind {
@@ -101,12 +101,12 @@ extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
         }
     });
     if result.is_err() {
-        eprintln!("[rust_widgets] Panic in on_menu_item handler");
+        log::error!("[rust_widgets] Panic in on_menu_item handler");
     }
 }
 extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSButton actions.
-    eprintln!(
+    log::info!(
         "[rust_widgets] on_button_clicked: CALLED! sender={:?}",
         sender
     );
@@ -114,20 +114,20 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
     let result = std::panic::catch_unwind(|| {
         unsafe {
             if sender == nil {
-                eprintln!("[rust_widgets] on_button_clicked: sender is nil");
+                log::error!("[rust_widgets] on_button_clicked: sender is nil");
                 return;
             }
             let represented: id = msg_send![sender, representedObject];
-            eprintln!(
+            log::debug!(
                 "[rust_widgets] on_button_clicked: represented={:?}",
                 represented
             );
             if represented == nil {
-                eprintln!("[rust_widgets] on_button_clicked: representedObject is nil");
+                log::error!("[rust_widgets] on_button_clicked: representedObject is nil");
                 return;
             }
             let widget_id: u64 = msg_send![represented, unsignedLongLongValue];
-            eprintln!(
+            log::debug!(
                 "[rust_widgets] on_button_clicked: widget_id = {}",
                 widget_id
             );
@@ -138,22 +138,22 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
                         widget_id,
                         kind: WidgetTriggerKind::Clicked,
                     });
-                    eprintln!(
+                    log::debug!(
                         "[rust_widgets] on_button_clicked: event pushed, queue size = {}",
                         events.len()
                     );
                 } else {
-                    eprintln!("[rust_widgets] on_button_clicked: failed to lock widget_events");
+                    log::error!("[rust_widgets] on_button_clicked: failed to lock widget_events");
                 }
             }
         }
     });
     if result.is_err() {
-        eprintln!("[rust_widgets] Panic in on_button_clicked handler");
+        log::error!("[rust_widgets] Panic in on_button_clicked handler");
     }
 }
 extern "C" fn on_button_clicked_simple(_this: &Object, _cmd: Sel) {
-    eprintln!("[rust_widgets] on_button_clicked_simple: called");
+    log::error!("[rust_widgets] on_button_clicked_simple: called");
 }
 pub(crate) fn menu_target_class() -> *const Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
@@ -207,17 +207,17 @@ pub(crate) fn button_target_class() -> *const Class {
 pub(crate) fn shared_button_target() -> id {
     let ptr = *BUTTON_TARGET.get_or_init(|| unsafe {
         let class = button_target_class();
-        eprintln!(
+        log::info!(
             "[rust_widgets] shared_button_target: creating target with class {:?}",
             class
         );
         let obj: id = msg_send![class, new];
-        eprintln!("[rust_widgets] shared_button_target: created obj {:?}", obj);
+        log::error!("[rust_widgets] shared_button_target: created obj {:?}", obj);
         // Retain the object to keep it alive
         let _: () = msg_send![obj, retain];
         obj as usize
     });
-    eprintln!(
+    log::info!(
         "[rust_widgets] shared_button_target: returning target {:?}",
         ptr as id
     );
@@ -365,4 +365,3 @@ impl MacOSPlatform {
         }
     }
 }
-

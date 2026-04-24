@@ -5,22 +5,21 @@
 //! Also contains the `impl SoftwareSurface` block with all software rendering methods.
 
 use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::{BackBuffer, SceneLayer, RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextCluster, TextMetrics};
-use crate::render::{default_software_render_config, is_empty_rect};
-use crate::render::pipeline::controls::{
-    push_widget_fill_and_border, centered_text_origin,
+use crate::render::pipeline::controls::{centered_text_origin, push_widget_fill_and_border};
+use crate::render::pipeline::pixel_ops::{
+    blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, cluster_ends_with_zwj,
+    draw_bitmap_glyph, estimate_cluster_advance, fill_pixels, inset_rect, is_combining_mark,
+    is_variation_selector, line_stroke_coverage_grid, rounded_rect_coverage,
+    rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel,
 };
-use crate::render::pipeline::pixel_ops::{fill_pixels, blend_pixel, set_pixel,
-    circle_fill_coverage_grid, circle_stroke_coverage_grid, line_stroke_coverage_grid,
-    rounded_rect_coverage_grid, draw_bitmap_glyph,
-    cluster_ends_with_zwj, is_combining_mark, is_variation_selector,
-    estimate_cluster_advance,
-    rounded_rect_effective_radius, inset_rect,
-    rounded_rect_coverage,
+use crate::render::{default_software_render_config, is_empty_rect};
+use crate::render::{
+    BackBuffer, RenderCommand, SceneLayer, ShapedText, SoftwareRenderConfig, SoftwareSurface,
+    TextCluster, TextMetrics,
 };
 use crate::widget::{
-    Canvas, ChartWidget, DockPanel, GridWidget, GroupBox, MdiArea,
-    RichEdit, Splitter, TabWidget, TableWidget, TextEdit, TreeView, Widget,
+    Canvas, ChartWidget, DockPanel, GridWidget, GroupBox, MdiArea, RichEdit, Splitter, TabWidget,
+    TableWidget, TextEdit, TreeView, Widget,
 };
 
 pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &TabWidget) {
@@ -292,9 +291,9 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
     if is_empty_rect(&rect) {
         return;
     }
-    // Draw grid lines
-    let rows = 4u32;
-    let cols = 4u32;
+    // Draw grid lines — read actual dimensions from the widget
+    let rows = grid_widget.rows().max(1);
+    let cols = grid_widget.columns().max(1);
     let cell_width = rect.width / cols;
     let cell_height = rect.height / rows;
     // Horizontal lines

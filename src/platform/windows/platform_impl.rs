@@ -1,6 +1,7 @@
 //! `impl Platform for WindowsPlatform` — the main trait implementation.
 
 use crate::core::{ObjectId, PlatformFamily};
+use crate::error::RwError;
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
     WidgetTriggerEvent, WidgetTriggerKind,
@@ -215,7 +216,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!(
+                log::error!(
                     "[rust_widgets][windows] create_window failed for title='{}'",
                     title
                 );
@@ -306,7 +307,7 @@ impl Platform for WindowsPlatform {
             if let Some(id) = try_create_label(self, parent, text, x, y, width, height) {
                 return id;
             }
-            eprintln!("[rust_widgets][windows] create_label failed (parent={parent})");
+            log::error!("[rust_widgets][windows] create_label failed (parent={parent})");
             return 0;
         }
         #[cfg(not(target_os = "windows"))]
@@ -353,7 +354,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_checkbox failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_checkbox failed (parent={parent})");
                 return 0;
             }
             let widget_id =
@@ -409,7 +410,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_radio_button failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_radio_button failed (parent={parent})");
                 return 0;
             }
             let widget_id =
@@ -472,7 +473,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_line_edit failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_line_edit failed (parent={parent})");
                 return 0;
             }
             let widget_id =
@@ -494,7 +495,7 @@ impl Platform for WindowsPlatform {
         if let Some(widget_id) = try_create_slider(self, parent, x, y, width, height) {
             return widget_id;
         }
-        eprintln!("[rust_widgets][windows] create_slider failed (parent={parent})");
+        log::error!("[rust_widgets][windows] create_slider failed (parent={parent})");
         0
     }
     fn create_progress_bar(
@@ -508,7 +509,7 @@ impl Platform for WindowsPlatform {
         if let Some(widget_id) = try_create_progress_bar(self, parent, x, y, width, height) {
             return widget_id;
         }
-        eprintln!("[rust_widgets][windows] create_progress_bar failed (parent={parent})");
+        log::error!("[rust_widgets][windows] create_progress_bar failed (parent={parent})");
         0
     }
     fn create_combo_box(
@@ -522,7 +523,7 @@ impl Platform for WindowsPlatform {
         if let Some(widget_id) = try_create_combo_box(self, parent, x, y, width, height) {
             return widget_id;
         }
-        eprintln!("[rust_widgets][windows] create_combo_box failed (parent={parent})");
+        log::error!("[rust_widgets][windows] create_combo_box failed (parent={parent})");
         0
     }
     fn combo_box_add_item(&self, combo_box: ObjectId, text: &str) -> bool {
@@ -689,7 +690,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_list_box failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_list_box failed (parent={parent})");
                 return 0;
             }
             let widget_id = self.state.create_widget(
@@ -877,7 +878,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_panel failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_panel failed (parent={parent})");
                 return 0;
             }
             let widget_id =
@@ -906,7 +907,7 @@ impl Platform for WindowsPlatform {
             let _ = (parent, x, y, width, height);
             let menu_bar_handle = unsafe { CreateMenu() };
             if menu_bar_handle.is_null() {
-                eprintln!("[rust_widgets][windows] create_menu_bar failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_menu_bar failed (parent={parent})");
                 return 0;
             }
             let widget_id = self.state.create_widget(
@@ -951,7 +952,7 @@ impl Platform for WindowsPlatform {
                 match handles.get(&parent).copied() {
                     Some(value) => value,
                     None => {
-                        eprintln!(
+                        log::error!(
                             "[rust_widgets][windows] create_menu failed: invalid parent={parent}"
                         );
                         return 0;
@@ -960,7 +961,7 @@ impl Platform for WindowsPlatform {
             };
             let submenu_handle = unsafe { CreatePopupMenu() };
             if submenu_handle.is_null() {
-                eprintln!("[rust_widgets][windows] create_menu failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_menu failed (parent={parent})");
                 return 0;
             }
             let text_wide = Self::to_wide(text);
@@ -973,7 +974,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if append_ok == 0 {
-                eprintln!(
+                log::error!(
                     "[rust_widgets][windows] create_menu failed: AppendMenuW failed (parent={parent})"
                 );
                 return 0;
@@ -1015,7 +1016,7 @@ impl Platform for WindowsPlatform {
             let hwnd = match self.get_native_handle(window) {
                 Some(hwnd) => hwnd,
                 None => {
-                    eprintln!(
+                    log::error!(
                         "[rust_widgets][windows] attach_menu_bar_to_window failed: invalid window={window}"
                     );
                     return false;
@@ -1029,7 +1030,7 @@ impl Platform for WindowsPlatform {
                 match handles.get(&menu_bar).copied() {
                     Some(value) => value,
                     None => {
-                        eprintln!(
+                        log::error!(
                             "[rust_widgets][windows] attach_menu_bar_to_window failed: invalid menu_bar={menu_bar}"
                         );
                         return false;
@@ -1038,7 +1039,7 @@ impl Platform for WindowsPlatform {
             };
             let set_ok = unsafe { SetMenu(hwnd, menu_handle as HMENU) };
             if set_ok == 0 {
-                eprintln!(
+                log::error!(
                     "[rust_widgets][windows] attach_menu_bar_to_window failed: SetMenu returned 0"
                 );
                 return false;
@@ -1071,7 +1072,7 @@ impl Platform for WindowsPlatform {
                 match handles.get(&parent_menu).copied() {
                     Some(value) => value,
                     None => {
-                        eprintln!(
+                        log::error!(
                             "[rust_widgets][windows] menu_add_item failed: invalid parent_menu={parent_menu}"
                         );
                         return 0;
@@ -1092,7 +1093,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if append_ok == 0 {
-                eprintln!(
+                log::error!(
                     "[rust_widgets][windows] menu_add_item failed: AppendMenuW failed (parent_menu={parent_menu})"
                 );
                 return 0;
@@ -1229,7 +1230,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_tool_bar failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_tool_bar failed (parent={parent})");
                 return 0;
             }
             let widget_id = self.state.create_widget(
@@ -1287,7 +1288,7 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                eprintln!("[rust_widgets][windows] create_status_bar failed (parent={parent})");
+                log::error!("[rust_widgets][windows] create_status_bar failed (parent={parent})");
                 return 0;
             }
             let widget_id =
@@ -1315,7 +1316,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows MessageBox (MessageBoxW API)
+            // Reserved for native Windows MessageBox (MessageBoxW API)
+            log::error!("[rust_widgets][windows] MessageBox stubbed: title='{}'", _title);
+            let _ = RwError::not_implemented("Windows native MessageBox");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1334,7 +1337,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows file dialog (IFileOpenDialog/IFileSaveDialog)
+            // Reserved for native Windows file dialog (IFileOpenDialog/IFileSaveDialog)
+            log::error!("[rust_widgets][windows] File dialog stubbed");
+            let _ = RwError::not_implemented("Windows native file dialog");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1353,7 +1358,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows color dialog (CHOOSECOLORW)
+            // Reserved for native Windows color dialog (CHOOSECOLORW)
+            log::error!("[rust_widgets][windows] Color dialog stubbed");
+            let _ = RwError::not_implemented("Windows native color dialog");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1372,7 +1379,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows font dialog (CHOOSEFONTW)
+            // Reserved for native Windows font dialog (CHOOSEFONTW)
+            log::error!("[rust_widgets][windows] Font dialog stubbed");
+            let _ = RwError::not_implemented("Windows native font dialog");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1391,7 +1400,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows spin box (Up-Down control)
+            // Reserved for native Windows spin box (Up-Down control)
+            log::error!("[rust_widgets][windows] Spin box stubbed");
+            let _ = RwError::not_implemented("Windows native spin box");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1410,7 +1421,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows list view (SysListView32)
+            // Reserved for native Windows list view (SysListView32)
+            log::error!("[rust_widgets][windows] List view stubbed");
+            let _ = RwError::not_implemented("Windows native list view");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1429,7 +1442,9 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement native Windows scroll area (WS_HSCROLL/WS_VSCROLL)
+            // Reserved for native Windows scroll area (WS_HSCROLL/WS_VSCROLL)
+            log::error!("[rust_widgets][windows] Scroll area stubbed");
+            let _ = RwError::not_implemented("Windows native scroll area");
             0
         }
         #[cfg(not(target_os = "windows"))]
@@ -1521,9 +1536,11 @@ impl Platform for WindowsPlatform {
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement OLE drag-drop (IDropSource/IDropTarget)
+            // Reserved for OLE drag-drop (IDropSource/IDropTarget)
             // Requires: DoDragDrop, OleInitialize, RegisterDragDrop, RevokeDragDrop
             // See: https://learn.microsoft.com/en-us/windows/win32/shell/dragdrop
+            log::error!("[rust_widgets][windows] OLE drag-drop stubbed");
+            let _ = RwError::not_implemented("Windows OLE drag-drop");
             false
         }
         #[cfg(not(target_os = "windows"))]
@@ -1535,7 +1552,9 @@ impl Platform for WindowsPlatform {
     fn poll_drop_event(&self) -> Option<DropEvent> {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement OLE drag-drop event polling
+            // Reserved for OLE drag-drop event polling
+            log::error!("[rust_widgets][windows] Drop event polling stubbed");
+            let _ = RwError::not_implemented("Windows OLE drag-drop polling");
             None
         }
         #[cfg(not(target_os = "windows"))]
@@ -1546,7 +1565,9 @@ impl Platform for WindowsPlatform {
     fn inject_drop_event(&self, _event: DropEvent) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // TODO: Implement OLE drag-drop event injection
+            // Reserved for OLE drag-drop event injection
+            log::error!("[rust_widgets][windows] Drop event injection stubbed");
+            let _ = RwError::not_implemented("Windows OLE drag-drop injection");
             false
         }
         #[cfg(not(target_os = "windows"))]

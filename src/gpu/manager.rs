@@ -7,13 +7,13 @@
 //! - Detects performance traps and provides user guidance
 //!
 //! This integrates with the existing memory pool system in `crate::memory`.
-use std::sync::Mutex;
 use super::adapter::{AdapterInfo, AdapterSelectionStrategy, AdapterSelector};
 use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
 use super::performance::{
     AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
 use crate::quality::{QualityLevel, QualityManager};
+use std::sync::Mutex;
 /// GPU operation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuOperationMode {
@@ -175,18 +175,18 @@ impl GpuManager {
         match &trap {
             PerformanceTrap::LowFrameRate { current_fps, .. } => {
                 // Already handled by quality manager
-                eprintln!("[gpu] Low frame rate detected: {:.1} FPS", current_fps);
+                log::warn!("[gpu] Low frame rate detected: {:.1} FPS", current_fps);
             }
             PerformanceTrap::MemoryPressure { utilization } => {
-                eprintln!("[gpu] Memory pressure: {:.0}%", utilization * 100.0);
+                log::warn!("[gpu] Memory pressure: {:.0}%", utilization * 100.0);
                 self.add_warning(&trap.message());
             }
             PerformanceTrap::CpuOverload { utilization } => {
-                eprintln!("[gpu] CPU overload: {:.0}%", utilization * 100.0);
+                log::warn!("[gpu] CPU overload: {:.0}%", utilization * 100.0);
                 self.add_warning(&trap.message());
             }
             PerformanceTrap::BrowserForcedIntegratedGpu => {
-                eprintln!("[gpu] Browser forcing integrated GPU");
+                log::warn!("[gpu] Browser forcing integrated GPU");
                 self.add_warning(&trap.message());
             }
         }

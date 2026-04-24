@@ -184,8 +184,9 @@ mod tests {
             let quality = renderer.update_frame_time(target_frame_time * 2.0); // 2x slower
             println!("Quality after slow frame: {:?}", quality);
         }
-        // Should degrade to Medium after 5 slow frames
-        assert_eq!(renderer.current_quality(), QualityLevel::Medium);
+        // After 10 slow frames: High→Medium(5 frames)→Low(5 more frames)
+        // Two full degradation steps
+        assert_eq!(renderer.current_quality(), QualityLevel::Low);
     }
     #[test]
     fn test_quality_upgrade() {

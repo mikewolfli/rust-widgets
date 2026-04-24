@@ -1,5 +1,18 @@
 //! Rendering quality level enum.
 /// Rendering quality levels for adaptive performance control.
+///
+/// # Examples
+///
+/// ```rust
+/// use rust_widgets::quality::QualityLevel;
+///
+/// let high = QualityLevel::High;
+/// let medium = QualityLevel::Medium;
+/// let low = QualityLevel::Low;
+///
+/// assert!(low < medium);
+/// assert!(medium < high);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QualityLevel {
     /// High quality: full effects including anti-aliasing, shadows, complex shaders.

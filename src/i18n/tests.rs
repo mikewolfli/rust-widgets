@@ -20,10 +20,15 @@ fn test_i18n_manager_with_translations() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("en.json");
     let json = r#"{
-        "hello": {"message": "Hello World"}
+        "language": "en",
+        "translations": {
+            "hello": {"message": "Hello World"}
+        }
     }"#;
     fs::write(&file_path, json).unwrap();
-    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    manager
+        .load_translations(file_path.to_str().unwrap())
+        .unwrap();
     manager.set_language("en");
     assert_eq!(manager.translate("hello"), "Hello World");
 }

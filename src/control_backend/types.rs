@@ -46,6 +46,9 @@ pub(crate) struct CustomControlState {
     // Store widget properties for custom painting
     pub(crate) widget_properties: HashMap<ObjectId, CustomWidgetProperties>,
 }
+/// Properties for custom-painted controls.
+/// Reserved for future custom control rendering — stores geometry and kind metadata
+/// that will be used when the custom-paint path is wired to the rendering pipeline.
 #[allow(dead_code)]
 pub(crate) struct CustomWidgetProperties {
     pub(crate) parent: Option<ObjectId>,

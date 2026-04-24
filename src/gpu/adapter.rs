@@ -1,25 +1,26 @@
 //! GPU adapter detection and selection with hardware auto-detection.
 //!
 //! This module provides intelligent GPU adapter selection with the following priority:
-//! 1. Discrete GPU (独显) - Highest performance
-//! 2. Integrated GPU (集显) - Balanced performance
+//! 1. Discrete GPU - Highest performance
+//! 2. Integrated GPU - Balanced performance
 //! 3. CPU Software Rendering (CPU) - Fallback mode
 //!
 //! # Example
-//! ```
+//! ```no_run
 //! use rust_widgets::gpu::adapter::{AdapterSelector, AdapterSelectionStrategy};
 //!
 //! let selector = AdapterSelector::new();
-//! let adapter_info = selector.select_adapter_with_fallback(None).unwrap();
+//! // select_adapter_with_fallback is async and requires pollster or tokio runtime
+//! let adapter_info = pollster::block_on(selector.select_adapter_with_fallback(None)).unwrap();
 //! println!("Selected: {:?}", adapter_info.device_type);
 //! ```
 use std::fmt;
 /// GPU type for simplified hardware detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuType {
-    /// Discrete GPU (独立显卡)
+    /// Discrete GPU
     Discrete,
-    /// Integrated GPU (集成显卡)
+    /// Integrated GPU
     Integrated,
     /// CPU software rendering
     Cpu,
@@ -54,15 +55,15 @@ impl From<GpuDeviceType> for GpuType {
 /// GPU device type with priority ordering
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDeviceType {
-    /// Discrete GPU (独立显卡) - Highest priority
+    /// Discrete GPU — highest priority
     DiscreteGpu,
-    /// Integrated GPU (集成显卡) - Medium priority
+    /// Integrated GPU — medium priority
     IntegratedGpu,
-    /// Virtual GPU (虚拟显卡) - Low priority
+    /// Virtual GPU — low priority
     VirtualGpu,
     /// Other GPU types
     Other,
-    /// CPU Software Rendering (CPU软件渲染) - Lowest priority, fallback
+    /// CPU software rendering — lowest priority (fallback)
     Cpu,
 }
 impl GpuDeviceType {
@@ -104,14 +105,15 @@ impl GpuDeviceType {
     pub fn is_cpu(&self) -> bool {
         matches!(self, GpuDeviceType::Cpu)
     }
-    /// Returns a human-readable description
+    /// Returns a human-readable description (English).
+    /// i18n: localize via display name lookup table if needed.
     pub fn description(&self) -> &'static str {
         match self {
-            GpuDeviceType::DiscreteGpu => "Discrete GPU (独立显卡)",
-            GpuDeviceType::IntegratedGpu => "Integrated GPU (集成显卡)",
-            GpuDeviceType::VirtualGpu => "Virtual GPU (虚拟显卡)",
+            GpuDeviceType::DiscreteGpu => "Discrete GPU",
+            GpuDeviceType::IntegratedGpu => "Integrated GPU",
+            GpuDeviceType::VirtualGpu => "Virtual GPU",
             GpuDeviceType::Other => "Other GPU",
-            GpuDeviceType::Cpu => "CPU Software Rendering (CPU软件渲染)",
+            GpuDeviceType::Cpu => "CPU Software Rendering",
         }
     }
     /// Returns the performance tier (0-5, higher is better)
@@ -142,7 +144,24 @@ impl From<wgpu::DeviceType> for GpuDeviceType {
         }
     }
 }
-/// Information about a GPU adapter
+/// Information about a GPU adapter.
+///
+/// # Examples
+///
+/// ```rust
+/// use rust_widgets::gpu::{AdapterInfo, GpuDeviceType};
+///
+/// let info = AdapterInfo {
+///     device_type: GpuDeviceType::DiscreteGpu,
+///     vendor: String::from("Mock"),
+///     name: String::from("Mock GPU"),
+///     backend: String::from("Vulkan"),
+///     driver: String::from("Mock driver"),
+///     driver_version: 1,
+///     is_selected: false,
+/// };
+/// assert!(!info.is_selected);
+/// ```
 #[derive(Debug, Clone)]
 pub struct AdapterInfo {
     /// Device type

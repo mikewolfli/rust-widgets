@@ -76,7 +76,7 @@ impl BaseWidget {
             layout_requested: GenericSignal::new(),
         }
     }
-    // 基础方法实现
+    // -- Base accessors --
     pub fn id(&self) -> ObjectId {
         self.object.id()
     }
@@ -192,7 +192,7 @@ impl BaseWidget {
 }
 impl EventHandler for BaseWidget {
     fn handle_event(&mut self, event: &Event) {
-        // 基础事件处理逻辑
+        // Default event routing: delegate to typed signals
         match event {
             Event::MouseMove { pos } => {
                 self.hover.emit(*pos);

@@ -19,6 +19,7 @@ pub mod view_widgets;
 pub mod web_widgets;
 // Individual widget files (not in subfolders)
 pub mod window;
+pub use window::Window;
 // Legacy module aliases for backward compatibility paths.
 pub use display_widgets::lcd_number;
 pub use input_widgets::command_link;

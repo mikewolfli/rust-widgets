@@ -69,10 +69,10 @@ impl GroupBox {
     /// Returns title rectangle.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
-        // Note: measure_text需要通过RenderContext调用
-        // 这里暂时使用估算值
-        let text_width = self.title.len() as u32 * 8; // 估算宽度
-        let text_height = 16i32; // 估算高度
+        // FIXME: measure_text requires RenderContext which is not available here
+        // Using approximate text size until proper measuring is wired in
+        let text_width = self.title.len() as u32 * 8; // Approximate char width (pixels)
+        let text_height = 16i32; // Approximate line height (pixels)
         let x = match self.alignment {
             Alignment::Left => rect.x + 10,
             Alignment::Center => rect.x + ((rect.width - text_width) / 2) as i32,
@@ -237,13 +237,25 @@ impl Draw for GroupBox {
                 // Draw checkmark if checked
                 if self.checked {
                     context.draw_line(
-                        Point::from_f32(checkbox_rect.x as f32 + 2.0, checkbox_rect.y as f32 + checkbox_rect.height as f32 * 0.5),
-                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5, checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0),
+                        Point::from_f32(
+                            checkbox_rect.x as f32 + 2.0,
+                            checkbox_rect.y as f32 + checkbox_rect.height as f32 * 0.5,
+                        ),
+                        Point::from_f32(
+                            checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5,
+                            checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0,
+                        ),
                         Color::from_rgb(0, 0, 0),
                     );
                     context.draw_line(
-                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5, checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0),
-                        Point::from_f32(checkbox_rect.x as f32 + checkbox_rect.width as f32 - 2.0, checkbox_rect.y as f32 + 2.0),
+                        Point::from_f32(
+                            checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5,
+                            checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0,
+                        ),
+                        Point::from_f32(
+                            checkbox_rect.x as f32 + checkbox_rect.width as f32 - 2.0,
+                            checkbox_rect.y as f32 + 2.0,
+                        ),
                         Color::from_rgb(0, 0, 0),
                     );
                 }

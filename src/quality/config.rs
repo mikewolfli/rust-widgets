@@ -1,6 +1,16 @@
 //! Quality adjustment configuration.
 use super::level::QualityLevel;
 /// Configuration for quality adjustment behavior.
+///
+/// # Examples
+///
+/// ```rust
+/// use rust_widgets::quality::QualityConfig;
+///
+/// let config = QualityConfig::default();
+/// assert!(config.target_frame_rate > 0.0);
+/// assert!(config.degrade_threshold >= 1.0);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct QualityConfig {
     /// Target frame rate in frames per second.

@@ -25,7 +25,7 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
                         Ok(()) => {
                             report.files_loaded += 1;
                             if diagnostics {
-                                eprintln!("[i18n] Loaded translations from: {:?}", path);
+                                log::info!("[i18n] Loaded translations from: {:?}", path);
                             }
                         }
                         Err(e) => {

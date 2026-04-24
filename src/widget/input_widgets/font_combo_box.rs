@@ -231,14 +231,14 @@ impl EventHandler for FontComboBox {
         match event {
             Event::MousePress { pos: _, button } => {
                 if button == &1 {
-                    // 显示下拉菜单
+                    // Show the dropdown list
                     self.show_popup();
                     self.base.clicked.emit();
                 }
             }
             Event::MouseRelease { pos: _, button } => {
                 if button == &1 {
-                    // 模拟选择操作
+                    // Simulate selection: cycle to next font
                     if self.fonts.len() > 0 {
                         let new_index = (self.current_index + 1) % self.fonts.len() as i32;
                         self.set_current_index(new_index);
@@ -249,18 +249,18 @@ impl EventHandler for FontComboBox {
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
                     13 | 32 => {
-                        // Enter或Space键
+                        // Enter or Space
                         if self.fonts.len() > 0 && self.current_index >= 0 {
                             self.activated.emit(self.current_index);
                         }
                         self.base.clicked.emit();
                     }
                     27 => {
-                        // Escape键
+                        // Escape
                         self.hide_popup();
                     }
                     38 => {
-                        // 上箭头
+                        // Up arrow
                         if self.fonts.len() > 0 {
                             let new_index = if self.current_index <= 0 {
                                 self.fonts.len() as i32 - 1
@@ -271,7 +271,7 @@ impl EventHandler for FontComboBox {
                         }
                     }
                     40 => {
-                        // 下箭头
+                        // Down arrow
                         if self.fonts.len() > 0 {
                             let new_index = (self.current_index + 1) % self.fonts.len() as i32;
                             self.set_current_index(new_index);
@@ -317,7 +317,12 @@ impl Draw for FontComboBox {
             );
         }
         // Draw dropdown arrow button
-        let arrow_rect = Rect::new(rect.x + rect.width as f32 as i32 - 24, rect.y, 24, rect.height);
+        let arrow_rect = Rect::new(
+            rect.x + rect.width as f32 as i32 - 24,
+            rect.y,
+            24,
+            rect.height,
+        );
         let arrow_color = if self.base.is_enabled() {
             text_color
         } else {
@@ -329,8 +334,20 @@ impl Draw for FontComboBox {
         let arrow_x = arrow_rect.x + arrow_rect.width as i32 / 2;
         let arrow_y = arrow_rect.y + arrow_rect.height as i32 / 2;
         let arrow_size = 6;
-        context.draw_line(Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2), Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2), arrow_color);
-        context.draw_line(Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2), Point::new(arrow_x, arrow_y + arrow_size / 2), arrow_color);
-        context.draw_line(Point::new(arrow_x, arrow_y + arrow_size / 2), Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2), arrow_color);
+        context.draw_line(
+            Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2),
+            Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2),
+            arrow_color,
+        );
+        context.draw_line(
+            Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2),
+            Point::new(arrow_x, arrow_y + arrow_size / 2),
+            arrow_color,
+        );
+        context.draw_line(
+            Point::new(arrow_x, arrow_y + arrow_size / 2),
+            Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2),
+            arrow_color,
+        );
     }
 }

@@ -1,0 +1,962 @@
+//! JSON layout loader — parses JSON source and instantiates widget trees.
+//!
+//! The [`JsonLoader`] reads a JSON string, recursively creates
+//! widget instances, applies properties (geometry, style, events),
+//! and returns a [`BoundJsonLayout`](crate::json::BoundJsonLayout)
+//! for typed widget access.
+//!
+//! # i18n Support
+//!
+//! Text properties (`title`, `text`, `tooltip`, `placeholder`) accept
+//! translation keys. Use the [`crate::i18n::I18nManager::translate`] or
+//! the [`crate::tr!`] macro at the call site to resolve the key before
+//! passing JSON to the loader. The loader itself does NOT call the
+//! i18n manager – it uses the literal string values from JSON.
+//!
+//! # Event Binding
+//!
+//! When a JSON node declares `"on_click": "handler_name"`, the string
+//! is stored in the loader and connected after instantiation.
+//! Callers use [`EventHandlerMap`](crate::json::EventHandlerMap) to
+//! register closures against those handler names.
+
+use serde_json::Value;
+
+use crate::app::{ButtonHandle, WidgetHandle};
+use crate::json::{
+    add_spacer_to_layout, add_widget_to_layout, create_layout_from_kind, parse_layout_kind,
+    store_layout, BoundJsonLayout, ChildLayoutAttrs,
+};
+use crate::widget::{
+    Button, CheckBox, ComboBox, GridWidget, GroupBox, Label, LineEdit, ListBox, ListView,
+    ProgressBar, RadioButton, ScrollArea, ScrollBar, Slider, SpinBox, TabWidget, TextEdit, Widget,
+};
+use crate::window::Window;
+use crate::{
+    core::{Alignment, Color, ObjectId, Orientation, Rect},
+    index::WidgetKind,
+};
+
+/// Maximum nested depth for recursive instantiation (prevents stack overflow).
+const MAX_DEPTH: u32 = 64;
+
+/// A loader that parses JSON layout strings and instantiates widget trees.
+pub struct JsonLoader;
+
+impl JsonLoader {
+    /// Parse a JSON layout string and instantiate the widget tree.
+    ///
+    /// Returns a [`BoundJsonLayout`] for typed widget access.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSON parsing fails, an unknown widget type is
+    /// encountered, or the widget tree exceeds [`MAX_DEPTH`].
+    pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
+        let value: Value =
+            serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;
+        let mut registry = crate::index::WidgetRegistry::new();
+        let mut binding = BoundJsonLayout::new();
+
+        let root = value
+            .as_object()
+            .ok_or_else(|| "JSON root must be an object".to_string())?;
+
+        // The root should have exactly one top-level key (the widget type).
+        if root.len() != 1 {
+            return Err(format!(
+                "JSON root must have exactly one widget type, found {} keys",
+                root.len()
+            ));
+        }
+
+        let (widget_type, widget_value) = root.iter().next().unwrap();
+        Self::instantiate_node(
+            widget_type,
+            widget_value,
+            None,
+            &mut registry,
+            &mut binding,
+            0,
+        )?;
+
+        Ok(binding)
+    }
+
+    /// Recursively instantiate a single JSON node into a widget.
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_node(
+        widget_type: &str,
+        value: &Value,
+        parent_id: Option<ObjectId>,
+        registry: &mut crate::index::WidgetRegistry,
+        binding: &mut BoundJsonLayout,
+        depth: u32,
+    ) -> Result<ObjectId, String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("Maximum widget depth ({}) exceeded", MAX_DEPTH));
+        }
+
+        let obj = value
+            .as_object()
+            .ok_or_else(|| format!("'{}' value must be a JSON object", widget_type))?;
+
+        // Get the widget ID (optional — auto-generated if missing).
+        let id_str = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Handle the "spacer" pseudo-widget
+        if widget_type.eq_ignore_ascii_case("spacer") {
+            let stretch = obj.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            if let Some(pid) = parent_id {
+                add_spacer_to_layout(stretch, pid, registry);
+            }
+            return Ok(0);
+        }
+
+        // Handle the "layout" pseudo-widget
+        if widget_type.eq_ignore_ascii_case("layout") {
+            let kind = parse_layout_kind(value)?;
+            let layout = create_layout_from_kind(&kind);
+            let layout_parent = parent_id
+                .ok_or_else(|| format!("'{}' layout must be a child of a widget", widget_type))?;
+
+            // Process children
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                for child_value in children {
+                    if let Some(child_obj) = child_value.as_object() {
+                        if child_obj.len() == 1 {
+                            let (child_type, child_val) = child_obj.iter().next().unwrap();
+                            if child_type.eq_ignore_ascii_case("spacer") {
+                                let stretch = child_val
+                                    .get("stretch")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(1)
+                                    as u32;
+                                add_spacer_to_layout(stretch, layout_parent, registry);
+                                continue;
+                            }
+
+                            let child_id = Self::instantiate_node(
+                                child_type,
+                                child_val,
+                                Some(layout_parent),
+                                registry,
+                                binding,
+                                depth + 1,
+                            )?;
+
+                            if child_id != 0 {
+                                let attrs = ChildLayoutAttrs::from_value(child_val);
+                                add_widget_to_layout(
+                                    layout.as_ref(),
+                                    child_id,
+                                    attrs.stretch,
+                                    layout_parent,
+                                    registry,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            store_layout(layout_parent, layout, registry);
+            return Ok(layout_parent);
+        }
+
+        // Create the widget
+        let mut widget: Box<dyn Widget> = Self::create_widget(widget_type, obj)?;
+
+        // Apply common properties (geometry, enabled, visible, tooltip, style)
+        apply_properties(&mut *widget, obj);
+
+        // Apply min/max size constraints
+        apply_size_constraints(&mut *widget, obj);
+
+        // Set parent
+        widget.set_parent(parent_id);
+
+        // Register
+        let widget_id = widget.id();
+        let kind = infer_kind(widget_type);
+
+        let label = if id_str.is_empty() {
+            format!("{}_{}", widget_type, widget_id)
+        } else {
+            id_str.to_string()
+        };
+
+        registry.register(crate::index::WidgetEntry {
+            id: widget_id,
+            kind,
+            parent: parent_id,
+            label,
+        });
+
+        if !id_str.is_empty() {
+            binding.register(id_str, widget_id);
+        }
+
+        // ── Apply text property via platform API ────────────
+        // Text for widgets that accept it (checkbox, radiobutton,
+        // groupbox title via "title" key, lineedit placeholder, etc.)
+        // is set through the global set_widget_text function.
+        //
+        // i18n: If the text value is a translation key, resolve it
+        // BEFORE passing to the loader (e.g. tr!("button.ok")).
+        // The loader uses the literal string as-is.
+        if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+            if !text.is_empty()
+                && !matches!(widget_type.to_lowercase().as_str(), "button" | "label")
+            {
+                crate::set_widget_text(widget_id, text);
+            }
+        }
+        // Handle "title" property — BLUE4.md spec says groupbox uses "title"
+        // (not "text"). For window, title is already set in create_widget.
+        // Only apply via platform API for non-window widgets.
+        if widget_type.to_lowercase().as_str() != "window" {
+            if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                if !title.is_empty() {
+                    crate::set_widget_text(widget_id, title);
+                }
+            }
+        }
+
+        // ── Event binding: on_click / on_change ─────────────
+        // When JSON declares "on_click": "handler_name", wire the
+        // widget's click signal to invoke_global_handler.
+        let (on_click_name, on_change_name) = extract_event_handlers(obj);
+        if let Some(ref name) = on_click_name {
+            let handler_name = name.clone();
+            let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+            handle.on_click(move || {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::Clicked,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_change_name {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+
+        // Handle children (for container widgets)
+        if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+            for child_value in children {
+                if let Some(child_obj) = child_value.as_object() {
+                    if child_obj.len() == 1 {
+                        let (child_type, child_val) = child_obj.iter().next().unwrap();
+                        Self::instantiate_node(
+                            child_type,
+                            child_val,
+                            Some(widget_id),
+                            registry,
+                            binding,
+                            depth + 1,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // Handle layout inline
+        if let Some(layout_val) = obj.get("layout") {
+            let kind = parse_layout_kind(layout_val)?;
+            let layout = create_layout_from_kind(&kind);
+
+            // Process layout children from the layout object
+            if let Some(layout_obj) = layout_val.as_object() {
+                if let Some(children) = layout_obj.get("children").and_then(|v| v.as_array()) {
+                    for child_value in children {
+                        if let Some(child_obj) = child_value.as_object() {
+                            if child_obj.len() == 1 {
+                                let (child_type, child_val) = child_obj.iter().next().unwrap();
+                                if child_type.eq_ignore_ascii_case("spacer") {
+                                    let stretch = child_val
+                                        .get("stretch")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(1)
+                                        as u32;
+                                    add_spacer_to_layout(stretch, widget_id, registry);
+                                    continue;
+                                }
+
+                                let child_id = Self::instantiate_node(
+                                    child_type,
+                                    child_val,
+                                    Some(widget_id),
+                                    registry,
+                                    binding,
+                                    depth + 1,
+                                )?;
+
+                                if child_id != 0 {
+                                    let attrs = ChildLayoutAttrs::from_value(child_val);
+                                    add_widget_to_layout(
+                                        layout.as_ref(),
+                                        child_id,
+                                        attrs.stretch,
+                                        widget_id,
+                                        registry,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            store_layout(widget_id, layout, registry);
+        }
+
+        Ok(widget_id)
+    }
+
+    /// Create a widget box from a type name and property object.
+    ///
+    /// Widget-specific properties (text for Button/Label, value/items for
+    /// input widgets, min/max for sliders, etc.) are applied before boxing.
+    fn create_widget(
+        widget_type: &str,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<Box<dyn Widget>, String> {
+        let geometry = Rect::new(0, 0, 100, 100);
+        match widget_type.to_lowercase().as_str() {
+            "window" => {
+                let title = obj
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Window");
+                Ok(Box::new(Window::new(title.to_string(), geometry)))
+            }
+            "button" => {
+                let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                Ok(Box::new(Button::new(text.to_string(), geometry)))
+            }
+            "label" => {
+                let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let mut label = Label::new(text.to_string(), geometry);
+                // alignment: "left"|"center"|"right"|"top"|"bottom"
+                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
+                    label.set_alignment(match align {
+                        "center" => Alignment::Center,
+                        "right" => Alignment::Right,
+                        "top" => Alignment::Top,
+                        "bottom" => Alignment::Bottom,
+                        _ => Alignment::Left,
+                    });
+                }
+                Ok(Box::new(label))
+            }
+            "checkbox" => {
+                let mut cb = CheckBox::new(geometry);
+                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
+                    cb.set_checked(checked);
+                }
+                // tristate: enables partial check state
+                if let Some(tri) = obj.get("tristate").and_then(|v| v.as_bool()) {
+                    cb.set_tristate_enabled(tri);
+                }
+                Ok(Box::new(cb))
+            }
+            "radiobutton" => {
+                let mut rb = RadioButton::new(geometry);
+                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
+                    rb.set_checked(checked);
+                }
+                // group_id: logical group name for mutual exclusion
+                if let Some(gid) = obj.get("group_id").and_then(|v| v.as_str()) {
+                    if !gid.is_empty() {
+                        rb.set_group_id(Some(gid.to_string()));
+                    }
+                }
+                Ok(Box::new(rb))
+            }
+            "lineedit" => {
+                let mut le = LineEdit::new(geometry);
+                if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
+                    le.set_text(value.to_string());
+                }
+                if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
+                    le.set_placeholder_text(placeholder.to_string());
+                }
+                if let Some(max_len) = obj.get("max_length").and_then(|v| v.as_u64()) {
+                    le.set_max_length(Some(max_len as usize));
+                }
+                if let Some(password) = obj.get("password").and_then(|v| v.as_bool()) {
+                    if password {
+                        le.set_echo_mode(crate::widget::EchoMode::Password);
+                    }
+                }
+                Ok(Box::new(le))
+            }
+            "textedit" => {
+                let mut te = TextEdit::new(geometry);
+                if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
+                    te.set_text(value.to_string());
+                }
+                if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
+                    te.set_placeholder_text(placeholder.to_string());
+                }
+                if let Some(max_len) = obj.get("max_length").and_then(|v| v.as_u64()) {
+                    te.set_max_length(Some(max_len as usize));
+                }
+                if let Some(read_only) = obj.get("read_only").and_then(|v| v.as_bool()) {
+                    te.set_read_only(read_only);
+                }
+                if let Some(word_wrap) = obj.get("word_wrap").and_then(|v| v.as_bool()) {
+                    te.set_line_wrap(word_wrap);
+                }
+                Ok(Box::new(te))
+            }
+            "combobox" => {
+                let mut cb = ComboBox::new(geometry);
+                if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
+                    for item in items {
+                        if let Some(text) = item.as_str() {
+                            cb.add_item(text.to_string());
+                        }
+                    }
+                }
+                // current_index: pre-select an item by index (0-based)
+                if let Some(idx) = obj.get("current_index").and_then(|v| v.as_u64()) {
+                    cb.set_current_index(Some(idx as usize));
+                }
+                // editable: allow user to type custom text
+                if let Some(ed) = obj.get("editable").and_then(|v| v.as_bool()) {
+                    cb.set_editable(ed);
+                }
+                // max_visible_items: dropdown max rows
+                if let Some(max) = obj.get("max_visible_items").and_then(|v| v.as_u64()) {
+                    cb.set_max_visible_items(max as usize);
+                }
+                Ok(Box::new(cb))
+            }
+            "listbox" => {
+                let mut lb = ListBox::new(geometry);
+                if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
+                    for item in items {
+                        if let Some(text) = item.as_str() {
+                            lb.add_item(text.to_string());
+                        }
+                    }
+                }
+                if let Some(mode) = obj.get("selection_mode").and_then(|v| v.as_str()) {
+                    match mode {
+                        "none" => lb.set_selection_mode(crate::widget::SelectionMode::NoSelection),
+                        "single" => {
+                            lb.set_selection_mode(crate::widget::SelectionMode::SingleSelection)
+                        }
+                        "multi" => {
+                            lb.set_selection_mode(crate::widget::SelectionMode::MultiSelection)
+                        }
+                        "extended" => {
+                            lb.set_selection_mode(crate::widget::SelectionMode::ExtendedSelection)
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Box::new(lb))
+            }
+            "slider" => {
+                let mut sl = Slider::new(geometry);
+                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
+                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
+                    sl.set_range(min as i32, max as i32);
+                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                    sl.set_maximum(max as i32);
+                }
+                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
+                    sl.set_value(value as i32);
+                }
+                if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
+                    match orientation {
+                        "horizontal" => sl.set_orientation(Orientation::Horizontal),
+                        "vertical" => sl.set_orientation(Orientation::Vertical),
+                        _ => {}
+                    }
+                }
+                // single_step: keyboard arrow increment
+                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
+                    sl.set_single_step(step as i32);
+                }
+                // page_step: PgUp/PgDn increment
+                if let Some(step) = obj.get("page_step").and_then(|v| v.as_u64()) {
+                    sl.set_page_step(step as i32);
+                }
+                // tick_position: "none"|"above"|"below"|"both"
+                if let Some(pos) = obj.get("tick_position").and_then(|v| v.as_str()) {
+                    match pos {
+                        "above" => sl.set_tick_position(
+                            crate::widget::display_widgets::slider::TickPosition::TicksAbove,
+                        ),
+                        "below" => sl.set_tick_position(
+                            crate::widget::display_widgets::slider::TickPosition::TicksBelow,
+                        ),
+                        "both" => sl.set_tick_position(
+                            crate::widget::display_widgets::slider::TickPosition::TicksBothSides,
+                        ),
+                        _ => {}
+                    }
+                }
+                // tick_interval: interval between tick marks
+                if let Some(iv) = obj.get("tick_interval").and_then(|v| v.as_u64()) {
+                    sl.set_tick_interval(iv as i32);
+                }
+                // tracking: emit value_changed while dragging (default: true)
+                if let Some(tr) = obj.get("tracking").and_then(|v| v.as_bool()) {
+                    sl.set_tracking(tr);
+                }
+                Ok(Box::new(sl))
+            }
+            "scrollbar" => {
+                let mut sb = ScrollBar::new(geometry);
+                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
+                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
+                    sb.set_range(min as i32, max as i32);
+                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                    sb.set_maximum(max as i32);
+                }
+                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
+                    sb.set_value(value as i32);
+                }
+                if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
+                    match orientation {
+                        "horizontal" => sb.set_orientation(Orientation::Horizontal),
+                        "vertical" => sb.set_orientation(Orientation::Vertical),
+                        _ => {}
+                    }
+                }
+                // single_step: arrow button increment
+                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
+                    sb.set_single_step(step as i32);
+                }
+                // page_step: click-track increment
+                if let Some(step) = obj.get("page_step").and_then(|v| v.as_u64()) {
+                    sb.set_page_step(step as i32);
+                }
+                Ok(Box::new(sb))
+            }
+            "progressbar" => {
+                let mut pb = ProgressBar::new(geometry);
+                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
+                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
+                    pb.set_range(min as i32, max as i32);
+                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                    pb.set_maximum(max as i32);
+                }
+                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
+                    pb.set_value(value as i32);
+                }
+                // text_visible: show percentage text overlay
+                if let Some(tv) = obj.get("text_visible").and_then(|v| v.as_bool()) {
+                    pb.set_text_visible(tv);
+                }
+                // orientation: "horizontal"|"vertical"
+                if let Some(orient) = obj.get("orientation").and_then(|v| v.as_str()) {
+                    match orient {
+                        "vertical" => pb.set_orientation(Orientation::Vertical),
+                        _ => pb.set_orientation(Orientation::Horizontal),
+                    }
+                }
+                // inverted_appearance: fill from right/bottom
+                if let Some(inv) = obj.get("inverted_appearance").and_then(|v| v.as_bool()) {
+                    pb.set_inverted_appearance(inv);
+                }
+                Ok(Box::new(pb))
+            }
+            "groupbox" | "panel" => {
+                let mut gb = GroupBox::new(geometry);
+                if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                    if !title.is_empty() {
+                        gb.set_title(title.to_string());
+                    }
+                }
+                // alignment: title text alignment
+                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
+                    match align {
+                        "center" => gb.set_alignment(Alignment::Center),
+                        "right" => gb.set_alignment(Alignment::Right),
+                        _ => gb.set_alignment(Alignment::Left),
+                    }
+                }
+                // checkable: add a checkbox to the group box title
+                if let Some(chk) = obj.get("checkable").and_then(|v| v.as_bool()) {
+                    gb.set_checkable(chk);
+                }
+                // checked: initial checked state (only if checkable)
+                if let Some(chk) = obj.get("checked").and_then(|v| v.as_bool()) {
+                    if gb.is_checkable() || obj.get("checkable").is_none() {
+                        gb.set_checked(chk);
+                    }
+                }
+                Ok(Box::new(gb))
+            }
+            "tabwidget" => {
+                let mut tw = TabWidget::new(geometry);
+                if let Some(index) = obj.get("current_index").and_then(|v| v.as_u64()) {
+                    tw.set_current_index(index as usize);
+                }
+                // tab_position: "north"|"south"|"west"|"east"
+                if let Some(pos) = obj.get("tab_position").and_then(|v| v.as_str()) {
+                    match pos {
+                        "south" => tw.set_tab_position(
+                            crate::widget::container_widgets::tabwidget::TabPosition::South,
+                        ),
+                        "west" => tw.set_tab_position(
+                            crate::widget::container_widgets::tabwidget::TabPosition::West,
+                        ),
+                        "east" => tw.set_tab_position(
+                            crate::widget::container_widgets::tabwidget::TabPosition::East,
+                        ),
+                        _ => {}
+                    }
+                }
+                // tab_shape: "rounded"|"triangular"|"rectangular"
+                if let Some(shape) = obj.get("tab_shape").and_then(|v| v.as_str()) {
+                    match shape {
+                        "triangular" => tw.set_tab_shape(
+                            crate::widget::container_widgets::tabwidget::TabShape::Triangular,
+                        ),
+                        "rectangular" => tw.set_tab_shape(
+                            crate::widget::container_widgets::tabwidget::TabShape::Rectangular,
+                        ),
+                        _ => {}
+                    }
+                }
+                // closable: show close buttons on tabs
+                if let Some(cl) = obj.get("closable").and_then(|v| v.as_bool()) {
+                    tw.set_closable(cl);
+                }
+                // movable: allow drag-reordering of tabs
+                if let Some(mv) = obj.get("movable").and_then(|v| v.as_bool()) {
+                    tw.set_movable(mv);
+                }
+                Ok(Box::new(tw))
+            }
+            "grid" => {
+                let mut grid = GridWidget::new(geometry);
+                if let Some(rows) = obj.get("rows").and_then(|v| v.as_u64()) {
+                    grid.set_rows(rows as u32);
+                }
+                if let Some(cols) = obj.get("columns").and_then(|v| v.as_u64()) {
+                    grid.set_columns(cols as u32);
+                }
+                if let Some(spacing) = obj.get("spacing").and_then(|v| v.as_u64()) {
+                    grid.set_spacing(spacing as u32);
+                }
+                if let Some(color_str) = obj.get("line_color").and_then(|v| v.as_str()) {
+                    if let Some(color) = Color::parse_hex(color_str) {
+                        grid.set_line_color(Some(color));
+                    }
+                }
+                Ok(Box::new(grid))
+            }
+            "spinbox" => {
+                let mut sb = SpinBox::new(geometry);
+                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
+                    sb.set_minimum(min as i32);
+                }
+                if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                    sb.set_maximum(max as i32);
+                }
+                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
+                    sb.set_value(value as i32);
+                }
+                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
+                    sb.set_single_step(step as i32);
+                }
+                if let Some(prefix) = obj.get("prefix").and_then(|v| v.as_str()) {
+                    sb.set_prefix(prefix.to_string());
+                }
+                if let Some(suffix) = obj.get("suffix").and_then(|v| v.as_str()) {
+                    sb.set_suffix(suffix.to_string());
+                }
+                if let Some(wrap) = obj.get("wrapping").and_then(|v| v.as_bool()) {
+                    sb.set_wrapping(wrap);
+                }
+                Ok(Box::new(sb))
+            }
+            "listview" => Ok(Box::new(ListView::new(geometry))),
+            "scrollarea" => {
+                let mut sa = ScrollArea::new(geometry);
+                if let Some(resizable) = obj.get("widget_resizable").and_then(|v| v.as_bool()) {
+                    sa.set_widget_resizable(resizable);
+                }
+                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
+                    match align {
+                        "center" => sa.set_alignment(Alignment::Center),
+                        "right" => sa.set_alignment(Alignment::Right),
+                        _ => sa.set_alignment(Alignment::Left),
+                    }
+                }
+                // h_policy / v_policy: "always_on"|"always_off"|"as_needed"
+                if let Some(policy) = obj.get("h_policy").and_then(|v| v.as_str()) {
+                    sa.set_horizontal_scroll_bar_policy(match policy {
+                        "always_on" => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AlwaysOn
+                        }
+                        "always_off" => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AlwaysOff
+                        }
+                        _ => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AsNeeded
+                        }
+                    });
+                }
+                if let Some(policy) = obj.get("v_policy").and_then(|v| v.as_str()) {
+                    sa.set_vertical_scroll_bar_policy(match policy {
+                        "always_on" => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AlwaysOn
+                        }
+                        "always_off" => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AlwaysOff
+                        }
+                        _ => {
+                            crate::widget::container_widgets::scrollarea::ScrollBarPolicy::AsNeeded
+                        }
+                    });
+                }
+                Ok(Box::new(sa))
+            }
+            "frame" => {
+                use crate::widget::base_widgets::frame::Frame;
+                let mut frame = Frame::new(geometry);
+                if let Some(shape) = obj.get("frame_shape").and_then(|v| v.as_str()) {
+                    match shape {
+                        "no_frame" => frame.set_frame_shape(
+                            crate::widget::base_widgets::frame::FrameShape::NoFrame,
+                        ),
+                        "panel" => frame
+                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::Panel),
+                        "styled_panel" => frame.set_frame_shape(
+                            crate::widget::base_widgets::frame::FrameShape::StyledPanel,
+                        ),
+                        "hline" => frame
+                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::HLine),
+                        "vline" => frame
+                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::VLine),
+                        "win_panel" => frame.set_frame_shape(
+                            crate::widget::base_widgets::frame::FrameShape::WinPanel,
+                        ),
+                        _ => frame
+                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::Box),
+                    }
+                }
+                if let Some(shadow) = obj.get("frame_shadow").and_then(|v| v.as_str()) {
+                    match shadow {
+                        "raised" => frame.set_frame_shadow(
+                            crate::widget::base_widgets::frame::FrameShadow::Raised,
+                        ),
+                        "sunken" => frame.set_frame_shadow(
+                            crate::widget::base_widgets::frame::FrameShadow::Sunken,
+                        ),
+                        _ => {}
+                    }
+                }
+                if let Some(lw) = obj.get("line_width").and_then(|v| v.as_f64()) {
+                    frame.set_line_width(lw as f32);
+                }
+                Ok(Box::new(frame))
+            }
+            _ => Err(format!("unknown widget type: '{}'", widget_type)),
+        }
+    }
+}
+
+/// Apply common widget properties from a JSON object.
+///
+/// Handles: x/y/width/height, visible, enabled, tooltip,
+/// background/text_color/border_color/border_width/border_radius,
+/// padding, margin, and event bindings (on_click, on_change).
+fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
+    // ── Geometry ────────────────────────────────────────────
+    if let (Some(x), Some(y), Some(w), Some(h)) = (
+        obj.get("x").and_then(|v| v.as_i64()),
+        obj.get("y").and_then(|v| v.as_i64()),
+        obj.get("width").and_then(|v| v.as_u64()),
+        obj.get("height").and_then(|v| v.as_u64()),
+    ) {
+        widget.set_geometry(Rect::from_i64(x, y, w as i64, h as i64));
+    }
+
+    // ── Visibility ──────────────────────────────────────────
+    if let Some(visible) = obj.get("visible").and_then(|v| v.as_bool()) {
+        widget.set_visible(visible);
+    }
+
+    // ── Enabled ─────────────────────────────────────────────
+    if let Some(enabled) = obj.get("enabled").and_then(|v| v.as_bool()) {
+        widget.set_enabled(enabled);
+    }
+
+    // ── Tooltip ─────────────────────────────────────────────
+    if let Some(tooltip) = obj.get("tooltip").and_then(|v| v.as_str()) {
+        widget.set_tooltip(tooltip.to_string());
+    }
+
+    // ── Style: colors ───────────────────────────────────────
+    if let Some(bg) = obj.get("background").and_then(|v| v.as_str()) {
+        if let Some(color) = Color::parse_hex(bg) {
+            widget.set_background_color(Some(color));
+        }
+    }
+    if let Some(tc) = obj.get("text_color").and_then(|v| v.as_str()) {
+        if let Some(color) = Color::parse_hex(tc) {
+            widget.set_foreground_color(Some(color));
+        }
+    }
+    if let Some(bc) = obj.get("border_color").and_then(|v| v.as_str()) {
+        if let Some(color) = Color::parse_hex(bc) {
+            widget.set_border_color(Some(color));
+        }
+    }
+
+    // ── Style: border width / radius ────────────────────────
+    if let Some(bw) = obj.get("border_width").and_then(|v| v.as_u64()) {
+        widget.set_border_width(bw as u32);
+    }
+    if let Some(br) = obj.get("border_radius").and_then(|v| v.as_u64()) {
+        widget.set_border_radius(br as u32);
+    }
+
+    // ── Style: padding / margin ─────────────────────────────
+    // Padding accepts either a single number (all sides) or an object
+    // with top/right/bottom/left keys.
+    apply_style_padding(widget, obj, "padding", |widget, value| {
+        let mut style = widget.style().clone();
+        style.padding = value;
+        widget.set_style(style);
+    });
+    // Margin is a `Margin` type — convert from Padding-compatible values.
+    if let Some(value) = obj.get("margin") {
+        if let Some(p) = parse_spacing(value) {
+            let margin = crate::style::Margin::new(p.top, p.right, p.bottom, p.left);
+            let mut style = widget.style().clone();
+            style.margin = margin;
+            widget.set_style(style);
+        }
+    }
+}
+
+/// Apply min/max size constraints from JSON object.
+fn apply_size_constraints(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
+    let min_w = obj.get("min_width").and_then(|v| v.as_u64());
+    let min_h = obj.get("min_height").and_then(|v| v.as_u64());
+    let max_w = obj.get("max_width").and_then(|v| v.as_u64());
+    let max_h = obj.get("max_height").and_then(|v| v.as_u64());
+
+    if min_w.is_some() || min_h.is_some() {
+        let current = widget.min_size().unwrap_or(crate::core::Size::new(0, 0));
+        widget.set_min_size(Some(crate::core::Size::new(
+            min_w.unwrap_or(current.width as u64) as u32,
+            min_h.unwrap_or(current.height as u64) as u32,
+        )));
+    }
+    if max_w.is_some() || max_h.is_some() {
+        let current = widget
+            .max_size()
+            .unwrap_or(crate::core::Size::new(u32::MAX, u32::MAX));
+        widget.set_max_size(Some(crate::core::Size::new(
+            max_w.unwrap_or(current.width as u64) as u32,
+            max_h.unwrap_or(current.height as u64) as u32,
+        )));
+    }
+}
+
+/// Parse a padding/margin value from JSON: either a single number
+/// (applied to all sides) or an object with top/right/bottom/left keys.
+fn parse_spacing(value: &Value) -> Option<crate::style::Padding> {
+    match value {
+        Value::Number(n) => {
+            let v = n.as_u64()? as u32;
+            Some(crate::style::Padding::all(v))
+        }
+        Value::Object(map) => {
+            let top = map.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let right = map.get("right").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let bottom = map.get("bottom").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let left = map.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if top == 0 && right == 0 && bottom == 0 && left == 0 {
+                None
+            } else {
+                Some(crate::style::Padding::new(top, right, bottom, left))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Apply a padding property to a widget.
+fn apply_style_padding(
+    widget: &mut dyn Widget,
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    apply: fn(&mut dyn Widget, crate::style::Padding),
+) {
+    if let Some(value) = obj.get(key) {
+        if let Some(padding) = parse_spacing(value) {
+            apply(widget, padding);
+        }
+    }
+}
+
+/// Connect JSON `on_click` / `on_change` handlers to the widget callback system.
+///
+/// Returns `(on_click_name, on_change_name)` if present.
+pub fn extract_event_handlers(
+    obj: &serde_json::Map<String, Value>,
+) -> (Option<String>, Option<String>) {
+    let on_click = obj
+        .get("on_click")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_change = obj
+        .get("on_change")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (on_click, on_change)
+}
+
+/// Infer widget kind from type string.
+fn infer_kind(widget_type: &str) -> WidgetKind {
+    match widget_type.to_lowercase().as_str() {
+        "window" => WidgetKind::Window,
+        "button" => WidgetKind::Button,
+        "label" => WidgetKind::Label,
+        "checkbox" => WidgetKind::CheckBox,
+        "radiobutton" => WidgetKind::RadioButton,
+        "lineedit" => WidgetKind::LineEdit,
+        "textedit" => WidgetKind::LineEdit, // mapped to closest match
+        "combobox" => WidgetKind::ComboBox,
+        "listbox" => WidgetKind::ListBox,
+        "slider" => WidgetKind::Slider,
+        "scrollbar" => WidgetKind::Slider, // mapped to closest match
+        "progressbar" => WidgetKind::ProgressBar,
+        "groupbox" => WidgetKind::Panel,
+        "tabwidget" => WidgetKind::Panel,
+        "grid" => WidgetKind::Panel,
+        "panel" => WidgetKind::Panel,
+        "spinbox" => WidgetKind::SpinBox,
+        "listview" => WidgetKind::ListView,
+        "scrollarea" => WidgetKind::ScrollArea,
+        _ => WidgetKind::Button,
+    }
+}
+
+/// Parse a JSON layout string into a widget tree.
+///
+/// This is a convenience wrapper around [`JsonLoader::load`].
+pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
+    JsonLoader::load(json_str)
+}

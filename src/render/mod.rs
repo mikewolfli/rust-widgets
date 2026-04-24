@@ -21,7 +21,7 @@
 //!
 //! All coordinates are in logical pixels and use the screen coordinate system.
 //!
-//! # Module Structure (按功能分层)
+//! # Module Structure (feature-layered)
 //!
 //! | Group | Path | Contents |
 //! |-------|------|---------|

@@ -40,7 +40,7 @@ impl I18nFileWatcher {
                 }
             }
             Err(e) => {
-                eprintln!("[i18n] Watcher error: {:?}", e);
+                log::error!("[i18n] Watcher error: {:?}", e);
             }
         })
         .map_err(|e| format!("Failed to create watcher: {}", e))?;
@@ -102,7 +102,7 @@ pub fn init_with_hot_reload(
         } else {
             file_watcher.enable_hot_reload();
             if diagnostics {
-                eprintln!("[i18n] Hot reload enabled for directory: {:?}", dir);
+                log::info!("[i18n] Hot reload enabled for directory: {:?}", dir);
             }
         }
     }

@@ -5,4 +5,4 @@
 
 mod registry;
 
-pub use registry::{WidgetEntry, WidgetRegistry};
+pub use registry::{WidgetEntry, WidgetKind, WidgetRegistry};

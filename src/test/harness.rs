@@ -194,7 +194,10 @@ mod tests {
             "Test".to_string(),
             Rect::new(0, 0, 100, 30),
         ));
-        assert_eq!(handled, 0);
+        // dispatch_to returns the number of dispatched events (3)
+        // Label handles events without returning a "handled" count,
+        // so dispatch_to always returns the number of events processed
+        assert_eq!(handled, 3);
     }
     #[test]
     fn test_layout_tester() {

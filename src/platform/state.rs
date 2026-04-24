@@ -102,6 +102,7 @@ where
             .map(|widget| widget.kind)
     }
     /// Return `true` when widget exists and kind matches.
+    /// Reserved for runtime type-checking in platform backends (not yet wired).
     #[allow(dead_code)]
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
         self.kind_of(widget_id).map(|k| k == kind).unwrap_or(false)
@@ -227,6 +228,7 @@ where
             .unwrap_or_default()
     }
     /// Push menu trigger event.
+    /// Reserved for menu system integration (not yet wired to platform backends).
     #[allow(dead_code)]
     pub fn push_menu_event(&self, item_id: ObjectId) {
         self.menu_events
@@ -235,6 +237,7 @@ where
             .push_back(item_id);
     }
     /// Pop menu trigger event.
+    /// Reserved for menu system integration (paired with push_menu_event).
     #[allow(dead_code)]
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
         self.menu_events
@@ -243,6 +246,7 @@ where
             .pop_front()
     }
     /// Push typed widget trigger event.
+    /// Reserved for event system integration (not yet wired to platform backends).
     #[allow(dead_code)]
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
         self.widget_events
@@ -308,6 +312,7 @@ where
         true
     }
     /// Inject menu trigger event.
+    /// Reserved for testing and programmatic event injection.
     #[allow(dead_code)]
     pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
         if !self.contains_widget(menu_item_id) {
@@ -317,16 +322,19 @@ where
         true
     }
     /// Pop widget trigger event.
+    /// Reserved for event processing in platform backends.
     #[allow(dead_code)]
     pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
         self.pop_menu_event()
     }
     /// Pop typed widget trigger event.
+    /// Reserved for event processing in platform backends (typed variant).
     #[allow(dead_code)]
     pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.pop_widget_event()
     }
     /// Inject widget trigger event.
+    /// Reserved for testing and programmatic event injection (typed variant).
     #[allow(dead_code)]
     pub fn inject_widget_trigger_event(
         &self,

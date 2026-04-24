@@ -33,13 +33,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 threadpool = "1.8"
 crossbeam-channel = "0.5"
-winit = "0.30.13"
 font8x8 = "0.2.7"
 pollster = "0.3"
-roxmltree = "0.19"
 chrono = "0.4"
 notify = "6.1"
 dirs = "5.0"
+log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "commctrl", "winbase", "synchapi"] }

@@ -63,7 +63,9 @@ impl Snapshot {
         } else {
             0.0
         };
-        if diff_percentage <= tolerance {
+        if diff_percentage == 0.0 {
+            SnapshotComparison::Identical
+        } else if diff_percentage <= tolerance {
             SnapshotComparison::Similar { diff_percentage }
         } else {
             SnapshotComparison::Different {

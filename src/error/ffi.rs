@@ -24,7 +24,7 @@ macro_rules! c_try {
         match __result {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("[rust_widgets] C ABI error: {e}");
+                log::error!("[rust_widgets] C ABI error: {e}");
                 $crate::error::c_try_fallback(e)
             }
         }
@@ -150,7 +150,7 @@ macro_rules! c_try_void {
     ($body:expr) => {{
         let __result: $crate::error::RwResult<_> = $crate::error::catch_panic(|| $body);
         if let Err(e) = __result {
-            eprintln!("[rust_widgets] C ABI error: {e}");
+            log::error!("[rust_widgets] C ABI error: {e}");
         }
     }};
 }
