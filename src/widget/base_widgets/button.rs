@@ -4,7 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 /// Button interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
@@ -16,7 +16,9 @@ pub enum ButtonState {
 pub struct Button {
     base: BaseWidget,
     text: String,
+    icon: Option<Image>,
     pressed: bool,
+    default_button: bool,
     pub activated: GenericSignal,
     pub pressed_signal: GenericSignal,
     pub released_signal: GenericSignal,
@@ -28,7 +30,9 @@ impl Button {
         Self {
             base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
             text,
+            icon: None,
             pressed: false,
+            default_button: false,
             activated: GenericSignal::new(),
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
@@ -91,6 +95,24 @@ impl Button {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.base.request_redraw();
+    }
+    /// Sets the icon displayed on the button.
+    pub fn set_icon(&mut self, icon: Image) {
+        self.icon = Some(icon);
+        self.base.request_redraw();
+    }
+    /// Returns a reference to the button icon, if set.
+    pub fn icon(&self) -> Option<&Image> {
+        self.icon.as_ref()
+    }
+    /// Sets whether this button is the default button.
+    pub fn set_default(&mut self, default: bool) {
+        self.default_button = default;
+        self.base.request_redraw();
+    }
+    /// Returns whether this button is the default button.
+    pub fn is_default(&self) -> bool {
+        self.default_button
     }
 }
 impl Widget for Button {

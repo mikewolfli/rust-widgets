@@ -7,6 +7,8 @@ pub struct GridLayout {
     cols: u32,
     spacing: u32,
     margin: u32,
+    column_stretch: u32,
+    row_stretch: u32,
     cells: Vec<Option<ObjectId>>,
 }
 impl GridLayout {
@@ -19,6 +21,8 @@ impl GridLayout {
             cols: safe_cols,
             spacing,
             margin,
+            column_stretch: 1,
+            row_stretch: 1,
             cells: vec![None; (safe_rows * safe_cols) as usize],
         }
     }
@@ -51,6 +55,26 @@ impl GridLayout {
     /// Returns the outer margin.
     pub fn margin(&self) -> u32 {
         self.margin
+    }
+
+    /// Returns the column stretch factor.
+    pub fn column_stretch(&self) -> u32 {
+        self.column_stretch
+    }
+
+    /// Sets the column stretch factor.
+    pub fn set_column_stretch(&mut self, stretch: u32) {
+        self.column_stretch = stretch.max(1);
+    }
+
+    /// Returns the row stretch factor.
+    pub fn row_stretch(&self) -> u32 {
+        self.row_stretch
+    }
+
+    /// Sets the row stretch factor.
+    pub fn set_row_stretch(&mut self, stretch: u32) {
+        self.row_stretch = stretch.max(1);
     }
 }
 impl Layout for GridLayout {

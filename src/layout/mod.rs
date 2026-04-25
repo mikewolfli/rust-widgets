@@ -7,6 +7,7 @@ pub mod grid;
 pub mod inspector;
 pub mod splitter;
 pub mod stack;
+pub mod uniform_grid;
 pub use crate::core::Orientation;
 use crate::core::{ObjectId, Point, Rect, Size};
 pub use absolute::*;
@@ -16,6 +17,7 @@ pub use form::*;
 pub use grid::*;
 pub use splitter::*;
 pub use stack::*;
+pub use uniform_grid::*;
 /// Space allocation preference used by layout items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePolicy {

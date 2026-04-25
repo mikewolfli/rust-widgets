@@ -45,6 +45,7 @@ pub struct FileDialog {
     selected_files: Vec<String>,
     name_filters: Vec<FileFilter>,
     current_filter: usize,
+    modal: bool,
     pub files_selected: Signal1<Vec<String>>,
     pub file_selected: Signal1<String>,
     pub current_changed: Signal1<String>,
@@ -54,19 +55,26 @@ pub struct FileDialog {
 impl FileDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "FileDialog"),
+            base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
             mode: FileDialogMode::OpenFile,
             title: "Open File".to_string(),
             directory: String::new(),
             selected_files: Vec::new(),
             name_filters: vec![FileFilter::all_files()],
             current_filter: 0,
+            modal: true,
             files_selected: Signal1::new(),
             file_selected: Signal1::new(),
             current_changed: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
         }
+    }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);

@@ -1,4 +1,5 @@
 //! Paint backend trait and software implementation.
+use super::batch::BatchState;
 use crate::core::{Color, Font, Size};
 use crate::render::{
     RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
@@ -26,12 +27,14 @@ pub trait PaintBackend {
 /// Software implementation of the paint backend strategy.
 pub struct SoftwarePaintBackend {
     pub(crate) surface: SoftwareSurface,
+    pub(crate) batch_state: BatchState,
 }
 impl SoftwarePaintBackend {
     /// Creates a software paint backend with a target size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
         Self {
             surface: SoftwareSurface::new(size, dpi_scale),
+            batch_state: BatchState::new(),
         }
     }
     /// Returns immutable access to the underlying software surface.

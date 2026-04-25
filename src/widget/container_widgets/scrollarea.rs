@@ -155,6 +155,34 @@ impl ScrollArea {
             self.viewport.y = (cy - half_h as i32).max(0);
         }
     }
+
+    /// Scrolls to the top of the content.
+    pub fn scroll_to_top(&mut self) {
+        self.viewport.y = 0;
+    }
+
+    /// Scrolls to the bottom of the content.
+    pub fn scroll_to_bottom(&mut self) {
+        if self.content_size.height > self.viewport.height {
+            self.viewport.y = (self.content_size.height - self.viewport.height) as i32;
+        } else {
+            self.viewport.y = 0;
+        }
+    }
+
+    /// Scrolls to the left edge of the content.
+    pub fn scroll_to_left(&mut self) {
+        self.viewport.x = 0;
+    }
+
+    /// Scrolls to the right edge of the content.
+    pub fn scroll_to_right(&mut self) {
+        if self.content_size.width > self.viewport.width {
+            self.viewport.x = (self.content_size.width - self.viewport.width) as i32;
+        } else {
+            self.viewport.x = 0;
+        }
+    }
     /// Returns whether horizontal scroll bar is visible.
     fn horizontal_scroll_bar_visible(&self) -> bool {
         match self.horizontal_scroll_bar_policy {

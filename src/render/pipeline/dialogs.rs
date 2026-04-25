@@ -8,6 +8,7 @@ use crate::widget::{
     ColorDialog, Dialog, DirectoryDialog, FileDialog, FontDialog, MessageBox, PopupWindow, Widget,
 };
 
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_dialog_visual_commands(layer: &mut SceneLayer, dialog: &Dialog) {
     push_widget_fill_and_border(
         layer,
@@ -29,6 +30,7 @@ pub fn append_dialog_visual_commands(layer: &mut SceneLayer, dialog: &Dialog) {
     }
 }
 /// Append visual commands for a `MessageBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_message_box_visual_commands(layer: &mut SceneLayer, message_box: &MessageBox) {
     push_widget_fill_and_border(
         layer,
@@ -61,6 +63,7 @@ pub fn append_message_box_visual_commands(layer: &mut SceneLayer, message_box: &
     }
 }
 /// Append visual commands for a `FileDialog` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &FileDialog) {
     push_widget_fill_and_border(
         layer,
@@ -112,6 +115,7 @@ pub fn append_file_dialog_visual_commands(layer: &mut SceneLayer, file_dialog: &
     }
 }
 /// Append visual commands for a `ColorDialog` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_color_dialog_visual_commands(layer: &mut SceneLayer, color_dialog: &ColorDialog) {
     push_widget_fill_and_border(
         layer,
@@ -154,6 +158,7 @@ pub fn append_color_dialog_visual_commands(layer: &mut SceneLayer, color_dialog:
     }
 }
 /// Append visual commands for a `FontDialog` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_font_dialog_visual_commands(layer: &mut SceneLayer, font_dialog: &FontDialog) {
     push_widget_fill_and_border(
         layer,
@@ -186,6 +191,7 @@ pub fn append_font_dialog_visual_commands(layer: &mut SceneLayer, font_dialog: &
     }
 }
 /// Append visual commands for a `PopupWindow` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_popup_window_visual_commands(layer: &mut SceneLayer, popup_window: &PopupWindow) {
     push_widget_fill_and_border(
         layer,
@@ -207,6 +213,7 @@ pub fn append_popup_window_visual_commands(layer: &mut SceneLayer, popup_window:
     }
 }
 /// Append visual commands for a `DirectoryDialog` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_directory_dialog_visual_commands(
     layer: &mut SceneLayer,
     directory_dialog: &DirectoryDialog,

@@ -22,6 +22,7 @@ use crate::widget::{
     TableWidget, TextEdit, TreeView, Widget,
 };
 
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &TabWidget) {
     push_widget_fill_and_border(
         layer,
@@ -63,6 +64,7 @@ pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &Ta
     }
 }
 /// Append visual commands for a `TextEdit` multi-line text editor representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_text_edit_visual_commands(layer: &mut SceneLayer, text_edit: &TextEdit) {
     push_widget_fill_and_border(
         layer,
@@ -94,6 +96,7 @@ pub fn append_text_edit_visual_commands(layer: &mut SceneLayer, text_edit: &Text
     }
 }
 /// Append visual commands for a `RichEdit` rich text editor representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &RichEdit) {
     let bg_color = if rich_edit.is_read_only() {
         Color::rgba(245, 245, 245, 255)
@@ -147,6 +150,7 @@ pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &Rich
     }
 }
 /// Append visual commands for a `TreeView` hierarchical data display representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &TreeView) {
     push_widget_fill_and_border(
         layer,
@@ -203,6 +207,7 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     });
 }
 /// Append visual commands for a `TableWidget` data grid representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget: &TableWidget) {
     push_widget_fill_and_border(
         layer,
@@ -280,6 +285,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     }
 }
 /// Append visual commands for a `GridWidget` layout container representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &GridWidget) {
     push_widget_fill_and_border(
         layer,
@@ -324,6 +330,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
     }
 }
 /// Append visual commands for a `ChartWidget` data visualization representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget: &ChartWidget) {
     push_widget_fill_and_border(
         layer,
@@ -405,6 +412,7 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
     }
 }
 /// Append visual commands for a `DockPanel` docking container representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &DockPanel) {
     push_widget_fill_and_border(
         layer,
@@ -447,6 +455,7 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
     });
 }
 /// Append visual commands for a `GroupBox` titled container representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_group_box_visual_commands(layer: &mut SceneLayer, group_box: &GroupBox) {
     let rect = group_box.geometry();
     // Draw the main border with title area
@@ -485,6 +494,7 @@ pub fn append_group_box_visual_commands(layer: &mut SceneLayer, group_box: &Grou
     });
 }
 /// Append visual commands for a `Splitter` resizable divider representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitter) {
     push_widget_fill_and_border(
         layer,
@@ -531,6 +541,7 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
     }
 }
 /// Append visual commands for an `MdiArea` multiple document interface representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiArea) {
     push_widget_fill_and_border(
         layer,
@@ -574,6 +585,7 @@ pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiAre
     }
 }
 /// Append visual commands for a `Canvas` drawing surface representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
     push_widget_fill_and_border(
         layer,
@@ -607,6 +619,7 @@ pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
     }
 }
 /// Append visual commands for a `SpinBox` numeric input control.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate::widget::SpinBox) {
     push_widget_fill_and_border(
         layer,
@@ -737,6 +750,7 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     });
 }
 /// Append visual commands for a `ListView` widget representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_list_view_visual_commands(
     layer: &mut SceneLayer,
     list_view: &crate::widget::ListView,
@@ -807,6 +821,7 @@ pub fn append_list_view_visual_commands(
     }
 }
 /// Append visual commands for a `ScrollArea` scrollable container.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_scroll_area_visual_commands(
     layer: &mut SceneLayer,
     scroll_area: &crate::widget::ScrollArea,

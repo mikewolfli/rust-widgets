@@ -30,6 +30,7 @@ pub use web_widgets::web_view;
 pub use base::BaseWidget;
 pub use draw::Draw;
 pub use image::Image;
+pub use image::ImageFormat;
 pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
 pub use widget_trait::Widget;
@@ -53,8 +54,9 @@ pub use input_widgets::{
 };
 // Re-export container widgets
 pub use container_widgets::{
-    dockwidget::DockWidget, groupbox::GroupBox, mdiarea::MdiArea, scrollarea::ScrollArea,
-    splitter::Splitter, stackedwidget::StackedWidget, tabwidget::TabWidget, toolbox::ToolBox,
+    collapsible_pane::CollapsiblePane, dockwidget::DockWidget, groupbox::GroupBox,
+    mdiarea::MdiArea, scrollarea::ScrollArea, splitter::Splitter, stackedwidget::StackedWidget,
+    tabwidget::TabWidget, toolbox::ToolBox,
 };
 pub type Panel = GroupBox;
 pub type DockPanel = DockWidget;
@@ -73,7 +75,9 @@ pub use web_widgets::{
 // Re-export advanced widgets
 pub use advanced_widgets::{
     calendar::Calendar, date_edit::DateEdit, date_time_edit::DateTimeEdit, dial::Dial,
-    key_sequence_edit::KeySequenceEdit, time_edit::TimeEdit,
+    key_sequence_edit::KeySequenceEdit, pie_menu::PieMenu, pie_menu::PieMenuItem,
+    ribbon_bar::RibbonBar, ribbon_bar::RibbonGroup, ribbon_bar::RibbonItem, tab_bar::TabBar,
+    tab_bar::TabBarTab, time_edit::TimeEdit,
 };
 // Re-export dialog widgets
 pub use dialog::{
@@ -99,8 +103,17 @@ pub use view_widgets::{
     tree_view::TreeView,
 };
 // Re-export special widgets
-pub use special_widgets::{Canvas, ChartWidget, GridWidget};
+pub use special_widgets::{Canvas, ChartWidget, FreeformShapeWidget, GridWidget};
 pub type ActivityIndicator = ProgressBar;
 pub type CheckListBox = ListBox;
+pub type Toolbox = ToolBox;
 pub type DoubleSpinBox = SpinBox;
 pub type Wizard = Panel;
+// ── P3-6: WidgetKind variant type aliases ──
+pub type DataView = TableWidget;
+pub type PropertyGrid = TreeView;
+pub type ColumnView = TreeView;
+pub type UndoView = ListView;
+pub type DatePicker = DateEdit;
+pub type TimePicker = TimeEdit;
+pub type DateTimePicker = DateTimeEdit;

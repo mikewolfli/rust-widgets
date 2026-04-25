@@ -45,6 +45,7 @@ pub struct Menu {
     items: Vec<MenuItem>,
     hovered_index: Option<usize>,
     pub triggered: Signal1<String>,
+    pub triggered_index: Signal1<usize>,
     pub about_to_show: GenericSignal,
     pub about_to_hide: GenericSignal,
 }
@@ -56,6 +57,7 @@ impl Menu {
             items: Vec::new(),
             hovered_index: None,
             triggered: Signal1::new(),
+            triggered_index: Signal1::new(),
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
         }
@@ -336,7 +338,11 @@ impl Draw for Menu {
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
                 let sep_y = y + Self::separator_height() / 2.0;
-                context.draw_line(Point::new(rect.x + 4, sep_y as i32), Point::new(rect.x + rect.width as i32 - 4, sep_y as i32), Color::from_rgb(200, 200, 200));
+                context.draw_line(
+                    Point::new(rect.x + 4, sep_y as i32),
+                    Point::new(rect.x + rect.width as i32 - 4, sep_y as i32),
+                    Color::from_rgb(200, 200, 200),
+                );
                 y += Self::separator_height();
                 continue;
             }

@@ -16,6 +16,7 @@ pub enum InputMode {
 /// Input dialog for simple user input.
 pub struct InputDialog {
     base: BaseWidget,
+    modal: bool,
     title: String,
     label_text: String,
     mode: InputMode,
@@ -40,7 +41,8 @@ pub struct InputDialog {
 impl InputDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "InputDialog"),
+            base: BaseWidget::new(WidgetKind::InputDialog, geometry, "InputDialog"),
+            modal: true,
             title: String::new(),
             label_text: String::new(),
             mode: InputMode::Text,
@@ -140,6 +142,12 @@ impl InputDialog {
     }
     pub fn set_double_value(&mut self, v: f64) {
         self.double_value = v.clamp(self.double_min, self.double_max);
+    }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
     pub fn accept(&mut self) {
         self.accepted.emit();

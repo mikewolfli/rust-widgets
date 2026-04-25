@@ -63,11 +63,13 @@ pub use core::{RenderCommand, ShapedText, TextCluster, TextMetrics};
 pub use backend::{
     average_frame_time, current_fps, current_quality_level, default_software_render_config,
     last_auto_render_backend, set_default_software_render_config, set_quality_level,
-    AutoRenderBackend, BackBuffer, PaintBackend, RenderContext, RenderScene, SceneLayer,
-    SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface,
+    AutoRenderBackend, BackBuffer, BatchCommand, BatchId, BatchRenderer, PaintBackend,
+    RenderContext, RenderScene, SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig,
+    SoftwareSurface,
 };
 
 // Pipeline — all append_* functions
+#[allow(deprecated)]
 pub use pipeline::{
     append_activity_indicator_visual_commands,
     append_button_visual_commands,

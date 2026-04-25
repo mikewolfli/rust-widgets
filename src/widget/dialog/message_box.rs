@@ -60,6 +60,7 @@ pub struct MessageBox {
     icon: MessageBoxIcon,
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
+    modal: bool,
     pub button_clicked: Signal1<StandardButton>,
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
@@ -67,12 +68,13 @@ pub struct MessageBox {
 impl MessageBox {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "MessageBox"),
+            base: BaseWidget::new(WidgetKind::MessageBox, geometry, "MessageBox"),
             title: String::new(),
             text: String::new(),
             icon: MessageBoxIcon::NoIcon,
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
+            modal: true,
             button_clicked: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
@@ -138,6 +140,14 @@ impl MessageBox {
     pub fn set_default_button(&mut self, btn: StandardButton) {
         self.default_button = Some(btn);
     }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
     pub fn click_button(&mut self, btn: StandardButton) {
         self.button_clicked.emit(btn);
         match btn {
@@ -361,7 +371,10 @@ impl Draw for MessageBox {
                 Color::from_rgb(0, 0, 0)
             };
             context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w as f32, btn_h as f32), bg);
-            context.draw_rect(Rect::from_f32(btn_x, btn_y, btn_w as f32, btn_h as f32), Color::from_rgb(100, 100, 100));
+            context.draw_rect(
+                Rect::from_f32(btn_x, btn_y, btn_w as f32, btn_h as f32),
+                Color::from_rgb(100, 100, 100),
+            );
             context.draw_text(
                 Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
                 btn.label(),

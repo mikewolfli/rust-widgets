@@ -202,6 +202,16 @@ impl TabWidget {
     pub fn tab_mut(&mut self, index: usize) -> Option<&mut Tab> {
         self.tabs.get_mut(index)
     }
+    /// Returns the text of the tab at the given index.
+    pub fn tab_text(&self, index: usize) -> Option<&str> {
+        self.tabs.get(index).map(|t| t.title.as_str())
+    }
+    /// Sets the text of the tab at the given index.
+    pub fn set_tab_text(&mut self, index: usize, text: String) {
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.title = text;
+        }
+    }
     /// Returns tab position.
     pub fn tab_position(&self) -> TabPosition {
         self.tab_position

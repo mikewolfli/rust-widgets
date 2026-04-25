@@ -1,5 +1,5 @@
 //! Radio button widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -10,6 +10,7 @@ pub struct RadioButton {
     base: BaseWidget,
     checked: bool,
     group_id: Option<String>,
+    text: String,
     pub selected: GenericSignal,
     pub checked_changed: Signal1<bool>,
 }
@@ -20,6 +21,7 @@ impl RadioButton {
             base: BaseWidget::new(WidgetKind::RadioButton, geometry, "RadioButton"),
             checked: false,
             group_id: None,
+            text: String::new(),
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -27,6 +29,15 @@ impl RadioButton {
     /// Returns current checked state.
     pub fn is_checked(&self) -> bool {
         self.checked
+    }
+    /// Returns the text label displayed next to the radio button.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    /// Sets the text label displayed next to the radio button and requests a redraw.
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.base.request_redraw();
     }
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
@@ -198,19 +209,19 @@ impl Draw for RadioButton {
         );
         let radius = (rect.height.min(rect.width) / 4) as u32;
         // Draw outer circle
-        context.draw_circle(
-            center,
-            radius,
-            Color::from_rgb(100u8, 100, 100),
-        );
+        context.draw_circle(center, radius, Color::from_rgb(100u8, 100, 100));
         // Draw inner circle if checked
         if self.checked {
             let inner_radius = radius / 2;
-            context.fill_circle(
-                center,
-                inner_radius,
-                Color::from_rgb(0u8, 120, 215),
-            );
+            context.fill_circle(center, inner_radius, Color::from_rgb(0u8, 120, 215));
         }
+        // Draw text label
+        let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
+        context.draw_text(
+            text_pos,
+            &self.text,
+            &Font::default(),
+            Color::from_rgb(60u8, 60, 60),
+        );
     }
 }

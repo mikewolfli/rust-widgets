@@ -5,6 +5,7 @@ use crate::render::is_empty_rect;
 use crate::render::pipeline::controls::{push_widget_fill_and_border, centered_text_origin};
 use crate::widget::{ContextMenu, Menu, MenuBar, StatusBar, ToolBar, Widget};
 
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBar) {
     push_widget_fill_and_border(
         layer,
@@ -47,6 +48,7 @@ pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBa
     }
 }
 /// Append visual commands for a `Menu` host representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
     push_widget_fill_and_border(
         layer,
@@ -169,6 +171,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
 }
 /// Append visual commands for a `ContextMenu` host representation.
 /// Reuses the same rendering logic as Menu for consistency.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu: &ContextMenu) {
     push_widget_fill_and_border(
         layer,
@@ -277,6 +280,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
     }
 }
 /// Append visual commands for a `ToolBar` host representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBar) {
     push_widget_fill_and_border(
         layer,
@@ -352,6 +356,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     }
 }
 /// Append visual commands for a `StatusBar` host representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_status_bar_visual_commands(layer: &mut SceneLayer, status_bar: &StatusBar) {
     push_widget_fill_and_border(
         layer,

@@ -50,6 +50,13 @@ impl ComboBox {
     pub fn add_items(&mut self, items: Vec<String>) {
         self.items.extend(items);
     }
+    /// Replaces all items with the given items. Clears the current selection.
+    pub fn set_items(&mut self, items: Vec<String>) {
+        self.items = items;
+        self.current_index = None;
+        self.current_index_changed.emit(None);
+        self.current_text_changed.emit(String::new());
+    }
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
@@ -342,11 +349,17 @@ impl Draw for ComboBox {
         );
         context.draw_line(
             Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(
+                arrow_x_f + arrow_size_f / 2.0,
+                arrow_y_f + arrow_size_f / 2.0,
+            ),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
-            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(
+                arrow_x_f + arrow_size_f / 2.0,
+                arrow_y_f + arrow_size_f / 2.0,
+            ),
             Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );

@@ -3,12 +3,15 @@ use crate::widget::WidgetKind;
 /// Returns the policy preference for one widget kind.
 pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePreference {
     match kind {
-        WidgetKind::Window
+        WidgetKind::TabBar
+        | WidgetKind::Window
         | WidgetKind::Dialog
         | WidgetKind::MessageBox
         | WidgetKind::FileDialog
         | WidgetKind::ColorDialog
         | WidgetKind::FontDialog
+        | WidgetKind::InputDialog
+        | WidgetKind::ProgressDialog
         | WidgetKind::PopupWindow
         | WidgetKind::Button
         | WidgetKind::CheckBox
@@ -42,7 +45,9 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::ActivityIndicator
         | WidgetKind::Calendar
         | WidgetKind::LCDNumber
-        | WidgetKind::FontComboBox => ControlRoutePreference::NativePreferred,
+        | WidgetKind::FontComboBox
+        | WidgetKind::PieMenu
+        | WidgetKind::RibbonBar => ControlRoutePreference::NativePreferred,
         WidgetKind::TextEdit
         | WidgetKind::RichEdit
         | WidgetKind::ListView
@@ -64,6 +69,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::ColumnView
         | WidgetKind::UndoView
         | WidgetKind::CommandLink
+        | WidgetKind::FreeformShape
         | WidgetKind::WebEngineView
         | WidgetKind::WebEnginePage
         | WidgetKind::WebEngineSettings

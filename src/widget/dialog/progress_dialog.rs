@@ -17,12 +17,13 @@ pub struct ProgressDialog {
     was_canceled: bool,
     auto_close: bool,
     auto_reset: bool,
+    modal: bool,
     pub canceled: GenericSignal,
 }
 impl ProgressDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "ProgressDialog"),
+            base: BaseWidget::new(WidgetKind::ProgressDialog, geometry, "ProgressDialog"),
             title: String::new(),
             label_text: String::new(),
             value: 0,
@@ -32,6 +33,7 @@ impl ProgressDialog {
             was_canceled: false,
             auto_close: true,
             auto_reset: true,
+            modal: true,
             canceled: GenericSignal::new(),
         }
     }
@@ -86,6 +88,12 @@ impl ProgressDialog {
     }
     pub fn set_cancel_button_text(&mut self, t: impl Into<String>) {
         self.cancel_button_text = t.into();
+    }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
     pub fn set_value(&mut self, value: i32) {
         self.value = value.clamp(self.minimum, self.maximum);
@@ -279,11 +287,21 @@ impl Draw for ProgressDialog {
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
         let btn_w = 80;
         context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 / 2 - btn_w / 2, btn_y as i32, btn_w as u32, 28u32),
+            Rect::new(
+                rect.x + rect.width as i32 / 2 - btn_w / 2,
+                btn_y as i32,
+                btn_w as u32,
+                28u32,
+            ),
             Color::from_rgb(225, 225, 225),
         );
         context.draw_rect(
-            Rect::new(rect.x + rect.width as i32 / 2 - btn_w / 2, btn_y as i32, btn_w as u32, 28u32),
+            Rect::new(
+                rect.x + rect.width as i32 / 2 - btn_w / 2,
+                btn_y as i32,
+                btn_w as u32,
+                28u32,
+            ),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_text(

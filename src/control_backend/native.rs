@@ -521,6 +521,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: DataView is an alias for TableWidget");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_property_grid(
@@ -531,6 +532,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: PropertyGrid is an alias for TreeView");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_toolbox(
@@ -552,6 +554,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: CollapsiblePane is an alias for Panel");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_dock_widget(
@@ -603,6 +606,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: ColumnView is an alias for TreeView");
         get_platform().create_list_view(parent, x, y, width, height)
     }
     fn create_undo_view(
@@ -613,6 +617,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: UndoView is an alias for ListView");
         get_platform().create_list_view(parent, x, y, width, height)
     }
     fn create_command_link(

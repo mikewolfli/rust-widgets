@@ -247,4 +247,14 @@ impl<'a> RenderContext<'a> {
     pub fn pop_clip(&mut self) {
         self.backend.execute_command(&RenderCommand::PopClip);
     }
+
+    pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
+        self.backend.execute_command(&RenderCommand::DrawImage {
+            x,
+            y,
+            width,
+            height,
+            data: data.to_vec(),
+        });
+    }
 }

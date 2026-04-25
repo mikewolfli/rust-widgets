@@ -16,6 +16,7 @@ pub enum CheckState {
 pub struct CheckBox {
     base: BaseWidget,
     state: CheckState,
+    text: String,
     tristate_enabled: bool,
     pub toggled: Signal1<bool>,
     pub state_changed: Signal1<CheckState>,
@@ -26,6 +27,7 @@ impl CheckBox {
         Self {
             base: BaseWidget::new(WidgetKind::CheckBox, geometry, "CheckBox"),
             state: CheckState::Unchecked,
+            text: String::new(),
             tristate_enabled: false,
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
@@ -70,6 +72,15 @@ impl CheckBox {
         } else {
             CheckState::Unchecked
         });
+    }
+    /// Returns the text label displayed next to the checkbox.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    /// Sets the text label displayed next to the checkbox and requests a redraw.
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.base.request_redraw();
     }
     /// Enables or disables tristate behavior.
     pub fn set_tristate_enabled(&mut self, enabled: bool) {
@@ -219,7 +230,7 @@ impl Draw for CheckBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let checkbox_size = 16; // Standard checkbox size
-        // Calculate checkbox rectangle
+                                // Calculate checkbox rectangle
         let checkbox_rect = Rect::new(
             rect.x,
             rect.y + (rect.height as i32 - checkbox_size) / 2,
@@ -272,6 +283,19 @@ impl Draw for CheckBox {
                 }
                 _ => {}
             }
+        }
+        // Draw text next to the checkbox
+        if !self.text.is_empty() {
+            let text_color = if !self.base.is_enabled() {
+                Color::from_rgb(150, 150, 150)
+            } else {
+                Color::from_rgb(0, 0, 0)
+            };
+            let text_point = Point {
+                x: checkbox_rect.x + checkbox_rect.width as i32 + 4,
+                y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
+            };
+            context.draw_text(text_point, &self.text, &Font::default(), text_color);
         }
     }
 }

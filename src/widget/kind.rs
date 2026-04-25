@@ -10,6 +10,8 @@ pub enum WidgetKind {
     FileDialog,
     ColorDialog,
     FontDialog,
+    InputDialog,
+    ProgressDialog,
     PopupWindow,
     Button,
     CheckBox,
@@ -94,4 +96,12 @@ pub enum WidgetKind {
     ToolButton,
     /// Tool box widget (alias with capital B).
     ToolBox,
+    /// Freeform shape widget — a path-based non-rectangular clickable shape.
+    FreeformShape,
+    /// Standalone tab bar widget (decoupled from TabWidget).
+    TabBar,
+    /// Pie menu / radial menu widget.
+    PieMenu,
+    /// RibbonBar (Office-style ribbon) widget.
+    RibbonBar,
 }

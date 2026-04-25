@@ -9,6 +9,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 pub struct FontDialog {
     base: BaseWidget,
     current_font: Font,
+    modal: bool,
     pub font_selected: Signal1<Font>,
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
@@ -16,8 +17,9 @@ pub struct FontDialog {
 impl FontDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "FontDialog"),
+            base: BaseWidget::new(WidgetKind::FontDialog, geometry, "FontDialog"),
             current_font: Font::default(),
+            modal: true,
             font_selected: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
@@ -41,6 +43,12 @@ impl FontDialog {
     }
     pub fn get_font(&self) -> Font {
         self.current_font.clone()
+    }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
 }
 impl Widget for FontDialog {
@@ -192,8 +200,14 @@ impl Draw for FontDialog {
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
             );
-            context.fill_rect(Rect::new(col_x as i32, list_y, col_w, list_h), Color::from_rgb(255, 255, 255));
-            context.draw_rect(Rect::new(col_x as i32, list_y, col_w, list_h), Color::from_rgb(150, 150, 150));
+            context.fill_rect(
+                Rect::new(col_x as i32, list_y, col_w, list_h),
+                Color::from_rgb(255, 255, 255),
+            );
+            context.draw_rect(
+                Rect::new(col_x as i32, list_y, col_w, list_h),
+                Color::from_rgb(150, 150, 150),
+            );
         }
         // Preview area
         let prev_y = list_y + list_h as i32 + 8;

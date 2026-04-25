@@ -10,6 +10,7 @@ pub struct ColorDialog {
     base: BaseWidget,
     current_color: Color,
     options_alpha: bool,
+    modal: bool,
     pub color_selected: Signal1<Color>,
     pub accepted: GenericSignal,
     pub rejected: GenericSignal,
@@ -17,13 +18,20 @@ pub struct ColorDialog {
 impl ColorDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Dialog, geometry, "ColorDialog"),
+            base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
             current_color: Color::from_rgb(255, 255, 255),
             options_alpha: false,
+            modal: true,
             color_selected: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
         }
+    }
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
     pub fn current_color(&self) -> Color {
         self.current_color
@@ -202,7 +210,10 @@ impl Draw for ColorDialog {
         );
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
-        context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
+        context.fill_rect(
+            Rect::new(rect.x + 10, preview_y as i32, 60, 30),
+            self.current_color,
+        );
         context.draw_rect(
             Rect::new(rect.x + 10, preview_y as i32, 60, 30),
             Color::from_rgb(0, 0, 0),

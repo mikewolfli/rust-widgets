@@ -11,6 +11,7 @@ use super::controls::push_widget_fill_and_border;
 
 /// Append visual commands for a `CommandLink` baseline representation.
 #[allow(dead_code)]
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link: &CommandLink) {
     push_widget_fill_and_border(
         layer,
@@ -68,6 +69,7 @@ pub fn append_command_link_visual_commands(layer: &mut SceneLayer, command_link:
 
 /// Append visual commands for a `FontComboBox` baseline representation.
 #[allow(dead_code)]
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_font_combo_box_visual_commands(
     layer: &mut SceneLayer,
     font_combo_box: &FontComboBox,
@@ -218,6 +220,7 @@ pub fn append_font_combo_box_visual_commands(
 
 /// Append visual commands for an `LCDNumber` baseline representation.
 #[allow(dead_code)]
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_lcd_number_visual_commands(layer: &mut SceneLayer, lcd_number: &LcdNumber) {
     let rect = lcd_number.geometry();
     if rect.width > 16 && rect.height > 12 {

@@ -66,6 +66,18 @@ impl StackedWidget {
     pub fn count(&self) -> usize {
         self.widgets.len()
     }
+
+    /// Returns the number of widgets (alias for count).
+    pub fn widget_count(&self) -> usize {
+        self.widgets.len()
+    }
+
+    /// Sets the current widget by its ObjectId.
+    pub fn set_current_widget(&mut self, id: ObjectId) {
+        if let Some(index) = self.widgets.iter().position(|&wid| wid == id) {
+            self.set_current_index(index);
+        }
+    }
     /// Returns current widget index.
     pub fn current_index(&self) -> usize {
         self.current_index

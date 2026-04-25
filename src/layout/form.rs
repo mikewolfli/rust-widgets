@@ -24,13 +24,20 @@ impl FormLayout {
     }
 
     /// Add one form row as `(label, field)` pair.
-    pub fn add_row(&mut self, label_id: ObjectId, field_id: ObjectId) {
+    pub fn add_row_pair(&mut self, label_id: ObjectId, field_id: ObjectId) {
         self.rows.push((label_id, field_id));
     }
 
     /// Returns the number of rows in the form.
     pub fn row_count(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Convenience method that adds a standalone widget with a label string,
+    /// delegating to [`Layout::add_widget`]. Returns the index of the added item.
+    pub fn add_row(&mut self, _label: &str, widget_id: ObjectId) -> usize {
+        self.add_widget(widget_id, 0);
+        self.items.len() - 1
     }
 
     /// Returns the number of standalone items.

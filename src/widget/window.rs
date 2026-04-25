@@ -9,6 +9,9 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 pub struct Window {
     base: BaseWidget,
     title: String,
+    pub title_bar_height: u32,
+    pub close_button_size: u32,
+    pub button_spacing: u32,
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }
@@ -18,6 +21,9 @@ impl Window {
         Self {
             base: BaseWidget::new(WidgetKind::Window, geometry, "Window"),
             title,
+            title_bar_height: 32,
+            close_button_size: 14,
+            button_spacing: 40,
             closed: GenericSignal::new(),
         }
     }
@@ -33,6 +39,39 @@ impl Window {
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
+    /// Returns the title bar height.
+    pub fn get_title_bar_height(&self) -> u32 {
+        self.title_bar_height
+    }
+
+    /// Sets the title bar height and requests redraw.
+    pub fn set_title_bar_height(&mut self, height: u32) {
+        self.title_bar_height = height;
+        self.base.request_redraw();
+    }
+
+    /// Returns the close button size.
+    pub fn get_close_button_size(&self) -> u32 {
+        self.close_button_size
+    }
+
+    /// Sets the close button size and requests redraw.
+    pub fn set_close_button_size(&mut self, size: u32) {
+        self.close_button_size = size;
+        self.base.request_redraw();
+    }
+
+    /// Returns the button spacing.
+    pub fn get_button_spacing(&self) -> u32 {
+        self.button_spacing
+    }
+
+    /// Sets the button spacing and requests redraw.
+    pub fn set_button_spacing(&mut self, spacing: u32) {
+        self.button_spacing = spacing;
+        self.base.request_redraw();
+    }
+
     /// Emits the window closed signal.
     pub fn close(&mut self) {
         self.closed.emit();
@@ -156,7 +195,7 @@ impl Draw for Window {
         // Draw window background
         context.fill_rect(rect, bg_color);
         // Draw title bar
-        let title_bar_height = 32;
+        let title_bar_height = self.title_bar_height;
         let title_bar_rect = Rect::new(rect.x, rect.y, rect.width, title_bar_height);
         context.fill_rect(title_bar_rect, title_bar_color);
         // Draw title text
@@ -174,7 +213,7 @@ impl Draw for Window {
             context.draw_rect_stroke(rect, border_color, border_width);
         }
         // Draw window controls (close button)
-        let close_button_size = 14;
+        let close_button_size = self.close_button_size;
         let close_button_rect = Rect::new(
             rect.x + rect.width as f32 as i32 - close_button_size as i32 - 10,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
@@ -205,7 +244,9 @@ impl Draw for Window {
         context.draw_line(x3, x4, Color::WHITE);
         // Draw minimize button
         let minimize_button_rect = Rect::new(
-            rect.x + rect.width as i32 - close_button_size as i32 - 100,
+            rect.x + rect.width as i32
+                - close_button_size as i32
+                - (self.button_spacing * 2 + self.close_button_size * 2) as i32,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
@@ -215,12 +256,17 @@ impl Draw for Window {
         let minimize_y = minimize_button_rect.y + minimize_button_rect.height as i32 / 2;
         context.draw_line(
             Point::new(minimize_button_rect.x + 2, minimize_y),
-            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2, minimize_y),
+            Point::new(
+                minimize_button_rect.x + minimize_button_rect.width as i32 - 2,
+                minimize_y,
+            ),
             Color::WHITE,
         );
         // Draw maximize button
         let maximize_button_rect = Rect::new(
-            rect.x + rect.width as f32 as i32 - close_button_size as i32 - 50,
+            rect.x + rect.width as f32 as i32
+                - close_button_size as i32
+                - (self.button_spacing + self.close_button_size) as i32,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,

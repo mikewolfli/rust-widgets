@@ -81,6 +81,7 @@ pub(crate) fn normalized_progress_i32(value: i32, min: i32, max: i32) -> f32 {
     ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
 }
 /// Append visual commands for a `Window` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
     push_widget_fill_and_border(
         layer,
@@ -102,6 +103,7 @@ pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
     }
 }
 /// Append visual commands for a `Panel` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_panel_visual_commands(layer: &mut SceneLayer, panel: &Panel) {
     push_widget_fill_and_border(
         layer,
@@ -111,6 +113,7 @@ pub fn append_panel_visual_commands(layer: &mut SceneLayer, panel: &Panel) {
     );
 }
 /// Append visual commands for a `Label` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_label_visual_commands(layer: &mut SceneLayer, label: &Label) {
     push_widget_fill_and_border(layer, label, None, None);
     if !label.text().is_empty() {
@@ -125,6 +128,7 @@ pub fn append_label_visual_commands(layer: &mut SceneLayer, label: &Label) {
     }
 }
 /// Append visual commands for a `Button` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
     let fallback_bg = match button.state() {
         ButtonState::Pressed => Color::PRIMARY,
@@ -152,6 +156,7 @@ pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
     }
 }
 /// Append visual commands for a `CheckBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckBox) {
     let rect = checkbox.geometry();
     if is_empty_rect(&rect) {
@@ -208,6 +213,7 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
     }
 }
 /// Append visual commands for a `RadioButton` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioButton) {
     let rect = radio.geometry();
     if is_empty_rect(&rect) {
@@ -237,6 +243,7 @@ pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioB
     }
 }
 /// Append visual commands for a `LineEdit` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &LineEdit) {
     push_widget_fill_and_border(
         layer,
@@ -257,6 +264,7 @@ pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &Line
     }
 }
 /// Append visual commands for a `ComboBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &ComboBox) {
     let rect = combo_box.geometry();
     if is_empty_rect(&rect) {
@@ -342,6 +350,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
     }
 }
 /// Append visual commands for a `ListBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBox) {
     push_widget_fill_and_border(
         layer,
@@ -375,6 +384,7 @@ pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBo
     }
 }
 /// Append visual commands for a `ProgressBar` value representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar: &ProgressBar) {
     push_widget_fill_and_border(
         layer,
@@ -405,6 +415,7 @@ pub fn append_progress_bar_visual_commands(layer: &mut SceneLayer, progress_bar:
     }
 }
 /// Append visual commands for a `Slider` value representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     let rect = slider.geometry();
     if is_empty_rect(&rect) {
@@ -474,6 +485,7 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     }
 }
 /// Append visual commands for a `ScrollBar` value representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &ScrollBar) {
     let rect = scroll_bar.geometry();
     if is_empty_rect(&rect) {

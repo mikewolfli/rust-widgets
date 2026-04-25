@@ -6,6 +6,7 @@ use crate::render::pipeline::controls::{centered_text_origin, push_widget_fill_a
 use crate::render::{RenderCommand, SceneLayer};
 use crate::widget::{ActivityIndicator, Widget};
 
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_activity_indicator_visual_commands(
     layer: &mut SceneLayer,
     activity_indicator: &ActivityIndicator,
@@ -42,6 +43,7 @@ pub fn append_activity_indicator_visual_commands(
     }
 }
 /// Append visual commands for a `ToggleButton` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_toggle_button_visual_commands(
     layer: &mut SceneLayer,
     toggle_button: &crate::widget::ToggleButton,
@@ -74,6 +76,7 @@ pub fn append_toggle_button_visual_commands(
     });
 }
 /// Append visual commands for a `CheckListBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_check_list_box_visual_commands(
     layer: &mut SceneLayer,
     check_list_box: &crate::widget::CheckListBox,
@@ -134,6 +137,7 @@ pub fn append_check_list_box_visual_commands(
     }
 }
 /// Append visual commands for a `DoubleSpinBox` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_double_spin_box_visual_commands(
     layer: &mut SceneLayer,
     double_spin_box: &crate::widget::DoubleSpinBox,
@@ -190,6 +194,7 @@ pub fn append_double_spin_box_visual_commands(
     });
 }
 /// Append visual commands for a `Dial` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget::Dial) {
     push_widget_fill_and_border(
         layer,
@@ -236,6 +241,7 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
     });
 }
 /// Append visual commands for a `Wizard` baseline representation.
+#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::widget::Wizard) {
     push_widget_fill_and_border(
         layer,

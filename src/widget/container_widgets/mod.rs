@@ -1,4 +1,5 @@
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
+pub mod collapsible_pane;
 pub mod dockwidget;
 pub mod groupbox;
 pub mod mdiarea;
@@ -8,6 +9,7 @@ pub mod stackedwidget;
 pub mod tabwidget;
 pub mod toolbox;
 // Re-export container widgets
+pub use collapsible_pane::CollapsiblePane;
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
 pub use mdiarea::MdiArea;

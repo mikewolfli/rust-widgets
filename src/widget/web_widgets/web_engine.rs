@@ -37,17 +37,127 @@ pub struct WebEngineView {
     /// Emitted when the page is destroyed.
     pub page_destroyed: Signal1<ObjectId>,
 }
-// Backward-compatibility aliases for render pipeline symbol imports.
-pub type WebEnginePage = WebEngineView;
-pub type WebEngine = WebEngineView;
-pub type WebEngineSettings = WebEngineView;
-pub type WebEngineDownloadItem = WebEngineView;
-pub type WebEngineCookieStore = WebEngineView;
-pub type WebEngineWebChannel = WebEngineView;
-pub type WebEngineFindTextResult = WebEngineView;
-pub type WebEngineNotification = WebEngineView;
-pub type WebEngineScriptDialog = WebEngineView;
-pub type WebEngineContextMenuRequest = WebEngineView;
+// Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
+pub struct WebEnginePage(pub WebEngineView);
+impl WebEnginePage {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngine(pub WebEngineView);
+impl WebEngine {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineSettings(pub WebEngineView);
+impl WebEngineSettings {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineDownloadItem(pub WebEngineView);
+impl WebEngineDownloadItem {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineCookieStore(pub WebEngineView);
+impl WebEngineCookieStore {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineWebChannel(pub WebEngineView);
+impl WebEngineWebChannel {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineFindTextResult(pub WebEngineView);
+impl WebEngineFindTextResult {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineNotification(pub WebEngineView);
+impl WebEngineNotification {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineScriptDialog(pub WebEngineView);
+impl WebEngineScriptDialog {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
+pub struct WebEngineContextMenuRequest(pub WebEngineView);
+impl WebEngineContextMenuRequest {
+    pub fn new(geometry: Rect) -> Self {
+        Self(WebEngineView::new(geometry))
+    }
+    pub fn inner(&self) -> &WebEngineView {
+        &self.0
+    }
+    pub fn inner_mut(&mut self) -> &mut WebEngineView {
+        &mut self.0
+    }
+}
 impl WebEngineView {
     pub fn new(geometry: Rect) -> Self {
         Self {

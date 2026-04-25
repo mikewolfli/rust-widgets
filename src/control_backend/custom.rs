@@ -1702,6 +1702,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: DataView is an alias for TableWidget");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state
@@ -1734,6 +1735,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: PropertyGrid is an alias for TreeView");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state
@@ -1799,6 +1801,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: CollapsiblePane is an alias for Panel");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state
@@ -1962,6 +1965,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: ColumnView is an alias for TreeView");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state
@@ -1994,6 +1998,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("shallow implementation: UndoView is an alias for ListView");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state

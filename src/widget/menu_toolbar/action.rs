@@ -39,7 +39,7 @@ pub struct Action {
 impl Action {
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
-        Self {
+        let mut action = Self {
             base: BaseWidget::new(WidgetKind::Action, geometry, "Action"),
             cmd: CmdAction::new("", &text),
             text: text.clone(),
@@ -52,7 +52,9 @@ impl Action {
             changed: GenericSignal::new(),
             _toggled_handle: None,
             _enabled_handle: None,
-        }
+        };
+        action.wire_signals();
+        action
     }
     pub fn separator(geometry: Rect) -> Self {
         let mut a = Self::new("", geometry);

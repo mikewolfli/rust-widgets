@@ -1,11 +1,11 @@
 //! Calendar widget.
-use chrono::Datelike;
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use chrono::Datelike;
 /// Calendar widget.
 pub struct Calendar {
     base: BaseWidget,
@@ -18,6 +18,7 @@ pub struct Calendar {
     horizontal_header_visible: bool,
     vertical_header_visible: bool,
     pub selection_changed: Signal1<chrono::NaiveDate>,
+    date_format: String,
 }
 impl Calendar {
     /// Creates a calendar widget.
@@ -34,6 +35,7 @@ impl Calendar {
             horizontal_header_visible: true,
             vertical_header_visible: false,
             selection_changed: Signal1::new(),
+            date_format: "%Y-%m-%d".to_string(),
         }
     }
     /// Returns selected date.
@@ -150,6 +152,16 @@ impl Calendar {
             self.set_selected_date(prev_year);
         }
     }
+    /// Returns the current date format string.
+    pub fn date_format(&self) -> &str {
+        &self.date_format
+    }
+
+    /// Sets the date format string (uses chrono format specifiers).
+    pub fn set_date_format(&mut self, format: String) {
+        self.date_format = format;
+    }
+
     /// Returns date at position.
     fn date_at_position(&self, pos: Point) -> Option<chrono::NaiveDate> {
         let rect = self.geometry();
@@ -351,7 +363,7 @@ impl Draw for Calendar {
             &Font::default(),
             Color::from_rgb(40, 40, 40),
         );
-        let value = self.selected_date.format("%Y-%m-%d").to_string();
+        let value = self.selected_date.format(&self.date_format).to_string();
         context.draw_text(
             Point {
                 x: rect.x + 8,
