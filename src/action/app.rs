@@ -45,6 +45,15 @@ impl<'a> ActionRouter<'a> {
             return false;
         }
         // Also register in ActionManager's shortcut map
+        //
+        // NOTE(P4-19): The shortcut is registered in two places
+        // intentionally for consistency:
+        //   1. `shortcut_mgr.register(...)` — enables shortcut detection
+        //      from keyboard input in the shortcut system.
+        //   2. `action_mgr.bind_shortcut_type(...)` — enables reverse
+        //      lookup (shortcut → action id) inside ActionManager.
+        // Both registrations are required for the router to work
+        // correctly in both directions.
         self.action_mgr.bind_shortcut_type(&shortcut, action_id)
     }
 

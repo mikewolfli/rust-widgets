@@ -28,6 +28,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         | WidgetKind::Splitter
         | WidgetKind::MenuBar
         | WidgetKind::Menu
+        | WidgetKind::MenuItem
         | WidgetKind::ContextMenu
         | WidgetKind::ToolBar
         | WidgetKind::StatusBar

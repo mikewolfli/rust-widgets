@@ -1,4 +1,34 @@
 //! PDF reader and parsing logic.
+//!
+//! # Known Limitations
+//!
+//! This is a minimal PDF reader implementation. The following features are NOT
+//! yet supported:
+//!
+//! - **Tokenization**: The parser operates on a line-level basis rather than
+//!   proper PDF tokenization. A proper [`Lexer`] should be implemented to
+//!   produce tokens for names (`/Name`), numbers, strings, hex strings,
+//!   dictionaries (`<< ... >>`), arrays (`[ ... ]`), etc.
+//! - **Cross-reference stream (XRefStm)**: Only classic cross-reference tables
+//!   are parsed; cross-reference streams (introduced in PDF 1.5) are ignored.
+//! - **Object streams (ObjStm)**: Compressed objects stored inside object
+//!   streams are not supported. All objects must be direct or in classic
+//!   indirect-object format (`N 0 obj ... endobj`).
+//! - **Compressed object data**: Streams using FlateDecode, LZWDecode, or
+//!   other compression filters are not decompressed.
+//! - **Encryption**: Only security-diagnostics metadata is parsed; actual
+//!   decryption of encrypted payloads is not implemented.
+//! - **Font subsetting / CID fonts**: Only core Helvetica is used as a
+//!   default font resource. Embedded font programs are not parsed.
+//! - **Interactive form filling**: Form field definitions are stored but
+//!   not populated from the PDF's AcroForm structure.
+//! - **Page tree traversal**: Only flat `/Type /Page` objects are detected;
+//!   page-tree nodes with `/Type /Pages` and `/Kids` arrays are not
+//!   recursively resolved.
+//!
+//! These limitations mean the reader works correctly only for simple,
+//! uncompressed PDFs with no object streams and flat page structures.
+//! For production use, consider integrating a more complete PDF library.
 
 use crate::core::Size;
 use crate::pdf::metadata::PdfMetadata;
@@ -53,6 +83,8 @@ impl PdfReader {
             security: PdfSecurity::default(),
             fonts: vec![PdfFontResource::core_helvetica("F1")],
             pagination: PdfPagination::default(),
+            annotation_manager: crate::pdf::annotation::AnnotationManager::new(),
+            hyperlink_manager: crate::pdf::hyperlink::HyperlinkManager::new(),
         };
         if let Some(security) = parse_security_diagnostics(&text) {
             doc.security = security;

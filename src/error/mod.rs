@@ -117,6 +117,25 @@ impl fmt::Display for RwError {
 impl std::error::Error for RwError {}
 
 // ---------------------------------------------------------------------------
+// From impls — bridge between core and error domains
+// ---------------------------------------------------------------------------
+
+impl From<crate::core::CoreError> for RwError {
+    fn from(err: crate::core::CoreError) -> Self {
+        match err {
+            crate::core::CoreError::InvalidArgument(msg) => {
+                RwError::new(ErrorId::INVALID_ARGUMENT, msg)
+            }
+            crate::core::CoreError::NotSupported(msg) => {
+                RwError::new(ErrorId::UNSUPPORTED_OPERATION, msg)
+            }
+            crate::core::CoreError::NotFound(msg) => RwError::new(ErrorId::FILE_NOT_FOUND, msg),
+            crate::core::CoreError::Internal(msg) => RwError::new(ErrorId::NOT_IMPLEMENTED, msg),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Result alias
 // ---------------------------------------------------------------------------
 

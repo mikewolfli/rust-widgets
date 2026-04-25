@@ -1,6 +1,8 @@
 //! PDF document implementation.
 
 use crate::core::Size;
+use crate::pdf::annotation::AnnotationManager;
+use crate::pdf::hyperlink::HyperlinkManager;
 use crate::pdf::metadata::PdfMetadata;
 use crate::pdf::page::PdfPageImpl;
 use crate::pdf::types::*;
@@ -21,6 +23,10 @@ pub(crate) struct PdfDocumentImpl {
     pub(crate) fonts: Vec<PdfFontResource>,
     /// Optional page-number footer stamping options.
     pub(crate) pagination: PdfPagination,
+    /// Annotation manager for tracking page annotations.
+    pub(crate) annotation_manager: AnnotationManager,
+    /// Hyperlink manager for tracking page hyperlinks.
+    pub(crate) hyperlink_manager: HyperlinkManager,
 }
 impl PdfDocumentImpl {
     pub(crate) fn new(page_size: Size) -> Self {
@@ -30,6 +36,8 @@ impl PdfDocumentImpl {
             security: PdfSecurity::default(),
             fonts: vec![PdfFontResource::core_helvetica("F1")],
             pagination: PdfPagination::default(),
+            annotation_manager: AnnotationManager::new(),
+            hyperlink_manager: HyperlinkManager::new(),
         };
         document.add_page(page_size);
         document
@@ -54,6 +62,8 @@ impl PdfDocumentImpl {
                 embedded_data: font_data,
             }],
             pagination: PdfPagination::default(),
+            annotation_manager: AnnotationManager::new(),
+            hyperlink_manager: HyperlinkManager::new(),
         };
         document.add_page(page_size);
         Ok(document)

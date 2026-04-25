@@ -3,6 +3,7 @@ mod js_engine;
 mod navigation;
 mod plugins;
 mod privacy;
+mod web_core;
 mod web_engine;
 mod web_view;
 pub use history::*;

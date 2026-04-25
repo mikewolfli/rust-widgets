@@ -1,5 +1,7 @@
 //! Windows platform types, structs, enums, and traits.
 
+use super::notify;
+
 pub enum WindowsHandleKind {
     Window,
     Button,
@@ -40,7 +42,7 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
         WM_COMMAND => {
             let command_id = (wparam & 0xFFFF) as u32;
             let notify_code = ((wparam >> 16) & 0xFFFF) as u32;
-            if let Some(platform) = active_windows_platform() {
+            if let Some(platform) = notify::active_windows_platform() {
                 if let Ok(map) = platform.menu_state.menu_command_to_item.lock() {
                     if let Some(item_id) = map.get(&command_id).copied() {
                         if let Ok(mut queue) = platform.menu_state.pending_menu_events.lock() {
@@ -54,7 +56,7 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
                 }
                 if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
                     if let Some(widget_id) = map.get(&command_id).copied() {
-                        if enqueue_control_notify_event(platform, widget_id, notify_code) {
+                        if notify::enqueue_control_notify_event(platform, widget_id, notify_code) {
                             return 0;
                         }
                     }
@@ -65,7 +67,7 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
                     if fallback_command_id != 0 {
                         if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
                             if let Some(widget_id) = map.get(&fallback_command_id).copied() {
-                                if enqueue_control_notify_event(platform, widget_id, notify_code) {
+                                if notify::enqueue_control_notify_event(platform, widget_id, notify_code) {
                                     return 0;
                                 }
                             }
@@ -76,7 +78,7 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_NOTIFY => {
-            if let Some(platform) = active_windows_platform() {
+            if let Some(platform) = notify::active_windows_platform() {
                 let hdr = lparam as *const NMHDR;
                 if !hdr.is_null() {
                     let hwnd_from = unsafe { (*hdr).hwndFrom };
@@ -84,7 +86,7 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
                     if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd_from) {
                         if let Some(kind) =
                             platform.state.kind_of(widget_id).and_then(|widget_kind| {
-                                notify_kind_for_widget(widget_kind, notify_code)
+                                notify::notify_kind_for_widget(widget_kind, notify_code)
                             })
                         {
                             if let Ok(mut events) = platform.menu_state.pending_widget_events.lock()

@@ -7,6 +7,7 @@ use crate::platform::{
     WidgetTriggerEvent, WidgetTriggerKind,
 };
 
+use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 
 impl Platform for WindowsPlatform {
@@ -145,7 +146,7 @@ impl Platform for WindowsPlatform {
         self.runtime_initialized.store(true, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         {
-            let _ = ACTIVE_WINDOWS_PLATFORM.set(self as *const WindowsPlatform as usize);
+            let _ = notify::register_active_platform(self as &'static WindowsPlatform);
         }
         #[cfg(target_os = "windows")]
         unsafe {
@@ -198,7 +199,7 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{
                 CreateWindowExW, ShowWindow, UpdateWindow, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             };
-            ensure_window_class_registered();
+            notify::ensure_window_class_registered();
             let class_name = Self::to_wide("RustWidgetsWindowClass");
             let title_wide = Self::to_wide(title);
             let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
@@ -575,12 +576,15 @@ impl Platform for WindowsPlatform {
                 Some(hwnd) => hwnd,
                 None => return false,
             };
+            // CB_GETCURSEL returns -1 (CB_ERR) if nothing is selected, or the current 0-based index.
             let previous = unsafe { SendMessageW(hwnd, CB_GETCURSEL, 0, 0) };
+            // CB_SETCURSEL returns the PREVIOUS selection index on success, or CB_ERR (-1) on failure.
             let result = unsafe { SendMessageW(hwnd, CB_SETCURSEL, index, 0) };
             if result == CB_ERR as isize {
                 return false;
             }
-            if result != previous {
+            // Fire trigger only when the selection actually changes: previous index != new index.
+            if previous != index as isize {
                 let _ = self
                     .inject_widget_trigger_event(combo_box, WidgetTriggerKind::SelectionChanged);
                 let _ =
@@ -1309,20 +1313,20 @@ impl Platform for WindowsPlatform {
     // ...implement other required methods as stubs...
     fn create_message_box(
         &self,
-        _parent: ObjectId,
-        _title: &str,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows MessageBox (MessageBoxW API)
-            log::error!("[rust_widgets][windows] MessageBox stubbed: title='{}'", _title);
-            let _ = RwError::not_implemented("Windows native MessageBox");
-            0
+            // State-backed MessageBox surrogate until native MessageBoxW integration lands.
+            let _ = (parent, text);
+            log::warn!("[rust_widgets][windows] MessageBox surrogate for '{}'", title);
+            self.state.create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1333,80 +1337,79 @@ impl Platform for WindowsPlatform {
     fn create_file_dialog(
         &self,
         _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows file dialog (IFileOpenDialog/IFileSaveDialog)
-            log::error!("[rust_widgets][windows] File dialog stubbed");
-            let _ = RwError::not_implemented("Windows native file dialog");
-            0
+            // State-backed FileDialog surrogate until native IFileOpenDialog integration lands.
+            log::warn!("[rust_widgets][windows] FileDialog surrogate");
+            self.state.create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (parent, x, y, width, height);
+            let _ = (x, y, width, height);
             0
         }
     }
     fn create_color_dialog(
         &self,
         _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows color dialog (CHOOSECOLORW)
-            log::error!("[rust_widgets][windows] Color dialog stubbed");
-            let _ = RwError::not_implemented("Windows native color dialog");
-            0
+            // State-backed ColorDialog surrogate until native CHOOSECOLORW integration lands.
+            log::warn!("[rust_widgets][windows] ColorDialog surrogate");
+            self.state.create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (parent, x, y, width, height);
+            let _ = (x, y, width, height);
             0
         }
     }
     fn create_font_dialog(
         &self,
         _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows font dialog (CHOOSEFONTW)
-            log::error!("[rust_widgets][windows] Font dialog stubbed");
-            let _ = RwError::not_implemented("Windows native font dialog");
-            0
+            // State-backed FontDialog surrogate until native CHOOSEFONTW integration lands.
+            log::warn!("[rust_widgets][windows] FontDialog surrogate");
+            self.state.create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (parent, x, y, width, height);
+            let _ = (x, y, width, height);
             0
         }
     }
     fn create_spin_box(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows spin box (Up-Down control)
-            log::error!("[rust_widgets][windows] Spin box stubbed");
-            let _ = RwError::not_implemented("Windows native spin box");
-            0
+            // Validate that parent exists before creating spin box surrogate.
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            log::warn!("[rust_widgets][windows] SpinBox surrogate until native up-down control lands");
+            self.state.create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1416,18 +1419,20 @@ impl Platform for WindowsPlatform {
     }
     fn create_list_view(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows list view (SysListView32)
-            log::error!("[rust_widgets][windows] List view stubbed");
-            let _ = RwError::not_implemented("Windows native list view");
-            0
+            // Validate that parent exists before creating list view surrogate.
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            log::warn!("[rust_widgets][windows] ListView surrogate until native SysListView32 lands");
+            self.state.create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1437,18 +1442,20 @@ impl Platform for WindowsPlatform {
     }
     fn create_scroll_area(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for native Windows scroll area (WS_HSCROLL/WS_VSCROLL)
-            log::error!("[rust_widgets][windows] Scroll area stubbed");
-            let _ = RwError::not_implemented("Windows native scroll area");
-            0
+            // Validate that parent exists before creating scroll area surrogate.
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            log::warn!("[rust_widgets][windows] ScrollArea surrogate until native WS_HSCROLL/WS_VSCROLL lands");
+            self.state.create_widget(WindowsHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {

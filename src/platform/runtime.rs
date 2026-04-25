@@ -1,13 +1,61 @@
+#[cfg(any(
+    feature = "embedded",
+    all(
+        not(feature = "embedded"),
+        not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+    )
+))]
+use crate::core::PlatformFamily;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
-#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "embedded"),
+    not(feature = "objc2-macos")
+))]
 use crate::platform::macos::MacOSPlatform;
-#[cfg(feature = "mobile-api")]
+#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 use crate::platform::mobile;
 pub use crate::platform::types::*;
-#[cfg(target_os = "windows")]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native"
+))]
+use crate::platform::wayland::WaylandPlatform;
+#[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
+#[cfg(any(
+    feature = "embedded",
+    all(
+        not(feature = "embedded"),
+        not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+    )
+))]
+use crate::platform::StubPlatform;
 use std::sync::OnceLock;
+
+// ---------------------------------------------------------------------------
+// Linux runtime auto-detection: Wayland vs X11/GTK
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when the process is running under a Wayland display server.
+///
+/// Detection strategy (tiered):
+///  1. `$WAYLAND_DISPLAY` environment variable is set → Wayland
+///  2. `$XDG_SESSION_TYPE` equals `"wayland"` → Wayland
+///  3. Otherwise → assume X11/"plain" Linux
+#[cfg(all(target_os = "linux", not(feature = "embedded")))]
+fn is_wayland_session() -> bool {
+    std::env::var("WAYLAND_DISPLAY").is_ok()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|t| t.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Platform constructor (auto-detect on Linux)
+// ---------------------------------------------------------------------------
 
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -16,10 +64,12 @@ fn create_native_platform() -> Box<dyn Platform> {
         PlatformFamily::Embedded,
     ))
 }
+
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(WindowsPlatform::new())
 }
+
 /// Select objc2 preview backend when migration feature is enabled on macOS.
 #[cfg(all(
     target_os = "macos",
@@ -29,6 +79,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(crate::platform::macos_objc2::MacOSObjc2Platform::new())
 }
+
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
 #[cfg(all(
     target_os = "macos",
@@ -38,10 +89,33 @@ fn create_native_platform() -> Box<dyn Platform> {
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(MacOSPlatform::new())
 }
-#[cfg(all(target_os = "linux", not(feature = "embedded")))]
+
+/// Linux runtime auto-detection:
+///   - Wayland session → WaylandPlatform (when wayland-native feature enabled)
+///   - Otherwise → LinuxPlatform (GTK or state-backed)
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native"
+))]
+fn create_native_platform() -> Box<dyn Platform> {
+    if is_wayland_session() {
+        Box::new(WaylandPlatform::new())
+    } else {
+        Box::new(LinuxPlatform::new())
+    }
+}
+
+/// Linux without wayland-native feature → always use LinuxPlatform.
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    not(feature = "wayland-native")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
 }
+
 #[cfg(all(
     not(feature = "embedded"),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
@@ -52,27 +126,38 @@ fn create_native_platform() -> Box<dyn Platform> {
         PlatformFamily::Desktop,
     ))
 }
+
+// ---------------------------------------------------------------------------
+// Global platform singleton
+// ---------------------------------------------------------------------------
+
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
+
 /// Returns the process-global platform backend instance.
 pub fn get_platform() -> &'static dyn Platform {
     PLATFORM.get_or_init(create_native_platform).as_ref()
 }
+
 /// Initializes the platform backend.
 pub fn init() {
     get_platform().init();
 }
+
 /// Runs the platform main loop.
 pub fn run() {
     get_platform().run();
 }
+
 /// Requests platform main loop shutdown.
 pub fn quit() {
     get_platform().quit();
 }
+
 /// Returns runtime capabilities for the active backend.
 pub fn capabilities() -> PlatformCapabilities {
     get_platform().capabilities()
 }
+
 /// Runtime GUI mode contract used by demos/tools to explain visible behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeGuiMode {
@@ -81,10 +166,21 @@ pub enum RuntimeGuiMode {
     /// Backend is preview/stub-like and may not render native windows.
     PreviewOrStub,
 }
+
 /// Resolve GUI mode for a specific platform backend.
 pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
     match platform.backend_name() {
         "cocoa" | "WindowsPlatform" => RuntimeGuiMode::NativeInteractive,
+        "wayland" => {
+            #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+            {
+                RuntimeGuiMode::NativeInteractive
+            }
+            #[cfg(not(all(target_os = "linux", feature = "wayland-native")))]
+            {
+                RuntimeGuiMode::PreviewOrStub
+            }
+        }
         "gtk" => {
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             {
@@ -101,23 +197,29 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
         _ => RuntimeGuiMode::PreviewOrStub,
     }
 }
+
 /// Resolve GUI mode for the active process-global backend.
 pub fn runtime_gui_mode() -> RuntimeGuiMode {
     runtime_gui_mode_for(get_platform())
 }
+
 /// Returns logical DPI scale factor for the active backend.
 pub fn dpi_scale_factor() -> f32 {
     get_platform().dpi_scale_factor()
 }
-#[cfg(feature = "mobile-api")]
+
+// ---------------------------------------------------------------------------
+// Mobile extension (not embedded)
+// ---------------------------------------------------------------------------
+
 /// Returns the mobile backend name.
+#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 pub fn mobile_backend_name() -> &'static str {
     mobile::get_mobile_platform().backend_name()
 }
-#[cfg(feature = "mobile-api")]
+
 /// Attaches the mobile backend to a native view handle.
+#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 pub fn mobile_attach_to_native_view(native_handle: usize) -> bool {
     mobile::get_mobile_platform().attach_to_native_view(native_handle)
 }
-// NOTE: fallback_native_capability_contract and fallback_embedded_capability_contract
-// are defined in contract.rs

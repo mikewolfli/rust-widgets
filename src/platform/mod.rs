@@ -9,24 +9,28 @@ pub mod macos;
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
+#[cfg(all(target_os = "linux", feature = "wayland-native"))]
+pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
 // Internal sub-modules (split from monolithic mod.rs)
+mod contract;
+mod runtime;
 mod state;
 mod stub;
 pub mod types;
-mod runtime;
-mod contract;
 
 // Re-exports: everything that was previously defined directly in mod.rs
-pub use crate::platform::types::*;
-pub use crate::platform::stub::StubPlatform;
-pub use crate::platform::runtime::{get_platform, init, run, quit, capabilities};
-pub use crate::platform::runtime::{runtime_gui_mode, runtime_gui_mode_for, dpi_scale_factor};
-pub use crate::platform::runtime::{RuntimeGuiMode, mobile_backend_name, mobile_attach_to_native_view};
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
-pub use crate::platform::contract::{NativeCapabilityContract, EmbeddedCapabilityContract};
+pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
+pub use crate::platform::runtime::RuntimeGuiMode;
+pub use crate::platform::runtime::{capabilities, get_platform, init, quit, run};
+pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
+#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
+pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_name};
+pub use crate::platform::stub::StubPlatform;
+pub use crate::platform::types::*;
 
 #[cfg(test)]
 mod tests;

@@ -34,15 +34,14 @@ impl ConnectionScope {
     }
     fn track(&self, disconnector: Box<dyn FnOnce() + Send + 'static>) {
         self.disconnectors
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .push(disconnector);
     }
 }
 impl Drop for ConnectionScope {
     fn drop(&mut self) {
-        let mut disconnectors = self
-            .disconnectors
-            .lock().unwrap_or_else(|e| e.into_inner());
+        let mut disconnectors = self.disconnectors.lock().unwrap_or_else(|e| e.into_inner());
         while let Some(disconnector) = disconnectors.pop() {
             disconnector();
         }
@@ -131,6 +130,19 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .clear();
     }
     /// Emit a cloned value to all connected slots.
+    ///
+    /// # ⚠️ Deadlock risk
+    ///
+    /// This method acquires a **write** lock on the slot map for the entire
+    /// duration of emission. If any callback (slot) tries to call `connect`,
+    /// `disconnect`, `disconnect_all`, or `emit` on **the same Signal**
+    /// from within the callback, a **deadlock** will occur because those
+    /// operations also attempt to acquire the same lock.
+    ///
+    /// To safely mutate connections during emission, consider collecting
+    /// slot handles first under a read lock, then switching to a write lock
+    /// only for once-slot cleanup — or document that callbacks must not
+    /// re-enter the signal.
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
         let mut slots = self.inner.slots.write().expect("signal lock poisoned");

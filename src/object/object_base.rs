@@ -1,8 +1,8 @@
+use super::PropertyValue;
+use crate::core::{CoreObject, ObjectId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use crate::core::{CoreObject, ObjectId};
-use super::PropertyValue;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Lightweight object identity and dynamic property container.
 #[derive(Debug, Clone)]
@@ -77,5 +77,8 @@ impl CoreObject for Object {
     }
     fn set_id(&mut self, id: ObjectId) {
         self.id = id;
+    }
+    fn type_name(&self) -> &'static str {
+        "Object"
     }
 }

@@ -534,7 +534,14 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = (parent, title, text);
-        self.insert_widget(MacObjc2HandleKind::Panel, "MessageBox", x, y, width, height)
+        self.insert_widget(
+            MacObjc2HandleKind::MessageBox,
+            "MessageBox",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_file_dialog(
         &self,
@@ -545,7 +552,14 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(MacObjc2HandleKind::Panel, "FileDialog", x, y, width, height)
+        self.insert_widget(
+            MacObjc2HandleKind::FileDialog,
+            "FileDialog",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_color_dialog(
         &self,
@@ -557,7 +571,7 @@ impl Platform for MacOSObjc2Platform {
     ) -> ObjectId {
         let _ = parent;
         self.insert_widget(
-            MacObjc2HandleKind::Panel,
+            MacObjc2HandleKind::ColorDialog,
             "ColorDialog",
             x,
             y,
@@ -574,7 +588,14 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(MacObjc2HandleKind::Panel, "FontDialog", x, y, width, height)
+        self.insert_widget(
+            MacObjc2HandleKind::FontDialog,
+            "FontDialog",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_spin_box(
         &self,
@@ -587,7 +608,7 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::ComboBox, "SpinBox", x, y, width, height)
+        self.insert_widget(MacObjc2HandleKind::Panel, "SpinBox", x, y, width, height)
     }
     fn create_list_view(
         &self,
@@ -600,7 +621,7 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::ListBox, "ListView", x, y, width, height)
+        self.insert_widget(MacObjc2HandleKind::Panel, "ListView", x, y, width, height)
     }
     fn create_scroll_area(
         &self,

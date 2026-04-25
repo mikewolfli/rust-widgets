@@ -1,20 +1,23 @@
 //! PDF generation, parsing, and document manipulation.
 
-pub mod metadata;
-pub mod types;
-pub mod security;
-pub mod writer;
-pub mod reader;
+pub mod annotation;
 pub mod document;
+pub mod form;
+pub mod hyperlink;
+pub mod metadata;
 pub mod page;
+pub mod reader;
+pub mod security;
+pub mod types;
+pub mod writer;
 
+pub(crate) use crate::pdf::document::*;
+pub use crate::pdf::reader::*;
 pub use crate::pdf::types::*;
 pub use crate::pdf::writer::*;
-pub use crate::pdf::reader::*;
-pub(crate) use crate::pdf::document::*;
 // pub(crate) use crate::pdf::page::*;
 
-use crate::core::{Rect, Size, Color};
+use crate::core::{Color, Rect, Size};
 use crate::pdf::metadata::PdfMetadata;
 
 /// PDF page trait
@@ -51,4 +54,3 @@ pub trait PdfDocument {
     fn save(&self, path: &str) -> Result<(), std::io::Error>;
     fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error>;
 }
-

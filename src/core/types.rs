@@ -27,6 +27,8 @@ pub trait CoreObject: Debug + Send + Sync {
     fn id(&self) -> ObjectId;
     /// Set stable object id (used by object system adapters).
     fn set_id(&mut self, id: ObjectId);
+    /// Returns a human-readable type name for the core object.
+    fn type_name(&self) -> &'static str;
 }
 /// Result type for core operations.
 pub type CoreResult<T> = Result<T, CoreError>;
@@ -53,6 +55,20 @@ impl std::fmt::Display for CoreError {
     }
 }
 impl std::error::Error for CoreError {}
+
+impl From<crate::error::RwError> for CoreError {
+    fn from(err: crate::error::RwError) -> Self {
+        use crate::error::ErrorId;
+        match err.id {
+            ErrorId::INVALID_ARGUMENT => CoreError::InvalidArgument(err.message),
+            ErrorId::UNSUPPORTED_OPERATION => CoreError::NotSupported(err.message),
+            ErrorId::NOT_IMPLEMENTED => CoreError::NotSupported(err.message),
+            ErrorId::FILE_NOT_FOUND => CoreError::NotFound(err.message),
+            _ => CoreError::Internal(err.message),
+        }
+    }
+}
+
 /// Generic result type with default error.
 pub type Result<T, E = CoreError> = std::result::Result<T, E>;
 /// Version information for compatibility checks.

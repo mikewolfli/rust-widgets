@@ -479,7 +479,7 @@ impl ControlBackend for CustomPaintControlBackend {
                 y: 0,
                 width: 0,
                 height: 0,
-                widget_kind: WidgetKind::Menu,
+                widget_kind: WidgetKind::MenuItem,
             },
         );
         widget_id
@@ -1402,6 +1402,1171 @@ impl ControlBackend for CustomPaintControlBackend {
                 width,
                 height,
                 widget_kind: WidgetKind::Chart,
+            },
+        );
+        widget_id
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, text.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, text.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ToggleButton,
+            },
+        );
+        widget_id
+    }
+    fn create_check_list_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "CheckListBox".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::CheckListBox,
+            },
+        );
+        widget_id
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, "0.0".to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, true);
+        state
+            .accessibility_names
+            .insert(widget_id, "DoubleSpinBox".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DoubleSpinBox,
+            },
+        );
+        widget_id
+    }
+    fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "Dial".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::Dial,
+            },
+        );
+        widget_id
+    }
+    fn create_wizard(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, title.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, title.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::Wizard,
+            },
+        );
+        widget_id
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "DatePicker".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DatePicker,
+            },
+        );
+        widget_id
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "TimePicker".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::TimePicker,
+            },
+        );
+        widget_id
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "DateTimePicker".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DateTimePicker,
+            },
+        );
+        widget_id
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, title.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, title.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DirectoryDialog,
+            },
+        );
+        widget_id
+    }
+    fn create_data_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "DataView".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DataView,
+            },
+        );
+        widget_id
+    }
+    fn create_property_grid(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "PropertyGrid".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::PropertyGrid,
+            },
+        );
+        widget_id
+    }
+    fn create_toolbox(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "Toolbox".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::Toolbox,
+            },
+        );
+        widget_id
+    }
+    fn create_collapsible_pane(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, title.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, title.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::CollapsiblePane,
+            },
+        );
+        widget_id
+    }
+    fn create_dock_widget(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, title.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, title.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::DockWidget,
+            },
+        );
+        widget_id
+    }
+    fn create_web_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebView".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebView,
+            },
+        );
+        widget_id
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "ActivityIndicator".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ActivityIndicator,
+            },
+        );
+        widget_id
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "Calendar".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::Calendar,
+            },
+        );
+        widget_id
+    }
+    fn create_column_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "ColumnView".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ColumnView,
+            },
+        );
+        widget_id
+    }
+    fn create_undo_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "UndoView".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::UndoView,
+            },
+        );
+        widget_id
+    }
+    fn create_command_link(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, text.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, text.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::CommandLink,
+            },
+        );
+        widget_id
+    }
+    fn create_lcd_number(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, "0".to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "LCDNumber".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::LCDNumber,
+            },
+        );
+        widget_id
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "FontComboBox".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::FontComboBox,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineView".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineView,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_page(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEnginePage".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEnginePage,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_settings(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineSettings".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineSettings,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_download_item(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineDownloadItem".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineDownloadItem,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_cookie_store(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineCookieStore".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineCookieStore,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_web_channel(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineWebChannel".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineWebChannel,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_find_text_result(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineFindTextResult".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineFindTextResult,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_notification(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineNotification".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineNotification,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_script_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineScriptDialog".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineScriptDialog,
+            },
+        );
+        widget_id
+    }
+    fn create_web_engine_context_menu_request(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "WebEngineContextMenuRequest".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::WebEngineContextMenuRequest,
+            },
+        );
+        widget_id
+    }
+    fn create_action(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, text.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, text.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::Action,
+            },
+        );
+        widget_id
+    }
+    fn create_tool_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, text.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, text.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ToolButton,
+            },
+        );
+        widget_id
+    }
+    fn create_tool_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, "ToolBox".to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ToolBox,
+            },
+        );
+        widget_id
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let widget_id = self.alloc_widget_id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.texts.insert(widget_id, text.to_string());
+        state.enabled.insert(widget_id, true);
+        state.visible.insert(widget_id, true);
+        state.ime_enabled.insert(widget_id, false);
+        state
+            .accessibility_names
+            .insert(widget_id, text.to_string());
+        state.widget_properties.insert(
+            widget_id,
+            CustomWidgetProperties {
+                parent: Some(parent),
+                x,
+                y,
+                width,
+                height,
+                widget_kind: WidgetKind::ContextMenu,
             },
         );
         widget_id

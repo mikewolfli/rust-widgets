@@ -286,6 +286,29 @@ impl Color {
             Self::BLACK
         }
     }
+    /// Returns the inverted color (RGB channels negated, alpha preserved).
+    pub fn invert(&self) -> Self {
+        Self::rgba(255 - self.r, 255 - self.g, 255 - self.b, self.a)
+    }
+}
+impl Default for Color {
+    fn default() -> Self {
+        Self::BLACK
+    }
+}
+impl From<&str> for Color {
+    fn from(s: &str) -> Self {
+        Self::parse_hex(s).unwrap_or(Self::BLACK)
+    }
+}
+impl std::fmt::Display for Color {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Color(#{:02X}{:02X}{:02X}{:02X})",
+            self.r, self.g, self.b, self.a
+        )
+    }
 }
 #[cfg(test)]
 mod tests {

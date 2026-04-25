@@ -1,4 +1,5 @@
 use crate::core::{Color, Rect};
+use crate::pdf::types::PdfFormField;
 use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldType {
@@ -139,8 +140,50 @@ impl FormField {
             self.value.clear();
         }
     }
+    /// Convert this `FormField` to a `PdfFormField` for PDF serialization.
+    pub fn to_pdf_form_field(&self) -> PdfFormField {
+        match self.field_type {
+            FieldType::Text => PdfFormField::TextField {
+                name: self.name.clone(),
+                rect: self.rect,
+                value: self.value.clone(),
+            },
+            FieldType::Checkbox | FieldType::Radio => PdfFormField::CheckBox {
+                name: self.name.clone(),
+                rect: self.rect,
+                checked: !self.value.is_empty() && self.value != "Off" && self.value != "false",
+            },
+            FieldType::Button => PdfFormField::Button {
+                name: self.name.clone(),
+                rect: self.rect,
+                text: self.value.clone(),
+            },
+            FieldType::ComboBox => PdfFormField::ComboBox {
+                name: self.name.clone(),
+                rect: self.rect,
+                value: self.value.clone(),
+                options: self.options.clone(),
+            },
+            FieldType::ListBox => PdfFormField::ListBox {
+                name: self.name.clone(),
+                rect: self.rect,
+                selected: self.selected_indices.clone(),
+                options: self.options.clone(),
+            },
+            FieldType::Signature => {
+                // Signatures fall back to text fields in the simplified model.
+                PdfFormField::TextField {
+                    name: self.name.clone(),
+                    rect: self.rect,
+                    value: self.value.clone(),
+                }
+            }
+        }
+    }
+
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        self.rect.contains_point(crate::core::Point::from_f32(x as f32, y as f32))
+        self.rect
+            .contains_point(crate::core::Point::from_f32(x as f32, y as f32))
     }
 }
 #[derive(Debug, Clone)]
@@ -221,6 +264,26 @@ impl Form {
     pub fn required_field_count(&self) -> usize {
         self.fields.iter().filter(|f| f.is_required).count()
     }
+    /// Convert all fields in this form to `PdfFormField` entries suitable
+    /// for serialization into the PDF `/Annots` array.
+    ///
+    /// Only fields on the given page are included.
+    pub fn to_pdf_form_fields(&self, page: u32) -> Vec<PdfFormField> {
+        self.fields
+            .iter()
+            .filter(|f| f.page == page)
+            .map(|f| f.to_pdf_form_field())
+            .collect()
+    }
+
+    /// Convert all fields across all pages to `PdfFormField` entries.
+    pub fn to_pdf_form_fields_all(&self) -> Vec<(u32, PdfFormField)> {
+        self.fields
+            .iter()
+            .map(|f| (f.page, f.to_pdf_form_field()))
+            .collect()
+    }
+
     pub fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         for field in &self.fields {
@@ -294,6 +357,24 @@ impl FormManager {
     pub fn form_count(&self) -> usize {
         self.forms.len()
     }
+    /// Convert all forms to a flat list of `(page, PdfFormField)` entries.
+    pub fn to_pdf_form_fields_all(&self) -> Vec<(u32, PdfFormField)> {
+        let mut result = Vec::new();
+        for form in self.forms.values() {
+            result.extend(form.to_pdf_form_fields_all());
+        }
+        result
+    }
+
+    /// Convert all forms to `PdfFormField` entries for a specific page.
+    pub fn to_pdf_form_fields(&self, page: u32) -> Vec<PdfFormField> {
+        let mut result = Vec::new();
+        for form in self.forms.values() {
+            result.extend(form.to_pdf_form_fields(page));
+        }
+        result
+    }
+
     pub fn total_field_count(&self) -> usize {
         self.forms.values().map(|f| f.field_count()).sum()
     }

@@ -13,7 +13,9 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 default = ["full"]
-full = ["print", "pdf", "chart", "desktop-runtime", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom", "advanced-widgets"]
+full = ["print", "pdf", "chart", "desktop-runtime", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom", "advanced-widgets", "wayland-native"]
+unstable-pipeline-routing = []
+unstable-special-widgets = []
 advanced-widgets = []
 embedded = []
 print = []
@@ -24,6 +26,7 @@ gpu-wgpu = ["wgpu"]
 quality-management = []
 mobile-api = []
 gtk-native = ["dep:gtk"]
+wayland-native = []
 controls-native = []
 controls-custom = []
 objc2-macos = []
@@ -51,6 +54,9 @@ cocoa = "0.24"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["staging"], optional = true }
+wayland-cursor = { version = "0.31", optional = true }
 
 [target.'cfg(target_os = "harmony")'.dependencies]
 # dependency for Huawei HarmonyOS, if applicable. Placeholder for now since HarmonyOS support is in early stages and may require custom bindings or FFI.

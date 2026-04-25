@@ -1,5 +1,18 @@
 //! Win32 event notification helpers.
+//!
+//! This module provides Win32 event-handling helpers for the Windows platform
+//! backend. All functions are `#[cfg(target_os = "windows")]`-gated to prevent
+//! unused warnings on non-Windows build targets.
 
+use crate::core::ObjectId;
+use crate::platform::windows::types::{WindowsHandleKind, WindowsPlatform};
+use crate::platform::WidgetTriggerEvent;
+use crate::platform::WidgetTriggerKind;
+use std::sync::OnceLock;
+
+/// Registers the `RustWidgetsWindowClass` window class via `RegisterClassW`.
+/// Safe to call multiple times — registration happens exactly once.
+#[cfg(target_os = "windows")]
 fn ensure_window_class_registered() {
     unsafe extern "system" {
         fn GetModuleHandleW(lpModuleName: *const u16) -> *mut std::ffi::c_void;
@@ -14,18 +27,21 @@ fn ensure_window_class_registered() {
         let hinstance = GetModuleHandleW(std::ptr::null());
         let mut wnd_class: WNDCLASSW = std::mem::zeroed();
         wnd_class.style = CS_HREDRAW | CS_VREDRAW;
-        wnd_class.lpfnWndProc = Some(rust_widgets_wnd_proc);
+        wnd_class.lpfnWndProc = Some(super::types::rust_widgets_wnd_proc);
         wnd_class.hInstance = hinstance as _;
         wnd_class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wnd_class.lpszClassName = class_name.as_ptr();
         let _ = RegisterClassW(&wnd_class);
     });
 }
+
+/// Global pointer to the active `WindowsPlatform` instance, stored at `init()` time.
 #[cfg(target_os = "windows")]
 static ACTIVE_WINDOWS_PLATFORM: OnceLock<usize> = OnceLock::new();
-#[cfg(target_os = "windows")]
 
-fn active_windows_platform() -> Option<&'static WindowsPlatform> {
+/// Returns a reference to the active `WindowsPlatform`, or `None` if not yet initialized.
+#[cfg(target_os = "windows")]
+pub(crate) fn active_windows_platform() -> Option<&'static WindowsPlatform> {
     let ptr = *ACTIVE_WINDOWS_PLATFORM.get()? as *const WindowsPlatform;
     if ptr.is_null() {
         None
@@ -33,8 +49,16 @@ fn active_windows_platform() -> Option<&'static WindowsPlatform> {
         Some(unsafe { &*ptr })
     }
 }
-#[cfg(target_os = "windows")]
 
+/// Register the active platform pointer so that the window procedure can find it.
+/// Called once during `WindowsPlatform::init()`.
+#[cfg(target_os = "windows")]
+pub(crate) fn register_active_platform(platform: &'static WindowsPlatform) {
+    let _ = ACTIVE_WINDOWS_PLATFORM.set(platform as *const WindowsPlatform as usize);
+}
+
+/// Map a Win32 notification code to a `WidgetTriggerKind` for the given widget kind.
+#[cfg(target_os = "windows")]
 fn control_notify_kind_for_widget(
     kind: WindowsHandleKind,
     notify_code: u32,
@@ -80,9 +104,11 @@ fn control_notify_kind_for_widget(
         _ => None,
     }
 }
-#[cfg(target_os = "windows")]
 
-fn enqueue_control_notify_event(
+/// Enqueue a typed trigger event derived from a Win32 notification code.
+/// Returns `true` if the event was successfully enqueued.
+#[cfg(target_os = "windows")]
+pub(crate) fn enqueue_control_notify_event(
     platform: &WindowsPlatform,
     widget_id: ObjectId,
     notify_code: u32,
@@ -97,6 +123,8 @@ fn enqueue_control_notify_event(
     };
     if let Ok(mut events) = platform.menu_state.pending_widget_events.lock() {
         events.push_back(WidgetTriggerEvent { widget_id, kind });
+        // Dual-emit: a ComboBox selection change also counts as a value change
+        // for cross-platform event parity.
         if widget_kind == WindowsHandleKind::ComboBox && kind == WidgetTriggerKind::SelectionChanged
         {
             events.push_back(WidgetTriggerEvent {
@@ -108,9 +136,14 @@ fn enqueue_control_notify_event(
     }
     false
 }
-#[cfg(target_os = "windows")]
 
-fn notify_kind_for_widget(kind: WindowsHandleKind, notify_code: u32) -> Option<WidgetTriggerKind> {
+/// Resolve a `WidgetTriggerKind` from a widget kind and raw notification code.
+/// Used by the `WM_NOTIFY` handler in the window procedure.
+#[cfg(target_os = "windows")]
+pub(crate) fn notify_kind_for_widget(
+    kind: WindowsHandleKind,
+    notify_code: u32,
+) -> Option<WidgetTriggerKind> {
     if kind == WindowsHandleKind::Slider {
         return Some(WidgetTriggerKind::ValueChanged);
     }
@@ -119,5 +152,3 @@ fn notify_kind_for_widget(kind: WindowsHandleKind, notify_code: u32) -> Option<W
     }
     None
 }
-// Helper to convert &str to wide string for Win32 API
-

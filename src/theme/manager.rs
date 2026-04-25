@@ -232,6 +232,7 @@ impl Default for Theme {
                     b: 200,
                     a: 255,
                 },
+                info: Color::INFO,
             },
             fonts: Fonts {
                 regular: Font {
@@ -262,6 +263,11 @@ impl Default for Theme {
                     bold: false,
                     italic: false,
                 },
+                caption: Font::simple("Arial", 11.0),
+                body: Font::simple("Arial", 14.0),
+                title: Font::bold("Arial", 16.0),
+                headline: Font::bold("Arial", 20.0),
+                display: Font::bold("Arial", 28.0),
             },
             spacing: Spacing {
                 small: 4,

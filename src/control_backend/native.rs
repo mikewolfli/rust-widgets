@@ -427,4 +427,366 @@ impl ControlBackend for NativeControlBackend {
     fn create_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         get_platform().create_panel(parent, x, y, width, height)
     }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_checkbox(parent, text, x, y, width, height)
+    }
+    fn create_check_list_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_list_box(parent, x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_spin_box(parent, x, y, width, height)
+    }
+    fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        get_platform().create_slider(parent, x, y, width, height)
+    }
+    fn create_wizard(
+        &self,
+        parent: ObjectId,
+        _title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        _title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_file_dialog(parent, x, y, width, height)
+    }
+    fn create_data_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_property_grid(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_toolbox(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_collapsible_pane(
+        &self,
+        parent: ObjectId,
+        _title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_dock_widget(
+        &self,
+        parent: ObjectId,
+        _title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_progress_bar(parent, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_column_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_list_view(parent, x, y, width, height)
+    }
+    fn create_undo_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_list_view(parent, x, y, width, height)
+    }
+    fn create_command_link(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_button(parent, text, x, y, width, height)
+    }
+    fn create_lcd_number(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_label(parent, "0", x, y, width, height)
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_combo_box(parent, x, y, width, height)
+    }
+    fn create_web_engine_view(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_page(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_settings(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_download_item(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_cookie_store(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_web_channel(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_find_text_result(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_notification(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_script_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_web_engine_context_menu_request(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_action(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_button(parent, text, x, y, width, height)
+    }
+    fn create_tool_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_button(parent, text, x, y, width, height)
+    }
+    fn create_tool_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_menu(parent, text, x, y, width, height)
+    }
 }

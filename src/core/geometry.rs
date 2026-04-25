@@ -105,10 +105,23 @@ impl Point {
     }
     /// Converts point to u32 coordinates (clamped to positive values).
     pub fn to_u32(&self) -> (u32, u32) {
-        (
-            self.x.max(0) as u32,
-            self.y.max(0) as u32,
-        )
+        (self.x.max(0) as u32, self.y.max(0) as u32)
+    }
+}
+impl std::ops::Add<(i32, i32)> for Point {
+    type Output = Self;
+    fn add(self, (dx, dy): (i32, i32)) -> Self {
+        Self::new(self.x + dx, self.y + dy)
+    }
+}
+impl From<(i32, i32)> for Point {
+    fn from((x, y): (i32, i32)) -> Self {
+        Self::new(x, y)
+    }
+}
+impl std::fmt::Display for Point {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Point({}, {})", self.x, self.y)
     }
 }
 /// Width/height pair in logical pixels.
@@ -219,6 +232,30 @@ impl Size {
     /// Returns `true` when either axis is zero.
     pub const fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
+    }
+    /// Returns the area of the size (width * height).
+    pub fn area(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+    /// Returns the aspect ratio (width / height) as f32.
+    /// Returns 0.0 if height is zero.
+    pub fn aspect_ratio(&self) -> f32 {
+        if self.height == 0 {
+            0.0
+        } else {
+            self.width as f32 / self.height as f32
+        }
+    }
+}
+impl std::ops::Add<(u32, u32)> for Size {
+    type Output = Self;
+    fn add(self, (dw, dh): (u32, u32)) -> Self {
+        Self::new(self.width + dw, self.height + dh)
+    }
+}
+impl std::fmt::Display for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Size({}x{})", self.width, self.height)
     }
 }
 /// Axis-aligned rectangle in logical pixels.
@@ -493,6 +530,63 @@ impl Rect {
     pub fn contains(&self, point: Point) -> bool {
         self.contains_point(point)
     }
+    /// Returns the area of the rectangle (width * height).
+    pub fn area(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+    /// Clamps a point to be inside the rectangle.
+    pub fn clamp_point(&self, point: Point) -> Point {
+        let max_x = self.x + self.width as i32 - 1;
+        let max_y = self.y + self.height as i32 - 1;
+        Point::new(point.x.clamp(self.x, max_x), point.y.clamp(self.y, max_y))
+    }
+    /// Shrinks the rectangle by `amount` on all sides.
+    pub fn shrink(&self, amount: i32) -> Self {
+        Self::new(
+            self.x + amount,
+            self.y + amount,
+            (self.width as i32 - 2 * amount).max(0) as u32,
+            (self.height as i32 - 2 * amount).max(0) as u32,
+        )
+    }
+    /// Grows the rectangle by `amount` on all sides.
+    pub fn grow(&self, amount: i32) -> Self {
+        Self::new(
+            self.x - amount,
+            self.y - amount,
+            (self.width as i32 + 2 * amount).max(0) as u32,
+            (self.height as i32 + 2 * amount).max(0) as u32,
+        )
+    }
+    /// Extends the rectangle to include the given point.
+    pub fn extend_to_include(&self, point: Point) -> Self {
+        let max_x = self.x + self.width as i32;
+        let max_y = self.y + self.height as i32;
+        let new_x = self.x.min(point.x);
+        let new_y = self.y.min(point.y);
+        let new_max_x = max_x.max(point.x + 1);
+        let new_max_y = max_y.max(point.y + 1);
+        Self::new(
+            new_x,
+            new_y,
+            (new_max_x - new_x) as u32,
+            (new_max_y - new_y) as u32,
+        )
+    }
+}
+impl Default for Rect {
+    fn default() -> Self {
+        Self::new(0, 0, 0, 0)
+    }
+}
+impl std::fmt::Display for Rect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Rect({}, {}, {}x{})",
+            self.x, self.y, self.width, self.height
+        )
+    }
 }
 /// Direction used by directional widgets and layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -543,10 +637,10 @@ mod tests {
     fn point_constructors_from_different_types() {
         let p1 = Point::from_f32(10.3, 20.7);
         assert_eq!(p1, Point::new(10, 21));
-        
+
         let p2 = Point::from_f32(10.6, 20.4);
         assert_eq!(p2, Point::new(11, 20));
-        
+
         let p3 = Point::from_f32_trunc(10.9, 20.1);
         assert_eq!(p3, Point::new(10, 20));
     }
@@ -554,16 +648,16 @@ mod tests {
     fn size_constructors_from_different_types() {
         let s1 = Size::from_f32(100.3, 200.7);
         assert_eq!(s1, Size::new(100, 201));
-        
+
         let s2 = Size::from_f32(100.6, 200.4);
         assert_eq!(s2, Size::new(101, 200));
-        
+
         let s3 = Size::from_f32_trunc(100.9, 200.1);
         assert_eq!(s3, Size::new(100, 200));
-        
+
         let s4 = Size::from_usize(100, 200);
         assert_eq!(s4, Size::new(100, 200));
-        
+
         let s5 = Size::from_isize(100, 200);
         assert_eq!(s5, Size::new(100, 200));
     }
@@ -571,32 +665,32 @@ mod tests {
     fn rect_constructors_from_different_types() {
         let r1 = Rect::from_f32(10.3, 20.7, 100.3, 200.7);
         assert_eq!(r1, Rect::new(10, 21, 100, 201));
-        
+
         let r2 = Rect::from_f64(10.6, 20.4, 100.6, 200.4);
         assert_eq!(r2, Rect::new(11, 20, 101, 200));
-        
+
         let r3 = Rect::from_usize(10, 20, 100, 200);
         assert_eq!(r3, Rect::new(10, 20, 100, 200));
-        
+
         let r4 = Rect::from_isize(10, 20, 100, 200);
         assert_eq!(r4, Rect::new(10, 20, 100, 200));
     }
     #[test]
     fn rect_conversion_methods() {
         let rect = Rect::new(10, 20, 100, 200);
-        
+
         let (x, y, w, h) = rect.to_f32();
         assert_eq!(x, 10.0);
         assert_eq!(y, 20.0);
         assert_eq!(w, 100.0);
         assert_eq!(h, 200.0);
-        
+
         let (x, y, w, h) = rect.to_f64();
         assert_eq!(x, 10.0);
         assert_eq!(y, 20.0);
         assert_eq!(w, 100.0);
         assert_eq!(h, 200.0);
-        
+
         let (x, y, w, h) = rect.to_u32();
         assert_eq!(x, 10);
         assert_eq!(y, 20);
@@ -609,7 +703,7 @@ mod tests {
         let bottom_right = Point::new(110, 220);
         let rect = Rect::from_points(top_left, bottom_right);
         assert_eq!(rect, Rect::new(10, 20, 100, 200));
-        
+
         let center = Point::new(60, 120);
         let size = Size::new(100, 200);
         let rect2 = Rect::from_center(center, size);
@@ -618,13 +712,13 @@ mod tests {
     #[test]
     fn rect_padding_and_margin() {
         let rect = Rect::new(10, 20, 100, 200);
-        
+
         let padded = rect.with_padding(5);
         assert_eq!(padded, Rect::new(15, 25, 90, 190));
-        
+
         let margined = rect.with_margin(5);
         assert_eq!(margined, Rect::new(5, 15, 110, 210));
-        
+
         // Test with negative padding (should clamp to zero)
         let padded_neg = rect.with_padding(60);
         assert_eq!(padded_neg, Rect::new(70, 80, 0, 80));
@@ -634,13 +728,13 @@ mod tests {
         let rect1 = Rect::new(10, 10, 100, 100);
         let rect2 = Rect::new(50, 50, 100, 100);
         let rect3 = Rect::new(200, 200, 100, 100);
-        
+
         let intersect = rect1.intersection(&rect2);
         assert_eq!(intersect, Some(Rect::new(50, 50, 60, 60)));
-        
+
         let intersect2 = rect1.intersection(&rect3);
         assert_eq!(intersect2, None);
-        
+
         let union = rect1.union(&rect2);
         assert_eq!(union, Rect::new(10, 10, 140, 140));
     }
@@ -649,7 +743,7 @@ mod tests {
         let rect1 = Rect::new(10, 10, 100, 100);
         let rect2 = Rect::new(20, 20, 50, 50);
         let rect3 = Rect::new(200, 200, 100, 100);
-        
+
         assert!(rect1.contains_rect(&rect2));
         assert!(!rect2.contains_rect(&rect1));
         assert!(rect1.intersects(&rect2));
@@ -658,7 +752,7 @@ mod tests {
     #[test]
     fn rect_center_and_edges() {
         let rect = Rect::new(10, 20, 100, 200);
-        
+
         assert_eq!(rect.center(), Point::new(60, 120));
         assert_eq!(rect.right(), 110);
         assert_eq!(rect.bottom(), 220);

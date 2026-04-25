@@ -46,6 +46,80 @@ pub enum Event {
     /// Event loop shutdown signal.
     Quit,
 }
+impl Event {
+    /// Creates a mouse press event.
+    pub fn mouse_press(x: i32, y: i32, button: u32) -> Self {
+        Self::MousePress {
+            pos: Point::new(x, y),
+            button,
+        }
+    }
+    /// Creates a mouse release event.
+    pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {
+        Self::MouseRelease {
+            pos: Point::new(x, y),
+            button,
+        }
+    }
+    /// Creates a mouse double-click event.
+    pub fn mouse_double_click(x: i32, y: i32, button: u32) -> Self {
+        Self::MouseDoubleClick {
+            pos: Point::new(x, y),
+            button,
+        }
+    }
+    /// Creates a mouse move event.
+    pub fn mouse_move(x: i32, y: i32) -> Self {
+        Self::MouseMove {
+            pos: Point::new(x, y),
+        }
+    }
+    /// Creates a mouse enter event.
+    pub fn mouse_enter(x: i32, y: i32) -> Self {
+        Self::MouseEnter {
+            pos: Point::new(x, y),
+        }
+    }
+    /// Creates a mouse leave event.
+    pub fn mouse_leave(x: i32, y: i32) -> Self {
+        Self::MouseLeave {
+            pos: Point::new(x, y),
+        }
+    }
+    /// Creates a key press event.
+    pub fn key_press(key: u32, modifiers: u32) -> Self {
+        Self::KeyPress { key, modifiers }
+    }
+    /// Creates a key release event.
+    pub fn key_release(key: u32, modifiers: u32) -> Self {
+        Self::KeyRelease { key, modifiers }
+    }
+    /// Creates a paint/repaint request event.
+    pub fn paint() -> Self {
+        Self::Paint
+    }
+    /// Creates a resize event.
+    pub fn resize(width: u32, height: u32) -> Self {
+        Self::Resize {
+            size: Size::new(width, height),
+        }
+    }
+    /// Creates a timer event.
+    pub fn timer(id: u32) -> Self {
+        Self::Timer { id }
+    }
+    /// Creates a mouse wheel event.
+    pub fn wheel(delta_x: i32, delta_y: i32, modifiers: u32) -> Self {
+        Self::Wheel {
+            delta: Point::new(delta_x, delta_y),
+            modifiers,
+        }
+    }
+    /// Creates a quit event.
+    pub fn quit() -> Self {
+        Self::Quit
+    }
+}
 /// Trait implemented by event targets.
 pub trait EventHandler {
     /// Handle a single dispatched event.

@@ -28,8 +28,7 @@
 //! | **gpu** | `gpu/` | GPU-accelerated rendering traits and capability enums (gated behind `gpu-wgpu`) |
 //! | **core** | `core/` | Data types (`TextMetrics`, `TextCluster`, `ShapedText`) and commands (`RenderCommand`) |
 //! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), batch (`BatchId`), scene (`SceneLayer`, `RenderScene`) |
-//! | **controls** | `controls/` | Widget-specific render controls (basic/input/special) |
-//! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types |
+//! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types (controls, containers, dialogs, special, etc.) |
 //! | **web** | `web/` | Web engine and web view rendering |
 //! | **quality** | `quality/` | Adaptive rendering quality management |
 //! | flat | `text_cache.rs` | Text caching utilities |
@@ -40,9 +39,7 @@
 mod core;
 // Rendering backends
 mod backend;
-// Widget controls (basic/input/special) — reserved for future pipeline integration
-#[allow(dead_code)]
-mod controls;
+// (controls/ directory was migrated to pipeline/special.rs — see pipeline module)
 // Visual command pipeline for all widget types
 mod pipeline;
 // Web rendering

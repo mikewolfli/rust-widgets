@@ -119,24 +119,29 @@ fn widget_lifecycle() {
     );
 
     // Test IME (default: false).
+    // IME defaults to true (BackendState::WidgetRecord default).
+    assert!(
+        backend.is_widget_ime_enabled(button),
+        "IME should be enabled by default"
+    );
+    assert!(
+        backend.set_widget_ime_enabled(button, false),
+        "set_widget_ime_enabled should succeed"
+    );
     assert!(
         !backend.is_widget_ime_enabled(button),
-        "IME should be disabled by default"
-    );
-    assert!(
-        !backend.set_widget_ime_enabled(button, true),
-        "set_widget_ime_enabled should return false (not implemented)"
+        "IME should be disabled after set_widget_ime_enabled(false)"
     );
 
-    // Test accessibility name (default: empty).
+    // Test accessibility name (default: copies widget text).
     assert!(
-        !backend.set_widget_accessibility_name(button, "acc"),
-        "set_widget_accessibility_name should return false (not implemented)"
+        backend.set_widget_accessibility_name(button, "acc"),
+        "set_widget_accessibility_name should succeed for a valid widget"
     );
     assert_eq!(
         backend.get_widget_accessibility_name(button),
-        "",
-        "Accessibility name should be empty"
+        "acc",
+        "Accessibility name should match the value just set"
     );
 }
 
@@ -371,22 +376,22 @@ fn drag_and_drop() {
     let window = backend.create_window("w", 0, 0, 200, 120);
     let button = backend.create_button(window, "btn", 10, 10, 80, 24);
 
-    // Drag and drop defaults to false/None.
+    // Drag and drop: begin_drag succeeds because button is a valid widget.
     assert!(
-        !backend.begin_drag(button, "text/plain", b"payload"),
-        "begin_drag should return false (not implemented)"
+        backend.begin_drag(button, "text/plain", b"payload"),
+        "begin_drag should succeed for a valid widget"
     );
     assert!(
-        backend.poll_drop_event().is_none(),
-        "poll_drop_event should return None (not implemented)"
+        backend.poll_drop_event().is_some(),
+        "poll_drop_event should return Some after begin_drag"
     );
     assert!(
-        !backend.inject_drop_event(crate::platform::DropEvent {
+        backend.inject_drop_event(crate::platform::DropEvent {
             source_widget_id: button,
             target_widget_id: button,
             mime: "text/plain".into(),
             payload: vec![]
         }),
-        "inject_drop_event should return false (not implemented)"
+        "inject_drop_event should succeed for valid target widget"
     );
 }

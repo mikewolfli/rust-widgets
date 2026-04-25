@@ -7,6 +7,7 @@
 use rust_widgets::core::*;
 use rust_widgets::error::*;
 use rust_widgets::event::*;
+#[cfg(not(feature = "embedded"))]
 use rust_widgets::i18n::*;
 use rust_widgets::quality::*;
 
@@ -200,6 +201,7 @@ fn test_quality_manager_degrade() {
 // i18n basics (no file system needed)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "embedded"))]
 #[test]
 fn test_i18n_manager_create() {
     let manager = I18nManager::new();
@@ -208,6 +210,7 @@ fn test_i18n_manager_create() {
     assert_eq!(manager.translate(""), "");
 }
 
+#[cfg(not(feature = "embedded"))]
 #[test]
 fn test_i18n_manager_set_language() {
     let mut manager = I18nManager::new();

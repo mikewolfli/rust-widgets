@@ -35,6 +35,8 @@ pub enum WidgetKind {
     MdiArea,
     MenuBar,
     Menu,
+    /// Individual item inside a menu.
+    MenuItem,
     ContextMenu,
     ToolBar,
     StatusBar,
