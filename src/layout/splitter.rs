@@ -55,7 +55,7 @@ impl SplitterLayout {
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         self.panes.push(pane_id);
         self.ratios.push((stretch.max(1)) as f32);
-        self.panes.len() - 1
+        self.panes.len().saturating_sub(1)
     }
 
     /// Removes one pane by object id. Returns false if not found.

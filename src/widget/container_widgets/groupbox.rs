@@ -13,6 +13,8 @@ pub struct GroupBox {
     checkable: bool,
     checked: bool,
     pub toggled: Signal1<bool>,
+    /// Cached title width computed in draw() via RenderContext::measure_text().
+    cached_title_width: Option<u32>,
 }
 impl GroupBox {
     /// Creates a group box.
@@ -24,6 +26,7 @@ impl GroupBox {
             checkable: false,
             checked: true,
             toggled: Signal1::new(),
+            cached_title_width: None,
         }
     }
     /// Returns title.
@@ -69,10 +72,11 @@ impl GroupBox {
     /// Returns title rectangle.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
-        // FIXME: measure_text requires RenderContext which is not available here
-        // Using approximate text size until proper measuring is wired in
-        let text_width = self.title.len() as u32 * 8; // Approximate char width (pixels)
-        let text_height = 16i32; // Approximate line height (pixels)
+        let text_width = self.cached_title_width.unwrap_or_else(|| {
+            // Fallback approximate measurement if draw() hasn't run yet.
+            self.title.len() as u32 * 8
+        });
+        let text_height = 16i32;
         let x = match self.alignment {
             Alignment::Left => rect.x + 10,
             Alignment::Center => rect.x + ((rect.width - text_width) / 2) as i32,
@@ -217,6 +221,11 @@ impl EventHandler for GroupBox {
 }
 impl Draw for GroupBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Cache actual title width from render context.
+        if !self.title.is_empty() {
+            let metrics = context.measure_text(&self.title, &Font::default());
+            self.cached_title_width = Some(metrics.width);
+        }
         // Draw base widget
         let rect = self.geometry();
         let title_rect = self.title_rect();

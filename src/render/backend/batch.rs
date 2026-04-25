@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Batch rendering primitives.
 //!
 //! Provides types for organizing draw commands into batches that can be

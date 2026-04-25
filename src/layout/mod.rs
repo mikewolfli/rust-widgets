@@ -66,11 +66,18 @@ pub trait Layout {
 
     /// Returns true if the given widget ID is a child of this layout.
     fn has_child(&self, _id: ObjectId) -> bool {
+        log::warn!(
+            "Layout::has_child() called on a layout that does not override the default (no-op) implementation"
+        );
         false
     }
 
     /// Removes all children from this layout.
-    fn clear(&mut self) {}
+    fn clear(&mut self) {
+        log::warn!(
+            "Layout::clear() called on a layout that does not override the default (no-op) implementation"
+        );
+    }
 
     /// Enables downcasting from `dyn Layout` to concrete types.
     /// Required by the layout inspector for introspection.

@@ -5,6 +5,14 @@ use crate::core::ObjectId;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+/// Helper to recover from a poisoned mutex by extracting the inner value.
+fn recover_lock<T>(
+    e: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>,
+) -> std::sync::MutexGuard<'_, T> {
+    e.into_inner()
+}
+
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
@@ -14,6 +22,7 @@ pub struct EventLoop {
     /// Processing thread handle.
     thread_handle: Option<thread::JoinHandle<()>>,
 }
+
 impl EventLoop {
     /// Creates a new event loop.
     pub fn new() -> Self {
@@ -23,18 +32,19 @@ impl EventLoop {
             thread_handle: None,
         }
     }
+
     /// Starts the event loop in a separate thread.
     pub fn start(&mut self) {
-        if *self.running.lock().unwrap() {
+        if *self.running.lock().unwrap_or_else(recover_lock) {
             return;
         }
-        *self.running.lock().unwrap() = true;
+        *self.running.lock().unwrap_or_else(recover_lock) = true;
         let running = Arc::clone(&self.running);
         let queue = Arc::clone(&self.queue);
         let handle = thread::spawn(move || {
-            while *running.lock().unwrap() {
+            while *running.lock().unwrap_or_else(recover_lock) {
                 // Process events from the queue
-                if let Some(_event) = queue.lock().unwrap().dequeue() {
+                if let Some(_event) = queue.lock().unwrap_or_else(recover_lock).dequeue() {
                     // Process the event
                     // In a real implementation, this would dispatch to widgets
                 }
@@ -44,13 +54,15 @@ impl EventLoop {
         });
         self.thread_handle = Some(handle);
     }
+
     /// Stops the event loop.
     pub fn stop(&mut self) {
-        *self.running.lock().unwrap() = false;
+        *self.running.lock().unwrap_or_else(recover_lock) = false;
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
     }
+
     /// Posts an event to the event loop.
     pub fn post_event(
         &self,
@@ -60,19 +72,20 @@ impl EventLoop {
     ) -> Result<(), String> {
         self.queue
             .lock()
-            .unwrap()
+            .unwrap_or_else(recover_lock)
             .sender()
             .post_with_priority(target, event, priority)
             .map_err(|e| format!("{e}"))
     }
+
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
-        *self.running.lock().unwrap()
+        *self.running.lock().unwrap_or_else(recover_lock)
     }
 }
+
 impl Default for EventLoop {
     fn default() -> Self {
         Self::new()
     }
 }
-

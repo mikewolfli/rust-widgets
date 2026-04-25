@@ -28,6 +28,10 @@ impl VecListModel {
             data_changed: GenericSignal::new(),
         }
     }
+    /// Returns a reference to the data changed signal.
+    pub fn data_changed_signal(&self) -> &GenericSignal {
+        &self.data_changed
+    }
     /// Appends an item to the model.
     pub fn append(&mut self, item: String) {
         self.items.push(item);

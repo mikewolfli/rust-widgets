@@ -10,19 +10,17 @@ use crate::style::{Margin, Padding, WidgetStyle};
 pub trait Widget: EventHandler {
     /// Returns shared base widget state for default trait delegation.
     fn base(&self) -> &BaseWidget {
-        // All real widgets override this. The default is only reached
-        // if a widget type omits the override AND something calls a
-        // delegated method. Log a diagnostic so it can be fixed.
-        log::error!("[rust_widgets] Widget::base() not implemented — aborting");
-        std::process::abort();
+        panic!(
+            "Widget::base() not implemented — override in {}",
+            std::any::type_name::<Self>()
+        );
     }
     /// Returns mutable base widget state for default trait delegation.
     fn base_mut(&mut self) -> &mut BaseWidget {
-        // All real widgets override this. The default is only reached
-        // if a widget type omits the override AND something calls a
-        // delegated method. Log a diagnostic so it can be fixed.
-        log::error!("[rust_widgets] Widget::base_mut() not implemented — aborting");
-        std::process::abort();
+        panic!(
+            "Widget::base_mut() not implemented — override in {}",
+            std::any::type_name::<Self>()
+        );
     }
     /// Get stable widget id.
     fn id(&self) -> ObjectId {
@@ -225,9 +223,10 @@ pub trait Widget: EventHandler {
     fn clicked_signal(&self) -> &GenericSignal {
         &self.base().clicked
     }
-    /// Optional changed signal (legacy API compatibility).
+    /// Optional changed signal (legacy API compatibility) — reserved for future use.
+    /// Currently returns a reference to the clicked signal as a placeholder.
     fn changed_signal(&self) -> &GenericSignal {
-        &self.base().changed
+        &self.base().clicked
     }
     /// Emits on hover/move interactions while pointer is over widget.
     fn hover_signal(&self) -> &Signal1<Point> {

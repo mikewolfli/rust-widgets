@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "0.6.1"
+version = "0.7.1"
 edition = "2021"
 description = "Cross-platform native GUI library"
 license = "MIT"
@@ -28,8 +28,8 @@ mobile-api = []
 gtk-native = ["dep:gtk"]
 wayland-native = []
 controls-native = []
+objc2-macos = ["dep:objc2-foundation"]
 controls-custom = []
-objc2-macos = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

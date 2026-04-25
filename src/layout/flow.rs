@@ -191,7 +191,11 @@ impl FlowLayout {
                         FlowDirection::Horizontal => content_rect.width as i32,
                         FlowDirection::Vertical => content_rect.height as i32,
                     };
-                    let spacing = (available - total_size) / (positions.len() as i32 - 1);
+                    let spacing = if positions.len() > 1 {
+                        (available - total_size) / (positions.len() as i32 - 1)
+                    } else {
+                        0
+                    };
                     let mut current = match self.config.direction {
                         FlowDirection::Horizontal => content_rect.x,
                         FlowDirection::Vertical => content_rect.y,
@@ -276,14 +280,22 @@ impl Layout for FlowLayout {
         self
     }
 
-    fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
-        // Widgets are added via add_child().
+        // Log a warning so callers know the widget ID is tracked but not managed
+        // through the Box<dyn Widget> path.
+        log::warn!(
+            "FlowLayout::add_widget() called for {} — use add_child(Box<dyn Widget>) instead",
+            widget_id
+        );
     }
 
-    fn remove_widget(&mut self, _widget_id: ObjectId) {
+    fn remove_widget(&mut self, widget_id: ObjectId) {
         // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
-        // Widgets are removed via remove_child().
+        log::warn!(
+            "FlowLayout::remove_widget() called for {} — use remove_child() instead",
+            widget_id
+        );
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {

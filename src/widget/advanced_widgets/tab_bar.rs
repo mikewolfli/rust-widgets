@@ -121,7 +121,7 @@ impl TabBar {
     /// Adds a tab with the given title and returns the index of the new tab.
     pub fn add_tab(&mut self, title: String) -> usize {
         self.tabs.push(TabBarTab::new(title));
-        let idx = self.tabs.len() - 1;
+        let idx = self.tabs.len().saturating_sub(1);
         if self.current_index.is_none() {
             self.current_index = Some(idx);
         }

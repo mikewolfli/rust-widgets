@@ -97,7 +97,7 @@ impl ToolBox {
             self.base.add_child(widget_id);
         }
         self.items.push(item);
-        self.items.len() - 1
+        self.items.len().saturating_sub(1)
     }
     /// Inserts an item at position.
     pub fn insert_item(&mut self, index: usize, text: String, widget: Option<ObjectId>) {

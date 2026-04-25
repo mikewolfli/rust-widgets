@@ -1,7 +1,16 @@
+//! Unified control backend contract.
+//!
+//! This trait is designed for full implementation — it exposes a large surface
+//! of widget-creation and lifecycle methods. Rather than adding ~97 default
+//! no-op implementations here, helper traits and pattern implementations are
+//! provided in [`custom`](crate::control_backend::custom) and
+//! [`native`](crate::control_backend::native) modules for common use cases.
+//!
+//! Implementors should override only the methods they support.
+
 use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
-/// Unified control backend contract.
 pub trait ControlBackend: Send + Sync {
     /// Backend display name.
     fn backend_name(&self) -> &'static str;

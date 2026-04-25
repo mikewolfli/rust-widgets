@@ -31,6 +31,10 @@ fn ensure_window_class_registered() {
         wnd_class.hInstance = hinstance as _;
         wnd_class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wnd_class.lpszClassName = class_name.as_ptr();
+        // RegisterClassW returns an ATOM (nonzero on success, 0 on failure).
+        // If registration fails, the OnceLock prevents retry. The subsequent
+        // CreateWindowExW call in create_window will return null, which is
+        // already handled by the caller.
         let _ = RegisterClassW(&wnd_class);
     });
 }

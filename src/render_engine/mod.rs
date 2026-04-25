@@ -1,3 +1,8 @@
+//! Render engine module providing native and embedded rendering backends.
+//!
+//! This module contains the engine trait contract (`EngineTrait`) and concrete
+//! implementations for both native desktop rendering and embedded (lightweight)
+//! rendering with independent lifecycle management.
 /// Embedded runtime state, task queue, and shared engine internals.
 pub mod embedded;
 /// Embedded render engine with independent lifecycle and resource registry.

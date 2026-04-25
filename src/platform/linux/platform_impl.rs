@@ -768,12 +768,15 @@ impl Platform for LinuxPlatform {
         }
         let item_id = self.insert_widget(LinuxHandleKind::MenuItem, text, 0, 0, 0, 0);
         let _ = shortcut;
-        let mut menus = self.menus.lock().expect("linux menu lock poisoned");
-        menus
-            .menu_children
-            .entry(parent_menu)
-            .or_default()
-            .push(item_id);
+        // Capture menu_children push first, then drop menus lock before acquiring native lock.
+        {
+            let mut menus = self.menus.lock().expect("linux menu lock poisoned");
+            menus
+                .menu_children
+                .entry(parent_menu)
+                .or_default()
+                .push(item_id);
+        }
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let menu_item = gtk::MenuItem::with_label(text);
@@ -870,13 +873,11 @@ impl Platform for LinuxPlatform {
         self.state.set_geometry(widget_id, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let parent_id = self
-                .menus
-                .lock()
-                .expect("linux menu lock poisoned")
-                .widget_parent
-                .get(&widget_id)
-                .copied();
+            // Capture parent_id first, then drop menus lock before acquiring native lock.
+            let parent_id = {
+                let menus = self.menus.lock().expect("linux menu lock poisoned");
+                menus.widget_parent.get(&widget_id).copied()
+            };
             let native = self.native.lock().expect("linux native lock poisoned");
             if let Some(window) = native.windows.get(&widget_id) {
                 window.move_(x, y);

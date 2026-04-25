@@ -9,9 +9,9 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 pub struct Window {
     base: BaseWidget,
     title: String,
-    pub title_bar_height: u32,
-    pub close_button_size: u32,
-    pub button_spacing: u32,
+    title_bar_height: u32,
+    close_button_size: u32,
+    button_spacing: u32,
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }

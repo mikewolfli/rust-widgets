@@ -1,12 +1,12 @@
 //! MDI area widget.
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// MDI area widget.
 pub struct MdiArea {
     base: BaseWidget,
@@ -198,7 +198,7 @@ impl MdiArea {
         subwindow.z_order = self.subwindows.len() as i32;
         self.base.add_child(widget);
         self.subwindows.push(subwindow);
-        let index = self.subwindows.len() - 1;
+        let index = self.subwindows.len().saturating_sub(1);
         if self.active_subwindow.is_none() {
             self.active_subwindow = Some(index);
             self.subwindow_activated.emit(widget);
@@ -284,8 +284,10 @@ impl MdiArea {
             return;
         }
         let offset = 30;
-        let max_width = (area_rect.width as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
-        let max_height = (area_rect.height as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
+        let max_width =
+            (area_rect.width as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
+        let max_height =
+            (area_rect.height as f32 - offset as f32 * (count as f32 - 1.0)).max(0.0) as u32;
         for (i, subwindow) in self.subwindows.iter_mut().enumerate() {
             let x = area_rect.x as f32 + offset as f32 * i as f32;
             let y = area_rect.y as f32 + offset as f32 * i as f32;
@@ -326,12 +328,15 @@ impl MdiArea {
         let icon_width = 100;
         let icon_height = 80;
         let spacing = 10;
-        let cols = ((area_rect.width as f32 - spacing as f32) / (icon_width as f32 + spacing as f32)).floor() as usize;
+        let cols = ((area_rect.width as f32 - spacing as f32)
+            / (icon_width as f32 + spacing as f32))
+            .floor() as usize;
         let _rows = (count as f32 / cols as f32).ceil() as usize;
         for (i, subwindow) in minimized.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let x = area_rect.x + spacing as i32 + (icon_width as i32 + spacing as i32) * col as i32;
+            let x =
+                area_rect.x + spacing as i32 + (icon_width as i32 + spacing as i32) * col as i32;
             let y = area_rect.y + area_rect.height as i32
                 - icon_height as i32
                 - spacing as i32
@@ -505,10 +510,7 @@ impl Draw for MdiArea {
                 // No background
             }
             Background::Plain => {
-                context.fill_rect(
-                    rect,
-                    Color::from_rgb(240, 240, 240),
-                );
+                context.fill_rect(rect, Color::from_rgb(240, 240, 240));
             }
             Background::Gradient => {
                 // Draw gradient background
@@ -519,7 +521,11 @@ impl Draw for MdiArea {
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                     );
-                    context.draw_line(Point::new(rect.x, rect.y + y as i32), Point::new(rect.x + rect.width as i32, rect.y + y as i32), color);
+                    context.draw_line(
+                        Point::new(rect.x, rect.y + y as i32),
+                        Point::new(rect.x + rect.width as i32, rect.y + y as i32),
+                        color,
+                    );
                 }
             }
             Background::Pattern => {
@@ -560,20 +566,14 @@ impl Draw for MdiArea {
             } else {
                 Color::from_rgb(250, 250, 250)
             };
-            context.fill_rect(
-                frame_rect,
-                bg_color,
-            );
+            context.fill_rect(frame_rect, bg_color);
             // Draw frame border
             let border_color = if is_active {
                 Color::from_rgb(0, 120, 215)
             } else {
                 Color::from_rgb(200, 200, 200)
             };
-            context.draw_rect(
-                frame_rect,
-                border_color,
-            );
+            context.draw_rect(frame_rect, border_color);
             // Draw title bar
             let title_bar_height = 24;
             let title_bar_color = if is_active {
@@ -582,7 +582,12 @@ impl Draw for MdiArea {
                 Color::from_rgb(180, 180, 180)
             };
             context.fill_rect(
-                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
+                Rect::new(
+                    frame_rect.x,
+                    frame_rect.y,
+                    frame_rect.width,
+                    title_bar_height as u32,
+                ),
                 title_bar_color,
             );
             // Draw title text
@@ -607,15 +612,23 @@ impl Draw for MdiArea {
                 } else {
                     Color::from_rgb(100, 100, 100)
                 };
-                context.draw_line(Point::new(close_x, close_y), Point::new(close_x + close_size, close_y + close_size), close_color);
-                context.draw_line(Point::new(close_x + close_size, close_y), Point::new(close_x, close_y + close_size), close_color);
+                context.draw_line(
+                    Point::new(close_x, close_y),
+                    Point::new(close_x + close_size, close_y + close_size),
+                    close_color,
+                );
+                context.draw_line(
+                    Point::new(close_x + close_size, close_y),
+                    Point::new(close_x, close_y + close_size),
+                    close_color,
+                );
             }
             // Draw widget content via registry
             let content_rect = Rect::new(
                 frame_rect.x,
                 frame_rect.y + title_bar_height,
                 frame_rect.width,
-                frame_rect.height - title_bar_height as u32,
+                frame_rect.height.saturating_sub(title_bar_height as u32),
             );
             if let Some(ref reg) = self.registry {
                 reg.borrow_mut().draw_widget(subwindow.widget, context);

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::render::pipeline::*;
 use crate::render::{

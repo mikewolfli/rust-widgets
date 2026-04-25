@@ -146,7 +146,7 @@ impl TabWidget {
             self.base.add_child(widget_id);
         }
         self.tabs.push(tab);
-        self.tabs.len() - 1
+        self.tabs.len().saturating_sub(1)
     }
     /// Inserts a tab at position.
     pub fn insert_tab(&mut self, index: usize, title: String, widget: Option<ObjectId>) {

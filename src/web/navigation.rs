@@ -50,7 +50,7 @@ impl NavigationHistory {
             }
         }
         self.entries.push_back(entry);
-        self.current_index = Some(self.entries.len() - 1);
+        self.current_index = Some(self.entries.len().saturating_sub(1));
     }
     pub fn current(&self) -> Option<&NavigationEntry> {
         self.current_index.and_then(|idx| self.entries.get(idx))

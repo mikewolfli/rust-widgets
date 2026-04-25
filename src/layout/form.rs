@@ -37,7 +37,7 @@ impl FormLayout {
     /// delegating to [`Layout::add_widget`]. Returns the index of the added item.
     pub fn add_row(&mut self, _label: &str, widget_id: ObjectId) -> usize {
         self.add_widget(widget_id, 0);
-        self.items.len() - 1
+        self.items.len().saturating_sub(1)
     }
 
     /// Returns the number of standalone items.

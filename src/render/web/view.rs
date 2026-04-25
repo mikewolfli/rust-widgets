@@ -1,9 +1,9 @@
-#![allow(dead_code)]
-
 //! Visual rendering helpers for WebView widget.
 //!
 //! Provides rendering support for `WebViewEnhanced` by delegating
 //! visual commands to the core web rendering pipeline.
+
+use std::cell::Cell;
 
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::widget::WidgetKind;
@@ -19,6 +19,10 @@ pub struct WebView {
     widget_id: ObjectId,
     /// The display rectangle of the web view.
     rect: Rect,
+    /// Current scroll offset.
+    scroll_offset: Point,
+    /// Flag set when a redraw has been requested.
+    redraw_requested: Cell<bool>,
 }
 
 impl WebView {
@@ -27,6 +31,8 @@ impl WebView {
         Self {
             widget_id,
             rect: Rect::default(),
+            scroll_offset: Point::origin(),
+            redraw_requested: Cell::new(false),
         }
     }
 
@@ -45,23 +51,43 @@ impl WebView {
         self.rect = rect;
     }
 
-    /// Return the current display rectangle.
+    /// Return the current display rectangle, adjusted for scroll offset.
     pub fn rect(&self) -> Rect {
-        self.rect
+        Rect::new(
+            self.rect.x + self.scroll_offset.x,
+            self.rect.y + self.scroll_offset.y,
+            self.rect.width,
+            self.rect.height,
+        )
     }
 
     /// Request a redraw of this web view.
     pub fn request_redraw(&self) {
-        // Delegates to the widget system; the widget itself tracks
-        // the redraw signal via its BaseWidget.
+        self.redraw_requested.set(true);
     }
 
-    /// Update the internal scroll offset (no-op for flat web views).
-    pub fn set_scroll_offset(&mut self, _offset: Point) {}
+    /// Returns whether a redraw has been requested and clears the flag.
+    pub fn take_redraw_requested(&self) -> bool {
+        self.redraw_requested.replace(false)
+    }
 
-    /// Return the preferred visual size for this view.
+    /// Update the internal scroll offset.
+    pub fn set_scroll_offset(&mut self, offset: Point) {
+        self.scroll_offset = offset;
+    }
+
+    /// Return the current scroll offset.
+    pub fn scroll_offset(&self) -> Point {
+        self.scroll_offset
+    }
+
+    /// Return the preferred visual size for this view, adjusted for scroll offset.
     pub fn preferred_size(&self) -> Size {
-        Size::new(800, 600)
+        let base = Size::new(800, 600);
+        Size::new(
+            base.width.wrapping_add(self.scroll_offset.x.abs() as u32),
+            base.height.wrapping_add(self.scroll_offset.y.abs() as u32),
+        )
     }
 }
 

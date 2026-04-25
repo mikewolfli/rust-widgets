@@ -50,9 +50,9 @@ pub trait Plugin: Send + Sync {
     fn info(&self) -> &PluginInfo;
     fn info_mut(&mut self) -> &mut PluginInfo;
     fn on_load(&mut self) -> Result<(), PluginError>;
-    fn on_unload(&mut self);
+    fn on_unload(&mut self) {}
     fn on_enable(&mut self) -> Result<(), PluginError>;
-    fn on_disable(&mut self);
+    fn on_disable(&mut self) {}
     fn handle_message(&mut self, message: &str) -> Option<String>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -279,11 +279,9 @@ impl Plugin for ContentPlugin {
     fn on_load(&mut self) -> Result<(), PluginError> {
         Ok(())
     }
-    fn on_unload(&mut self) {}
     fn on_enable(&mut self) -> Result<(), PluginError> {
         Ok(())
     }
-    fn on_disable(&mut self) {}
     fn handle_message(&mut self, _message: &str) -> Option<String> {
         None
     }

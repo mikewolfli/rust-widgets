@@ -55,8 +55,8 @@ pub mod test;
 pub mod theme;
 /// Web view and engine components.
 pub mod web;
-/// Optional WGPU GPU acceleration backend.
-/// Optional WGPU GPU acceleration backend.
+/// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
+#[cfg(feature = "gpu-wgpu")]
 pub mod wgpu_backend;
 /// Widget definitions and widget helpers.
 pub mod widget;
@@ -147,7 +147,9 @@ fn init_i18n_runtime() {
     i18n::init();
 }
 #[cfg(feature = "embedded")]
-fn init_i18n_runtime() {}
+fn init_i18n_runtime() {
+    log::debug!("i18n init skipped in embedded mode — no i18n module loaded");
+}
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance
 /// Create a top-level window with specified title and geometry.

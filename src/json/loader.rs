@@ -71,7 +71,12 @@ impl JsonLoader {
             ));
         }
 
-        let (widget_type, widget_value) = root.iter().next().unwrap();
+        let (widget_type, widget_value) = match root.iter().next() {
+            Some(pair) => pair,
+            None => {
+                return Err("JSON root object is empty — expected a widget type key".to_string())
+            }
+        };
         Self::instantiate_node(
             widget_type,
             widget_value,

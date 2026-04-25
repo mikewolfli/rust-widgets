@@ -1,3 +1,4 @@
+//! Performance monitoring and optimization utilities, including dirty region tracking, update batching, and profiling.
 pub mod batcher;
 pub mod dirty;
 mod profiler;

@@ -1,12 +1,12 @@
 //! Base widget state — shared struct used by all concrete controls.
 
+use super::WidgetKind;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use super::WidgetKind;
 
 /// Shared widget state and signals used by concrete controls.
 pub struct BaseWidget {
@@ -25,8 +25,6 @@ pub struct BaseWidget {
     pub(crate) connection_scope: ConnectionScope,
     /// Emitted when a click-like interaction is received.
     pub clicked: GenericSignal,
-    /// Emitted when widget internal value/state changes.
-    pub changed: GenericSignal,
     /// Emitted when hover/move interaction is observed.
     pub hover: Signal1<Point>,
     /// Emitted when mouse/pointer button is pressed.
@@ -64,7 +62,6 @@ impl BaseWidget {
             style: WidgetStyle::default(),
             connection_scope: ConnectionScope::new(),
             clicked: GenericSignal::new(),
-            changed: GenericSignal::new(),
             hover: Signal1::new(),
             mouse_down: Signal1::new(),
             mouse_up: Signal1::new(),

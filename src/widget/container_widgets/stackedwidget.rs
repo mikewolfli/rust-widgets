@@ -39,7 +39,7 @@ impl StackedWidget {
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
         self.base.add_child(widget);
         self.widgets.push(widget);
-        self.widgets.len() - 1
+        self.widgets.len().saturating_sub(1)
     }
     /// Inserts a widget at position.
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {

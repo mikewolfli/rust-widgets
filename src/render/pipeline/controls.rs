@@ -1,11 +1,12 @@
-//! Basic widget rendering: helpers + window, panel, label, button, checkbox,
-//! radiobutton, line_edit, combo_box, list_box, progress_bar, slider, scroll_bar.
+//! Basic widget rendering — DEPRECATED: pipeline routing is unstable.
+//! Use `RenderContext` directly instead. These functions are kept for
+//! backward compatibility during the `unstable-pipeline-routing` feature
+//! transition and will be removed in a future version.
 use crate::core::{Color, Point, Rect};
-use crate::render::{SceneLayer, RenderCommand};
 use crate::render::is_empty_rect;
+use crate::render::{RenderCommand, SceneLayer};
 use crate::widget::{
-    Button, ButtonState, CheckBox, CheckState, ComboBox,
-    Label, LineEdit, ListBox, Panel,
+    Button, ButtonState, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Panel,
     ProgressBar, RadioButton, ScrollBar, Slider, Widget,
 };
 use crate::window::Window;

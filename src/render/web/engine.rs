@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! `WebEngine` rendering wrapper that delegates to the main web engine module.
 //!
 //! This module provides a thin rendering-oriented wrapper around the full

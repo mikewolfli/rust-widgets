@@ -91,22 +91,46 @@ pub fn flip_rect_y(rect: Rect, height: i32) -> Rect {
 }
 /// Converts a rectangle from Cartesian to screen coordinates (f32).
 #[inline]
-pub fn rect_to_screen_f32(x: f32, y: f32, width: f32, height: f32, container_height: f32) -> (f32, f32, f32, f32) {
+pub fn rect_to_screen_f32(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    container_height: f32,
+) -> (f32, f32, f32, f32) {
     (x, container_height - y - height, width, height)
 }
 /// Converts a rectangle from screen to Cartesian coordinates (f32).
 #[inline]
-pub fn rect_to_cartesian_f32(x: f32, y: f32, width: f32, height: f32, container_height: f32) -> (f32, f32, f32, f32) {
+pub fn rect_to_cartesian_f32(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    container_height: f32,
+) -> (f32, f32, f32, f32) {
     (x, container_height - y - height, width, height)
 }
 /// Converts a rectangle from Cartesian to screen coordinates (f64).
 #[inline]
-pub fn rect_to_screen_f64(x: f64, y: f64, width: f64, height: f64, container_height: f64) -> (f64, f64, f64, f64) {
+pub fn rect_to_screen_f64(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    container_height: f64,
+) -> (f64, f64, f64, f64) {
     (x, container_height - y - height, width, height)
 }
 /// Converts a rectangle from screen to Cartesian coordinates (f64).
 #[inline]
-pub fn rect_to_cartesian_f64(x: f64, y: f64, width: f64, height: f64, container_height: f64) -> (f64, f64, f64, f64) {
+pub fn rect_to_cartesian_f64(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    container_height: f64,
+) -> (f64, f64, f64, f64) {
     (x, container_height - y - height, width, height)
 }
 /// Converts a point from Cartesian to screen coordinates (f64).
@@ -142,7 +166,9 @@ pub fn to_cartesian_y_u32(screen_y: u32, height: u32) -> u32 {
 /// Normalizes coordinates to a 0.0-1.0 range.
 #[inline]
 pub fn normalize_coords(x: f32, y: f32, width: f32, height: f32) -> (f32, f32) {
-    (x / width, y / height)
+    let w = if width == 0.0 { 1.0 } else { width };
+    let h = if height == 0.0 { 1.0 } else { height };
+    (x / w, y / h)
 }
 /// Denormalizes coordinates from 0.0-1.0 range to pixel coordinates.
 #[inline]
@@ -159,7 +185,14 @@ pub fn clamp_point_to_rect(point: Point, rect: Rect) -> Point {
 }
 /// Clamps coordinates to within a rectangle (f32).
 #[inline]
-pub fn clamp_point_to_rect_f32(x: f32, y: f32, rect_x: f32, rect_y: f32, rect_width: f32, rect_height: f32) -> (f32, f32) {
+pub fn clamp_point_to_rect_f32(
+    x: f32,
+    y: f32,
+    rect_x: f32,
+    rect_y: f32,
+    rect_width: f32,
+    rect_height: f32,
+) -> (f32, f32) {
     (
         x.clamp(rect_x, rect_x + rect_width - 1.0),
         y.clamp(rect_y, rect_y + rect_height - 1.0),

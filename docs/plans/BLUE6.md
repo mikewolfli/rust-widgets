@@ -969,8 +969,9 @@ cargo check --all-targets                     ➜ 0 errors, 0 warnings
 cargo check --features objc2-macos --all-targets ➜ 0 errors, 0 warnings
 cargo check --all-features --all-targets       ➜ 0 errors, 0 warnings
 cargo check --features embedded                ➜ 0 errors, 0 warnings
-cargo test --all-targets                       ➜ 412 passed, 0 failed
-cargo test --all-features --all-targets         ➜ 411 passed, 0 failed
+cargo test --features objc2-macos               ➜ 388 unit + 47 integration + 12 doc = ALL PASS
+cargo test                                      ➜ 375 unit + 47 integration + 12 doc = ALL PASS
+cargo test --all-features                       ➜ 388 unit + 47 integration + 12 doc = ALL PASS
 ```
 
 所有错误和警告已清零。质量评分维持 **4.9 / 5.0** ✅

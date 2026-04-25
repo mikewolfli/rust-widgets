@@ -22,6 +22,16 @@ use std::fmt;
 ///
 /// `ErrorId` values are **stable** – they must never be renumbered or
 /// deleted once published in a C header.  New IDs are appended.
+///
+/// # Usage
+/// - **Used in production code**: `SUCCESS`, `NOT_IMPLEMENTED`,
+///   `UNSUPPORTED_OPERATION`, `INVALID_ARGUMENT`, `FILE_NOT_FOUND`
+/// - **Reserved for future use** (stable API, not yet wired):
+///   `NULL_POINTER`, `OUT_OF_MEMORY`, `LOCK_POISONED`,
+///   `WIDGET_BASE_NOT_IMPL`, `WIDGET_NOT_FOUND`, `WIDGET_INVALID_STATE`,
+///   `WIDGET_DEPRECATED`, `PLATFORM_UNSUPPORTED`, `PLATFORM_INIT_FAILED`,
+///   `CLIPBOARD_FAILED`, `DRAG_DROP_FAILED`, `RENDER_CONTEXT_INVALID`,
+///   `RENDER_PIPELINE_FAILED`, `I18N_LOAD_FAILED`
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ErrorId(pub i32);
 
@@ -31,27 +41,41 @@ impl ErrorId {
     pub const NOT_IMPLEMENTED: Self = Self(1);
     pub const UNSUPPORTED_OPERATION: Self = Self(2);
     pub const INVALID_ARGUMENT: Self = Self(3);
+    /// Reserved — not yet wired.
     pub const NULL_POINTER: Self = Self(4);
+    /// Reserved — not yet wired.
     pub const OUT_OF_MEMORY: Self = Self(5);
+    /// Reserved — not yet wired.
     pub const LOCK_POISONED: Self = Self(6);
 
     // --- Widget (100‑199) ---
+    /// Reserved — not yet wired.
     pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
+    /// Reserved — not yet wired.
     pub const WIDGET_NOT_FOUND: Self = Self(101);
+    /// Reserved — not yet wired.
     pub const WIDGET_INVALID_STATE: Self = Self(102);
+    /// Reserved — not yet wired.
     pub const WIDGET_DEPRECATED: Self = Self(103);
 
     // --- Platform (200‑299) ---
+    /// Reserved — not yet wired.
     pub const PLATFORM_UNSUPPORTED: Self = Self(200);
+    /// Reserved — not yet wired.
     pub const PLATFORM_INIT_FAILED: Self = Self(201);
+    /// Reserved — not yet wired.
     pub const CLIPBOARD_FAILED: Self = Self(202);
+    /// Reserved — not yet wired.
     pub const DRAG_DROP_FAILED: Self = Self(203);
 
     // --- Render (300‑399) ---
+    /// Reserved — not yet wired.
     pub const RENDER_CONTEXT_INVALID: Self = Self(300);
+    /// Reserved — not yet wired.
     pub const RENDER_PIPELINE_FAILED: Self = Self(301);
 
     // --- I/O (400‑499) ---
+    /// Reserved — not yet wired.
     pub const I18N_LOAD_FAILED: Self = Self(400);
     pub const FILE_NOT_FOUND: Self = Self(401);
 }

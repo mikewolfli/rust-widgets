@@ -1,3 +1,6 @@
+//! Memory management utilities: pool allocator, arena allocator, stack allocator,
+//! and memory monitoring with pressure handling.
+
 mod pool;
 pub use pool::*;
 use std::alloc::{alloc, dealloc, Layout};

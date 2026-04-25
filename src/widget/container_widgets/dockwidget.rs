@@ -1,12 +1,12 @@
 //! Dock widget.
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Dock widget.
 pub struct DockWidget {
     base: BaseWidget,
@@ -247,7 +247,7 @@ impl DockWidget {
             rect.x,
             rect.y + title_bar_height,
             rect.width,
-            rect.height - title_bar_height as u32,
+            rect.height.saturating_sub(title_bar_height as u32),
         )
     }
     /// Returns close button rectangle.
@@ -474,8 +474,19 @@ impl Draw for DockWidget {
                 } else {
                     Color::from_rgb(200, 200, 200)
                 };
-                context.draw_line(Point::new(close_rect.x, close_rect.y), Point::new(close_rect.x + close_rect.width as i32, close_rect.y + close_rect.height as i32), close_color);
-                context.draw_line(Point::new(close_rect.x + close_rect.width as i32, close_rect.y), Point::new(close_rect.x, close_rect.y + close_rect.height as i32), close_color);
+                context.draw_line(
+                    Point::new(close_rect.x, close_rect.y),
+                    Point::new(
+                        close_rect.x + close_rect.width as i32,
+                        close_rect.y + close_rect.height as i32,
+                    ),
+                    close_color,
+                );
+                context.draw_line(
+                    Point::new(close_rect.x + close_rect.width as i32, close_rect.y),
+                    Point::new(close_rect.x, close_rect.y + close_rect.height as i32),
+                    close_color,
+                );
             }
         }
         // Draw float button if enabled
@@ -495,20 +506,52 @@ impl Draw for DockWidget {
                 // Use integer coordinates for drawing
                 let y0 = float_rect.y + 2;
                 // Up arrow
-                context.draw_line(Point::new(center_x, y0), Point::new(center_x, y0 + arrow_size), float_color);
-                context.draw_line(Point::new(center_x - arrow_size / 2, y0 + arrow_size / 2), Point::new(center_x + arrow_size / 2, y0 + arrow_size / 2), float_color);
+                context.draw_line(
+                    Point::new(center_x, y0),
+                    Point::new(center_x, y0 + arrow_size),
+                    float_color,
+                );
+                context.draw_line(
+                    Point::new(center_x - arrow_size / 2, y0 + arrow_size / 2),
+                    Point::new(center_x + arrow_size / 2, y0 + arrow_size / 2),
+                    float_color,
+                );
                 // Down arrow
                 let y1 = float_rect.y + float_rect.height as i32 - 2;
-                context.draw_line(Point::new(center_x, y1 - arrow_size), Point::new(center_x, y1), float_color);
-                context.draw_line(Point::new(center_x - arrow_size / 2, y1 - arrow_size / 2), Point::new(center_x + arrow_size / 2, y1 - arrow_size / 2), float_color);
+                context.draw_line(
+                    Point::new(center_x, y1 - arrow_size),
+                    Point::new(center_x, y1),
+                    float_color,
+                );
+                context.draw_line(
+                    Point::new(center_x - arrow_size / 2, y1 - arrow_size / 2),
+                    Point::new(center_x + arrow_size / 2, y1 - arrow_size / 2),
+                    float_color,
+                );
                 // Left arrow
                 let x0 = float_rect.x + 2;
-                context.draw_line(Point::new(x0, center_y), Point::new(x0 + arrow_size, center_y), float_color);
-                context.draw_line(Point::new(x0 + arrow_size / 2, center_y - arrow_size / 2), Point::new(x0 + arrow_size / 2, center_y + arrow_size / 2), float_color);
+                context.draw_line(
+                    Point::new(x0, center_y),
+                    Point::new(x0 + arrow_size, center_y),
+                    float_color,
+                );
+                context.draw_line(
+                    Point::new(x0 + arrow_size / 2, center_y - arrow_size / 2),
+                    Point::new(x0 + arrow_size / 2, center_y + arrow_size / 2),
+                    float_color,
+                );
                 // Right arrow
                 let x1 = float_rect.x + float_rect.width as i32 - 2;
-                context.draw_line(Point::new(x1 - arrow_size, center_y), Point::new(x1, center_y), float_color);
-                context.draw_line(Point::new(x1 - arrow_size / 2, center_y - arrow_size / 2), Point::new(x1 - arrow_size / 2, center_y + arrow_size / 2), float_color);
+                context.draw_line(
+                    Point::new(x1 - arrow_size, center_y),
+                    Point::new(x1, center_y),
+                    float_color,
+                );
+                context.draw_line(
+                    Point::new(x1 - arrow_size / 2, center_y - arrow_size / 2),
+                    Point::new(x1 - arrow_size / 2, center_y + arrow_size / 2),
+                    float_color,
+                );
             }
         }
         // Draw content background

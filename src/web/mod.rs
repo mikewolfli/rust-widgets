@@ -1,3 +1,5 @@
+//! Web capabilities module — provides web view, web engine, navigation, history,
+//! JavaScript bridge, privacy controls, and plugin management.
 mod history;
 mod js_engine;
 mod navigation;

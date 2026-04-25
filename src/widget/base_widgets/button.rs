@@ -19,7 +19,6 @@ pub struct Button {
     icon: Option<Image>,
     pressed: bool,
     default_button: bool,
-    pub activated: GenericSignal,
     pub pressed_signal: GenericSignal,
     pub released_signal: GenericSignal,
     pub state_changed: Signal1<ButtonState>,
@@ -33,7 +32,6 @@ impl Button {
             icon: None,
             pressed: false,
             default_button: false,
-            activated: GenericSignal::new(),
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
@@ -226,7 +224,7 @@ impl EventHandler for Button {
             Event::MouseUp((_, _)) => {
                 if self.pressed {
                     self.release();
-                    self.activated.emit();
+                    self.base.clicked.emit();
                     return;
                 }
             }

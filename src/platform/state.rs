@@ -1,12 +1,12 @@
 //! Shared backend state model used by platform adapters.
+use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::core::ObjectId;
+/// Generic widget state record owned by backend state model.
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use crate::core::ObjectId;
-use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
-/// Generic widget state record owned by backend state model.
-use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
@@ -227,9 +227,15 @@ where
             .map(|widget| widget.accessibility_name.clone())
             .unwrap_or_default()
     }
+
+    // ─── Backend event methods ─────────────────────────────────────────────────
+    // These methods provide event system integration for menu and widget trigger
+    // dispatch. They are called by the macos, mobile, and stub platform backends.
+    // NOTE: is_kind() is reserved for future runtime type-checking — it compiles
+    // but is not yet called anywhere.
+
     /// Push menu trigger event.
     /// Reserved for menu system integration (not yet wired to platform backends).
-    #[allow(dead_code)]
     pub fn push_menu_event(&self, item_id: ObjectId) {
         self.menu_events
             .lock()
@@ -238,7 +244,6 @@ where
     }
     /// Pop menu trigger event.
     /// Reserved for menu system integration (paired with push_menu_event).
-    #[allow(dead_code)]
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
         self.menu_events
             .lock()
@@ -247,7 +252,6 @@ where
     }
     /// Push typed widget trigger event.
     /// Reserved for event system integration (not yet wired to platform backends).
-    #[allow(dead_code)]
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
         self.widget_events
             .lock()
@@ -255,7 +259,6 @@ where
             .push_back(event);
     }
     /// Pop typed widget trigger event.
-    #[allow(dead_code)]
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
         self.widget_events
             .lock()
@@ -311,9 +314,13 @@ where
             .push_back(event);
         true
     }
+
+    // ─── Test/programmatic event injection ─────────────────────────────────────
+    // These helpers are called by the macos, mobile, and stub platform backends
+    // for event system bridge functions.
+
     /// Inject menu trigger event.
     /// Reserved for testing and programmatic event injection.
-    #[allow(dead_code)]
     pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
         if !self.contains_widget(menu_item_id) {
             return false;
@@ -323,19 +330,16 @@ where
     }
     /// Pop widget trigger event.
     /// Reserved for event processing in platform backends.
-    #[allow(dead_code)]
     pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
         self.pop_menu_event()
     }
     /// Pop typed widget trigger event.
     /// Reserved for event processing in platform backends (typed variant).
-    #[allow(dead_code)]
     pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.pop_widget_event()
     }
     /// Inject widget trigger event.
     /// Reserved for testing and programmatic event injection (typed variant).
-    #[allow(dead_code)]
     pub fn inject_widget_trigger_event(
         &self,
         widget_id: ObjectId,

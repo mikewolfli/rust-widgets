@@ -28,6 +28,10 @@ impl VecTreeModel {
             data_changed: GenericSignal::new(),
         }
     }
+    /// Returns a reference to the data changed signal.
+    pub fn data_changed_signal(&self) -> &GenericSignal {
+        &self.data_changed
+    }
     /// Appends a node to the model.
     pub fn append(&mut self, node: String) {
         self.nodes.push(node);

@@ -43,6 +43,9 @@ mod backend;
 // Visual command pipeline for all widget types
 mod pipeline;
 // Web rendering
+// NOTE: Not re-exported via `pub use web::*;` yet because the types
+// (WebEngine, WebView) are stubs gated behind module-level `#[allow(dead_code)]`
+// and require integration wiring before they are ready for public consumption.
 mod web;
 // GPU-accelerated rendering backend
 #[cfg(feature = "gpu-wgpu")]

@@ -21,11 +21,7 @@ pub mod web_widgets;
 pub mod window;
 pub use window::Window;
 // Legacy module aliases for backward compatibility paths.
-pub use display_widgets::lcd_number;
-pub use input_widgets::command_link;
-pub use input_widgets::font_combo_box;
-pub use web_widgets::web_engine;
-pub use web_widgets::web_view;
+
 // Re-export base types
 pub use base::BaseWidget;
 pub use draw::Draw;

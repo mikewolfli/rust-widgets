@@ -210,7 +210,8 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
         x: rect.x + rect.width as f32 as i32 / 2,
         y: rect.y + rect.height as f32 as i32 / 2,
     };
-    let radius = (rect.width.min(rect.height) / 2 - 4) as u32;
+    let radius = rect.width.min(rect.height) / 2;
+    let radius = if radius > 4 { radius - 4 } else { 0 } as u32;
     // Draw dial background
     layer.push(RenderCommand::DrawCircleStroke {
         center,

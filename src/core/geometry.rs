@@ -11,18 +11,18 @@ impl Point {
     pub const fn new(x: i32, y: i32) -> Self {
         Self { x, y }
     }
-    /// Creates a point from f32 coordinates (rounded to nearest integer).
+    /// Creates a point from f32 coordinates (rounded to nearest integer, clamped to i32 range).
     pub fn from_f32(x: f32, y: f32) -> Self {
         Self {
-            x: x.round() as i32,
-            y: y.round() as i32,
+            x: x.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            y: y.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
         }
     }
-    /// Creates a point from f32 coordinates (truncated to integer).
+    /// Creates a point from f32 coordinates (truncated to integer, clamped to i32 range).
     pub fn from_f32_trunc(x: f32, y: f32) -> Self {
         Self {
-            x: x as i32,
-            y: y as i32,
+            x: x.clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            y: y.clamp(i32::MIN as f32, i32::MAX as f32) as i32,
         }
     }
     /// Creates a point from u32 coordinates.
@@ -51,18 +51,18 @@ impl Point {
     pub const fn from_u32_tuple((x, y): (u32, u32)) -> Self {
         Self::from_u32(x, y)
     }
-    /// Creates a point from f64 coordinates (rounded to nearest integer).
+    /// Creates a point from f64 coordinates (rounded to nearest integer, clamped to i32 range).
     pub fn from_f64(x: f64, y: f64) -> Self {
         Self {
-            x: x.round() as i32,
-            y: y.round() as i32,
+            x: x.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: y.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
         }
     }
-    /// Creates a point from f64 coordinates (truncated to integer).
+    /// Creates a point from f64 coordinates (truncated to integer, clamped to i32 range).
     pub fn from_f64_trunc(x: f64, y: f64) -> Self {
         Self {
-            x: x as i32,
-            y: y as i32,
+            x: x.clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: y.clamp(i32::MIN as f64, i32::MAX as f64) as i32,
         }
     }
     /// Creates a point from usize coordinates (clamped to i32 range).
@@ -495,8 +495,8 @@ impl Rect {
     pub fn from_points(top_left: Point, bottom_right: Point) -> Self {
         let x = top_left.x.min(bottom_right.x);
         let y = top_left.y.min(bottom_right.y);
-        let width = (bottom_right.x - top_left.x).abs() as u32;
-        let height = (bottom_right.y - top_left.y).abs() as u32;
+        let width = bottom_right.x.abs_diff(top_left.x);
+        let height = bottom_right.y.abs_diff(top_left.y);
         Self::new(x, y, width, height)
     }
     /// Creates rectangle from center point and size.

@@ -29,6 +29,9 @@ pub(crate) enum StubHandleKind {
     FileDialog,
     ColorDialog,
     FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
 }
 
 pub struct StubPlatform {
@@ -260,16 +263,19 @@ impl Platform for StubPlatform {
     }
 
     fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
-        let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
-        if let Some(list) = items.get_mut(&combo_box) {
-            list.clear();
-            self.combo_box_selection
-                .lock()
-                .expect("platform lock poisoned")
-                .insert(combo_box, None);
-            return true;
+        {
+            let mut items = self.combo_box_items.lock().expect("platform lock poisoned");
+            if let Some(list) = items.get_mut(&combo_box) {
+                list.clear();
+            } else {
+                return false;
+            }
         }
-        false
+        self.combo_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(combo_box, None);
+        true
     }
 
     fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
@@ -347,15 +353,19 @@ impl Platform for StubPlatform {
     }
 
     fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
-        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
-        let list = match items.get_mut(&list_box) {
-            Some(list) => list,
-            None => return false,
-        };
-        if index >= list.len() {
-            return false;
+        let len;
+        {
+            let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+            let list = match items.get_mut(&list_box) {
+                Some(list) => list,
+                None => return false,
+            };
+            if index >= list.len() {
+                return false;
+            }
+            list.remove(index);
+            len = list.len();
         }
-        list.remove(index);
         let mut selection = self
             .list_box_selection
             .lock()
@@ -363,24 +373,27 @@ impl Platform for StubPlatform {
         if let Some(current) = selection.get(&list_box).and_then(|value| *value) {
             if current == index {
                 selection.insert(list_box, None);
-            } else if current > index {
-                selection.insert(list_box, Some(current - 1));
+            } else if current > index && len > 0 {
+                selection.insert(list_box, Some((current - 1).min(len - 1)));
             }
         }
         true
     }
 
     fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
-        let mut items = self.list_box_items.lock().expect("platform lock poisoned");
-        if let Some(list) = items.get_mut(&list_box) {
-            list.clear();
-            self.list_box_selection
-                .lock()
-                .expect("platform lock poisoned")
-                .insert(list_box, None);
-            return true;
+        {
+            let mut items = self.list_box_items.lock().expect("platform lock poisoned");
+            if let Some(list) = items.get_mut(&list_box) {
+                list.clear();
+            } else {
+                return false;
+            }
         }
-        false
+        self.list_box_selection
+            .lock()
+            .expect("platform lock poisoned")
+            .insert(list_box, None);
+        true
     }
 
     fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
@@ -571,7 +584,7 @@ impl Platform for StubPlatform {
         height: u32,
     ) -> ObjectId {
         self.state
-            .create_widget(StubHandleKind::ComboBox, "ComboBox", x, y, width, height)
+            .create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
 
     fn create_list_view(
@@ -583,7 +596,7 @@ impl Platform for StubPlatform {
         height: u32,
     ) -> ObjectId {
         self.state
-            .create_widget(StubHandleKind::ListBox, "ListBox", x, y, width, height)
+            .create_widget(StubHandleKind::ListView, "ListView", x, y, width, height)
     }
 
     fn create_scroll_area(
@@ -594,8 +607,14 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Panel, "Panel", x, y, width, height)
+        self.state.create_widget(
+            StubHandleKind::ScrollArea,
+            "ScrollArea",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {

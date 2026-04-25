@@ -89,7 +89,7 @@ impl PdfDocument for PdfDocumentImpl {
     fn add_page(&mut self, size: Size) -> u32 {
         let page = Box::new(PdfPageImpl::new(size, self.default_font_resource()));
         self.pages.push(page);
-        (self.pages.len() - 1) as u32
+        self.pages.len().saturating_sub(1) as u32
     }
     fn insert_page(&mut self, index: u32, size: Size) -> u32 {
         if index <= self.pages.len() as u32 {
