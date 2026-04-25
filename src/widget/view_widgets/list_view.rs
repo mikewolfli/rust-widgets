@@ -339,6 +339,23 @@ impl crate::event::EventHandler for ListView {
                     }
                 }
             }
+            #[cfg(feature = "touch")]
+            crate::event::Event::Tap { pos } => {
+                let rect = self.base.geometry();
+                let item_height = 20;
+                if pos.y >= rect.y {
+                    let index = ((pos.y - rect.y) / item_height) as usize;
+                    let row_count = self.row_count();
+                    if index < row_count {
+                        self.focused_row = Some(index);
+                        self.selection.select_row(index);
+                        if let Some(row) = self.focused_row {
+                            self.selection_changed.emit(row);
+                            self.focused_row_changed.emit(Some(row));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }

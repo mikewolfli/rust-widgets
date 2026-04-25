@@ -12,15 +12,26 @@ unexpected_cfgs = "allow"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["full"]
-full = ["print", "pdf", "chart", "desktop-runtime", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom", "advanced-widgets", "wayland-native"]
-unstable-pipeline-routing = []
-unstable-special-widgets = []
-advanced-widgets = []
+# ── Device-class profiles (pick ONE; `desktop` is the default) ──
+default = ["desktop"]
+## Full desktop PC: native platform, i18n, theme, bindings, touch, GPU.
+desktop = ["desktop-runtime", "gpu-wgpu", "quality-management", "controls-native", "controls-custom", "advanced-widgets", "print", "pdf", "chart"]
+## Tablet: touch-enabled, GPU-accelerated, native + custom controls.
+tablet = ["touch", "gpu-wgpu", "quality-management", "controls-native", "controls-custom"]
+## Mobile phone: touch-enabled, GPU-accelerated, mobile API bindings, native + custom controls.
+mobile = ["touch", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom"]
+## Embedded/stripped: no touch, no i18n, software-only render.
 embedded = []
-print = []
-pdf = []
-chart = []
+
+# ── Interaction features (composable atop device profiles) ──
+## Touch events + gesture recognizer engine.
+touch = []
+## Laser holographic keyboard/screen (Z-axis depth events).
+holographic = []
+## Projection/remote-control (air gestures, pointer input).
+projection = []
+
+# ── Runtime / platform backend features ──
 desktop-runtime = []
 gpu-wgpu = ["wgpu"]
 quality-management = []
@@ -30,6 +41,22 @@ wayland-native = []
 controls-native = []
 objc2-macos = ["dep:objc2-foundation"]
 controls-custom = []
+
+# ── Optional content modules ──
+print = []
+pdf = []
+chart = []
+advanced-widgets = []
+
+# ── Unstable / experimental features ──
+unstable-pipeline-routing = []
+unstable-special-widgets = []
+
+# ── Meta-feature: everything that can coexist ──
+# NOTE: device-class features (desktop/tablet/mobile/embedded) are
+# mutually exclusive and NOT combined here. Pick one device profile
+# and compose with interaction add-ons as needed.
+full = ["desktop", "touch", "holographic", "projection", "wayland-native", "gtk-native", "objc2-macos", "unstable-pipeline-routing", "unstable-special-widgets"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -64,8 +91,6 @@ wayland-cursor = { version = "0.31", optional = true }
 [dependencies.wgpu]
 version = "0.16"
 optional = true
-
-
 
 [dev-dependencies]
 criterion = "0.8.2"

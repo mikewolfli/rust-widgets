@@ -157,6 +157,19 @@ impl ComboBox {
     pub fn items(&self) -> &[String] {
         &self.items
     }
+    /// Shared activation logic for mouse/touch/gesture input.
+    fn activate_combo(&mut self) {
+        self.base.clicked.emit();
+        if !self.items.is_empty() {
+            let new_index = if let Some(current) = self.current_index {
+                (current + 1) % self.items.len()
+            } else {
+                0
+            };
+            self.set_current_index(Some(new_index));
+            self.activated.emit(new_index);
+        }
+    }
 }
 // Implement Widget trait
 impl Widget for ComboBox {
@@ -266,19 +279,12 @@ impl EventHandler for ComboBox {
         match event {
             Event::MousePress { button, .. } => {
                 if *button == 1 {
-                    // Toggle dropdown (in real implementation)
-                    self.base.clicked.emit();
-                    // Simulate selection for demo
-                    if !self.items.is_empty() {
-                        let new_index = if let Some(current) = self.current_index {
-                            (current + 1) % self.items.len()
-                        } else {
-                            0
-                        };
-                        self.set_current_index(Some(new_index));
-                        self.activated.emit(new_index);
-                    }
+                    self.activate_combo();
                 }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. } | Event::Tap { .. } => {
+                self.activate_combo();
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {

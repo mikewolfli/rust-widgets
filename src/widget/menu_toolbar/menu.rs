@@ -297,6 +297,29 @@ impl EventHandler for Menu {
                     y += h;
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                let rect = self.geometry();
+                let mut y = rect.y as f32 + 2.0;
+                for (_i, item) in self.items.iter().enumerate() {
+                    let h = if item.separator {
+                        Self::separator_height()
+                    } else {
+                        Self::item_height()
+                    };
+                    if !item.separator
+                        && item.enabled
+                        && pos.y >= y as i32
+                        && pos.y < (y + h) as i32
+                    {
+                        let text = item.text.clone();
+                        self.triggered.emit(text);
+                        self.hide();
+                        break;
+                    }
+                    y += h;
+                }
+            }
             Event::KeyPress { key, .. } => {
                 if *key == 27 {
                     self.hide();

@@ -1,8 +1,8 @@
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 /// Action/command system.
 pub mod action;
-#[cfg(not(feature = "embedded"))]
-/// C ABI bindings for desktop runtime.
+/// Desktop-only: C ABI bindings for desktop runtime.
+#[cfg(feature = "desktop")]
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;
@@ -11,15 +11,19 @@ pub mod control_backend;
 /// Core types and shared contracts.
 pub mod core;
 /// Embedded system optimizations and support.
+#[cfg(feature = "embedded")]
 pub mod embedded;
 /// Unified error system (ErrorId, RwError, c_try!).
 pub mod error;
 /// Event types and dispatch helpers.
 pub mod event;
+/// Gesture recognizer system (gated behind `touch` feature).
+#[cfg(feature = "touch")]
+pub mod gesture;
 /// Hardware-adaptive GPU management.
 pub mod gpu;
-#[cfg(not(feature = "embedded"))]
-/// Internationalization module for desktop runtime.
+/// Desktop-only: Internationalization module.
+#[cfg(feature = "desktop")]
 pub mod i18n;
 /// Declarative JSON window engine (QML-like).
 pub mod json;
@@ -27,8 +31,8 @@ pub mod json;
 pub mod layout;
 /// Memory management utilities.
 pub mod memory;
+/// Advanced widgets (gated behind `advanced-widgets` feature).
 #[cfg(feature = "advanced-widgets")]
-/// Menu system configuration with hardware-adaptive features.
 pub mod menu_config;
 /// Object tree and object utilities.
 pub mod object;
@@ -50,8 +54,8 @@ pub mod signal;
 pub mod style;
 /// Test infrastructure and utilities.
 pub mod test;
-#[cfg(not(feature = "embedded"))]
-/// Theme management for desktop runtime.
+/// Desktop-only: Theme management.
+#[cfg(feature = "desktop")]
 pub mod theme;
 /// Web view and engine components.
 pub mod web;
@@ -102,13 +106,50 @@ fn trace_runtime_route(stage: &str) {
         );
     }
 }
-#[cfg(not(feature = "embedded"))]
+// ── Runtime profile names ──
+
+/// Desktop: full native platform runtime.
+#[cfg(feature = "desktop")]
 fn runtime_profile_name() -> &'static str {
-    "full"
+    "desktop"
 }
-#[cfg(feature = "embedded")]
+
+/// Tablet: touch-first, native platform.
+#[cfg(all(
+    feature = "tablet",
+    not(any(feature = "desktop", feature = "mobile", feature = "embedded"))
+))]
+fn runtime_profile_name() -> &'static str {
+    "tablet"
+}
+
+/// Mobile: touch-first, mobile API.
+#[cfg(all(
+    feature = "mobile",
+    not(any(feature = "desktop", feature = "tablet", feature = "embedded"))
+))]
+fn runtime_profile_name() -> &'static str {
+    "mobile"
+}
+
+/// Embedded: stripped-down render-engine-only runtime.
+#[cfg(all(
+    feature = "embedded",
+    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
+))]
 fn runtime_profile_name() -> &'static str {
     "embedded"
+}
+
+/// Fallback (no device feature selected).
+#[cfg(not(any(
+    feature = "desktop",
+    feature = "tablet",
+    feature = "mobile",
+    feature = "embedded"
+)))]
+fn runtime_profile_name() -> &'static str {
+    "unknown"
 }
 #[cfg(not(feature = "embedded"))]
 fn runtime_route_name() -> &'static str {
@@ -142,13 +183,36 @@ fn quit_runtime_backend() {
 fn quit_runtime_backend() {
     render_engine::default_render_engine().quit();
 }
-#[cfg(not(feature = "embedded"))]
+/// Desktop: initialize i18n system.
+#[cfg(feature = "desktop")]
 fn init_i18n_runtime() {
     i18n::init();
 }
-#[cfg(feature = "embedded")]
+
+/// Tablet/mobile: i18n not loaded; log debug message.
+#[cfg(all(not(feature = "desktop"), any(feature = "tablet", feature = "mobile")))]
+fn init_i18n_runtime() {
+    log::debug!("i18n init skipped — i18n module not loaded on this device profile");
+}
+
+/// Embedded: stripped-down, no i18n.
+#[cfg(all(
+    feature = "embedded",
+    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
+))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped in embedded mode — no i18n module loaded");
+}
+
+/// Fallback: no device feature selected.
+#[cfg(not(any(
+    feature = "desktop",
+    feature = "tablet",
+    feature = "mobile",
+    feature = "embedded"
+)))]
+fn init_i18n_runtime() {
+    log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance

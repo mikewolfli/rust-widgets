@@ -2,7 +2,7 @@
 pub mod animation;
 pub mod gradient;
 pub mod theme_state;
-use crate::core::{Color, Font};
+use crate::core::{Color, Font, Size};
 pub use animation::*;
 pub use gradient::*;
 pub use theme_state::*;
@@ -160,6 +160,48 @@ impl Default for Shadow {
         Self::new()
     }
 }
+/// Minimum touch target dimensions by device class (BLUE8 P4-4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchTargetSize {
+    /// PC touch screen: 32×32 pt.
+    Desktop,
+    /// Tablet: 44×44 pt.
+    Tablet,
+    /// Phone: 48×48 pt.
+    Phone,
+    /// Embedded: 40×40 pt.
+    Embedded,
+    /// Projection/remote control: 24×24 pt. (gated behind `projection` feature).
+    #[cfg(feature = "projection")]
+    Projection,
+}
+
+impl TouchTargetSize {
+    /// Returns the minimum recommended pixel dimensions for this class.
+    pub const fn dimensions(self) -> Size {
+        match self {
+            Self::Desktop => Size::new(32, 32),
+            Self::Tablet => Size::new(44, 44),
+            Self::Phone => Size::new(48, 48),
+            Self::Embedded => Size::new(40, 40),
+            #[cfg(feature = "projection")]
+            Self::Projection => Size::new(24, 24),
+        }
+    }
+
+    /// Returns the recommended spacing between interactive elements.
+    pub const fn spacing(self) -> u32 {
+        match self {
+            Self::Desktop => 8,
+            Self::Tablet => 12,
+            Self::Phone => 16,
+            Self::Embedded => 10,
+            #[cfg(feature = "projection")]
+            Self::Projection => 6,
+        }
+    }
+}
+
 /// Resolved style values applied to a widget.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WidgetStyle {
@@ -183,6 +225,9 @@ pub struct WidgetStyle {
     pub margin: Margin,
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
+    /// Optional minimum touch-target size override (BLUE8 P4-4).
+    /// When set, hit testing expands the effective area to this size.
+    pub touch_target: Option<Size>,
 }
 impl WidgetStyle {
     /// Sets the background color.
@@ -220,6 +265,11 @@ impl WidgetStyle {
     /// Sets the shadow.
     pub fn with_shadow(mut self, s: Shadow) -> Self {
         self.shadow = Some(s);
+        self
+    }
+    /// Sets the minimum touch target size (BLUE8 P4-4).
+    pub fn with_touch_target(mut self, target: Size) -> Self {
+        self.touch_target = Some(target);
         self
     }
     /// Sets the background gradient.

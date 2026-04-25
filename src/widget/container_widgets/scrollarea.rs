@@ -314,7 +314,7 @@ impl Widget for ScrollArea {
 impl EventHandler for ScrollArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        // Handle scroll events
+        // Handle scroll events (mouse wheel + touch swipe)
         match event {
             Event::Wheel {
                 delta,
@@ -323,6 +323,24 @@ impl EventHandler for ScrollArea {
                 // Scroll the viewport
                 self.viewport.x += delta.x * 20;
                 self.viewport.y += delta.y * 20;
+            }
+            #[cfg(feature = "touch")]
+            Event::Swipe {
+                start,
+                end,
+                velocity: _,
+            } => {
+                // Map swipe to scroll
+                let dx = end.x - start.x;
+                let dy = end.y - start.y;
+                self.viewport.x += dx;
+                self.viewport.y += dy;
+            }
+            #[cfg(feature = "touch")]
+            Event::Drag { delta, .. } => {
+                // Map finger drag to scroll
+                self.viewport.x += delta.x;
+                self.viewport.y += delta.y;
             }
             _ => {}
         }

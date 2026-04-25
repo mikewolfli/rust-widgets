@@ -19,7 +19,7 @@ pub use capture::PointerCaptureManager;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
 pub use r#loop::EventLoop;
-pub use types::{Event, EventHandler, EventPriority};
+pub use types::{Event, EventHandler, EventPriority, GestureClass, TouchId};
 // Re-export queue utilities
 pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
 // Backward-compatible event aliases used by legacy widget implementations.

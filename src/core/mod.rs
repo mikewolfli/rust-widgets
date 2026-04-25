@@ -44,6 +44,6 @@ pub use color::Color;
 pub use font::Font;
 pub use geometry::{Orientation, Point, Rect, Size};
 pub use types::{
-    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily,
-    RuntimeProfile, Version,
+    CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,
+    PlatformFamily, RuntimeProfile, Version,
 };

@@ -237,6 +237,17 @@ impl crate::event::EventHandler for TreeView {
                     }
                 }
             }
+            #[cfg(feature = "touch")]
+            crate::event::Event::Tap { pos } => {
+                let rect = self.base.geometry();
+                let item_height = 20;
+                if pos.y >= rect.y {
+                    let index = ((pos.y - rect.y) / item_height) as usize;
+                    if index < self.node_count() {
+                        self.select_node(index);
+                    }
+                }
+            }
             _ => {}
         }
     }

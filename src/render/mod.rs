@@ -46,7 +46,8 @@ mod pipeline;
 // NOTE: Not re-exported via `pub use web::*;` yet because the types
 // (WebEngine, WebView) are stubs gated behind module-level `#[allow(dead_code)]`
 // and require integration wiring before they are ready for public consumption.
-mod web;
+#[cfg(feature = "desktop")]
+pub mod web;
 // GPU-accelerated rendering backend
 #[cfg(feature = "gpu-wgpu")]
 pub mod gpu;
@@ -128,6 +129,12 @@ pub use pipeline::{
 // GPU — re-export only when feature is active
 #[cfg(feature = "gpu-wgpu")]
 pub use gpu::{GpuCapability, GpuRenderer};
+
+/// Web rendering types — available on desktop targets
+#[cfg(feature = "desktop")]
+pub use web::engine::WebEngine;
+#[cfg(feature = "desktop")]
+pub use web::view::WebView;
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 

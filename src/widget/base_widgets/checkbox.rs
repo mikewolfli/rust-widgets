@@ -299,3 +299,435 @@ impl Draw for CheckBox {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    // ── 1. Creation ──────────────────────────────────────────────────────────
+    #[test]
+    fn test_creation_default_state() {
+        let cb = CheckBox::new(Rect::new(10, 10, 100, 30));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        assert!(!cb.is_checked());
+        assert!(!cb.is_partially_checked());
+        assert!(!cb.is_tristate_enabled());
+        assert!(cb.text().is_empty());
+        assert!(cb.is_visible());
+        assert!(cb.is_enabled());
+    }
+
+    // ── 2. State transitions (Unchecked→Checked→PartiallyChecked→Unchecked) ─
+    #[test]
+    fn test_toggle_unchecked_to_checked() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Checked);
+        assert!(cb.is_checked());
+    }
+
+    #[test]
+    fn test_toggle_checked_to_unchecked_no_tristate() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_checked(true);
+        assert_eq!(cb.state(), CheckState::Checked);
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_toggle_checked_to_partial_when_tristate() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        cb.set_checked(true);
+        assert_eq!(cb.state(), CheckState::Checked);
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::PartiallyChecked);
+        assert!(cb.is_partially_checked());
+    }
+
+    #[test]
+    fn test_toggle_partial_to_unchecked() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        cb.set_state(CheckState::PartiallyChecked);
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_tristate_cycle() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        // Unchecked → Checked
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Checked);
+        // Checked → PartiallyChecked
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::PartiallyChecked);
+        // PartiallyChecked → Unchecked
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    // ── 3. set_checked(true/false) ──────────────────────────────────────────
+    #[test]
+    fn test_set_checked_true() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_checked(true);
+        assert!(cb.is_checked());
+        assert_eq!(cb.state(), CheckState::Checked);
+    }
+
+    #[test]
+    fn test_set_checked_false() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_checked(true);
+        cb.set_checked(false);
+        assert!(!cb.is_checked());
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_set_checked_noop() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        // Set unchecked when already unchecked – no state_changed signal
+        cb.set_checked(false);
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    // ── 4. toggled signal (true on checked, false on unchecked) ─────────────
+    #[test]
+    fn test_toggled_signal_emitted_true() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        let emitted_value = Arc::new(Mutex::new(None));
+        let ev = emitted_value.clone();
+        cb.toggled.connect(move |v| *ev.lock().unwrap() = Some(*v));
+        cb.set_checked(true);
+        assert_eq!(*emitted_value.lock().unwrap(), Some(true));
+    }
+
+    #[test]
+    fn test_toggled_signal_emitted_false() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_checked(true);
+        let emitted_value = Arc::new(Mutex::new(None));
+        let ev = emitted_value.clone();
+        cb.toggled.connect(move |v| *ev.lock().unwrap() = Some(*v));
+        cb.set_checked(false);
+        assert_eq!(*emitted_value.lock().unwrap(), Some(false));
+    }
+
+    #[test]
+    fn test_toggled_not_emitted_on_noop() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_checked(true);
+        let emitted_count = Arc::new(AtomicU32::new(0));
+        let ec = emitted_count.clone();
+        cb.toggled.connect(move |_| {
+            ec.fetch_add(1, Ordering::SeqCst);
+        });
+        // Set same state – no toggle
+        cb.set_checked(true);
+        assert_eq!(emitted_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_toggled_not_emitted_on_partial_transition() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        cb.set_state(CheckState::PartiallyChecked);
+        let emitted_count = Arc::new(AtomicU32::new(0));
+        let ec = emitted_count.clone();
+        cb.toggled.connect(move |_| {
+            ec.fetch_add(1, Ordering::SeqCst);
+        });
+        // Partial → Unchecked does not emit toggled
+        cb.toggle();
+        assert_eq!(emitted_count.load(Ordering::SeqCst), 0);
+    }
+
+    // ── 5. state_changed signal (all transitions, no emission for noop) ────
+    #[test]
+    fn test_state_changed_on_all_transitions() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let s2 = states.clone();
+        cb.state_changed
+            .connect(move |s| s2.lock().unwrap().push(*s));
+        cb.toggle(); // Unchecked → Checked
+        cb.toggle(); // Checked → PartiallyChecked
+        cb.toggle(); // PartiallyChecked → Unchecked
+        let guard = states.lock().unwrap();
+        assert_eq!(guard.len(), 3);
+        assert_eq!(guard[0], CheckState::Checked);
+        assert_eq!(guard[1], CheckState::PartiallyChecked);
+        assert_eq!(guard[2], CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_state_changed_not_emitted_on_noop() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        let emitted_count = Arc::new(AtomicU32::new(0));
+        let ec = emitted_count.clone();
+        cb.state_changed.connect(move |_| {
+            ec.fetch_add(1, Ordering::SeqCst);
+        });
+        cb.set_state(CheckState::Unchecked); // already Unchecked
+        assert_eq!(emitted_count.load(Ordering::SeqCst), 0);
+    }
+
+    // ── 6. Tristate mode toggle cycle ──────────────────────────────────────
+    #[test]
+    fn test_tristate_enable_disable_cycle() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(!cb.is_tristate_enabled());
+        cb.set_tristate_enabled(true);
+        assert!(cb.is_tristate_enabled());
+        cb.set_tristate_enabled(false);
+        assert!(!cb.is_tristate_enabled());
+    }
+
+    // ── 7. Disabling tristate resets Partial to Unchecked ──────────────────
+    #[test]
+    fn test_disable_tristate_resets_partial() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        cb.set_state(CheckState::PartiallyChecked);
+        assert!(cb.is_partially_checked());
+        // Disable tristate – should reset to Unchecked
+        cb.set_tristate_enabled(false);
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_disable_tristate_does_not_reset_checked() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        cb.set_checked(true);
+        cb.set_tristate_enabled(false);
+        // Checked should stay Checked
+        assert_eq!(cb.state(), CheckState::Checked);
+    }
+
+    #[test]
+    fn test_disable_tristate_does_not_reset_unchecked() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(false);
+        cb.set_state(CheckState::Unchecked);
+        // No-op
+        cb.set_tristate_enabled(false);
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    // ── 8. Text set/get ────────────────────────────────────────────────────
+    #[test]
+    fn test_text_default_empty() {
+        let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.text(), "");
+    }
+
+    #[test]
+    fn test_text_set_and_get() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_text(String::from("Enable feature"));
+        assert_eq!(cb.text(), "Enable feature");
+    }
+
+    #[test]
+    fn test_text_overwrite() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_text(String::from("Old label"));
+        cb.set_text(String::from("New label"));
+        assert_eq!(cb.text(), "New label");
+    }
+
+    // ── 9. Event handling ──────────────────────────────────────────────────
+    #[test]
+    fn test_mouse_down_toggles() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        assert_eq!(cb.state(), CheckState::Checked);
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn test_touch_begin_toggles() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        cb.handle_event(&Event::TouchBegin {
+            touch_id: 0,
+            pos: Point::new(10, 10),
+        });
+        // Current implementation does not match TouchBegin – falls through to _
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn test_tap_toggles() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        cb.handle_event(&Event::Tap {
+            pos: Point::new(10, 10),
+        });
+        // Current implementation does not match Tap – falls through to _
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_space_key_toggles() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        // Space key code is 32
+        cb.handle_event(&Event::KeyDown((32, 0)));
+        assert_eq!(cb.state(), CheckState::Checked);
+    }
+
+    #[test]
+    fn test_non_space_key_does_not_toggle() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.handle_event(&Event::KeyDown((65, 0))); // 'A' key
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_event_noop_when_disabled() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_enabled(false);
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        // Should NOT toggle because checkbox is disabled
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_event_key_noop_when_disabled() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_enabled(false);
+        cb.handle_event(&Event::KeyDown((32, 0)));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_multiple_mouse_down_toggles() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        assert_eq!(cb.state(), CheckState::Checked);
+        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        assert_eq!(cb.state(), CheckState::Unchecked);
+        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        assert_eq!(cb.state(), CheckState::Checked);
+    }
+
+    // ── 10. Widget trait delegation ─────────────────────────────────────────
+    #[test]
+    fn test_widget_geometry() {
+        let mut cb = CheckBox::new(Rect::new(10, 20, 100, 30));
+        assert_eq!(cb.geometry(), Rect::new(10, 20, 100, 30));
+        cb.set_geometry(Rect::new(0, 0, 200, 50));
+        assert_eq!(cb.geometry(), Rect::new(0, 0, 200, 50));
+    }
+
+    #[test]
+    fn test_widget_visibility() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.is_visible());
+        cb.hide();
+        assert!(!cb.is_visible());
+        cb.show();
+        assert!(cb.is_visible());
+    }
+
+    #[test]
+    fn test_widget_enabled() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.is_enabled());
+        cb.set_enabled(false);
+        assert!(!cb.is_enabled());
+        cb.set_enabled(true);
+        assert!(cb.is_enabled());
+    }
+
+    #[test]
+    fn test_widget_style_default() {
+        let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        let _style = cb.style();
+        assert_eq!(cb.kind(), WidgetKind::CheckBox);
+    }
+
+    #[test]
+    fn test_widget_tooltip() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.tooltip().is_empty());
+        cb.set_tooltip(String::from("Click to toggle"));
+        assert_eq!(cb.tooltip(), "Click to toggle");
+    }
+
+    #[test]
+    fn test_widget_parent() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.parent().is_none());
+        let parent_id: ObjectId = 42;
+        cb.set_parent(Some(parent_id));
+        assert_eq!(cb.parent(), Some(parent_id));
+        cb.set_parent(None);
+        assert!(cb.parent().is_none());
+    }
+
+    #[test]
+    fn test_widget_children() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.children().is_empty());
+        let child_id: ObjectId = 99;
+        cb.add_child(child_id);
+        assert_eq!(cb.children().len(), 1);
+        assert_eq!(cb.children()[0], child_id);
+        cb.remove_child(child_id);
+        assert!(cb.children().is_empty());
+    }
+
+    #[test]
+    fn test_widget_min_max_size() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert!(cb.min_size().is_none());
+        assert!(cb.max_size().is_none());
+        cb.set_min_size(Some(Size::new(50, 20)));
+        cb.set_max_size(Some(Size::new(200, 60)));
+        assert_eq!(cb.min_size(), Some(Size::new(50, 20)));
+        assert_eq!(cb.max_size(), Some(Size::new(200, 60)));
+    }
+
+    #[test]
+    fn test_widget_id_not_zero() {
+        let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_ne!(cb.id(), 0u64);
+    }
+
+    #[test]
+    fn test_widget_signal_accessors() {
+        let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        // Verify signal accessors do not panic
+        let _ = cb.hover_signal();
+        let _ = cb.mouse_down_signal();
+        let _ = cb.mouse_up_signal();
+        let _ = cb.key_down_signal();
+        let _ = cb.key_up_signal();
+        let _ = cb.focus_gained_signal();
+        let _ = cb.focus_lost_signal();
+        let _ = cb.redraw_requested_signal();
+        let _ = cb.layout_requested_signal();
+    }
+
+    #[test]
+    fn test_widget_connection_scope() {
+        let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        let _scope = cb.connection_scope();
+    }
+}

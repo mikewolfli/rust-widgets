@@ -674,6 +674,26 @@ impl EventHandler for TabBar {
                     }
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                // Check close button first.
+                if self.closable {
+                    for i in 0..self.tabs.len() {
+                        if let Some(close_rect) = self.close_rect(i) {
+                            if close_rect.contains(*pos) && self.tabs[i].enabled {
+                                self.tab_close_requested.emit(i);
+                                return;
+                            }
+                        }
+                    }
+                }
+                // Otherwise, select tab.
+                if let Some(index) = self.tab_at_position(*pos) {
+                    if self.tabs[index].enabled {
+                        self.set_current_index(index);
+                    }
+                }
+            }
             _ => {}
         }
     }

@@ -16,10 +16,17 @@ pub mod windows;
 
 // Internal sub-modules (split from monolithic mod.rs)
 mod contract;
+/// Device class detection and adaptive layout support (BLUE8 P4-6).
+pub mod detector;
+/// Laser holographic keyboard detector (BLUE8 P4-5a, experimental).
+#[cfg(feature = "holographic")]
+pub mod holographic;
 mod runtime;
 mod state;
 mod stub;
 pub mod types;
+/// Virtual keyboard controller for touch text input (BLUE8 P4-7).
+pub mod virtual_keyboard;
 
 // Re-exports: everything that was previously defined directly in mod.rs
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};

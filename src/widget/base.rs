@@ -137,6 +137,22 @@ impl BaseWidget {
     pub fn style(&self) -> &WidgetStyle {
         &self.style
     }
+    pub fn style_mut(&mut self) -> &mut WidgetStyle {
+        &mut self.style
+    }
+    /// Check if a point is within this widget's geometry, optionally expanded
+    /// to meet the minimum touch target size set in `WidgetStyle.touch_target`.
+    ///
+    /// When `touch_target` is set and the widget's visual geometry is smaller
+    /// than that target, the effective hit-test area is expanded outward while
+    /// keeping the visual center unchanged.
+    pub fn contains_point_with_touch_expansion(&self, point: Point) -> bool {
+        let rect = match self.style.touch_target {
+            Some(min_size) => self.geometry.expand_to_touch_target(min_size),
+            None => self.geometry,
+        };
+        rect.contains_point(point)
+    }
     pub fn set_style(&mut self, style: WidgetStyle) {
         self.style = style;
     }

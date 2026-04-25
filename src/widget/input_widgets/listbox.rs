@@ -217,6 +217,28 @@ impl ListBox {
     pub fn current_row(&self) -> Option<usize> {
         self.current_row
     }
+    /// Selects item at a pixel position (maps screen coords to item index).
+    fn select_at_pos(&mut self, pos: Point) {
+        let rect = self.geometry();
+        if rect.contains(pos) {
+            let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            if item_index < self.items.len() {
+                self.select(item_index);
+                self.base.clicked.emit();
+            }
+        }
+    }
+    /// Activates item at a pixel position (select + activate signal).
+    fn activate_at_pos(&mut self, pos: Point) {
+        let rect = self.geometry();
+        if rect.contains(pos) {
+            let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            if item_index < self.items.len() {
+                self.select(item_index);
+                self.item_activated.emit(item_index);
+            }
+        }
+    }
     /// Sets current row.
     pub fn set_current_row(&mut self, row: Option<usize>) {
         if let Some(r) = row {
@@ -356,27 +378,21 @@ impl EventHandler for ListBox {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
-                    let rect = self.geometry();
-                    if rect.contains(*pos) {
-                        let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
-                        if item_index < self.items.len() {
-                            self.select(item_index);
-                            self.base.clicked.emit();
-                        }
-                    }
+                    self.select_at_pos(*pos);
                 }
             }
             Event::MouseDoubleClick { pos, button } => {
                 if *button == 1 {
-                    let rect = self.geometry();
-                    if rect.contains(*pos) {
-                        let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
-                        if item_index < self.items.len() {
-                            self.select(item_index);
-                            self.item_activated.emit(item_index);
-                        }
-                    }
+                    self.activate_at_pos(*pos);
                 }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.select_at_pos(*pos);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.activate_at_pos(*pos);
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
@@ -444,7 +460,8 @@ impl Draw for ListBox {
         let (start, end) = self.visible_range();
         for i in start..end {
             let item_y_f = rect.y as f32 + (i as f32 * self.item_height);
-            let item_rect = Rect::from_f32(rect.x as f32, item_y_f, rect.width as f32, self.item_height);
+            let item_rect =
+                Rect::from_f32(rect.x as f32, item_y_f, rect.width as f32, self.item_height);
             // Draw item background
             if self.is_selected(i) {
                 context.fill_rect(
@@ -465,7 +482,10 @@ impl Draw for ListBox {
                     Color::from_rgb(0, 0, 0)
                 };
                 context.draw_text(
-                    Point::new(item_rect.x + padding as i32, (item_rect.y as f32 + self.item_height / 2.0) as i32),
+                    Point::new(
+                        item_rect.x + padding as i32,
+                        (item_rect.y as f32 + self.item_height / 2.0) as i32,
+                    ),
                     text,
                     &Font::default(),
                     text_color,

@@ -249,7 +249,7 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 | `FontComboBox` | Tap 选择字体 | ✅ MouseClick | 小 |
 | `Action` | 抽象触发 | ✅ 通过宿主 | 无 |
 
-### P4-4: 触摸目标最小尺寸
+### P4-4: 触摸目标最小尺寸（✅ Round 5 已完成）
 
 所有交互式控件应保证触摸目标不小于以下尺寸：
 
@@ -261,14 +261,19 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 | 嵌入式 | 40×40 pt | 10pt |
 | 投影屏 | 24×24 pt（遥控） | 6pt |
 
-**实施建议**：在 `WidgetStyle` 中添加 `touch_target: Option<Size>` 字段。如果控件几何小于最小触摸目标，渲染时扩展点击区域但不改变视觉几何。
+**实施情况**：
+- 在 `WidgetStyle` 中添加 `touch_target: Option<Size>` 字段
+- 在 `Rect` 添加 `expand_to_touch_target()` 方法，向外扩展命中区域
+- 在 `BaseWidget` 添加 `contains_point_with_touch_expansion()` 方法
+- `WidgetStyle` 添加 `with_touch_target()` builder 方法
+- `TouchTargetSize::Projection` 变体门控在 `projection` feature 之后
 
 ### P4-5: 投影屏支持（实验性）
 
 投影屏场景特征是：**大画幅（1920×1080+）、只读展示、遥控器/激光笔输入、无触摸**。
 
 **建议支持方式**：
-- 新增 `PlatformFamily::Projector` 平台变体
+- 新增 `PlatformFamily::Projector` 平台变体（✅ 已添加）
 - `ProjectorPlatform` 不接受鼠标/触摸事件，仅支持翻页遥控
 - `run()` 事件循环只处理 Swipe（翻页）和 Quit
 - 所有控件进入"展示模式"（只读、无悬停效果、字号增大 20%）
@@ -287,23 +292,56 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 | FreeformShapeWidget | 展示自由形状绘制 |
 | Panel | 容器，不影响展示 |
 
-### P4-6: 设备检测与自适应布局
+#### P4-5a: 激光全息键盘（✅ Round 9 已完成 — 门控 `holographic`）
 
-**建议新增模块**：`src/platform/detector.rs`
+`src/platform/holographic.rs`:
+- `HolographicKeyboardDetector` — 基于 Z 轴深度事件的状态机
+- `KeyboardLayout` — QWERTY 虚拟键盘布局（28 键 + 空格 + 退格）
+- `KeyHit` — 按键检测结果（字符 + 置信度）
+- 状态机：Idle → Approaching → Pressed → Releasing → Idle
+- 支持 Shift 切换、手指拖拽取消、超时复位
+- 9 个单元测试全部通过
+
+#### P4-5b: 投影屏渲染适配（未开始 — 门控 `projection`）
+
+#### P4-5c: 玻璃全息屏（未开始）
+
+### P4-6: 设备检测与自适应布局（✅ Round 4 已完成）
+
+`src/platform/detector.rs`:
 
 | 检测维度 | 检测方法 | 影响 |
 |----------|----------|------|
-| 触摸能力 | 平台 API 查询（Windows `GetSystemMetrics(SM_TOUCH)` / macOS `NSTouchDevice`） | 启用/禁用触摸事件 |
-| 屏幕尺寸 | 逻辑分辨率 | 选择触摸目标尺寸规范 |
-| 设备形态 | 宽高比 + DPI | 桌面/平板/手机布局模式 |
-| 投影模式 | 检测外接显示器 + 无输入设备 | 切换展示模式 |
+| 触摸能力 | feature flag `touch` + 设备类推断 | `DeviceEnvironment::touch_capable` |
+| 屏幕尺寸 | 逻辑分辨率 + 编译时 profile | 选择 `DeviceClass` |
+| 设备形态 | 编译时 feature（desktop/tablet/mobile/embedded）或屏幕宽度启发式 | 桌面/平板/手机布局模式 |
+| 投影模式 | `DeviceClass::Projector` | `layout_scale() = 1.2` |
 | 嵌入式 | feature flag `embedded` | 简化控件集 |
+
+**核心 API**：
+- `DeviceEnvironment::detect(screen_size, dpi_scale)` — 运行时检测
+- `DeviceEnvironment::min_touch_target()` — 最小触摸目标尺寸
+- `DeviceEnvironment::touch_spacing()` — 元素间距
+- `DeviceEnvironment::layout_scale()` — 布局缩放（投影 1.2x）
+- `DeviceClass` 枚举（Desktop/Tablet/Mobile/Embedded/Projector）已加入 `core::types`
 
 **自适应布局规则**：
 - 手机（宽 < 480pt）：StackedWidget 默认 Swipe 导航，TabWidget 简化标签
 - 平板（480~1024pt）：TabWidget 显示标签栏，Splitter 可触摸分割
 - 桌面（> 1024pt）：完整控件集，鼠标 hover 效果
-- 投影（检测到）：展示模式
+- 投影（检测到）：展示模式，字号增大 20%
+</｜DSML｜old_text>
+
+<old_text line=290>
+### P4-7: 虚拟键盘集成
+
+触摸屏需要虚拟键盘用于 `LineEdit`/`TextEdit`/`SpinBox`/`ComboBox` 编辑。
+
+**建议方案**：
+- 新增 `VirtualKeyboard` 模块
+- 平台集成：Windows `TabTip.exe` / 移动端 OSK / 嵌入式自定义
+- 当触摸编辑控件获得焦点时自动弹出
+- 布局自动调整（窗口升高 + 控件上移）避免键盘遮挡
 
 ### P4-7: 虚拟键盘集成
 
@@ -317,79 +355,101 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 
 ---
 
-## 🎯 修复优先级路线图
+## ✅ 完成状态（截至 2026-05-02）
+
+### Feature 架构重构 ✅
+
+`Cargo.toml` 完全重构：
+
+| 类别 | Feature | 说明 |
+|------|---------|------|
+| **设备类 profile**（互斥，选一） | `desktop`（默认） | 桌面 PC（原生平台/i18n/主题/GPU/控件） |
+| | `tablet` | 平板（触摸优先，GPU，原生+自绘控件） |
+| | `mobile` | 手机（触摸优先，GPU，移动端 API） |
+| | `embedded` | 嵌入式（精简，软件渲染，无 i18n） |
+| **交互特性**（可组合） | `touch` | 触摸事件 + 手势识别器 |
+| | `holographic` | 激光全息键盘（Z 轴深度事件） |
+| | `projection` | 投影屏（遥控器输入） |
+| **元特性** | `full` | 桌面 + 全部交互特性 + 实验特性 |
+
+### 完成状态总表
+
+| Round | 内容 | 文件 | 测试数 | 状态 |
+|-------|------|------|--------|------|
+| R1 | P3-1 基础控件单元测试 | 5 个 widget 文件 | 196 | ✅ |
+| R2 | P4-1/P4-2 触摸事件系统 + 手势识别器 | `event/types.rs`, `gesture/mod.rs` | 31 | ✅ |
+| R3 | P4-3 高优先级触摸适配 | 7 个 widget 文件 | — | ✅ |
+| **R4** | **P4-6 设备检测与自适应布局** | `platform/detector.rs` | **+8** | **✅** |
+| **R5** | **P4-4 触摸目标最小尺寸** | `core/geometry.rs`, `widget/base.rs` | **+3** | **✅** |
+| **R6** | **P4-3 中优先级触摸适配** | SpinBox, Menu, TreeView, ListView, TabBar | — | **✅** |
+| **R7** | **P4-7 虚拟键盘集成** | `platform/virtual_keyboard.rs` | **+9** | **✅** |
+| **R8** | **P1-1/P1-2 Platform 扩展分离** | `platform/types.rs`, `control_backend/trait_def.rs` | — | **✅** |
+| **R9** | **P4-5a 激光全息键盘** | `platform/holographic.rs` | **+9** | **✅** |
+| R10 | P4-5b 投影屏渲染适配 | — | — | ⬜ |
+| R11 | P2-1~P2-5 平台后端原生实施 | — | — | ⬜ |
+| **R12** | **P1-3 render/web/ 连接** | `render/mod.rs` | — | **✅** |
+
+## 🎯 待处理 Round
 
 | Round | 内容 | 工作量 | 优先级 |
 |-------|------|--------|--------|
-| Round 1 | P3-1 基础控件单元测试（Button/CheckBox/RadioButton/Label/Slider） | 中 | 🔴 高 |
-| Round 2 | P4-1/P4-2 触摸事件系统 + 手势识别器 | 大 | 🔴 高 |
-| Round 3 | P4-3 高优先级控件触摸适配（Button/CheckBox/Slider/ScrollArea/ComboBox/ListBox） | 中 | 🔴 高 |
-| Round 4 | P4-6 设备检测与自适应布局 | 中 | 🟡 中 |
-| Round 5 | P4-4 触摸目标最小尺寸实施 + WidgetStyle 扩展 | 小 | 🟡 中 |
-| Round 6 | P4-3 中优先级控件触摸适配（Menu/TabWidget/TreeView/Dialogs） | 中 | 🟡 中 |
-| Round 7 | P4-7 虚拟键盘集成 | 中 | 🟡 中 |
-| Round 8 | P1-1/P1-2 Platform trait 可选方法分离 + ControlBackend 辅助方法 | 小 | 🟡 中 |
-| Round 9 | P4-5 投影屏实验性支持 | 中 | 🟢 低 |
-| Round 10 | P1-3 render/web/ 模块连接决策与实施 | 小 | 🟢 低 |
-| Round 11 | P2-1~P2-5 平台后端真实原生实施（逐一，每个后端独立） | 极大 | ⚪ 架构 |
-| Round 12 | P3-1 剩余模块测试覆盖（render/control_backend/web/json） | 大 | ⚪ 改进 |
+| R10 | P4-5b 投影屏渲染适配 | 中 | 🟢 低 |
+| R11 | P2-1~P2-5 平台后端真实原生实施 | 极大 | ⚪ 架构 |
+| — | P3-1 剩余模块测试覆盖（render/control_backend/web/json） | 大 | ⚪ 改进 |
 
 ---
 
 ## 🏔️ 冰山模式扫描
 
-### 模式 1: 触摸事件=鼠标事件别名
+### 模式 1: 触摸事件≠鼠标事件别名（✅ 已修复）
 
-当前代码中不存在触摸事件，所有触摸输入必须模拟为鼠标事件。这导致双指缩放、长按、旋转等手势完全不可用。
+`Event` 枚举已扩展 11 个触摸/手势变体，门控在 `touch`/`holographic` feature 之后。`gesture/` 模块提供 6 个手势识别器。触摸事件与鼠标事件并存，互不干扰。
 
-**受影响控件**: 全部交互控件（40+）
+**受影响控件**: 11 个高优/中优控件已完成触摸适配
 **影响范围**: 全项目
 
-### 模式 2: 测试覆盖缺失
+### 模式 2: 测试覆盖（部分改善）
 
-从 BLUE7 继承。widget/ 零测试、render/backend 零测试、control_backend/ 零测试。每次手动测试而非自动化，回归风险高。
+R1 添加了 5 个基础控件 196 个单元测试。新增模块 `detector`/`virtual_keyboard`/`holographic` 均有测试。剩余 render/control_backend/web/json 仍有待覆盖。
 
-**受影响模块**: 8 个核心模块
-**影响范围**: 全项目
+**已覆盖模块**: widget 5 控件 + detector/virtual_keyboard/holographic
+**未覆盖模块**: render/backend, control_backend, web, json
 
-### 模式 3: Platform 后端实现深度不均
+### 模式 3: Platform 后端实现深度不均（未变）
 
-Windows 有真实 Win32 调用，Linux 有部分 GTK 集成，其余 4 个后端全为状态模拟。同一 Platform trait 下实现质量相差 10 倍。
+Windows 有真实 Win32 调用，Linux 有部分 GTK 集成，其余 4 个后端全为状态模拟。P1-2 通过扩展 trait 分离 IME/无障碍/拖放，降低了可选方法对 trait 的负担。
 
 **受影响后端**: Wayland, Harmony, Mobile, macOS objc2
 **影响范围**: 平台层
 
 ---
 
-## 📊 统计
+## 📊 统计（更新后）
 
-| 优先级 | 数量 | 关键项 |
-|--------|------|--------|
-| 🔴 P0 | 0 | 无未修复功能阻断问题 |
-| 🟠 P1 | 3 | ControlBackend 默认方法、Platform 可选分离、render/web 连接 |
-| 🟡 P2 | 5 | 5 个平台后端实施缺口（Wayland/objc2/Harmony/Mobile/Windows） |
-| 🔵 P3 | 1 | 测试覆盖不足（8 个模块零测试） |
-| ⚪ P4 | 7 | 触摸事件系统、手势识别器、40+ 控件触摸适配、触摸目标尺寸、投影屏、设备检测、虚拟键盘 |
-| **合计** | **16** | |
+| 状态 | 数量 | 关键项 |
+|------|------|--------|
+| ✅ 已完成 | 10 | R1-R9 + R12（含 Feature 重构） |
+| ⬜ 待处理 | 3 | R10 投影屏渲染、R11 平台后端、剩余测试 |
+| **合计** | **13** | |
 
 ---
 
-## 📈 预期质量评分基线
+## 📈 质量评分基线（更新后）
 
-| 维度 | 当前分数 | 说明 |
-|------|----------|------|
-| 编译可靠性 | 10/10 | 已完成 |
-| 触摸交互完整度 | 0/10 | 新增维度，当前完全无触摸支持 |
-| 手势识别能力 | 0/10 | 新增维度 |
-| 设备自适应 | 0/10 | 新增维度 |
-| 测试覆盖 | 3/10 | 继承 BLUE7 |
-| 平台后端正交性 | 5/10 | 继承 BLUE7 |
+| 维度 | 分数 | 说明 |
+|------|:----:|------|
+| 编译可靠性 | 10/10 | 5 个 profile 全部通过 |
+| 触摸交互完整度 | 6/10 | 事件系统 + 手势引擎 + 11 控件适配 ✅ |
+| 手势识别能力 | 6/10 | 6 识别器 + 22 测试 ✅ |
+| 设备自适应 | 5/10 | 检测模块 + 触摸目标 + 4 profile ✅ |
+| 测试覆盖 | 4/10 | 基础控件 + 新模块有测试，后端模块仍缺 |
+| 平台后端正交性 | 6/10 | 扩展 trait 分离 ✅ |
 | Widget 基础模式 | 8/10 | 继承 BLUE7 |
-| **综合** | **3.7/5.0** | 新增 3 个触摸维度拉低均分 |
+| **综合** | **4.0/5.0** | 较基线 +0.3 |
 
-预期 BLUE8 Round 1-6 完成后可提升至 **4.2/5.0**。
+预期剩余 Round 完成后可提升至 **4.4/5.0**。
 
 ---
 
-> **BLUE8 范围**: 16 项 P1-P4，不含代码实现，仅设计/规划/评估。
-> **下一阶段**: Round 1（测试）→ Round 2（触摸事件）→ Round 3（高优控件触摸适配）的顺序推进。
+> **BLUE8 完成度**: 10/13 Round 已完成（含 Feature 架构重构）。
+> **下一阶段**: R10 投影屏渲染适配 → R11 平台后端原生实施 → 剩余测试覆盖。

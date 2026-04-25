@@ -360,6 +360,13 @@ impl EventHandler for Slider {
                     self.set_slider_position(value);
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.mouse_pressed = true;
+                self.slider_pressed.emit();
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_slider_position(value);
+            }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
                     self.mouse_pressed = false;
@@ -369,7 +376,22 @@ impl EventHandler for Slider {
                     }
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.mouse_pressed = false;
+                self.slider_released.emit();
+                if !self.tracking {
+                    self.set_value(self.slider_position);
+                }
+            }
             Event::MouseMove { pos } => {
+                if self.mouse_pressed {
+                    let value = self.pixel_pos_to_value(pos.x as f32);
+                    self.set_slider_position(value);
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchMove { pos, .. } => {
                 if self.mouse_pressed {
                     let value = self.pixel_pos_to_value(pos.x as f32);
                     self.set_slider_position(value);
@@ -437,12 +459,22 @@ impl Draw for Slider {
                 let groove_height = 4;
                 // Draw groove
                 context.fill_rect(
-                    Rect::from_f32(rect.x as f32, groove_y - groove_height as f32 / 2.0, rect.width as f32, groove_height as f32),
+                    Rect::from_f32(
+                        rect.x as f32,
+                        groove_y - groove_height as f32 / 2.0,
+                        rect.width as f32,
+                        groove_height as f32,
+                    ),
                     Color::from_rgb(200, 200, 200),
                 );
                 // Draw slider handle
                 context.fill_rect(
-                    Rect::from_f32(slider_pos - slider_size as f32 / 2.0, rect.y as f32, slider_size as f32, rect.height as f32),
+                    Rect::from_f32(
+                        slider_pos - slider_size as f32 / 2.0,
+                        rect.y as f32,
+                        slider_size as f32,
+                        rect.height as f32,
+                    ),
                     Color::from_rgb(0, 120, 215),
                 );
                 // Draw ticks if enabled
@@ -454,13 +486,22 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::from_f32(tick_x, rect.y as f32), Point::from_f32(tick_x, rect.y as f32 + tick_height as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(
+                                Point::from_f32(tick_x, rect.y as f32),
+                                Point::from_f32(tick_x, rect.y as f32 + tick_height as f32),
+                                Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::from_f32(tick_x, rect.y as f32 + rect.height as f32 - tick_height as f32), Point::from_f32(tick_x, rect.y as f32 + rect.height as f32), Color::from_rgb(100, 100, 100),
+                            context.draw_line(
+                                Point::from_f32(
+                                    tick_x,
+                                    rect.y as f32 + rect.height as f32 - tick_height as f32,
+                                ),
+                                Point::from_f32(tick_x, rect.y as f32 + rect.height as f32),
+                                Color::from_rgb(100, 100, 100),
                             );
                         }
                     }
@@ -471,12 +512,22 @@ impl Draw for Slider {
                 let groove_width = 4;
                 // Draw groove
                 context.fill_rect(
-                    Rect::from_f32(groove_x - groove_width as f32 / 2.0, rect.y as f32, groove_width as f32, rect.height as f32),
+                    Rect::from_f32(
+                        groove_x - groove_width as f32 / 2.0,
+                        rect.y as f32,
+                        groove_width as f32,
+                        rect.height as f32,
+                    ),
                     Color::from_rgb(200, 200, 200),
                 );
                 // Draw slider handle
                 context.fill_rect(
-                    Rect::from_f32(rect.x as f32, slider_pos - slider_size as f32 / 2.0, rect.width as f32, slider_size as f32),
+                    Rect::from_f32(
+                        rect.x as f32,
+                        slider_pos - slider_size as f32 / 2.0,
+                        rect.width as f32,
+                        slider_size as f32,
+                    ),
                     Color::from_rgb(0, 120, 215),
                 );
                 // Draw ticks if enabled
@@ -488,18 +539,585 @@ impl Draw for Slider {
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::from_f32(rect.x as f32, tick_y), Point::from_f32(rect.x as f32 + tick_width as f32, tick_y), Color::from_rgb(100, 100, 100),
+                            context.draw_line(
+                                Point::from_f32(rect.x as f32, tick_y),
+                                Point::from_f32(rect.x as f32 + tick_width as f32, tick_y),
+                                Color::from_rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
                             || self.tick_position == TickPosition::TicksBothSides
                         {
-                            context.draw_line(Point::from_f32(rect.x as f32 + rect.width as f32 - tick_width as f32, tick_y), Point::from_f32(rect.x as f32 + rect.width as f32, tick_y), Color::from_rgb(100, 100, 100),
+                            context.draw_line(
+                                Point::from_f32(
+                                    rect.x as f32 + rect.width as f32 - tick_width as f32,
+                                    tick_y,
+                                ),
+                                Point::from_f32(rect.x as f32 + rect.width as f32, tick_y),
+                                Color::from_rgb(100, 100, 100),
                             );
                         }
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Orientation, Rect, Size};
+    use crate::event::Event;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Helper to create a default slider with a standard geometry.
+    fn make_slider() -> Slider {
+        Slider::new(Rect::new(0, 0, 200, 30))
+    }
+
+    // ── 1. Creation defaults ──
+
+    #[test]
+    fn default_range_is_0_to_100() {
+        let s = make_slider();
+        assert_eq!(s.minimum(), 0);
+        assert_eq!(s.maximum(), 100);
+    }
+
+    #[test]
+    fn default_value_is_0() {
+        let s = make_slider();
+        assert_eq!(s.value(), 0);
+    }
+
+    #[test]
+    fn default_orientation_horizontal() {
+        let s = make_slider();
+        assert_eq!(s.orientation(), Orientation::Horizontal);
+    }
+
+    #[test]
+    fn default_tracking_is_true() {
+        let s = make_slider();
+        assert!(s.tracking());
+    }
+
+    #[test]
+    fn default_tick_position_is_no_ticks() {
+        let s = make_slider();
+        assert_eq!(s.tick_position(), TickPosition::NoTicks);
+    }
+
+    #[test]
+    fn default_single_step_is_1() {
+        let s = make_slider();
+        assert_eq!(s.single_step(), 1);
+    }
+
+    #[test]
+    fn default_page_step_is_10() {
+        let s = make_slider();
+        assert_eq!(s.page_step(), 10);
+    }
+
+    // ── 2. set_value / clamping ──
+
+    #[test]
+    fn set_value_normal() {
+        let mut s = make_slider();
+        s.set_value(42);
+        assert_eq!(s.value(), 42);
+    }
+
+    #[test]
+    fn set_value_clamps_below_minimum() {
+        let mut s = make_slider();
+        s.set_value(-10);
+        assert_eq!(s.value(), 0);
+    }
+
+    #[test]
+    fn set_value_clamps_above_maximum() {
+        let mut s = make_slider();
+        s.set_value(200);
+        assert_eq!(s.value(), 100);
+    }
+
+    #[test]
+    fn set_value_same_value_does_not_emit() {
+        let mut s = make_slider();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.value_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        s.set_value(0);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn set_value_emits_on_change() {
+        let mut s = make_slider();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.value_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        s.set_value(55);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── 3. set_minimum / set_maximum / set_range ──
+
+    #[test]
+    fn set_minimum_adjusts_maximum_when_crossed() {
+        let mut s = make_slider();
+        s.set_minimum(150);
+        assert_eq!(s.minimum(), 150);
+        assert_eq!(s.maximum(), 150);
+    }
+
+    #[test]
+    fn set_minimum_reclamps_value() {
+        let mut s = make_slider();
+        s.set_value(50);
+        s.set_minimum(60);
+        assert_eq!(s.value(), 60);
+    }
+
+    #[test]
+    fn set_maximum_adjusts_minimum_when_crossed() {
+        let mut s = make_slider();
+        s.set_maximum(-20);
+        assert_eq!(s.maximum(), -20);
+        assert_eq!(s.minimum(), -20);
+    }
+
+    #[test]
+    fn set_maximum_reclamps_value() {
+        let mut s = make_slider();
+        s.set_value(80);
+        s.set_maximum(40);
+        assert_eq!(s.value(), 40);
+    }
+
+    #[test]
+    fn set_range_clamps_maximum_not_below_minimum() {
+        let mut s = make_slider();
+        s.set_range(10, 5);
+        assert_eq!(s.minimum(), 10);
+        assert_eq!(s.maximum(), 10);
+    }
+
+    #[test]
+    fn set_range_reclamps_value() {
+        let mut s = make_slider();
+        s.set_value(50);
+        s.set_range(0, 30);
+        assert_eq!(s.value(), 30);
+    }
+
+    // ── 4. value_changed signal emission ──
+
+    #[test]
+    fn value_changed_emits_new_value() {
+        let mut s = make_slider();
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let e = Arc::clone(&emitted);
+        s.value_changed.connect(move |v| {
+            e.store(*v as usize, Ordering::SeqCst);
+        });
+        s.set_value(77);
+        assert_eq!(emitted.load(Ordering::SeqCst), 77);
+    }
+
+    #[test]
+    fn value_changed_not_emitted_on_noop() {
+        let mut s = make_slider();
+        s.set_value(33);
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.value_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        s.set_value(33);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    // ── 5. slider_moved, slider_pressed, slider_released signals ──
+
+    #[test]
+    fn slider_moved_emitted_on_set_slider_position() {
+        let mut s = make_slider();
+        let emitted = Arc::new(AtomicUsize::new(999));
+        let e = Arc::clone(&emitted);
+        s.slider_moved.connect(move |v| {
+            e.store(*v as usize, Ordering::SeqCst);
+        });
+        s.set_slider_position(30);
+        assert_eq!(emitted.load(Ordering::SeqCst), 30);
+    }
+
+    #[test]
+    fn slider_pressed_emitted_on_mouse_press() {
+        let mut s = make_slider();
+        let pressed = Arc::new(AtomicUsize::new(0));
+        let p = Arc::clone(&pressed);
+        s.base.set_geometry(Rect::new(0, 0, 200, 30));
+        s.slider_pressed.connect(move || {
+            p.fetch_add(1, Ordering::SeqCst);
+        });
+        s.handle_event(&Event::mouse_press(50, 15, 1));
+        assert_eq!(pressed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn slider_released_emitted_on_mouse_release() {
+        let mut s = make_slider();
+        let released = Arc::new(AtomicUsize::new(0));
+        let r = Arc::clone(&released);
+        s.base.set_geometry(Rect::new(0, 0, 200, 30));
+        s.slider_released.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+        s.handle_event(&Event::mouse_press(50, 15, 1));
+        s.handle_event(&Event::mouse_release(50, 15, 1));
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn slider_moved_during_drag() {
+        let mut s = make_slider();
+        let moved = Arc::new(AtomicUsize::new(999));
+        let m = Arc::clone(&moved);
+        s.base.set_geometry(Rect::new(0, 0, 200, 30));
+        s.slider_moved.connect(move |v| {
+            m.store(*v as usize, Ordering::SeqCst);
+        });
+        s.handle_event(&Event::mouse_press(10, 15, 1));
+        s.handle_event(&Event::mouse_move(100, 15));
+        // After a drag the slider_moved should have been emitted.
+        assert_ne!(moved.load(Ordering::SeqCst), 999);
+    }
+
+    // ── 6. single_step / page_step set/get (floor at 1) ──
+
+    #[test]
+    fn single_step_floors_at_1() {
+        let mut s = make_slider();
+        s.set_single_step(0);
+        assert_eq!(s.single_step(), 1);
+        s.set_single_step(-5);
+        assert_eq!(s.single_step(), 1);
+    }
+
+    #[test]
+    fn single_step_normal() {
+        let mut s = make_slider();
+        s.set_single_step(5);
+        assert_eq!(s.single_step(), 5);
+    }
+
+    #[test]
+    fn page_step_floors_at_1() {
+        let mut s = make_slider();
+        s.set_page_step(0);
+        assert_eq!(s.page_step(), 1);
+        s.set_page_step(-3);
+        assert_eq!(s.page_step(), 1);
+    }
+
+    #[test]
+    fn page_step_normal() {
+        let mut s = make_slider();
+        s.set_page_step(15);
+        assert_eq!(s.page_step(), 15);
+    }
+
+    // ── 7. orientation set/get ──
+
+    #[test]
+    fn set_orientation_vertical() {
+        let mut s = make_slider();
+        s.set_orientation(Orientation::Vertical);
+        assert_eq!(s.orientation(), Orientation::Vertical);
+    }
+
+    #[test]
+    fn set_orientation_horizontal() {
+        let mut s = make_slider();
+        s.set_orientation(Orientation::Vertical);
+        s.set_orientation(Orientation::Horizontal);
+        assert_eq!(s.orientation(), Orientation::Horizontal);
+    }
+
+    // ── 8. trigger_action for all 8 SliderAction variants ──
+
+    #[test]
+    fn trigger_action_single_step_add() {
+        let mut s = make_slider();
+        s.set_value(5);
+        s.trigger_action(SliderAction::SliderSingleStepAdd);
+        assert_eq!(s.value(), 6);
+    }
+
+    #[test]
+    fn trigger_action_single_step_sub() {
+        let mut s = make_slider();
+        s.set_value(5);
+        s.trigger_action(SliderAction::SliderSingleStepSub);
+        assert_eq!(s.value(), 4);
+    }
+
+    #[test]
+    fn trigger_action_page_step_add() {
+        let mut s = make_slider();
+        s.set_value(5);
+        s.trigger_action(SliderAction::SliderPageStepAdd);
+        assert_eq!(s.value(), 15);
+    }
+
+    #[test]
+    fn trigger_action_page_step_sub() {
+        let mut s = make_slider();
+        s.set_value(50);
+        s.trigger_action(SliderAction::SliderPageStepSub);
+        assert_eq!(s.value(), 40);
+    }
+
+    #[test]
+    fn trigger_action_to_minimum() {
+        let mut s = make_slider();
+        s.set_value(80);
+        s.trigger_action(SliderAction::SliderToMinimum);
+        assert_eq!(s.value(), s.minimum());
+    }
+
+    #[test]
+    fn trigger_action_to_maximum() {
+        let mut s = make_slider();
+        s.set_value(10);
+        s.trigger_action(SliderAction::SliderToMaximum);
+        assert_eq!(s.value(), s.maximum());
+    }
+
+    #[test]
+    fn trigger_action_slider_move_no_op() {
+        let mut s = make_slider();
+        s.set_value(50);
+        s.trigger_action(SliderAction::SliderMove);
+        // SliderMove is a no-op handled by mouse events; value unchanged.
+        assert_eq!(s.value(), 50);
+    }
+
+    #[test]
+    fn trigger_action_single_step_sub_clamps_to_minimum() {
+        let mut s = make_slider();
+        s.set_value(0);
+        s.trigger_action(SliderAction::SliderSingleStepSub);
+        assert_eq!(s.value(), 0);
+    }
+
+    #[test]
+    fn trigger_action_single_step_add_clamps_to_maximum() {
+        let mut s = make_slider();
+        s.set_value(100);
+        s.trigger_action(SliderAction::SliderSingleStepAdd);
+        assert_eq!(s.value(), 100);
+    }
+
+    #[test]
+    fn trigger_action_page_step_sub_clamps_to_minimum() {
+        let mut s = make_slider();
+        s.set_value(3);
+        s.trigger_action(SliderAction::SliderPageStepSub);
+        assert_eq!(s.value(), 0);
+    }
+
+    #[test]
+    fn trigger_action_page_step_add_clamps_to_maximum() {
+        let mut s = make_slider();
+        s.set_value(95);
+        s.trigger_action(SliderAction::SliderPageStepAdd);
+        assert_eq!(s.value(), 100);
+    }
+
+    // ── 9. set_slider_position with tracking=true/false ──
+
+    #[test]
+    fn set_slider_position_with_tracking_emits_value_changed() {
+        let mut s = make_slider();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.value_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        s.set_slider_position(60);
+        // tracking=true by default → set_value called → value_changed emitted
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(s.value(), 60);
+    }
+
+    #[test]
+    fn set_slider_position_without_tracking_does_not_emit_value_changed() {
+        let mut s = make_slider();
+        s.set_tracking(false);
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.value_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        s.set_slider_position(60);
+        // tracking=false → no set_value → no value_changed
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        // But value is NOT updated; only slider_position is set
+        assert_eq!(s.value(), 0);
+        assert_eq!(s.slider_position(), 60);
+    }
+
+    #[test]
+    fn set_slider_position_clamps_to_range() {
+        let mut s = make_slider();
+        s.set_slider_position(999);
+        assert_eq!(s.slider_position(), 100);
+        s.set_slider_position(-50);
+        assert_eq!(s.slider_position(), 0);
+    }
+
+    #[test]
+    fn set_slider_position_without_tracking_applies_on_release() {
+        let mut s = make_slider();
+        s.set_tracking(false);
+        s.base.set_geometry(Rect::new(0, 0, 200, 30));
+        s.handle_event(&Event::mouse_press(80, 15, 1));
+        s.handle_event(&Event::mouse_release(80, 15, 1));
+        // On release, if !tracking, set_value is called with slider_position
+        assert_eq!(s.value(), 40); // 80/200 * 100 = 40
+    }
+
+    // ── 10. Widget trait delegation ──
+
+    #[test]
+    fn widget_id_delegation() {
+        let s = make_slider();
+        // id is always non-zero for a fresh BaseWidget
+        assert_ne!(s.id(), 0u64);
+    }
+
+    #[test]
+    fn widget_kind_is_slider() {
+        let s = make_slider();
+        assert_eq!(s.kind(), WidgetKind::Slider);
+    }
+
+    #[test]
+    fn widget_geometry_roundtrip() {
+        let mut s = make_slider();
+        let new_rect = Rect::new(10, 20, 300, 50);
+        s.set_geometry(new_rect);
+        assert_eq!(s.geometry(), new_rect);
+    }
+
+    #[test]
+    fn widget_visibility() {
+        let mut s = make_slider();
+        assert!(s.is_visible());
+        s.hide();
+        assert!(!s.is_visible());
+        s.show();
+        assert!(s.is_visible());
+    }
+
+    #[test]
+    fn widget_enabled() {
+        let mut s = make_slider();
+        assert!(s.is_enabled());
+        s.set_enabled(false);
+        assert!(!s.is_enabled());
+        s.set_enabled(true);
+        assert!(s.is_enabled());
+    }
+
+    #[test]
+    fn widget_parent_roundtrip() {
+        let mut s = make_slider();
+        let parent = 42u64;
+        s.set_parent(Some(parent));
+        assert_eq!(s.parent(), Some(parent));
+        s.set_parent(None);
+        assert_eq!(s.parent(), None);
+    }
+
+    #[test]
+    fn widget_children_delegation() {
+        let mut s = make_slider();
+        let child = 99u64;
+        assert!(s.children().is_empty());
+        s.add_child(child);
+        assert_eq!(s.children().len(), 1);
+        assert_eq!(s.children()[0], child);
+        s.remove_child(child);
+        assert!(s.children().is_empty());
+    }
+
+    #[test]
+    fn widget_min_max_size() {
+        let mut s = make_slider();
+        assert_eq!(s.min_size(), None);
+        assert_eq!(s.max_size(), None);
+        let min = Size::new(50, 20);
+        let max = Size::new(500, 100);
+        s.set_min_size(Some(min));
+        s.set_max_size(Some(max));
+        assert_eq!(s.min_size(), Some(min));
+        assert_eq!(s.max_size(), Some(max));
+    }
+
+    #[test]
+    fn widget_tooltip_roundtrip() {
+        let mut s = make_slider();
+        s.set_tooltip("Volume".to_string());
+        assert_eq!(s.tooltip(), "Volume");
+    }
+
+    #[test]
+    fn widget_style_roundtrip() {
+        let mut s = make_slider();
+        let mut style = WidgetStyle::default();
+        style.background_color = Some(Color::from_rgb(255, 0, 0));
+        s.set_style(style.clone());
+        assert_eq!(s.style().background_color, Some(Color::from_rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn widget_signals_accessible() {
+        let s = make_slider();
+        // All signal accessors should return valid signal references without panicking.
+        let _ = s.hover_signal();
+        let _ = s.mouse_down_signal();
+        let _ = s.mouse_up_signal();
+        let _ = s.key_down_signal();
+        let _ = s.key_up_signal();
+        let _ = s.focus_gained_signal();
+        let _ = s.focus_lost_signal();
+        let _ = s.redraw_requested_signal();
+        let _ = s.layout_requested_signal();
+        let _ = s.connection_scope();
+    }
+
+    #[test]
+    fn widget_signal_emission_hover() {
+        let mut s = make_slider();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        s.base.hover_signal().connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        // The base widget's handle_event emits hover_signal on MouseMove.
+        s.base.handle_event(&Event::mouse_move(10, 5));
+        // One emission from the event handler.
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }

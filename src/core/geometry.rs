@@ -419,6 +419,40 @@ impl Rect {
             && other_max_x <= self_max_x
             && other_max_y <= self_max_y
     }
+
+    /// Expand this rectangle outward (keeping center) to meet a minimum size.
+    ///
+    /// This is used for touch target hit testing: if a widget's visual geometry
+    /// is smaller than the recommended minimum touch target, the hit-test area
+    /// is expanded so that users can tap it comfortably. The visual geometry is
+    /// NOT changed — only the logical hit-test region expands.
+    ///
+    /// Returns a new `Rect` centered on the original with at least the given
+    /// width and height. If the original already meets or exceeds the minimum,
+    /// returns a clone of self.
+    pub fn expand_to_touch_target(&self, min_size: Size) -> Rect {
+        let ex_w = if min_size.width > self.width {
+            (min_size.width - self.width) as i32
+        } else {
+            0
+        };
+        let ey_h = if min_size.height > self.height {
+            (min_size.height - self.height) as i32
+        } else {
+            0
+        };
+        // Split expansion evenly on both sides.
+        let dx_l = ex_w / 2;
+        let dx_r = ex_w - dx_l;
+        let dy_t = ey_h / 2;
+        let dy_b = ey_h - dy_t;
+        Rect {
+            x: self.x - dx_l,
+            y: self.y - dy_t,
+            width: self.width + dx_l as u32 + dx_r as u32,
+            height: self.height + dy_t as u32 + dy_b as u32,
+        }
+    }
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
@@ -723,6 +757,32 @@ mod tests {
         let padded_neg = rect.with_padding(60);
         assert_eq!(padded_neg, Rect::new(70, 80, 0, 80));
     }
+    #[test]
+    fn expand_to_touch_target_centers_on_original() {
+        let small = Rect::new(100, 100, 10, 10);
+        let expanded = small.expand_to_touch_target(Size::new(32, 32));
+        // Original center: (105, 105)
+        // Expanded 32x32: x=105-16=89, y=105-16=89
+        assert_eq!(expanded, Rect::new(89, 89, 32, 32));
+        assert!(expanded.contains_point(Point::new(100, 100)));
+    }
+
+    #[test]
+    fn expand_to_touch_target_no_op_when_already_large_enough() {
+        let large = Rect::new(0, 0, 100, 100);
+        let expanded = large.expand_to_touch_target(Size::new(32, 32));
+        assert_eq!(expanded, large);
+    }
+
+    #[test]
+    fn expand_to_touch_target_expands_only_needed_axis() {
+        let tall = Rect::new(0, 0, 10, 100);
+        let expanded = tall.expand_to_touch_target(Size::new(32, 32));
+        // Width needs expansion: 10->32, height already >= 32
+        assert_eq!(expanded.width, 32);
+        assert_eq!(expanded.height, 100);
+    }
+
     #[test]
     fn rect_intersection_and_union() {
         let rect1 = Rect::new(10, 10, 100, 100);

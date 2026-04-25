@@ -16,6 +16,29 @@ pub trait ControlBackend: Send + Sync {
     fn backend_name(&self) -> &'static str;
     /// Backend family kind.
     fn kind(&self) -> ControlBackendKind;
+
+    // ── Widget creation helpers (default implementations) ──
+
+    /// Create a widget from a standard geometry pattern with default text "".
+    ///
+    /// This is a convenience helper that calls `create_widget(geom)` with
+    /// default text. Override `create_widget` for custom widget creation.
+    /// Default returns a no-op (0) handle.
+    fn create_widget(
+        &self,
+        _kind: &str,
+        _parent: ObjectId,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    // ── Concrete widget creation methods ──
+
     /// Create top-level window.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
     /// Create button control.

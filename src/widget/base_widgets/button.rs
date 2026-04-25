@@ -221,10 +221,33 @@ impl EventHandler for Button {
                     return;
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. } => {
+                if self.base.is_enabled() {
+                    self.press();
+                    return;
+                }
+            }
             Event::MouseUp((_, _)) => {
                 if self.pressed {
                     self.release();
                     self.base.clicked.emit();
+                    return;
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                if self.pressed {
+                    self.release();
+                    self.base.clicked.emit();
+                    return;
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { .. } => {
+                if self.base.is_enabled() {
+                    self.base.clicked.emit();
+                    self.state_changed.emit(self.state());
                     return;
                 }
             }
@@ -269,5 +292,507 @@ impl Draw for Button {
                 text_color,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Point, Rect, Size};
+    use crate::event::Event;
+    use crate::widget::Image;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // ── Helper ─────────────────────────────────────────────────────────
+    fn make_button() -> Button {
+        Button::new("Click".into(), Rect::new(10, 20, 120, 36))
+    }
+
+    fn make_image() -> Image {
+        Image {
+            data: vec![0u8; 64],
+            format: crate::widget::ImageFormat::Rgba8,
+            width: 8,
+            height: 8,
+        }
+    }
+
+    fn rect() -> Rect {
+        Rect::new(10, 20, 120, 36)
+    }
+
+    // ── 1. Button creation ─────────────────────────────────────────────
+    #[test]
+    fn button_creation_text_geometry_defaults_icon() {
+        let b = make_button();
+        assert_eq!(b.text(), "Click");
+        assert_eq!(b.geometry(), rect());
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert!(!b.is_pressed());
+        assert!(!b.is_default());
+        assert!(b.icon().is_none());
+    }
+
+    // ── 2. State transitions ───────────────────────────────────────────
+    #[test]
+    fn state_transition_normal_pressed_released() {
+        let mut b = make_button();
+        assert_eq!(b.state(), ButtonState::Normal);
+
+        b.press();
+        assert!(b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Pressed);
+
+        b.release();
+        assert!(!b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Normal);
+    }
+
+    #[test]
+    fn state_transition_idempotent_press_release_noop() {
+        let mut b = make_button();
+        // Already Normal → release is a no-op
+        b.release();
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert!(!b.is_pressed());
+
+        // Press once
+        b.press();
+        // Second press is a no-op
+        b.press();
+        assert!(b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Pressed);
+
+        // Release once
+        b.release();
+        // Second release is a no-op
+        b.release();
+        assert!(!b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Normal);
+    }
+
+    // ── 3. Signal emission ─────────────────────────────────────────────
+    #[test]
+    fn signal_press_emits_pressed_and_state_changed() {
+        let mut b = make_button();
+        let pressed_fired = Arc::new(AtomicBool::new(false));
+        let changed_fired = Arc::new(AtomicBool::new(false));
+        b.pressed_signal.connect({
+            let flag = Arc::clone(&pressed_fired);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        b.state_changed.connect({
+            let flag = Arc::clone(&changed_fired);
+            move |_| {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        b.press();
+
+        assert!(pressed_fired.load(Ordering::SeqCst));
+        assert!(changed_fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn signal_release_emits_released_and_state_changed() {
+        let mut b = make_button();
+        let released_fired = Arc::new(AtomicBool::new(false));
+        let changed_fired = Arc::new(AtomicBool::new(false));
+        b.released_signal.connect({
+            let flag = Arc::clone(&released_fired);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        b.state_changed.connect({
+            let flag = Arc::clone(&changed_fired);
+            move |_| {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        b.press(); // Press first
+        released_fired.store(false, Ordering::SeqCst);
+        changed_fired.store(false, Ordering::SeqCst);
+
+        b.release(); // Then release
+
+        assert!(released_fired.load(Ordering::SeqCst));
+        assert!(changed_fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn signal_no_emission_on_noop_transition() {
+        let mut b = make_button();
+        let fired = Arc::new(AtomicBool::new(false));
+        b.pressed_signal.connect({
+            let flag = Arc::clone(&fired);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        b.released_signal.connect({
+            let flag = Arc::clone(&fired);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        b.state_changed.connect({
+            let flag = Arc::clone(&fired);
+            move |_| {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        // No-op: Normal → Normal
+        b.release();
+        assert!(!fired.load(Ordering::SeqCst));
+
+        // Press → Pressed
+        b.press();
+        fired.store(false, Ordering::SeqCst);
+
+        // No-op: Pressed → Pressed
+        b.press();
+        assert!(!fired.load(Ordering::SeqCst));
+    }
+
+    // ── 4. Disabled state ──────────────────────────────────────────────
+    #[test]
+    fn disabled_prevents_transitions() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        assert_eq!(b.state(), ButtonState::Disabled);
+
+        // Press is ignored when disabled
+        b.press();
+        assert_eq!(b.state(), ButtonState::Disabled);
+        assert!(!b.is_pressed());
+
+        // Release is ignored when disabled
+        b.release();
+        assert_eq!(b.state(), ButtonState::Disabled);
+    }
+
+    #[test]
+    fn re_enable_restores_normal_state() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        assert_eq!(b.state(), ButtonState::Disabled);
+
+        b.set_enabled_state(true);
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert!(!b.is_pressed());
+    }
+
+    // ── 5. Text update and icon ────────────────────────────────────────
+    #[test]
+    fn set_text_updates_text() {
+        let mut b = make_button();
+        assert_eq!(b.text(), "Click");
+
+        b.set_text("OK".into());
+        assert_eq!(b.text(), "OK");
+    }
+
+    #[test]
+    fn set_empty_text() {
+        let mut b = make_button();
+        b.set_text("".into());
+        assert_eq!(b.text(), "");
+        assert!(b.text().is_empty());
+    }
+
+    #[test]
+    fn set_icon_and_default_icon() {
+        let mut b = make_button();
+        assert!(b.icon().is_none());
+
+        let img = make_image();
+        b.set_icon(img);
+        assert!(b.icon().is_some());
+    }
+
+    // ── 6. Default property ────────────────────────────────────────────
+    #[test]
+    fn default_property() {
+        let mut b = make_button();
+        assert!(!b.is_default());
+
+        b.set_default(true);
+        assert!(b.is_default());
+
+        b.set_default(false);
+        assert!(!b.is_default());
+    }
+
+    // ── 7. Event handling ──────────────────────────────────────────────
+    #[test]
+    fn event_mouse_down_presses_button() {
+        let mut b = make_button();
+        let event = Event::MouseDown((Point::new(15, 25), 0));
+        b.handle_event(&event);
+        assert!(b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Pressed);
+    }
+
+    #[test]
+    fn event_mouse_up_releases_and_clicks() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        // Must be pressed first
+        b.press();
+        assert!(b.is_pressed());
+
+        let event = Event::MouseUp((Point::new(15, 25), 0));
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert!(clicked.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_touch_begin_presses() {
+        let mut b = make_button();
+        let event = Event::TouchBegin {
+            pos: Point::new(15, 25),
+            touch_id: 0,
+        };
+        b.handle_event(&event);
+        assert!(b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Pressed);
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_touch_end_releases_and_clicks() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        b.press();
+        let event = Event::TouchEnd {
+            pos: Point::new(15, 25),
+            touch_id: 0,
+        };
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert!(clicked.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_tap_triggers_click() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let event = Event::Tap {
+            pos: Point::new(15, 25),
+        };
+        b.handle_event(&event);
+        assert!(clicked.load(Ordering::SeqCst));
+        // Tap does not change pressed state
+        assert!(!b.is_pressed());
+    }
+
+    #[test]
+    fn event_disabled_ignores_mouse_down() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        let event = Event::MouseDown((Point::new(15, 25), 0));
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+        assert_eq!(b.state(), ButtonState::Disabled);
+    }
+
+    #[test]
+    fn event_disabled_ignores_mouse_up() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        // Even if somehow pressed, disabled handle_event should not process MouseUp
+        let event = Event::MouseUp((Point::new(15, 25), 0));
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_disabled_ignores_tap() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        let event = Event::Tap {
+            pos: Point::new(15, 25),
+        };
+        b.handle_event(&event);
+        assert!(!clicked.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_disabled_ignores_touch_begin() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        let event = Event::TouchBegin {
+            pos: Point::new(15, 25),
+            touch_id: 0,
+        };
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_disabled_ignores_touch_end() {
+        let mut b = make_button();
+        b.set_enabled_state(false);
+        let event = Event::TouchEnd {
+            pos: Point::new(15, 25),
+            touch_id: 0,
+        };
+        b.handle_event(&event);
+        assert!(!b.is_pressed());
+    }
+
+    // ── 8. Widget trait delegation ─────────────────────────────────────
+    #[test]
+    fn widget_trait_id_and_kind() {
+        let b = make_button();
+        assert!(b.id() != 0);
+        assert_eq!(b.kind(), WidgetKind::Button);
+    }
+
+    #[test]
+    fn widget_trait_geometry() {
+        let mut b = make_button();
+        assert_eq!(b.geometry(), rect());
+        let new_rect = Rect::new(0, 0, 200, 50);
+        b.set_geometry(new_rect);
+        assert_eq!(b.geometry(), new_rect);
+    }
+
+    #[test]
+    fn widget_trait_visibility() {
+        let mut b = make_button();
+        assert!(b.is_visible());
+        b.hide();
+        assert!(!b.is_visible());
+        b.show();
+        assert!(b.is_visible());
+    }
+
+    #[test]
+    fn widget_trait_enabled() {
+        let mut b = make_button();
+        assert!(b.is_enabled());
+        b.set_enabled(false);
+        assert!(!b.is_enabled());
+        assert_eq!(b.state(), ButtonState::Disabled);
+        b.set_enabled(true);
+        assert!(b.is_enabled());
+        assert_eq!(b.state(), ButtonState::Normal);
+    }
+
+    #[test]
+    fn widget_trait_parent_and_children() {
+        let mut b = make_button();
+        assert!(b.parent().is_none());
+        assert!(b.children().is_empty());
+
+        let child: crate::core::ObjectId = 42;
+        let parent: crate::core::ObjectId = 99;
+
+        b.set_parent(Some(parent));
+        assert_eq!(b.parent(), Some(parent));
+
+        b.add_child(child);
+        assert_eq!(b.children(), &[child]);
+
+        b.remove_child(child);
+        assert!(b.children().is_empty());
+    }
+
+    #[test]
+    fn widget_trait_min_max_size() {
+        let mut b = make_button();
+        assert!(b.min_size().is_none());
+        assert!(b.max_size().is_none());
+
+        b.set_min_size(Some(Size::new(80, 24)));
+        assert_eq!(b.min_size(), Some(Size::new(80, 24)));
+
+        b.set_max_size(Some(Size::new(400, 200)));
+        assert_eq!(b.max_size(), Some(Size::new(400, 200)));
+    }
+
+    #[test]
+    fn widget_trait_tooltip() {
+        let mut b = make_button();
+        assert_eq!(b.tooltip(), "");
+        b.set_tooltip("Save".into());
+        assert_eq!(b.tooltip(), "Save");
+    }
+
+    #[test]
+    fn widget_trait_style() {
+        let mut b = make_button();
+        let default_style = b.style().clone();
+        // Verify we can set a modified style via builder pattern.
+        let new_style = default_style
+            .clone()
+            .with_background(Color::from_rgb(255, 0, 0));
+        b.set_style(new_style.clone());
+        assert_eq!(b.style().background_color, new_style.background_color);
+    }
+
+    #[test]
+    fn widget_trait_signals() {
+        let b = make_button();
+        // Verify signals are accessible via Widget trait
+        let _ = b.hover_signal();
+        let _ = b.mouse_down_signal();
+        let _ = b.mouse_up_signal();
+        let _ = b.key_down_signal();
+        let _ = b.key_up_signal();
+        let _ = b.focus_gained_signal();
+        let _ = b.focus_lost_signal();
+        let _ = b.redraw_requested_signal();
+        let _ = b.layout_requested_signal();
+    }
+
+    #[test]
+    fn widget_trait_connection_scope() {
+        let b = make_button();
+        let _scope = b.connection_scope();
     }
 }
