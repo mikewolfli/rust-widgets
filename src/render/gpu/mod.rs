@@ -1,8 +1,10 @@
 //! GPU-accelerated rendering backend (WGPU).
-#[cfg(feature = "wgpu")]
-pub mod wgpu_backend;
-#[cfg(feature = "wgpu")]
-pub use wgpu_backend::WgpuRenderer;
+//!
+//! `wgpu_backend` at the crate root is the canonical implementation.
+//! This module re-exports its types so that `crate::render::gpu::*` resolves
+//! to the same symbols regardless of whether the caller goes through `render::gpu`
+//! or uses the crate-local path directly.
+
 /// GPU rendering capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuCapability {
@@ -19,6 +21,7 @@ pub enum GpuCapability {
     /// Anti-aliasing
     AntiAliasing,
 }
+
 /// GPU renderer trait.
 pub trait GpuRenderer {
     /// Initializes the GPU renderer.

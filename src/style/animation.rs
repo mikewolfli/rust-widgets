@@ -162,6 +162,7 @@ pub struct Animation {
     is_running: bool,
     is_paused: bool,
     current_iteration: u32,
+    on_complete_callback: Option<Box<dyn FnMut()>>,
 }
 impl Animation {
     pub fn new(config: AnimationConfig) -> Self {
@@ -171,6 +172,7 @@ impl Animation {
             is_running: false,
             is_paused: false,
             current_iteration: 0,
+            on_complete_callback: None,
         }
     }
     pub fn start(&mut self) {
@@ -186,6 +188,18 @@ impl Animation {
     }
     pub fn pause(&mut self) {
         self.is_paused = true;
+    }
+    pub fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+    pub fn reset(&mut self) {
+        self.is_running = false;
+        self.is_paused = false;
+        self.start_time = None;
+        self.current_iteration = 0;
+    }
+    pub fn on_complete(&mut self, callback: Box<dyn FnMut()>) {
+        self.on_complete_callback = Some(callback);
     }
     pub fn resume(&mut self) {
         self.is_paused = false;
@@ -247,6 +261,9 @@ impl Animation {
                 self.current_iteration = raw_progress as u32;
                 if !self.config.infinite && self.current_iteration >= self.config.iteration_count {
                     self.is_running = false;
+                    if let Some(mut callback) = self.on_complete_callback.take() {
+                        callback();
+                    }
                 }
             }
         }

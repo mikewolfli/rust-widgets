@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use super::types::LinuxNativeState;
-use super::types::{LinuxHandleKind, LinuxPlatform};
+use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -10,6 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 impl Platform for LinuxPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn backend_name(&self) -> &'static str {
         "gtk"
     }
@@ -350,6 +353,16 @@ impl Platform for LinuxPlatform {
             .expect("linux menu lock poisoned")
             .widget_parent
             .insert(id, parent);
+        self.list_data
+            .lock()
+            .expect("linux list data lock poisoned")
+            .insert(
+                id,
+                ListData {
+                    items: Vec::new(),
+                    current_index: None,
+                },
+            );
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let combo = gtk::ComboBoxText::new();
@@ -384,6 +397,16 @@ impl Platform for LinuxPlatform {
             .expect("linux menu lock poisoned")
             .widget_parent
             .insert(id, parent);
+        self.list_data
+            .lock()
+            .expect("linux list data lock poisoned")
+            .insert(
+                id,
+                ListData {
+                    items: Vec::new(),
+                    current_index: None,
+                },
+            );
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let list = gtk::ListBox::new();
@@ -408,44 +431,182 @@ impl Platform for LinuxPlatform {
         }
         id
     }
-    fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
-        false
+    fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        let entry = data.entry(list_box).or_default();
+        entry.items.push(text.to_string());
+        true
     }
-    fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
-        false
+    fn list_box_remove_item(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.items.remove(index);
+        if let Some(cur) = entry.current_index {
+            if cur == index {
+                entry.current_index = None;
+            } else if cur > index {
+                entry.current_index = Some(cur - 1);
+            }
+        }
+        true
     }
-    fn list_box_clear_items(&self, _list_box: u64) -> bool {
-        false
+    fn list_box_clear_items(&self, list_box: u64) -> bool {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        if let Some(entry) = data.get_mut(&list_box) {
+            entry.items.clear();
+            entry.current_index = None;
+        }
+        true
     }
-    fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
-        false
+    fn list_box_set_current_index(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
     }
-    fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
-        None
+    fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.current_index)
     }
-    fn list_box_item_count(&self, _list_box: u64) -> usize {
-        0
+    fn list_box_item_count(&self, list_box: u64) -> usize {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return 0;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&list_box).map_or(0, |entry| entry.items.len())
     }
-    fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
-        None
+    fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&list_box)
+            .and_then(|entry| entry.items.get(index))
+            .cloned()
     }
-    fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
-        false
+    fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        let entry = data.entry(combo_box).or_default();
+        entry.items.push(text.to_string());
+        true
     }
-    fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
-        false
+    fn combo_box_clear_items(&self, combo_box: u64) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        if let Some(entry) = data.get_mut(&combo_box) {
+            entry.items.clear();
+            entry.current_index = None;
+        }
+        true
     }
-    fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
-        false
+    fn combo_box_set_current_index(&self, combo_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        let entry = match data.get_mut(&combo_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
     }
-    fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
-        None
+    fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.current_index)
     }
-    fn combo_box_item_count(&self, _combo_box: u64) -> usize {
-        0
+    fn combo_box_item_count(&self, combo_box: u64) -> usize {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return 0;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&combo_box).map_or(0, |entry| entry.items.len())
     }
-    fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
-        None
+    fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("linux list data lock poisoned");
+        data.get(&combo_box)
+            .and_then(|entry| entry.items.get(index))
+            .cloned()
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
@@ -842,36 +1003,57 @@ impl Platform for LinuxPlatform {
         _parent: u64,
         _title: &str,
         _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> u64 {
-        0
+        self.insert_widget(LinuxHandleKind::MessageBox, _text, x, y, width, height)
     }
-    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        0
+    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(
+            LinuxHandleKind::FileDialog,
+            "FileDialog",
+            _x,
+            _y,
+            width,
+            height,
+        )
     }
-    fn create_color_dialog(
-        &self,
-        _parent: u64,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> u64 {
-        0
+    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(
+            LinuxHandleKind::ColorDialog,
+            "ColorDialog",
+            _x,
+            _y,
+            width,
+            height,
+        )
     }
-    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        0
+    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(
+            LinuxHandleKind::FontDialog,
+            "FontDialog",
+            _x,
+            _y,
+            width,
+            height,
+        )
     }
-    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        0
+    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(LinuxHandleKind::SpinBox, "SpinBox", _x, _y, width, height)
     }
-    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        0
+    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(LinuxHandleKind::ListView, "ListView", _x, _y, width, height)
     }
-    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, _width: u32, _height: u32) -> u64 {
-        0
+    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(
+            LinuxHandleKind::ScrollArea,
+            "ScrollArea",
+            _x,
+            _y,
+            width,
+            height,
+        )
     }
 }

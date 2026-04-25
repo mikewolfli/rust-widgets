@@ -36,6 +36,36 @@ impl EventHandlerContext {
         self.user_data = Some(data);
         self
     }
+
+    /// Safely access user data as a typed reference.
+    ///
+    /// Uses unsafe internally to cast the raw pointer, but presents a
+    /// safe API. Returns `None` if no user data is set or the cast fails.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` matches the type that was
+    /// originally stored via [`with_user_data`](Self::with_user_data).
+    pub fn user_data<T>(&self) -> Option<&T> {
+        let ptr = self.user_data?;
+        // SAFETY: Caller guarantees type T matches the original data.
+        unsafe { Some(&*(ptr as *const T)) }
+    }
+
+    /// Safely access user data as a typed mutable reference.
+    ///
+    /// Uses unsafe internally to cast the raw pointer, but presents a
+    /// safe API. Returns `None` if no user data is set or the cast fails.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` matches the type that was
+    /// originally stored via [`with_user_data`](Self::with_user_data).
+    pub fn user_data_mut<T>(&mut self) -> Option<&mut T> {
+        let ptr = self.user_data?;
+        // SAFETY: Caller guarantees type T matches the original data.
+        unsafe { Some(&mut *(ptr as *mut T)) }
+    }
 }
 
 /// Named handler function signature.

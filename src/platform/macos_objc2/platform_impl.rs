@@ -1,11 +1,15 @@
+use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
+use crate::core::ObjectId;
+use crate::core::PlatformFamily;
+use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
-use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, ObjectId, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
 
 impl Platform for MacOSObjc2Platform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn backend_name(&self) -> &'static str {
         "macos-objc2-preview"
     }
@@ -148,44 +152,186 @@ impl Platform for MacOSObjc2Platform {
         }
         self.insert_widget(MacObjc2HandleKind::ListBox, "ListBox", x, y, width, height)
     }
-    fn list_box_add_item(&self, _list_box: u64, _text: &str) -> bool {
-        false
+    fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
+        // Validate that widget exists and is a ListBox.
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        let entry = data.entry(list_box).or_default();
+        entry.items.push(text.to_string());
+        true
     }
-    fn list_box_remove_item(&self, _list_box: u64, _index: usize) -> bool {
-        false
+    fn list_box_remove_item(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.items.remove(index);
+        // Adjust current_index if the removed item was at or before it.
+        if let Some(cur) = entry.current_index {
+            if cur == index {
+                // Item at the selected index was removed — clear selection.
+                entry.current_index = None;
+            } else if cur > index {
+                // Selection shifted down by one.
+                entry.current_index = Some(cur - 1);
+            }
+        }
+        true
     }
-    fn list_box_clear_items(&self, _list_box: u64) -> bool {
-        false
+    fn list_box_clear_items(&self, list_box: u64) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        if let Some(entry) = data.get_mut(&list_box) {
+            entry.items.clear();
+            entry.current_index = None;
+        }
+        true
     }
-    fn list_box_set_current_index(&self, _list_box: u64, _index: usize) -> bool {
-        false
+    fn list_box_set_current_index(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
     }
-    fn list_box_current_index(&self, _list_box: u64) -> Option<usize> {
-        None
+    fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.current_index)
     }
-    fn list_box_item_count(&self, _list_box: u64) -> usize {
-        0
+    fn list_box_item_count(&self, list_box: u64) -> usize {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return 0;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&list_box).map_or(0, |entry| entry.items.len())
     }
-    fn list_box_item_text(&self, _list_box: u64, _index: usize) -> Option<String> {
-        None
+    fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&list_box)
+            .and_then(|entry| entry.items.get(index))
+            .cloned()
     }
-    fn combo_box_add_item(&self, _combo_box: u64, _text: &str) -> bool {
-        false
+    fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        let entry = data.entry(combo_box).or_default();
+        entry.items.push(text.to_string());
+        true
     }
-    fn combo_box_clear_items(&self, _combo_box: u64) -> bool {
-        false
+    fn combo_box_clear_items(&self, combo_box: u64) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        if let Some(entry) = data.get_mut(&combo_box) {
+            entry.items.clear();
+            entry.current_index = None;
+        }
+        true
     }
-    fn combo_box_set_current_index(&self, _combo_box: u64, _index: usize) -> bool {
-        false
+    fn combo_box_set_current_index(&self, combo_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        let entry = match data.get_mut(&combo_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
     }
-    fn combo_box_current_index(&self, _combo_box: u64) -> Option<usize> {
-        None
+    fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.current_index)
     }
-    fn combo_box_item_count(&self, _combo_box: u64) -> usize {
-        0
+    fn combo_box_item_count(&self, combo_box: u64) -> usize {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return 0;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&combo_box).map_or(0, |entry| entry.items.len())
     }
-    fn combo_box_item_text(&self, _combo_box: u64, _index: usize) -> Option<String> {
-        None
+    fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
+            return None;
+        }
+        let data = self
+            .list_data
+            .lock()
+            .expect("mac objc2 list data lock poisoned");
+        data.get(&combo_box)
+            .and_then(|entry| entry.items.get(index))
+            .cloned()
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
@@ -470,4 +616,3 @@ impl Platform for MacOSObjc2Platform {
         self.insert_widget(MacObjc2HandleKind::Panel, "ScrollArea", x, y, width, height)
     }
 }
-#[cfg(test)]

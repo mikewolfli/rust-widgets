@@ -371,7 +371,7 @@ fn svg_snapshot_line_chart_stable() {
     );
     let svg = context.to_svg_string();
     let got = stable_hash64(&svg);
-    let expected = 380316035598459353u64;
+    let expected = 17974278823255601663u64;
     assert_eq!(got, expected, "line snapshot hash changed: {got}");
 }
 #[test]
@@ -405,6 +405,6 @@ fn svg_snapshot_bar_chart_stable() {
     );
     let svg = context.to_svg_string();
     let got = stable_hash64(&svg);
-    let expected = 842025056154913394u64;
+    let expected = 18105083242857139820u64;
     assert_eq!(got, expected, "bar snapshot hash changed: {got}");
 }

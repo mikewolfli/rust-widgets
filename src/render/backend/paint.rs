@@ -142,6 +142,20 @@ impl PaintBackend for SoftwarePaintBackend {
                 font,
                 color,
             } => self.surface.draw_text(*origin, text, font, *color),
+            RenderCommand::DrawImage {
+                x,
+                y,
+                width,
+                height,
+                data,
+            } => self.surface.draw_image(*x, *y, *width, *height, data),
+            RenderCommand::PushClip {
+                x,
+                y,
+                width,
+                height,
+            } => self.surface.push_clip(*x, *y, *width, *height),
+            RenderCommand::PopClip => self.surface.pop_clip(),
         }
     }
     fn size(&self) -> Size {

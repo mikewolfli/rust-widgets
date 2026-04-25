@@ -1,16 +1,16 @@
 //! Event loop implementation.
+use super::event_queue::EventQueue;
+use super::types::{Event, EventPriority};
 use crate::core::ObjectId;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use super::event_queue::EventQueue;
-use super::types::{Event, EventPriority};
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
     queue: Arc<Mutex<EventQueue>>,
-    /// Flag indicating if the loop is running.
-    running: bool,
+    /// Shared flag indicating if the loop is running.
+    running: Arc<Mutex<bool>>,
     /// Processing thread handle.
     thread_handle: Option<thread::JoinHandle<()>>,
 }
@@ -19,21 +19,19 @@ impl EventLoop {
     pub fn new() -> Self {
         Self {
             queue: Arc::new(Mutex::new(EventQueue::new())),
-            running: false,
+            running: Arc::new(Mutex::new(false)),
             thread_handle: None,
         }
     }
     /// Starts the event loop in a separate thread.
     pub fn start(&mut self) {
-        if self.running {
+        if *self.running.lock().unwrap() {
             return;
         }
-        self.running = true;
-        let queue_clone = Arc::clone(&self.queue);
-        let running_clone = Arc::new(Mutex::new(true));
+        *self.running.lock().unwrap() = true;
+        let running = Arc::clone(&self.running);
+        let queue = Arc::clone(&self.queue);
         let handle = thread::spawn(move || {
-            let running = running_clone;
-            let queue = queue_clone;
             while *running.lock().unwrap() {
                 // Process events from the queue
                 if let Some(_event) = queue.lock().unwrap().dequeue() {
@@ -48,23 +46,28 @@ impl EventLoop {
     }
     /// Stops the event loop.
     pub fn stop(&mut self) {
-        self.running = false;
+        *self.running.lock().unwrap() = false;
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
     }
     /// Posts an event to the event loop.
-    pub fn post_event(&self, target: ObjectId, event: Event, priority: EventPriority) -> bool {
+    pub fn post_event(
+        &self,
+        target: ObjectId,
+        event: Event,
+        priority: EventPriority,
+    ) -> Result<(), String> {
         self.queue
             .lock()
             .unwrap()
             .sender()
             .post_with_priority(target, event, priority)
-            .is_ok()
+            .map_err(|e| format!("{e}"))
     }
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
-        self.running
+        *self.running.lock().unwrap()
     }
 }
 impl Default for EventLoop {
@@ -72,3 +75,4 @@ impl Default for EventLoop {
         Self::new()
     }
 }
+

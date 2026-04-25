@@ -9,8 +9,9 @@ mod handle;
 
 pub use app_core::{App, AppConfig};
 pub use handle::{
-    dispatch_trigger, ButtonHandle, CheckBoxHandle, ComboBoxHandle, LabelHandle,
-    LineEditHandle, ListBoxHandle, ListViewHandle, MessageBoxHandle, PanelHandle,
-    ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle, SliderHandle, SpinBoxHandle,
-    WidgetHandle, WindowHandle,
+    dispatch_trigger, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, DialogHandle,
+    EchoMode, FrameHandle, GridWidgetHandle, LabelHandle, LineEditHandle, ListBoxHandle, ListModel,
+    ListViewHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
+    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, TabWidgetHandle,
+    TextEditHandle, WebViewHandle, WidgetHandle, WindowHandle,
 };

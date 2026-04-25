@@ -88,4 +88,30 @@ pub enum RenderCommand {
         font: Font,
         color: Color,
     },
+    /// Draw an image at the specified position and size.
+    DrawImage {
+        /// Top-left screen position in logical pixels.
+        x: i32,
+        /// Top-left screen position in logical pixels.
+        y: i32,
+        /// Image width in logical pixels.
+        width: u32,
+        /// Image height in logical pixels.
+        height: u32,
+        /// RGBA pixel data (4 bytes per pixel).
+        data: Vec<u8>,
+    },
+    /// Push a clipping rectangle onto the clip stack.
+    PushClip {
+        /// Left edge in logical pixels.
+        x: i32,
+        /// Top edge in logical pixels.
+        y: i32,
+        /// Clip width in logical pixels.
+        width: u32,
+        /// Clip height in logical pixels.
+        height: u32,
+    },
+    /// Pop the top clipping rectangle from the clip stack.
+    PopClip,
 }

@@ -11,12 +11,19 @@ pub enum WindowsHandleKind {
     Panel,
     MenuBar,
     Menu,
+    MenuItem,
     ToolBar,
     StatusBar,
     ProgressBar,
     Slider,
     ComboBox,
-    // Add other widget kinds as needed
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
 }
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn rust_widgets_wnd_proc(
@@ -152,15 +159,13 @@ impl WindowsPlatform {
             .find_map(|(widget_id, native)| ((*native as HWND) == hwnd).then_some(*widget_id))
     }
 }
-// Extension trait for downcasting Platform trait object to WindowsPlatform
-
+/// Extension trait for downcasting `dyn Platform` to concrete platform types.
 pub trait PlatformDowncast {
     fn downcast_ref<T: 'static>(&self) -> Option<&T>;
 }
 impl PlatformDowncast for dyn super::Platform {
     fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        // This is a stub; actual implementation may use Any or other trait object logic
-        None
+        self.as_any().downcast_ref::<T>()
     }
 }
 // Removed unresolved import crate::state::BackendState
@@ -269,9 +274,7 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
             unsafe {
                 InitCommonControls();
             }
-            // Use a direct cast for demonstration; actual implementation should use Any for trait objects
-            let this =
-                unsafe { &*(platform as *const dyn super::Platform as *const WindowsPlatform) };
+            let this = platform.as_any().downcast_ref::<WindowsPlatform>()?;
             if !this.state.contains_widget(parent) {
                 return None;
             }
@@ -308,7 +311,7 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
                 this.state
                     .create_widget(WindowsHandleKind::Slider, "Slider", x, y, width, height);
             this.bind_native_handle(widget_id, hwnd);
-            return Some(widget_id);
+            Some(widget_id)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -318,4 +321,3 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
     }
 }
 #[cfg(all(test, target_os = "windows"))]
-

@@ -3,8 +3,10 @@
 #![allow(deprecated)]
 
 mod tests {
-    use super::*;
-    fn insert_dummy_widget(platform: &MacOSPlatform) -> u64 {
+    use crate::core::ObjectId;
+    use crate::platform::macos::{HandleKind, MacOSPlatform};
+    use crate::platform::{DropEvent, Platform};
+    fn insert_dummy_widget(platform: &MacOSPlatform) -> ObjectId {
         platform
             .state
             .create_widget(HandleKind::Button, "dummy", 0, 0, 10, 10)
@@ -41,7 +43,7 @@ mod tests {
         assert_eq!(event.source_widget_id, widget_id);
         assert_eq!(event.mime, "text/plain");
         assert_eq!(event.payload, b"abc".to_vec());
-        let injected = super::DropEvent {
+        let injected = DropEvent {
             source_widget_id: widget_id,
             target_widget_id: widget_id,
             mime: "application/octet-stream".to_string(),

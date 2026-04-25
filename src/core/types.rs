@@ -1,5 +1,5 @@
-use std::fmt::Debug;
 use super::geometry::{Rect, Size};
+use std::fmt::{Debug, Display};
 
 /// Stable numeric identifier used for widgets and objects.
 pub type ObjectId = u64;
@@ -65,7 +65,11 @@ pub struct Version {
 impl Version {
     /// Creates a new version.
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
     /// Creates version from u32 (major.minor.patch packed).
     pub const fn from_u32(value: u32) -> Self {
@@ -88,15 +92,15 @@ impl Version {
                 s
             )));
         }
-        let major = parts[0]
-            .parse()
-            .map_err(|_| CoreError::InvalidArgument(format!("Invalid major version: {}", parts[0])))?;
-        let minor = parts[1]
-            .parse()
-            .map_err(|_| CoreError::InvalidArgument(format!("Invalid minor version: {}", parts[1])))?;
-        let patch = parts[2]
-            .parse()
-            .map_err(|_| CoreError::InvalidArgument(format!("Invalid patch version: {}", parts[2])))?;
+        let major = parts[0].parse().map_err(|_| {
+            CoreError::InvalidArgument(format!("Invalid major version: {}", parts[0]))
+        })?;
+        let minor = parts[1].parse().map_err(|_| {
+            CoreError::InvalidArgument(format!("Invalid minor version: {}", parts[1]))
+        })?;
+        let patch = parts[2].parse().map_err(|_| {
+            CoreError::InvalidArgument(format!("Invalid patch version: {}", parts[2]))
+        })?;
         Ok(Self::new(major, minor, patch))
     }
     /// Converts version to string.
@@ -116,6 +120,11 @@ impl Version {
     /// Checks if this version is older than another.
     pub fn is_older_than(&self, other: &Self) -> bool {
         other.is_newer_than(self)
+    }
+}
+impl Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string())
     }
 }
 /// Platform capabilities descriptor.
@@ -259,7 +268,7 @@ mod tests {
         let v1 = Version::new(1, 0, 0);
         let v2 = Version::new(1, 5, 0);
         let v3 = Version::new(2, 0, 0);
-        
+
         assert!(v1.is_compatible_with(&v2));
         assert!(!v1.is_compatible_with(&v3));
     }
@@ -269,7 +278,7 @@ mod tests {
         let v1 = Version::new(1, 0, 0);
         let v2 = Version::new(1, 1, 0);
         let v3 = Version::new(1, 1, 1);
-        
+
         assert!(v2.is_newer_than(&v1));
         assert!(v3.is_newer_than(&v2));
         assert!(v1.is_older_than(&v2));
@@ -311,7 +320,7 @@ mod tests {
         let size = caps.screen_size();
         assert_eq!(size.width, 1920);
         assert_eq!(size.height, 1080);
-        
+
         let rect = caps.screen_rect();
         assert_eq!(rect.x, 0);
         assert_eq!(rect.y, 0);
@@ -341,13 +350,13 @@ mod tests {
     fn test_core_error_display() {
         let err = CoreError::InvalidArgument("test".to_string());
         assert_eq!(format!("{}", err), "Invalid argument: test");
-        
+
         let err = CoreError::NotSupported("test".to_string());
         assert_eq!(format!("{}", err), "Not supported: test");
-        
+
         let err = CoreError::NotFound("test".to_string());
         assert_eq!(format!("{}", err), "Not found: test");
-        
+
         let err = CoreError::Internal("test".to_string());
         assert_eq!(format!("{}", err), "Internal error: test");
     }

@@ -30,6 +30,7 @@ pub struct WebViewEnhanced {
     pub error_occurred: Signal1<String>,
     pub navigation_state_changed: Signal1<(bool, bool)>,
     pub console_message: Signal1<(String, u32, String)>,
+    content: String,
 }
 impl WebViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
@@ -56,6 +57,7 @@ impl WebViewEnhanced {
             error_occurred: Signal1::new(),
             navigation_state_changed: Signal1::new(),
             console_message: Signal1::new(),
+            content: String::new(),
         }
     }
     pub fn url(&self) -> &str {
@@ -141,7 +143,7 @@ impl WebViewEnhanced {
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        let _ = html;
+        self.content = html.to_string();
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -156,7 +158,7 @@ impl WebViewEnhanced {
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        let _ = data;
+        self.content = String::from_utf8_lossy(data).to_string();
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -228,6 +230,13 @@ impl WebViewEnhanced {
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.settings.javascript_enabled = enabled;
     }
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+    pub fn html(&self) -> &str {
+        &self.content
+    }
+
     pub fn clear_browsing_data(&mut self, data: super::privacy::BrowsingData) {
         if data.cookies {
             self.cookies.clear();

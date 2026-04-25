@@ -97,17 +97,31 @@ pub fn add_spacer_to_layout(
 
 /// Add a widget to a grid layout with position/size attributes.
 pub fn add_widget_to_layout_grid(
-    _layout: &dyn Layout,
+    layout: &dyn Layout,
     child_id: u64,
     stretch: u32,
-    _col: u32,
-    _row: u32,
+    col: u32,
+    row: u32,
     _col_span: Option<u32>,
     _row_span: Option<u32>,
     parent_id: u64,
     registry: &mut crate::index::WidgetRegistry,
 ) {
-    add_widget_to_layout(_layout, child_id, stretch, parent_id, registry);
+    // Place widget at the specified grid cell using grid coordinates.
+    // GridLayout::set_widget(row, col, child_id) handles bounds checking.
+    LAYOUT_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        if let Some(layout_box) = map.get_mut(&parent_id) {
+            if let Some(grid) = layout_box.as_any_mut().downcast_mut::<GridLayout>() {
+                grid.set_widget(row, col, child_id);
+                // Note: col_span/row_span require GridLayout expansion (future).
+                return;
+            }
+        }
+        // Fallback: not a GridLayout, use generic add_widget.
+        drop(map);
+        add_widget_to_layout(layout, child_id, stretch, parent_id, registry);
+    });
 }
 
 // ── Parsing ─────────────────────────────────────────────────

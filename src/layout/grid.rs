@@ -36,9 +36,28 @@ impl GridLayout {
     pub fn total_cells(&self) -> usize {
         self.cells.len()
     }
+    /// Returns the number of rows.
+    pub fn rows(&self) -> u32 {
+        self.rows
+    }
+    /// Returns the number of columns.
+    pub fn cols(&self) -> u32 {
+        self.cols
+    }
+    /// Returns the spacing between cells.
+    pub fn spacing(&self) -> u32 {
+        self.spacing
+    }
+    /// Returns the outer margin.
+    pub fn margin(&self) -> u32 {
+        self.margin
+    }
 }
 impl Layout for GridLayout {
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
@@ -51,6 +70,17 @@ impl Layout for GridLayout {
             if *cell == Some(widget_id) {
                 *cell = None;
             }
+        }
+    }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.cells.iter().filter_map(|cell| *cell).collect()
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.cells.iter().any(|cell| *cell == Some(id))
+    }
+    fn clear(&mut self) {
+        for cell in &mut self.cells {
+            *cell = None;
         }
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {

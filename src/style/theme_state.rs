@@ -1,5 +1,12 @@
 use crate::core::Color;
+use chrono::Timelike;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+/// Callback type for theme mode change notifications.
+pub type ModeChangedCallback = Rc<RefCell<Option<Box<dyn FnMut(ThemeMode)>>>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetState {
     Normal,
@@ -79,6 +86,8 @@ pub struct StatefulTheme {
     name: String,
     states: HashMap<WidgetState, StateTheme>,
     default_state: StateTheme,
+    /// Transition durations in milliseconds between state pairs (from, to).
+    /// Stored here for future animation pipeline integration.
     transitions: HashMap<(WidgetState, WidgetState), u32>,
 }
 impl StatefulTheme {
@@ -125,6 +134,8 @@ pub struct ThemeStateManager {
     dark_theme: StatefulTheme,
     current_mode: ThemeMode,
     auto_switch_threshold: Option<(u8, u8)>,
+    /// Callback invoked when the theme mode changes.
+    on_mode_changed: ModeChangedCallback,
 }
 impl ThemeStateManager {
     pub fn new(light: StatefulTheme, dark: StatefulTheme) -> Self {
@@ -133,10 +144,17 @@ impl ThemeStateManager {
             dark_theme: dark,
             current_mode: ThemeMode::Light,
             auto_switch_threshold: None,
+            on_mode_changed: Rc::new(RefCell::new(None)),
         }
     }
     pub fn set_mode(&mut self, mode: ThemeMode) {
+        let old_mode = self.current_mode;
         self.current_mode = mode;
+        if old_mode != mode {
+            if let Some(callback) = self.on_mode_changed.borrow_mut().as_mut() {
+                callback(mode);
+            }
+        }
     }
     pub fn current_mode(&self) -> ThemeMode {
         self.current_mode
@@ -155,18 +173,19 @@ impl ThemeStateManager {
         }
     }
     pub fn toggle_mode(&mut self) {
-        self.current_mode = match self.current_mode {
+        let new_mode = match self.current_mode {
             ThemeMode::Light => ThemeMode::Dark,
             ThemeMode::Dark => ThemeMode::Light,
             ThemeMode::Auto => ThemeMode::Light,
         };
+        self.set_mode(new_mode);
     }
     pub fn set_auto_switch(&mut self, hour_start: u8, hour_end: u8) {
         self.auto_switch_threshold = Some((hour_start, hour_end));
     }
     fn should_use_dark(&self) -> bool {
         if let Some((start, end)) = self.auto_switch_threshold {
-            let hour = 12;
+            let hour = chrono::Local::now().hour() as u8;
             hour >= start && hour < end
         } else {
             false
@@ -174,6 +193,15 @@ impl ThemeStateManager {
     }
     pub fn get_state_theme(&self, state: &WidgetState) -> &StateTheme {
         self.current_theme().get_state(state)
+    }
+    /// Registers a callback that is invoked when the theme mode changes.
+    ///
+    /// The callback receives the new `ThemeMode` value.
+    pub fn on_mode_changed<F>(&self, callback: F)
+    where
+        F: FnMut(ThemeMode) + 'static,
+    {
+        *self.on_mode_changed.borrow_mut() = Some(Box::new(callback));
     }
 }
 impl Default for ThemeStateManager {
@@ -215,5 +243,21 @@ mod tests {
         assert_eq!(manager.current_mode(), ThemeMode::Dark);
         manager.toggle_mode();
         assert_eq!(manager.current_mode(), ThemeMode::Light);
+    }
+    #[test]
+    fn test_mode_changed_callback() {
+        let light = StatefulTheme::new("light");
+        let dark = StatefulTheme::new("dark");
+        let mut manager = ThemeStateManager::new(light, dark);
+        let fired = Rc::new(RefCell::new(false));
+        let fired_clone = fired.clone();
+        manager.on_mode_changed(move |_mode| {
+            *fired_clone.borrow_mut() = true;
+        });
+        manager.set_mode(ThemeMode::Dark);
+        assert!(
+            *fired.borrow(),
+            "callback should have been invoked on mode change"
+        );
     }
 }

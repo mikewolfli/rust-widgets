@@ -128,11 +128,45 @@ pub struct Shadow {
     /// Shadow color.
     pub color: Color,
 }
+impl Shadow {
+    /// Creates a new default shadow.
+    pub fn new() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            blur: 0,
+            color: Color::BLACK,
+        }
+    }
+    /// Sets the shadow offset.
+    pub fn with_offset(mut self, x: i32, y: i32) -> Self {
+        self.x = x;
+        self.y = y;
+        self
+    }
+    /// Sets the shadow blur radius.
+    pub fn with_blur(mut self, blur: u32) -> Self {
+        self.blur = blur;
+        self
+    }
+    /// Sets the shadow color.
+    pub fn with_color(mut self, c: Color) -> Self {
+        self.color = c;
+        self
+    }
+}
+impl Default for Shadow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 /// Resolved style values applied to a widget.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WidgetStyle {
     /// Optional background color.
     pub background_color: Option<Color>,
+    /// Optional background gradient.
+    pub background_gradient: Option<Gradient>,
     /// Optional text color.
     pub text_color: Option<Color>,
     /// Optional text font.
@@ -149,6 +183,50 @@ pub struct WidgetStyle {
     pub margin: Margin,
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
+}
+impl WidgetStyle {
+    /// Sets the background color.
+    pub fn with_background(mut self, c: Color) -> Self {
+        self.background_color = Some(c);
+        self
+    }
+    /// Sets the text color.
+    pub fn with_text_color(mut self, c: Color) -> Self {
+        self.text_color = Some(c);
+        self
+    }
+    /// Sets the font.
+    pub fn with_font(mut self, f: Font) -> Self {
+        self.font = Some(f);
+        self
+    }
+    /// Sets the border.
+    pub fn with_border(mut self, color: Color, width: u32, radius: u32) -> Self {
+        self.border_color = Some(color);
+        self.border_width = width;
+        self.border_radius = radius;
+        self
+    }
+    /// Sets the padding.
+    pub fn with_padding(mut self, p: Padding) -> Self {
+        self.padding = p;
+        self
+    }
+    /// Sets the margin.
+    pub fn with_margin(mut self, m: Margin) -> Self {
+        self.margin = m;
+        self
+    }
+    /// Sets the shadow.
+    pub fn with_shadow(mut self, s: Shadow) -> Self {
+        self.shadow = Some(s);
+        self
+    }
+    /// Sets the background gradient.
+    pub fn with_gradient(mut self, g: Gradient) -> Self {
+        self.background_gradient = Some(g);
+        self
+    }
 }
 #[cfg(test)]
 mod tests {

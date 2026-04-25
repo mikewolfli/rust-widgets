@@ -2,6 +2,7 @@
 use super::commands::WgpuDrawCommand;
 use super::raster::{align_to, rasterize_draw_commands_rgba8};
 use super::types::Rgba8;
+use crate::render::gpu::{GpuCapability, GpuRenderer};
 use std::sync::mpsc;
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
@@ -182,5 +183,37 @@ impl WgpuRenderer {
         rgba8: &[u8],
     ) -> Result<Vec<u8>, String> {
         self.upload_rgba8_and_readback(width, height, rgba8)
+    }
+}
+
+impl GpuRenderer for WgpuRenderer {
+    fn initialize(&mut self) -> Result<(), String> {
+        // Device and queue are already initialized in `new()`, so this is a no-op.
+        Ok(())
+    }
+
+    fn capabilities(&self) -> &[GpuCapability] {
+        &[GpuCapability::Basic2D, GpuCapability::Texture]
+    }
+
+    fn has_capability(&self, capability: GpuCapability) -> bool {
+        matches!(capability, GpuCapability::Basic2D | GpuCapability::Texture)
+    }
+
+    fn render_frame(&mut self) -> Result<(), String> {
+        // Offscreen rendering is driven via `render_draw_commands_rgba8`.
+        // A real swapchain-based frame loop will be added when surface integration lands.
+        Ok(())
+    }
+
+    fn memory_usage(&self) -> u64 {
+        // No reliable GPU-memory query is available through the current wgpu backend.
+        0
+    }
+
+    fn vendor_info(&self) -> &str {
+        // Vendor/device info is available from `wgpu::Adapter::get_info()`, but we do not
+        // store the adapter after construction. This will be plumbed in a follow-up.
+        "wgpu (WGPU)"
     }
 }

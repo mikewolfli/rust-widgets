@@ -1,4 +1,5 @@
-use crate::core::{Rect, Size};
+use super::Layout;
+use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbsolutePosition {
@@ -262,6 +263,27 @@ impl AbsoluteLayout {
 impl Default for AbsoluteLayout {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Layout for AbsoluteLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {
+        // AbsoluteLayout manages children via add_child()/add_child_with_constraint().
+    }
+
+    fn remove_widget(&mut self, _widget_id: ObjectId) {
+        // AbsoluteLayout manages children via remove_child().
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let positions = self.layout(rect);
+        for (i, child_rect) in positions.iter().enumerate() {
+            widgets(i as ObjectId, *child_rect);
+        }
     }
 }
 #[cfg(test)]

@@ -32,6 +32,7 @@ pub struct WebEngineViewEnhanced {
     pub console_message: Signal1<(String, u32, String)>,
     pub certificate_error: Signal1<String>,
     pub download_requested: Signal1<String>,
+    content: String,
 }
 impl WebEngineViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
@@ -60,6 +61,7 @@ impl WebEngineViewEnhanced {
             console_message: Signal1::new(),
             certificate_error: Signal1::new(),
             download_requested: Signal1::new(),
+            content: String::new(),
         }
     }
     pub fn url(&self) -> &str {
@@ -145,7 +147,7 @@ impl WebEngineViewEnhanced {
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        let _ = html;
+        self.content = html.to_string();
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -160,7 +162,7 @@ impl WebEngineViewEnhanced {
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        let _ = data;
+        self.content = String::from_utf8_lossy(data).to_string();
         self.load_progress = 100;
         self.loading = false;
         self.loading_finished.emit(self.url.clone());
@@ -231,6 +233,12 @@ impl WebEngineViewEnhanced {
     }
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.settings.javascript_enabled = enabled;
+    }
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+    pub fn html(&self) -> &str {
+        &self.content
     }
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.settings.plugins_enabled = enabled;

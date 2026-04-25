@@ -1,13 +1,13 @@
-use std::sync::OnceLock;
+#[cfg(all(target_os = "linux", not(feature = "embedded")))]
+use crate::platform::linux::LinuxPlatform;
+#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
+use crate::platform::macos::MacOSPlatform;
+#[cfg(feature = "mobile-api")]
+use crate::platform::mobile;
 pub use crate::platform::types::*;
 #[cfg(target_os = "windows")]
 use crate::platform::windows::WindowsPlatform;
-#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
-use crate::platform::macos::MacOSPlatform;
-#[cfg(all(target_os = "linux", not(feature = "embedded")))]
-use crate::platform::linux::LinuxPlatform;
-#[cfg(feature = "mobile-api")]
-use crate::platform::mobile;
+use std::sync::OnceLock;
 
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -27,7 +27,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "embedded")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(new())
+    Box::new(crate::platform::macos_objc2::MacOSObjc2Platform::new())
 }
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
 #[cfg(all(

@@ -2,16 +2,12 @@
 
 #![allow(deprecated)]
 
-use crate::core::{ObjectId, PlatformFamily};
+use crate::core::ObjectId;
 use crate::platform::state::BackendState;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
-    NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
-    NSView, NSWindow, NSWindowStyleMask,
-};
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
+use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
+use cocoa::appkit::{NSView, NSWindow, NSWindowStyleMask};
+use cocoa::base::{id, nil};
+use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};

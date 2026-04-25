@@ -57,9 +57,29 @@ pub trait Layout {
     ) {
         self.update(Rect::from_position_size(position, size), widgets);
     }
+    /// Returns all child widget IDs managed by this layout.
+    fn child_ids(&self) -> Vec<ObjectId> {
+        vec![]
+    }
+
+    /// Returns true if the given widget ID is a child of this layout.
+    fn has_child(&self, _id: ObjectId) -> bool {
+        false
+    }
+
+    /// Removes all children from this layout.
+    fn clear(&mut self) {}
+
     /// Enables downcasting from `dyn Layout` to concrete types.
     /// Required by the layout inspector for introspection.
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Enables mutable downcasting from `dyn Layout` to concrete types.
+    /// Required for mutation access to concrete layout implementations
+    /// through the trait object.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        panic!("as_any_mut not implemented — override in concrete layout implementation");
+    }
 }
 #[cfg(test)]
 mod tests {

@@ -24,6 +24,14 @@ impl StackLayout {
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
+    /// Returns the index of the currently visible page.
+    pub fn current_index(&self) -> usize {
+        self.current
+    }
+    /// Returns the widget id at the given index, if in bounds.
+    pub fn item_at(&self, index: usize) -> Option<ObjectId> {
+        self.items.get(index).copied()
+    }
 }
 impl Default for StackLayout {
     fn default() -> Self {
@@ -47,5 +55,15 @@ impl Layout for StackLayout {
         if let Some(widget_id) = self.items.get(self.current) {
             widgets(*widget_id, rect);
         }
+    }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.items.clone()
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.items.contains(&id)
+    }
+    fn clear(&mut self) {
+        self.items.clear();
+        self.current = 0;
     }
 }

@@ -3,12 +3,21 @@
 //! This backend provides a state-driven implementation behind the `objc2-macos`
 //! feature flag so migration can proceed incrementally without changing default
 //! runtime behavior.
+use crate::platform::state::BackendState;
+use crate::platform::WidgetTriggerEvent;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
-use serde::{Deserialize, Serialize};
-use crate::platform::state::BackendState;
-use crate::platform::{ObjectId, WidgetTriggerEvent, WidgetTriggerKind};
+
+/// Internal list data storage for ComboBox and ListBox widgets.
+#[derive(Default)]
+pub(crate) struct ListData {
+    /// Ordered item text entries.
+    pub(crate) items: Vec<String>,
+    /// Currently selected index, if any.
+    pub(crate) current_index: Option<usize>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum MacObjc2HandleKind {
     /// Top-level native window surrogate.
@@ -43,6 +52,14 @@ pub(crate) enum MacObjc2HandleKind {
     ToolBar,
     /// Window status bar region.
     StatusBar,
+    /// Modal message box dialog.
+    MessageBox,
+    /// File open/save dialog.
+    FileDialog,
+    /// Color picker dialog.
+    ColorDialog,
+    /// Font selection dialog.
+    FontDialog,
 }
 #[derive(Default)]
 pub(crate) struct MacObjc2MenuState {
@@ -56,11 +73,11 @@ pub(crate) struct MacObjc2MenuState {
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 /// Runtime lifecycle markers used by the preview run loop.
-struct MacObjc2RuntimeState {
+pub(crate) struct MacObjc2RuntimeState {
     /// `true` after backend initialization has completed.
-    initialized: AtomicBool,
+    pub(crate) initialized: AtomicBool,
     /// `true` while the preview loop is running.
-    running: AtomicBool,
+    pub(crate) running: AtomicBool,
 }
 impl MacObjc2RuntimeState {
     pub(crate) fn new() -> Self {
@@ -78,6 +95,8 @@ pub struct MacOSObjc2Platform {
     pub(crate) menus: Mutex<MacObjc2MenuState>,
     /// Runtime state for init/run/quit
     pub(crate) runtime: MacObjc2RuntimeState,
+    /// Shared list storage for ComboBox and ListBox widgets.
+    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
 impl MacOSObjc2Platform {
     /// Serialize all widget state for parity/regression testing
@@ -93,6 +112,7 @@ impl MacOSObjc2Platform {
             state: BackendState::new(),
             menus: Mutex::new(MacObjc2MenuState::default()),
             runtime: MacObjc2RuntimeState::new(),
+            list_data: Mutex::new(HashMap::new()),
         }
     }
     pub(crate) fn insert_widget(

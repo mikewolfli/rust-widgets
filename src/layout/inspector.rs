@@ -612,17 +612,31 @@ mod tests {
     use super::*;
     use crate::core::Rect;
     use crate::index::{WidgetEntry, WidgetKind, WidgetRegistry};
+    use std::sync::Mutex;
+
+    /// Serializes LayoutInspector tests that share global `ENABLED` state.
+    /// Uses `ignore_poison` to recover from panics in prior tests.
+    static LAYOUT_INSPECTOR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the test lock, recovering from poison if a previous test panicked.
+    fn lock_inspector() -> std::sync::MutexGuard<'static, ()> {
+        LAYOUT_INSPECTOR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     // ── Enable/disable ──
 
     #[test]
     fn default_is_disabled() {
+        let _lock = lock_inspector();
         LayoutInspector::disable(); // ensure clean state (tests share process)
         assert!(!LayoutInspector::is_enabled());
     }
 
     #[test]
     fn enable_disable_toggle() {
+        let _lock = lock_inspector();
         LayoutInspector::disable(); // ensure clean state
         assert!(!LayoutInspector::is_enabled());
         LayoutInspector::enable();
@@ -633,6 +647,7 @@ mod tests {
 
     #[test]
     fn disabled_run_once_returns_empty() {
+        let _lock = lock_inspector();
         LayoutInspector::disable();
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
@@ -644,6 +659,7 @@ mod tests {
 
     #[test]
     fn detect_orphan_widget() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -672,6 +688,7 @@ mod tests {
 
     #[test]
     fn window_not_flagged_as_orphan() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -695,6 +712,7 @@ mod tests {
 
     #[test]
     fn widget_with_parent_not_orphan() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -726,6 +744,7 @@ mod tests {
 
     #[test]
     fn detect_empty_layout() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::register_native_layout(100, "hbox_main", 0, "HBoxLayout");
         let reg = WidgetRegistry::new();
@@ -741,6 +760,7 @@ mod tests {
 
     #[test]
     fn non_empty_layout_clean() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::register_native_layout(100, "hbox_main", 3, "HBoxLayout");
         let reg = WidgetRegistry::new();
@@ -758,6 +778,7 @@ mod tests {
 
     #[test]
     fn detect_zero_width() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 0, 100));
         let reg = WidgetRegistry::new();
@@ -772,6 +793,7 @@ mod tests {
 
     #[test]
     fn detect_zero_height() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::record_geometry(1, Rect::new(10, 10, 200, 0));
         let reg = WidgetRegistry::new();
@@ -786,6 +808,7 @@ mod tests {
 
     #[test]
     fn detect_zero_size() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 0, 0));
         let reg = WidgetRegistry::new();
@@ -800,6 +823,7 @@ mod tests {
 
     #[test]
     fn valid_size_not_flagged() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 100, 30));
         let reg = WidgetRegistry::new();
@@ -808,6 +832,11 @@ mod tests {
             .issues
             .iter()
             .filter(|i| i.category == IssueCategory::Geometric)
+            .filter(|i| {
+                i.description.contains("zero width")
+                    || i.description.contains("zero height")
+                    || i.description.contains("zero size")
+            })
             .collect();
         assert!(zero_issues.is_empty());
         LayoutInspector::disable();
@@ -817,6 +846,7 @@ mod tests {
 
     #[test]
     fn detect_overlapping_rects() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -837,8 +867,9 @@ mod tests {
             parent: Some(10),
             label: "right".into(),
         });
+        // Record sibling geometries that overlap at x=50-60
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 60, 30));
-        LayoutInspector::record_geometry(2, Rect::new(50, 0, 60, 30)); // overlaps at x=50-60
+        LayoutInspector::record_geometry(2, Rect::new(50, 0, 60, 30));
         let report = LayoutInspector::run_once(&reg);
         let overlap_issues: Vec<_> = report
             .issues
@@ -851,6 +882,7 @@ mod tests {
 
     #[test]
     fn adjacent_rects_no_overlap() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -886,6 +918,7 @@ mod tests {
 
     #[test]
     fn no_overlap_single_child() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -911,13 +944,57 @@ mod tests {
         LayoutInspector::disable();
     }
 
-    // ── Recommendation engine ──
+    // ── Issue + Recommendation tests ──
+
+    #[test]
+    fn multiple_issues_caught_together() {
+        let _lock = lock_inspector();
+        LayoutInspector::enable();
+        let mut reg = WidgetRegistry::new();
+        reg.register(WidgetEntry {
+            id: 1,
+            kind: WidgetKind::Window,
+            parent: None,
+            label: "win".into(),
+        });
+        reg.register(WidgetEntry {
+            id: 2,
+            kind: WidgetKind::Button,
+            parent: None,
+            label: "orphan".into(),
+        });
+        LayoutInspector::register_native_layout(1, "empty_vbox", 0, "VBoxLayout");
+        LayoutInspector::record_geometry(2, Rect::new(0, 0, 0, 0));
+        let report = LayoutInspector::run_once(&reg);
+        assert!(report.has_issues());
+        assert!(report.has_errors());
+        assert!(report.has_warnings());
+        assert_eq!(report.widgets_inspected, 2);
+        LayoutInspector::disable();
+    }
+
+    #[test]
+    fn no_recommendations_when_clean() {
+        let _lock = lock_inspector();
+        LayoutInspector::enable();
+        let mut reg = WidgetRegistry::new();
+        reg.register(WidgetEntry {
+            id: 1,
+            kind: WidgetKind::Window,
+            parent: None,
+            label: "win".into(),
+        });
+        LayoutInspector::record_geometry(1, Rect::new(0, 0, 400, 300));
+        let report = LayoutInspector::run_once(&reg);
+        // Clean window with valid size — no issues should trigger recommendations
+        // other than the generic R6.
+        assert!(!report.issues.is_empty() || !report.recommendations.is_empty());
+        LayoutInspector::disable();
+    }
 
     #[test]
     fn recommendation_generated_for_issues() {
-        LayoutInspector::disable(); // reset from previous tests
-        NATIVE_LAYOUTS.with(|l| l.borrow_mut().clear());
-        GEOMETRY_SNAPSHOT.with(|s| s.borrow_mut().clear());
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         let mut reg = WidgetRegistry::new();
         reg.register(WidgetEntry {
@@ -942,39 +1019,8 @@ mod tests {
     }
 
     #[test]
-    fn no_recommendations_when_clean() {
-        LayoutInspector::enable();
-        let mut reg = WidgetRegistry::new();
-        reg.register(WidgetEntry {
-            id: 1,
-            kind: WidgetKind::Window,
-            parent: None,
-            label: "win".into(),
-        });
-        LayoutInspector::record_geometry(1, Rect::new(0, 0, 400, 300));
-        let report = LayoutInspector::run_once(&reg);
-        // Clean window with valid size — no issues should trigger recommendations
-        // other than the generic R6.
-        assert!(!report.issues.is_empty() || !report.recommendations.is_empty());
-        LayoutInspector::disable();
-    }
-
-    // ── Report formatting ──
-
-    #[test]
-    fn report_display_inspector_header() {
-        LayoutInspector::enable();
-        let reg = WidgetRegistry::new();
-        let report = LayoutInspector::run_once(&reg);
-        let text = format!("{}", report);
-        assert!(text.contains("Layout Inspector Report"));
-        LayoutInspector::disable();
-    }
-
-    // ── record_geometry idempotent ──
-
-    #[test]
     fn record_geometry_overwrites_same_id() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
         LayoutInspector::record_geometry(42, Rect::new(0, 0, 100, 20));
         LayoutInspector::record_geometry(42, Rect::new(10, 10, 200, 40)); // overwrite
@@ -985,31 +1031,14 @@ mod tests {
         LayoutInspector::disable();
     }
 
-    // ── Multiple issues in one run ──
-
     #[test]
-    fn multiple_issues_caught_together() {
+    fn report_display_inspector_header() {
+        let _lock = lock_inspector();
         LayoutInspector::enable();
-        let mut reg = WidgetRegistry::new();
-        reg.register(WidgetEntry {
-            id: 1,
-            kind: WidgetKind::Window,
-            parent: None,
-            label: "win".into(),
-        });
-        reg.register(WidgetEntry {
-            id: 2,
-            kind: WidgetKind::Button,
-            parent: None,
-            label: "orphan".into(),
-        });
-        LayoutInspector::register_native_layout(1, "empty_vbox", 0, "VBoxLayout");
-        LayoutInspector::record_geometry(2, Rect::new(0, 0, 0, 0));
+        let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
-        assert!(report.has_issues());
-        assert!(report.has_errors());
-        assert!(report.has_warnings());
-        assert_eq!(report.widgets_inspected, 2);
+        let display_text = format!("{}", report);
+        assert!(display_text.contains("Layout Inspector Report"));
         LayoutInspector::disable();
     }
 }

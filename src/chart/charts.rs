@@ -14,7 +14,7 @@ pub struct LineChart {
     show_grid: bool,
 }
 /// Common cartesian layout for line/bar style charts.
-struct CartesianLayout {
+pub struct CartesianLayout {
     plot_x: f32,
     plot_y: f32,
     plot_w: f32,
@@ -22,7 +22,7 @@ struct CartesianLayout {
     legend_x: f32,
     legend_y: f32,
 }
-fn compute_cartesian_layout(
+pub fn compute_cartesian_layout(
     rect: Rect,
     has_x_label: bool,
     has_y_label: bool,
@@ -45,7 +45,7 @@ fn compute_cartesian_layout(
         legend_y: plot_y + 8.0,
     }
 }
-fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
+pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
     let axis_color = Color {
         r: 90,
         g: 90,
@@ -65,7 +65,7 @@ fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout)
         axis_color,
     );
 }
-fn draw_y_ticks(
+pub fn draw_y_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
     min_y: f64,
@@ -118,7 +118,7 @@ fn draw_y_ticks(
         );
     }
 }
-fn draw_x_ticks(
+pub fn draw_x_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
     min_x: f64,
@@ -171,7 +171,11 @@ fn draw_x_ticks(
         );
     }
 }
-fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series: &[&ChartSeries]) {
+pub fn draw_legend(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    series: &[&ChartSeries],
+) {
     if series.is_empty() {
         return;
     }
@@ -215,7 +219,7 @@ fn draw_legend(context: &mut dyn ChartContext, layout: &CartesianLayout, series:
         );
     }
 }
-fn truncate_legend_label(label: &str, max_chars: usize) -> String {
+pub fn truncate_legend_label(label: &str, max_chars: usize) -> String {
     let char_count = label.chars().count();
     if char_count <= max_chars {
         return label.to_string();
@@ -343,7 +347,10 @@ impl Chart for LineChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
+                Point::from_f32(
+                    layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                    layout.plot_y + layout.plot_h + 36.0,
+                ),
                 11.0,
                 Color {
                     r: 40,
@@ -519,7 +526,10 @@ impl Chart for BarChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
+                Point::from_f32(
+                    layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                    layout.plot_y + layout.plot_h + 36.0,
+                ),
                 11.0,
                 Color {
                     r: 40,
@@ -576,6 +586,60 @@ impl PieChart {
             series: Vec::new(),
         }
     }
+    /// Return a color from a preset palette based on index.
+    fn palette_color(index: usize) -> Color {
+        const PALETTE: &[Color] = &[
+            Color {
+                r: 255,
+                g: 99,
+                b: 132,
+                a: 255,
+            }, // rose
+            Color {
+                r: 54,
+                g: 162,
+                b: 235,
+                a: 255,
+            }, // blue
+            Color {
+                r: 255,
+                g: 206,
+                b: 86,
+                a: 255,
+            }, // yellow
+            Color {
+                r: 75,
+                g: 192,
+                b: 192,
+                a: 255,
+            }, // teal
+            Color {
+                r: 153,
+                g: 102,
+                b: 255,
+                a: 255,
+            }, // purple
+            Color {
+                r: 255,
+                g: 159,
+                b: 64,
+                a: 255,
+            }, // orange
+            Color {
+                r: 46,
+                g: 204,
+                b: 113,
+                a: 255,
+            }, // green
+            Color {
+                r: 231,
+                g: 76,
+                b: 60,
+                a: 255,
+            }, // red
+        ];
+        PALETTE[index % PALETTE.len()]
+    }
 }
 impl Default for PieChart {
     fn default() -> Self {
@@ -602,6 +666,7 @@ impl Chart for PieChart {
         // Not used in pie chart
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
+        // Draw title at the top
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
@@ -614,15 +679,58 @@ impl Chart for PieChart {
             },
         );
         let center = Point {
-            x: rect.x + rect.width as f32 as i32 / 2,
-            y: rect.y + rect.height as f32 as i32 / 2,
+            x: rect.x + rect.width as i32 / 2,
+            y: rect.y + rect.height as i32 / 2,
         };
-        let radius = (rect.width.min(rect.height) / 3) as f32;
+        let radius = (rect.width.min(rect.height) as f64 / 2.5) as u32;
+        // Compute total sum across all visible series
+        let total: f64 = self
+            .series
+            .iter()
+            .filter(|s| s.visible)
+            .flat_map(|s| &s.data)
+            .map(|d| d.y)
+            .sum();
+        if total <= 0.0 {
+            return;
+        }
+        let mut start_angle: f64 = -90.0; // Start from top (12 o'clock)
+        let mut sector_index: usize = 0;
         for series in &self.series {
             if !series.visible {
                 continue;
             }
-            context.draw_circle(center, radius, series.color);
+            for point in &series.data {
+                let sweep = (point.y / total) * 360.0;
+                if sweep <= 0.0 {
+                    continue;
+                }
+                // Pick a distinct color per sector from the palette
+                let sector_color = Self::palette_color(sector_index);
+                sector_index += 1;
+                // Draw pie arc segment as a filled polygon approximating the arc
+                let cx = center.x as f64;
+                let cy = center.y as f64;
+                let r = radius as f64;
+                let steps = (sweep.abs().ceil() as u32).max(3).min(90);
+                let mut vertices = Vec::with_capacity((steps + 2) as usize);
+                // Center point
+                vertices.push(Point {
+                    x: cx as i32,
+                    y: cy as i32,
+                });
+                // Arc boundary points
+                for i in 0..=steps {
+                    let angle = start_angle + sweep * (i as f64 / steps as f64);
+                    let rad = angle.to_radians();
+                    vertices.push(Point {
+                        x: (cx + rad.cos() * r) as i32,
+                        y: (cy + rad.sin() * r) as i32,
+                    });
+                }
+                context.draw_polygon(&vertices, sector_color);
+                start_angle += sweep;
+            }
         }
     }
 }
@@ -759,7 +867,10 @@ impl Chart for ScatterChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
+                Point::from_f32(
+                    layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                    layout.plot_y + layout.plot_h + 36.0,
+                ),
                 11.0,
                 Color {
                     r: 40,
@@ -933,7 +1044,10 @@ impl Chart for AreaChart {
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
-                Point::from_f32(layout.plot_x + layout.plot_w * 0.5 - 28.0, layout.plot_y + layout.plot_h + 36.0),
+                Point::from_f32(
+                    layout.plot_x + layout.plot_w * 0.5 - 28.0,
+                    layout.plot_y + layout.plot_h + 36.0,
+                ),
                 11.0,
                 Color {
                     r: 40,
@@ -956,19 +1070,66 @@ impl Chart for AreaChart {
                 },
             );
         }
+        let baseline = layout.plot_y + layout.plot_h;
+        // Track accumulated y-values for stacking mode
+        let mut accum: Option<Vec<f64>> = None;
         for series in &visible_series {
             if series.data.len() < 2 {
                 continue;
             }
+            // Determine effective y-values for this series (stacked or raw)
+            let effective_y: Vec<f64> = if self.stacked {
+                // Ensure accumulator is sized to match this series
+                if accum
+                    .as_ref()
+                    .map_or(true, |a| a.len() != series.data.len())
+                {
+                    accum = Some(vec![0.0_f64; series.data.len()]);
+                }
+                let acc = accum.as_mut().unwrap();
+                series
+                    .data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let stacked_y = acc[i] + p.y;
+                        acc[i] = stacked_y;
+                        stacked_y
+                    })
+                    .collect()
+            } else {
+                series.data.iter().map(|p| p.y).collect()
+            };
+            // Build polygon from baseline up to data points, across, and back down
+            let mut pts = Vec::with_capacity(series.data.len() * 2 + 2);
+            let p0 = &series.data[0];
+            let x0 = layout.plot_x + (((p0.x - min_x) / span_x) as f32) * layout.plot_w;
+            let y0 = baseline - (((effective_y[0] - min_y) / span_y) as f32) * layout.plot_h;
+            // Start at baseline below first point, go up to first point
+            pts.push(Point::from_f32(x0, baseline as f32));
+            pts.push(Point::from_f32(x0, y0));
+            // Walk through intermediate data points
+            for i in 1..series.data.len() {
+                let p = &series.data[i];
+                let x = layout.plot_x + (((p.x - min_x) / span_x) as f32) * layout.plot_w;
+                let y = baseline - (((effective_y[i] - min_y) / span_y) as f32) * layout.plot_h;
+                pts.push(Point::from_f32(x, y));
+            }
+            // Drop back down to baseline from last point
+            let last = &series.data[series.data.len() - 1];
+            let last_x = layout.plot_x + (((last.x - min_x) / span_x) as f32) * layout.plot_w;
+            pts.push(Point::from_f32(last_x, baseline as f32));
+            // Fill the enclosed area with semi-transparent color
+            context.draw_polygon(&pts, series.color.with_alpha_f32(0.3));
+            // Overdraw the top line for visual clarity
             for i in 1..series.data.len() {
                 let p1 = &series.data[i - 1];
                 let p2 = &series.data[i];
                 let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y1 = layout.plot_y + layout.plot_h
-                    - (((p1.y - min_y) / span_y) as f32) * layout.plot_h;
+                let y1 =
+                    baseline - (((effective_y[i - 1] - min_y) / span_y) as f32) * layout.plot_h;
                 let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y2 = layout.plot_y + layout.plot_h
-                    - (((p2.y - min_y) / span_y) as f32) * layout.plot_h;
+                let y2 = baseline - (((effective_y[i] - min_y) / span_y) as f32) * layout.plot_h;
                 context.draw_line(
                     Point::from_f32(x1, y1),
                     Point::from_f32(x2, y2),
@@ -980,4 +1141,3 @@ impl Chart for AreaChart {
         draw_legend(context, &layout, &visible_series);
     }
 }
-

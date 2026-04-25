@@ -28,8 +28,9 @@ use crate::json::{
     store_layout, BoundJsonLayout, ChildLayoutAttrs,
 };
 use crate::widget::{
-    Button, CheckBox, ComboBox, GridWidget, GroupBox, Label, LineEdit, ListBox, ListView,
-    ProgressBar, RadioButton, ScrollArea, ScrollBar, Slider, SpinBox, TabWidget, TextEdit, Widget,
+    Button, CheckBox, ColorDialog, ComboBox, FileDialog, FontDialog, GridWidget, GroupBox, Label,
+    LineEdit, ListBox, ListView, MessageBox, ProgressBar, RadioButton, ScrollArea, ScrollBar,
+    Slider, SpinBox, TabWidget, TextEdit, Widget,
 };
 use crate::window::Window;
 use crate::{
@@ -223,7 +224,7 @@ impl JsonLoader {
             }
         }
 
-        // ── Event binding: on_click / on_change ─────────────
+        // ── Event binding: on_click / on_change / extended ──
         // When JSON declares "on_click": "handler_name", wire the
         // widget's click signal to invoke_global_handler.
         let (on_click_name, on_change_name) = extract_event_handlers(obj);
@@ -239,6 +240,75 @@ impl JsonLoader {
             });
         }
         if let Some(ref name) = on_change_name {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        // ── Extended event bindings ──────────────────────────
+        let (on_close, on_double_click, on_focus, on_blur, on_selection_changed, on_value_changed) =
+            extract_extended_event_handlers(obj);
+        if let Some(ref name) = on_close {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_click(move || {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::Closed,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_double_click {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_click(move || {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::Clicked,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_focus {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_blur {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_selection_changed {
+            let handler_name = name.clone();
+            let handle = ButtonHandle::from_raw(widget_id);
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
+                    widget_id,
+                    kind: crate::platform::WidgetTriggerKind::SelectionChanged,
+                });
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+        if let Some(ref name) = on_value_changed {
             let handler_name = name.clone();
             let handle = ButtonHandle::from_raw(widget_id);
             handle.on_value_changed(move |_value| {
@@ -769,6 +839,89 @@ impl JsonLoader {
                 }
                 Ok(Box::new(frame))
             }
+            "messagebox" => {
+                let mut mb = MessageBox::new(geometry);
+                if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                    if !title.is_empty() {
+                        mb.set_title(title.to_string());
+                    }
+                }
+                if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                    if !text.is_empty() {
+                        mb.set_text(text.to_string());
+                    }
+                }
+                if let Some(icon) = obj.get("icon").and_then(|v| v.as_str()) {
+                    match icon {
+                        "information" => mb.set_icon(
+                            crate::widget::dialog::message_box::MessageBoxIcon::Information,
+                        ),
+                        "question" => mb
+                            .set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Question),
+                        "warning" => {
+                            mb.set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Warning)
+                        }
+                        "critical" => mb
+                            .set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Critical),
+                        _ => {
+                            mb.set_icon(crate::widget::dialog::message_box::MessageBoxIcon::NoIcon)
+                        }
+                    }
+                }
+                Ok(Box::new(mb))
+            }
+            "filedialog" => {
+                let mut fd = FileDialog::new(geometry);
+                if let Some(mode) = obj.get("mode").and_then(|v| v.as_str()) {
+                    match mode {
+                        "open_files" => fd.set_mode(
+                            crate::widget::dialog::file_dialog::FileDialogMode::OpenFiles,
+                        ),
+                        "save_file" => fd
+                            .set_mode(crate::widget::dialog::file_dialog::FileDialogMode::SaveFile),
+                        "select_directory" => fd.set_mode(
+                            crate::widget::dialog::file_dialog::FileDialogMode::SelectDirectory,
+                        ),
+                        _ => fd
+                            .set_mode(crate::widget::dialog::file_dialog::FileDialogMode::OpenFile),
+                    }
+                }
+                if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                    if !title.is_empty() {
+                        fd.set_title(title.to_string());
+                    }
+                }
+                if let Some(dir) = obj.get("directory").and_then(|v| v.as_str()) {
+                    if !dir.is_empty() {
+                        fd.set_directory(dir.to_string());
+                    }
+                }
+                Ok(Box::new(fd))
+            }
+            "colordialog" => {
+                let mut cd = ColorDialog::new(geometry);
+                if let Some(alpha) = obj.get("alpha").and_then(|v| v.as_bool()) {
+                    cd.set_options_alpha(alpha);
+                }
+                if let Some(color_str) = obj.get("value").and_then(|v| v.as_str()) {
+                    if let Some(color) = Color::parse_hex(color_str) {
+                        cd.set_current_color(color);
+                    }
+                }
+                Ok(Box::new(cd))
+            }
+            "fontdialog" => {
+                let mut fd = FontDialog::new(geometry);
+                if let Some(_font_str) = obj.get("value").and_then(|v| v.as_str()) {
+                    if !_font_str.is_empty() {
+                        // Font selection from string requires font parsing.
+                        // Default value used for now; full font parsing can be
+                        // added when Font::from_string or similar is available.
+                        fd.set_current_font(crate::core::Font::default());
+                    }
+                }
+                Ok(Box::new(fd))
+            }
             _ => Err(format!("unknown widget type: '{}'", widget_type)),
         }
     }
@@ -911,9 +1064,9 @@ fn apply_style_padding(
     }
 }
 
-/// Connect JSON `on_click` / `on_change` handlers to the widget callback system.
+/// Connect JSON event handler names to the widget callback system.
 ///
-/// Returns `(on_click_name, on_change_name)` if present.
+/// Returns all extracted handler names.
 pub fn extract_event_handlers(
     obj: &serde_json::Map<String, Value>,
 ) -> (Option<String>, Option<String>) {
@@ -928,6 +1081,54 @@ pub fn extract_event_handlers(
     (on_click, on_change)
 }
 
+/// Extract all extended event handler names from a JSON object.
+///
+/// Supports: on_close, on_double_click, on_focus, on_blur,
+/// on_selection_changed, on_value_changed.
+pub fn extract_extended_event_handlers(
+    obj: &serde_json::Map<String, Value>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let on_close = obj
+        .get("on_close")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_double_click = obj
+        .get("on_double_click")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_focus = obj
+        .get("on_focus")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_blur = obj
+        .get("on_blur")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_selection_changed = obj
+        .get("on_selection_changed")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let on_value_changed = obj
+        .get("on_value_changed")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (
+        on_close,
+        on_double_click,
+        on_focus,
+        on_blur,
+        on_selection_changed,
+        on_value_changed,
+    )
+}
+
 /// Infer widget kind from type string.
 fn infer_kind(widget_type: &str) -> WidgetKind {
     match widget_type.to_lowercase().as_str() {
@@ -937,19 +1138,21 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "checkbox" => WidgetKind::CheckBox,
         "radiobutton" => WidgetKind::RadioButton,
         "lineedit" => WidgetKind::LineEdit,
-        "textedit" => WidgetKind::LineEdit, // mapped to closest match
+        "textedit" => WidgetKind::TextEdit,
         "combobox" => WidgetKind::ComboBox,
         "listbox" => WidgetKind::ListBox,
         "slider" => WidgetKind::Slider,
-        "scrollbar" => WidgetKind::Slider, // mapped to closest match
+        "scrollbar" => WidgetKind::ScrollBar,
         "progressbar" => WidgetKind::ProgressBar,
         "groupbox" => WidgetKind::Panel,
-        "tabwidget" => WidgetKind::Panel,
-        "grid" => WidgetKind::Panel,
+        "tabwidget" => WidgetKind::TabWidget,
+        "grid" => WidgetKind::GridWidget,
         "panel" => WidgetKind::Panel,
         "spinbox" => WidgetKind::SpinBox,
         "listview" => WidgetKind::ListView,
         "scrollarea" => WidgetKind::ScrollArea,
+        "frame" => WidgetKind::Frame,
+        "dialog" => WidgetKind::Dialog,
         _ => WidgetKind::Button,
     }
 }

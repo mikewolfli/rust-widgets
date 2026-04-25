@@ -1,5 +1,7 @@
 //! Linux backend platform (sub-module split).
-pub mod types;
 pub mod platform_impl;
+#[cfg(test)]
+pub mod tests;
+pub mod types;
 
 pub use types::*;

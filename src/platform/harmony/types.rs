@@ -1,9 +1,9 @@
 //! Harmony desktop backend shell.
+use super::super::WidgetTriggerEvent;
+use crate::platform::state::BackendState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
-use crate::platform::state::BackendState;
-use super::super::WidgetTriggerEvent;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HarmonyHandleKind {
     Window,
@@ -22,6 +22,13 @@ pub(crate) enum HarmonyHandleKind {
     MenuItem,
     ToolBar,
     StatusBar,
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
 }
 #[derive(Default)]
 pub(crate) struct HarmonyMenuState {
@@ -33,6 +40,14 @@ pub(crate) struct HarmonyMenuState {
     pub(crate) pending_menu_events: VecDeque<u64>,
     /// FIFO typed widget trigger queue, filled by bridge callbacks and local fallbacks.
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
+}
+/// Shared storage for ComboBox and ListBox widget data.
+#[derive(Default)]
+pub(crate) struct ListData {
+    /// Ordered item text entries.
+    pub(crate) items: Vec<String>,
+    /// Currently selected index, if any.
+    pub(crate) current_index: Option<usize>,
 }
 pub(crate) struct HarmonyRuntimeState {
     pub(crate) initialized: AtomicBool,
@@ -51,6 +66,8 @@ pub struct HarmonyPlatform {
     pub(crate) state: BackendState<HarmonyHandleKind>,
     pub(crate) menus: Mutex<HarmonyMenuState>,
     pub(crate) runtime: HarmonyRuntimeState,
+    /// Shared list storage for ComboBox and ListBox widgets.
+    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
 impl HarmonyPlatform {
     /// Creates a new Harmony platform adapter.
@@ -59,6 +76,7 @@ impl HarmonyPlatform {
             state: BackendState::new(),
             menus: Mutex::new(HarmonyMenuState::default()),
             runtime: HarmonyRuntimeState::new(),
+            list_data: Mutex::new(HashMap::new()),
         }
     }
 }

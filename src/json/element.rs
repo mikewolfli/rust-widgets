@@ -16,9 +16,10 @@
 use std::collections::HashMap;
 
 use crate::app::{
-    ButtonHandle, CheckBoxHandle, ComboBoxHandle, LabelHandle, LineEditHandle, ListBoxHandle,
-    ListViewHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle,
-    SliderHandle, SpinBoxHandle, WidgetHandle,
+    ButtonHandle, CheckBoxHandle, ComboBoxHandle, FrameHandle, GridWidgetHandle, LabelHandle,
+    LineEditHandle, ListBoxHandle, ListViewHandle, PanelHandle, ProgressBarHandle,
+    RadioButtonHandle, ScrollAreaHandle, ScrollBarHandle, SliderHandle, SpinBoxHandle,
+    TabWidgetHandle, TextEditHandle, WidgetHandle, WindowHandle,
 };
 use crate::core::ObjectId;
 
@@ -137,6 +138,36 @@ impl BoundJsonLayout {
 
     /// Convenience: get a scroll area handle by JSON id.
     pub fn scroll_area(&self, name: &str) -> Result<ScrollAreaHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a text edit handle by JSON id.
+    pub fn text_edit(&self, name: &str) -> Result<TextEditHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a scroll bar handle by JSON id.
+    pub fn scroll_bar(&self, name: &str) -> Result<ScrollBarHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a tab widget handle by JSON id.
+    pub fn tab_widget(&self, name: &str) -> Result<TabWidgetHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a grid widget handle by JSON id.
+    pub fn grid_widget(&self, name: &str) -> Result<GridWidgetHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a frame handle by JSON id.
+    pub fn frame(&self, name: &str) -> Result<FrameHandle, String> {
+        self.widget_by_name(name)
+    }
+
+    /// Convenience: get a window handle by JSON id.
+    pub fn window(&self, name: &str) -> Result<WindowHandle, String> {
         self.widget_by_name(name)
     }
 }

@@ -10,7 +10,7 @@ impl Default for GradientType {
         Self::Linear
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientStop {
     pub position: f32,
     pub color: Color,
@@ -23,7 +23,7 @@ impl GradientStop {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
     pub gradient_type: GradientType,
     pub stops: Vec<GradientStop>,

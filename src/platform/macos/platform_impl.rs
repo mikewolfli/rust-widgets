@@ -4,19 +4,21 @@
 
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::macos::types::*;
-use crate::platform::state::BackendState;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSView, NSWindow,
 };
 use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
+use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSString};
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
 
 impl Platform for MacOSPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn backend_name(&self) -> &'static str {
         "cocoa"
     }

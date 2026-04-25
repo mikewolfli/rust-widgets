@@ -24,6 +24,13 @@ pub(crate) enum LinuxHandleKind {
     MenuItem,
     ToolBar,
     StatusBar,
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
 }
 #[derive(Default)]
 pub(crate) struct LinuxMenuState {
@@ -38,6 +45,15 @@ pub(crate) struct LinuxMenuState {
     /// FIFO queue for typed widget triggers.
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
+/// Internal list data storage for ComboBox and ListBox widgets.
+#[derive(Default)]
+pub(crate) struct ListData {
+    /// Ordered item text entries.
+    pub(crate) items: Vec<String>,
+    /// Currently selected index, if any.
+    pub(crate) current_index: Option<usize>,
+}
+
 /// Runtime lifecycle state for Linux backend main loop fallback.
 pub(crate) struct LinuxRuntimeState {
     pub(crate) initialized: AtomicBool,
@@ -58,6 +74,8 @@ pub struct LinuxPlatform {
     pub(crate) runtime: LinuxRuntimeState,
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     pub(crate) native: Mutex<LinuxNativeState>,
+    /// Shared list storage for ComboBox and ListBox widgets.
+    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 #[derive(Default)]
@@ -82,6 +100,7 @@ impl LinuxPlatform {
             runtime: LinuxRuntimeState::new(),
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
+            list_data: Mutex::new(HashMap::new()),
         }
     }
 }

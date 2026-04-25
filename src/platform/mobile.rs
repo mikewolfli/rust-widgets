@@ -96,6 +96,9 @@ impl AndroidMobilePlatform {
     }
 }
 impl Platform for AndroidMobilePlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn backend_name(&self) -> &'static str {
         "android-mobile"
     }

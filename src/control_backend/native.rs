@@ -1,5 +1,5 @@
-use crate::control_backend::types::ControlBackendKind;
 use crate::control_backend::trait_def::ControlBackend;
+use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 use crate::platform::{get_platform, WidgetTriggerEvent, WidgetTriggerKind};
 /// Native control backend that forwards to platform backend.
@@ -217,59 +217,59 @@ impl ControlBackend for NativeControlBackend {
     }
     fn create_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_message_box(parent, title, "", x, y, width, height)
     }
     fn create_message_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         title: &str,
-        _text: &str,
+        text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_message_box(parent, title, text, x, y, width, height)
     }
     fn create_file_dialog(
         &self,
-        _parent: ObjectId,
-        title: &str,
+        parent: ObjectId,
+        _title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_file_dialog(parent, x, y, width, height)
     }
     fn create_color_dialog(
         &self,
-        _parent: ObjectId,
-        title: &str,
+        parent: ObjectId,
+        _title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_color_dialog(parent, x, y, width, height)
     }
     fn create_font_dialog(
         &self,
-        _parent: ObjectId,
-        title: &str,
+        parent: ObjectId,
+        _title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_font_dialog(parent, x, y, width, height)
     }
     fn create_popup_window(
         &self,
@@ -312,7 +312,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_line_edit(parent, "", x, y, width, height)
+        get_platform().create_spin_box(parent, x, y, width, height)
     }
     fn create_list_view(
         &self,
@@ -322,7 +322,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_list_box(parent, x, y, width, height)
+        get_platform().create_list_view(parent, x, y, width, height)
     }
     fn create_tree_view(
         &self,

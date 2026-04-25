@@ -1461,4 +1461,68 @@ impl SoftwareSurface {
             pen_x += cluster.advance;
         }
     }
+    /// Draws an RGBA image at the specified position and size.
+    /// Pixels are copied directly from the source data, performing alpha blending.
+    pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
+        let size = self.buffer.size();
+        if width == 0 || height == 0 {
+            return;
+        }
+        let expected_len = (width as usize) * (height as usize) * 4;
+        if data.len() < expected_len {
+            return;
+        }
+        let frame = self.buffer.back_mut();
+        let screen_width = size.width;
+        let screen_height = size.height;
+        for row in 0..height {
+            let sy = y + row as i32;
+            if sy < 0 || sy as u32 >= screen_height {
+                continue;
+            }
+            for col in 0..width {
+                let sx = x + col as i32;
+                if sx < 0 || sx as u32 >= screen_width {
+                    continue;
+                }
+                let src_idx = ((row as usize) * (width as usize) + (col as usize)) * 4;
+                let r = data[src_idx];
+                let g = data[src_idx + 1];
+                let b = data[src_idx + 2];
+                let a = data[src_idx + 3];
+                let dst_idx = ((sy as u32) * screen_width + (sx as u32)) as usize * 4;
+                if a == 255 {
+                    frame[dst_idx] = r;
+                    frame[dst_idx + 1] = g;
+                    frame[dst_idx + 2] = b;
+                    frame[dst_idx + 3] = 255;
+                } else if a > 0 {
+                    let src_alpha = a as f32 / 255.0;
+                    let dst_alpha = frame[dst_idx + 3] as f32 / 255.0;
+                    let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
+                    if out_alpha > 0.0 {
+                        let src_weight = src_alpha / out_alpha;
+                        let dst_weight = dst_alpha * (1.0 - src_alpha) / out_alpha;
+                        frame[dst_idx] =
+                            (r as f32 * src_weight + frame[dst_idx] as f32 * dst_weight) as u8;
+                        frame[dst_idx + 1] =
+                            (g as f32 * src_weight + frame[dst_idx + 1] as f32 * dst_weight) as u8;
+                        frame[dst_idx + 2] =
+                            (b as f32 * src_weight + frame[dst_idx + 2] as f32 * dst_weight) as u8;
+                        frame[dst_idx + 3] = (out_alpha * 255.0) as u8;
+                    }
+                }
+            }
+        }
+    }
+    /// Pushes a clip rectangle onto the clip stack.
+    /// Currently a no-op — clip stack integration is not yet wired into the raster pipeline.
+    pub fn push_clip(&mut self, _x: i32, _y: i32, _width: u32, _height: u32) {
+        // Clip stack is reserved for future scissor-rect / stencil integration.
+    }
+    /// Pops the top clip rectangle from the clip stack.
+    /// Currently a no-op — clip stack integration is not yet wired into the raster pipeline.
+    pub fn pop_clip(&mut self) {
+        // Clip stack is reserved for future scissor-rect / stencil integration.
+    }
 }

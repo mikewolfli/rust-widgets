@@ -10,6 +10,9 @@ use crate::platform::{
 use crate::platform::windows::types::*;
 
 impl Platform for WindowsPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn show_widget(&self, widget_id: ObjectId) {
         self.state.set_visible(widget_id, true);
         #[cfg(target_os = "windows")]
@@ -1580,4 +1583,3 @@ impl Platform for WindowsPlatform {
 // Core and platform types
 // Stub for WindowsHandleKind enum (should be replaced with actual variants as needed)
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-

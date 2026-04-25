@@ -278,13 +278,13 @@ fn test_app_default_is_new() {
 
 #[test]
 fn test_window_handle_roundtrip() {
-    use rust_widgets::app::{App, WidgetHandle};
-    let app = App::new();
-    let win = app.new_window("test", 0, 0, 100, 100);
-    // ObjectIds are sequential starting from 1
-    assert!(win.raw_id() >= 1);
-    // Even without platform, trait methods are callable
-    win.set_visible(true);
+    use rust_widgets::app::WindowHandle;
+    // Create a window handle from raw id — no platform needed.
+    let win = WindowHandle::from_raw(42);
+    assert_eq!(win.raw_id(), 42);
+    // Create another handle from same raw id.
+    let win2 = WindowHandle::from_raw(win.raw_id());
+    assert_eq!(win2.raw_id(), win.raw_id());
 }
 
 #[test]

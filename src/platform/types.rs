@@ -115,6 +115,10 @@ impl NativeCapabilityContract {
 }
 /// Platform backend contract used by widget/runtime layers.
 pub trait Platform: Send + Sync {
+    /// Returns self as a `&dyn Any` for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any {
+        panic!("as_any not implemented — override in concrete platform backend");
+    }
     /// Returns backend identifier string.
     fn backend_name(&self) -> &'static str;
     /// Returns platform family classification.
@@ -397,18 +401,7 @@ pub trait MobilePlatformExtension: Send + Sync {
     /// Attaches runtime to an externally provided native view handle.
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
 }
-#[derive(Default)]
-pub(crate) struct WidgetState {
-    pub(crate) text: String,
-    pub(crate) visible: bool,
-    pub(crate) enabled: bool,
-    pub(crate) ime_enabled: bool,
-    pub(crate) accessibility_name: String,
-    pub(crate) x: i32,
-    pub(crate) y: i32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-}
+
 pub(crate) struct MenuNodeState {
     pub(crate) text: String,
 }

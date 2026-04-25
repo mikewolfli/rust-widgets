@@ -1,4 +1,5 @@
-use crate::core::{Rect, Size};
+use super::Layout;
+use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowDirection {
@@ -75,7 +76,7 @@ impl FlowLayout {
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
-    pub fn layout(&mut self, available_rect: Rect) -> Vec<Rect> {
+    pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
         let content_rect = Rect::new(
             available_rect.x + self.config.padding,
             available_rect.y + self.config.padding,
@@ -91,7 +92,7 @@ impl FlowLayout {
             FlowDirection::Vertical => self.layout_vertical(&content_rect),
         }
     }
-    fn layout_horizontal(&mut self, content_rect: &Rect) -> Vec<Rect> {
+    fn layout_horizontal(&self, content_rect: &Rect) -> Vec<Rect> {
         let mut positions = Vec::new();
         let mut current_x = content_rect.x;
         let mut current_y = content_rect.y;
@@ -122,7 +123,7 @@ impl FlowLayout {
         self.apply_alignment(&mut positions, content_rect);
         positions
     }
-    fn layout_vertical(&mut self, content_rect: &Rect) -> Vec<Rect> {
+    fn layout_vertical(&self, content_rect: &Rect) -> Vec<Rect> {
         let mut positions = Vec::new();
         let mut current_x = content_rect.x;
         let mut current_y = content_rect.y;
@@ -267,6 +268,29 @@ impl FlowLayout {
 impl Default for FlowLayout {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Layout for FlowLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {
+        // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
+        // Widgets are added via add_child().
+    }
+
+    fn remove_widget(&mut self, _widget_id: ObjectId) {
+        // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
+        // Widgets are removed via remove_child().
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let positions = self.layout(rect);
+        for (i, child_rect) in positions.iter().enumerate() {
+            widgets(i as ObjectId, *child_rect);
+        }
     }
 }
 #[cfg(test)]

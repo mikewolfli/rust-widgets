@@ -232,7 +232,24 @@ impl PrintDialog {
     }
     /// Returns whether dialog state is currently valid to submit.
     pub fn show(&self) -> bool {
-        self.copies >= 1
+        if self.copies < 1 {
+            log::warn!("PrintDialog::show() called with 0 copies — no pages will be printed");
+            return false;
+        }
+        log::info!(
+            "PrintDialog::show() — copies={}, page_order={:?}, page_filter={:?}, collate={}",
+            self.copies,
+            self.pagination.page_order,
+            self.pagination.page_filter,
+            self.pagination.collate,
+        );
+        // When a real native print dialog is available (e.g., Cocoa PrintPanel on macOS,
+        // PrintDlg on Windows, GtkPrintDialog on Linux) this method would present the
+        // platform-native dialog and return user choices.
+        //
+        // For now we log the pending configuration and accept it, which enables
+        // the printer pipeline to produce output with the given settings.
+        true
     }
 }
 impl Default for PrintDialog {

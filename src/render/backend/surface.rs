@@ -1,7 +1,7 @@
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::{PaintBackend, RenderCommand, TextMetrics, ShapedText};
 use crate::render::pixel_bytes_len;
+use crate::render::{PaintBackend, RenderCommand, ShapedText, TextMetrics};
 use std::sync::{Mutex, OnceLock};
 
 /// Double-buffered RGBA pixel storage used by software rendering.
@@ -237,12 +237,14 @@ impl<'a> RenderContext<'a> {
         self.backend.shape_text(text, font)
     }
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
-        // Clip to the given rectangle by filling the area outside with a clipping rect.
-        // Since we have no real clip stack, we use a workaround: draw nothing, but mark it.
-        // The software renderer already handles per-pixel bounds.
-        let _ = (x, y, width, height);
+        self.backend.execute_command(&RenderCommand::PushClip {
+            x,
+            y,
+            width,
+            height,
+        });
     }
     pub fn pop_clip(&mut self) {
-        // Pop the clip rect. No-op since we don't have a real clip stack.
+        self.backend.execute_command(&RenderCommand::PopClip);
     }
 }

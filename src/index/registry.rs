@@ -5,10 +5,12 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::ObjectId;
 
 /// Kinds of widgets tracked by the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WidgetKind {
     Window,
     Button,
@@ -16,11 +18,17 @@ pub enum WidgetKind {
     CheckBox,
     RadioButton,
     LineEdit,
+    TextEdit,
     ComboBox,
     ListBox,
     Slider,
+    ScrollBar,
     ProgressBar,
     Panel,
+    TabWidget,
+    GridWidget,
+    Frame,
+    Dialog,
     SpinBox,
     ListView,
     ScrollArea,
@@ -31,7 +39,7 @@ pub enum WidgetKind {
 }
 
 /// Metadata stored for each registered widget.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WidgetEntry {
     /// The widget's unique identifier.
     pub id: ObjectId,
@@ -47,7 +55,7 @@ pub struct WidgetEntry {
 ///
 /// This is the runtime "index" for all widgets created through the
 /// `app` module or the raw `create_*` functions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WidgetRegistry {
     entries: HashMap<ObjectId, WidgetEntry>,
     by_kind: HashMap<WidgetKind, Vec<ObjectId>>,
@@ -95,6 +103,37 @@ impl WidgetRegistry {
     /// Return all [`ObjectId`]s of a given [`WidgetKind`].
     pub fn find_by_kind(&self, kind: WidgetKind) -> &[ObjectId] {
         self.by_kind.get(&kind).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Return all entries whose parent matches the given [`ObjectId`].
+    pub fn children_of(&self, parent_id: ObjectId) -> Vec<&WidgetEntry> {
+        self.entries
+            .values()
+            .filter(|entry| entry.parent == Some(parent_id))
+            .collect()
+    }
+
+    /// Serialize the registry to a JSON file at `path`.
+    ///
+    /// Returns `Ok(())` on success, or an error message if serialization
+    /// or file writing fails.
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("serialization error: {}", e))?;
+        std::fs::write(path, &json).map_err(|e| format!("write error: {}", e))
+    }
+
+    /// Deserialize widget registry data from a JSON file at `path`.
+    ///
+    /// Replaces all current entries with the data from the file.
+    /// Returns `Ok(())` on success, or an error message if reading
+    /// or parsing fails.
+    pub fn load(&mut self, path: &str) -> Result<(), String> {
+        let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {}", e))?;
+        let loaded: WidgetRegistry =
+            serde_json::from_str(&json).map_err(|e| format!("parse error: {}", e))?;
+        *self = loaded;
+        Ok(())
     }
 
     /// Return all registered [`ObjectId`]s.

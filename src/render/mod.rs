@@ -25,6 +25,7 @@
 //!
 //! | Group | Path | Contents |
 //! |-------|------|---------|
+//! | **gpu** | `gpu/` | GPU-accelerated rendering traits and capability enums (gated behind `gpu-wgpu`) |
 //! | **core** | `core/` | Data types (`TextMetrics`, `TextCluster`, `ShapedText`) and commands (`RenderCommand`) |
 //! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), batch (`BatchId`), scene (`SceneLayer`, `RenderScene`) |
 //! | **controls** | `controls/` | Widget-specific render controls (basic/input/special) |
@@ -46,8 +47,9 @@ mod controls;
 mod pipeline;
 // Web rendering
 mod web;
-// GPU-accelerated rendering backend (reserved, uses `#[cfg(feature = "wgpu")]` internally)
-// (gpu/ is not yet integrated into build — enable when wgpu feature is activated)
+// GPU-accelerated rendering backend
+#[cfg(feature = "gpu-wgpu")]
+pub mod gpu;
 // Adaptive quality
 pub mod quality;
 // Text caching
@@ -120,6 +122,10 @@ pub use pipeline::{
     // Pixel ops
     fill_pixels,
 };
+
+// GPU — re-export only when feature is active
+#[cfg(feature = "gpu-wgpu")]
+pub use gpu::{GpuCapability, GpuRenderer};
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 

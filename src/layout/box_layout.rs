@@ -146,6 +146,18 @@ impl Layout for BoxLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.items
+            .iter()
+            .filter_map(|item| item.widget_id)
+            .collect()
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.items.iter().any(|item| item.widget_id == Some(id))
+    }
+    fn clear(&mut self) {
+        self.items.clear();
+    }
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
         self.items.push(BoxLayoutItem {
             widget_id: Some(widget_id),
@@ -242,6 +254,15 @@ impl Layout for HBoxLayout {
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.inner.remove_widget(widget_id);
     }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.inner.child_ids()
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.inner.has_child(id)
+    }
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         self.inner.update(rect, widgets);
     }
@@ -290,6 +311,15 @@ impl Layout for VBoxLayout {
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.inner.remove_widget(widget_id);
+    }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.inner.child_ids()
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.inner.has_child(id)
+    }
+    fn clear(&mut self) {
+        self.inner.clear();
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         self.inner.update(rect, widgets);
