@@ -254,3 +254,348 @@ fn cached_wgpu_renderer() -> Option<&'static WgpuRenderer> {
     static RENDERER: OnceLock<Option<WgpuRenderer>> = OnceLock::new();
     RENDERER.get_or_init(|| WgpuRenderer::new().ok()).as_ref()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Point, Rect, Size};
+    use crate::render::RenderCommand;
+
+    // ── SceneLayer ──────────────────────────────────────────────────────
+
+    #[test]
+    fn scene_layer_new_creates_empty_layer() {
+        let layer = SceneLayer::new(5);
+        assert_eq!(layer.z_index(), 5);
+        assert!(layer.commands().is_empty());
+    }
+
+    #[test]
+    fn scene_layer_negative_z_index() {
+        let layer = SceneLayer::new(-3);
+        assert_eq!(layer.z_index(), -3);
+    }
+
+    #[test]
+    fn scene_layer_zero_z_index() {
+        let layer = SceneLayer::new(0);
+        assert_eq!(layer.z_index(), 0);
+    }
+
+    #[test]
+    fn scene_layer_push_and_commands() {
+        let mut layer = SceneLayer::new(1);
+        assert!(layer.commands().is_empty());
+
+        let cmd = RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 100, 100),
+            color: Color::RED,
+        };
+        layer.push(cmd.clone());
+        assert_eq!(layer.commands().len(), 1);
+
+        let cmd2 = RenderCommand::DrawLine {
+            from: Point::new(0, 0),
+            to: Point::new(50, 50),
+            color: Color::BLUE,
+        };
+        layer.push(cmd2.clone());
+        assert_eq!(layer.commands().len(), 2);
+
+        // Verify insertion order
+        assert!(matches!(
+            layer.commands()[0],
+            RenderCommand::FillRect { .. }
+        ));
+        assert!(matches!(
+            layer.commands()[1],
+            RenderCommand::DrawLine { .. }
+        ));
+    }
+
+    #[test]
+    fn scene_layer_clone_is_independent() {
+        let mut layer = SceneLayer::new(10);
+        layer.push(RenderCommand::PopClip);
+        let cloned = layer.clone();
+        assert_eq!(cloned.commands().len(), 1);
+        assert_eq!(cloned.z_index(), 10);
+    }
+
+    // ── RenderScene ─────────────────────────────────────────────────────
+
+    #[test]
+    fn render_scene_new_is_empty() {
+        let scene = RenderScene::new();
+        assert!(scene.layers().is_empty());
+    }
+
+    #[test]
+    fn render_scene_default_is_empty() {
+        let scene = RenderScene::default();
+        assert!(scene.layers().is_empty());
+    }
+
+    #[test]
+    fn render_scene_clear_removes_all_layers() {
+        let mut scene = RenderScene::new();
+        scene.add_layer(SceneLayer::new(0));
+        scene.add_layer(SceneLayer::new(1));
+        assert_eq!(scene.layers().len(), 2);
+
+        scene.clear();
+        assert!(scene.layers().is_empty());
+    }
+
+    #[test]
+    fn render_scene_add_layer_and_retrieve() {
+        let mut scene = RenderScene::new();
+        let layer = SceneLayer::new(42);
+        scene.add_layer(layer);
+
+        assert_eq!(scene.layers().len(), 1);
+        assert_eq!(scene.layers()[0].z_index(), 42);
+    }
+
+    #[test]
+    fn render_scene_multiple_layers_in_insertion_order() {
+        let mut scene = RenderScene::new();
+        scene.add_layer(SceneLayer::new(10));
+        scene.add_layer(SceneLayer::new(5));
+        scene.add_layer(SceneLayer::new(20));
+
+        // layers() returns insertion order, not sorted by z
+        assert_eq!(scene.layers()[0].z_index(), 10);
+        assert_eq!(scene.layers()[1].z_index(), 5);
+        assert_eq!(scene.layers()[2].z_index(), 20);
+    }
+
+    #[test]
+    fn render_scene_add_layer_with_zero_commands() {
+        let mut scene = RenderScene::new();
+        scene.add_layer(SceneLayer::new(0));
+        assert_eq!(scene.layers()[0].commands().len(), 0);
+    }
+
+    // ── compose_with_backend ────────────────────────────────────────────
+
+    #[test]
+    fn compose_with_backend_empty_scene_clears() {
+        let scene = RenderScene::new();
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        scene.compose_with_backend(&mut backend, Color::BLACK);
+
+        // compose_with_backend already calls end_frame internally,
+        // so frame_rgba() shows the cleared frame
+        let rgba = backend.frame_rgba();
+        for chunk in rgba.chunks(4) {
+            assert_eq!(chunk[0], 0, "R channel should be 0");
+            assert_eq!(chunk[1], 0, "G channel should be 0");
+            assert_eq!(chunk[2], 0, "B channel should be 0");
+            assert_eq!(chunk[3], 255, "A channel should be 255");
+        }
+    }
+
+    #[test]
+    fn compose_with_backend_layers_by_z_index() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(50, 50), 1.0);
+
+        let mut scene = RenderScene::new();
+
+        // Layer with z=1 draws red region (higher z = on top)
+        let mut layer_high = SceneLayer::new(1);
+        layer_high.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 25, 25),
+            color: Color::RED,
+        });
+        scene.add_layer(layer_high);
+
+        // Layer with z=0 draws larger blue region (lower z = drawn first)
+        let mut layer_low = SceneLayer::new(0);
+        layer_low.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 50, 50),
+            color: Color::BLUE,
+        });
+        scene.add_layer(layer_low);
+
+        scene.compose_with_backend(&mut backend, Color::BLACK);
+
+        // Pixel at (10,10) should be RED (higher z-index renders on top)
+        let rgba = backend.frame_rgba();
+        let stride = 50 * 4;
+        let idx = 10 * stride + 10 * 4;
+        assert_eq!(rgba[idx], 255); // R
+        assert_eq!(rgba[idx + 1], 0); // G
+        assert_eq!(rgba[idx + 2], 0); // B
+    }
+
+    #[test]
+    fn compose_with_backend_config_temporary_override() {
+        let scene = RenderScene::new();
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+
+        let original = backend.render_config();
+
+        let custom = SoftwareRenderConfig {
+            aa_samples_per_axis: 1,
+        };
+        scene.compose_with_backend_config(&mut backend, Color::BLACK, Some(custom));
+
+        // Config should be restored after compose
+        assert_eq!(backend.render_config(), original);
+    }
+
+    #[test]
+    fn compose_with_backend_config_none_preserves_config() {
+        let scene = RenderScene::new();
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        let original = backend.render_config();
+        scene.compose_with_backend_config(&mut backend, Color::BLACK, None);
+        assert_eq!(backend.render_config(), original);
+    }
+
+    // ── compose_to / compose_to_config ──────────────────────────────────
+
+    #[test]
+    fn compose_to_empty_scene_clears_surface() {
+        let scene = RenderScene::new();
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        scene.compose_to(&mut surface, Color::GREEN);
+
+        // Surface should be cleared to green
+        let rgba = surface.frame_rgba();
+        for chunk in rgba.chunks(4) {
+            assert_eq!(chunk[0], 0); // R
+            assert_eq!(chunk[1], 255); // G
+            assert_eq!(chunk[2], 0); // B
+            assert_eq!(chunk[3], 255); // A
+        }
+    }
+
+    #[test]
+    fn compose_to_config_with_custom_config() {
+        let scene = RenderScene::new();
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        let config = SoftwareRenderConfig {
+            aa_samples_per_axis: 2,
+        };
+        scene.compose_to_config(&mut surface, Color::BLACK, Some(config));
+        let rgba = surface.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    // ── compose_to_config_auto ──────────────────────────────────────────
+
+    #[test]
+    fn compose_to_config_auto_returns_backend() {
+        let scene = RenderScene::new();
+        let mut surface = SoftwareSurface::new(Size::new(5, 5), 1.0);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
+        // Either GpuWgpu (when gpu-wgpu feature available and runtime succeeds)
+        // or CpuSoftware (fallback)
+        assert!(
+            backend == AutoRenderBackend::CpuSoftware || backend == AutoRenderBackend::GpuWgpu,
+            "expected either CpuSoftware or GpuWgpu, got {:?}",
+            backend
+        );
+    }
+
+    #[test]
+    fn compose_to_config_auto_with_zero_size_surface() {
+        let scene = RenderScene::new();
+        let mut surface = SoftwareSurface::new(Size::new(0, 0), 1.0);
+        let backend = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
+        assert_eq!(backend, AutoRenderBackend::CpuSoftware);
+    }
+
+    #[test]
+    fn compose_to_config_auto_with_config() {
+        let scene = RenderScene::new();
+        let mut surface = SoftwareSurface::new(Size::new(5, 5), 1.0);
+        let config = SoftwareRenderConfig {
+            aa_samples_per_axis: 8,
+        };
+        let backend = scene.compose_to_config_auto(&mut surface, Color::WHITE, Some(config));
+        assert!(
+            backend == AutoRenderBackend::CpuSoftware || backend == AutoRenderBackend::GpuWgpu,
+            "expected either CpuSoftware or GpuWgpu, got {:?}",
+            backend
+        );
+    }
+
+    // ── AutoRenderBackend global functions ──────────────────────────────
+
+    #[test]
+    fn last_auto_render_backend_default_is_cpu() {
+        let backend = last_auto_render_backend();
+        assert_eq!(backend, AutoRenderBackend::CpuSoftware);
+    }
+
+    #[cfg(feature = "quality-management")]
+    #[test]
+    fn current_quality_level_returns_reasonable_default() {
+        let level = current_quality_level();
+        let _ = level;
+    }
+
+    // ── Z-order edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn compose_with_backend_layer_order_by_negative_z() {
+        let mut scene = RenderScene::new();
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+
+        // z=1 draws red over whole surface (on top after sort)
+        let mut top = SceneLayer::new(1);
+        top.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 20, 20),
+            color: Color::RED,
+        });
+        scene.add_layer(top);
+
+        // z=-1 draws blue over whole surface (lower priority, drawn first)
+        let mut bottom = SceneLayer::new(-1);
+        bottom.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 20, 20),
+            color: Color::BLUE,
+        });
+        scene.add_layer(bottom);
+
+        // Sorted: z=-1 first (blue), then z=1 (red) -> red wins
+        scene.compose_with_backend(&mut backend, Color::BLACK);
+
+        let rgba = backend.frame_rgba();
+        let idx = 0; // top-left pixel
+        assert_eq!(rgba[idx], 255); // R
+        assert_eq!(rgba[idx + 3], 255); // A
+    }
+
+    #[test]
+    fn compose_with_backend_multiple_layers_same_z_draws_in_input_order() {
+        let mut scene = RenderScene::new();
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+
+        // Both layers have same z=0, so insertion order determines draw order
+        let mut first = SceneLayer::new(0);
+        first.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 10, 10),
+            color: Color::RED,
+        });
+        scene.add_layer(first);
+
+        let mut second = SceneLayer::new(0);
+        second.push(RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 10, 10),
+            color: Color::GREEN,
+        });
+        scene.add_layer(second);
+
+        scene.compose_with_backend(&mut backend, Color::BLACK);
+
+        // Green was drawn second (same z), so it should be on top
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 0); // R = 0
+        assert_eq!(rgba[1], 255); // G = 255
+        assert_eq!(rgba[2], 0); // B = 0
+    }
+}

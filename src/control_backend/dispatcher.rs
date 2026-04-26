@@ -1,13 +1,13 @@
 #[cfg(feature = "controls-custom")]
-use std::sync::OnceLock;
-#[cfg(feature = "controls-custom")]
 use crate::control_backend::custom::CustomPaintControlBackend;
 #[cfg(feature = "controls-native")]
 use crate::control_backend::native::NativeControlBackend;
+use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::control_backend::trait_def::ControlBackend;
 use crate::control_backend::types::ControlRoutePreference;
-use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::widget::WidgetKind;
+#[cfg(feature = "controls-custom")]
+use std::sync::OnceLock;
 fn native_control_backend() -> &'static NativeControlBackend {
     static BACKEND: NativeControlBackend = NativeControlBackend::new();
     &BACKEND
@@ -79,4 +79,85 @@ pub fn active_control_policy() -> &'static str {
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn active_control_policy() -> &'static str {
     "native-strict"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::WidgetKind;
+
+    #[test]
+    fn get_control_backend_returns_valid_backend() {
+        let backend = get_control_backend();
+        let name = backend.backend_name();
+        assert!(!name.is_empty(), "backend_name must not be empty");
+        let kind = backend.kind();
+        // With "desktop" feature, both native and custom are enabled.
+        // Default is native in hybrid mode.
+        let _ = format!("{:?}", kind);
+    }
+
+    #[test]
+    fn get_control_backend_for_widget_returns_non_null() {
+        let backend = get_control_backend_for_widget(WidgetKind::Button);
+        let name = backend.backend_name();
+        assert!(
+            !name.is_empty(),
+            "backend_name must not be empty for Button"
+        );
+        let backend2 = get_control_backend_for_widget(WidgetKind::Canvas);
+        let name2 = backend2.backend_name();
+        assert!(
+            !name2.is_empty(),
+            "backend_name must not be empty for Canvas"
+        );
+    }
+
+    #[test]
+    fn get_control_backend_for_widget_various_kinds() {
+        let kinds = [
+            WidgetKind::Window,
+            WidgetKind::Button,
+            WidgetKind::Label,
+            WidgetKind::Canvas,
+            WidgetKind::Table,
+            WidgetKind::TextEdit,
+            WidgetKind::Slider,
+            WidgetKind::MenuBar,
+        ];
+        for kind in &kinds {
+            let backend = get_control_backend_for_widget(*kind);
+            let name = backend.backend_name();
+            assert!(
+                !name.is_empty(),
+                "backend_name must not be empty for {:?}",
+                kind
+            );
+            let _ = backend.kind();
+        }
+    }
+
+    #[test]
+    fn active_control_policy_returns_expected_string() {
+        let policy = active_control_policy();
+        assert!(!policy.is_empty(), "policy must not be empty");
+        // With "desktop" feature, both native and custom are enabled -> "hybrid-native-first"
+        #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
+        assert_eq!(policy, "hybrid-native-first");
+        #[cfg(all(not(feature = "controls-native"), feature = "controls-custom"))]
+        assert_eq!(policy, "custom-full");
+        #[cfg(feature = "controls-native")]
+        #[cfg(not(feature = "controls-custom"))]
+        assert_eq!(policy, "native-strict");
+        #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
+        assert_eq!(policy, "native-strict");
+    }
+
+    #[test]
+    fn control_backend_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NativeControlBackend>();
+        #[cfg(feature = "controls-custom")]
+        assert_send_sync::<CustomPaintControlBackend>();
+    }
 }

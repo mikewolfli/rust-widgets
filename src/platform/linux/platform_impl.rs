@@ -1,6 +1,8 @@
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use super::types::LinuxNativeState;
 use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use crate::core::MutexExt;
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -65,7 +67,7 @@ impl Platform for LinuxPlatform {
             let fixed = gtk::Fixed::new();
             root.pack_start(&fixed, true, true, 0);
             window.add(&root);
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
             native.content_fixed.insert(id, fixed.clone());
@@ -110,7 +112,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = button.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&button, x, y);
             }
@@ -153,7 +155,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = checkbox.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&checkbox, x, y);
             }
@@ -197,7 +199,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = entry.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&entry, x, y);
             }
@@ -228,7 +230,7 @@ impl Platform for LinuxPlatform {
             let label = gtk::Label::new(Some(text));
             label.set_size_request(width as i32, height as i32);
             let widget = label.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&label, x, y);
             }
@@ -270,7 +272,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = radio.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&radio, x, y);
             }
@@ -305,7 +307,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = slider.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&slider, x, y);
             }
@@ -335,7 +337,7 @@ impl Platform for LinuxPlatform {
             let progress = gtk::ProgressBar::new();
             progress.set_size_request(width as i32, height as i32);
             let widget = progress.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&progress, x, y);
             }
@@ -379,7 +381,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = combo.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&combo, x, y);
             }
@@ -423,7 +425,7 @@ impl Platform for LinuxPlatform {
                     });
             });
             let widget = list.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&list, x, y);
             }
@@ -623,7 +625,7 @@ impl Platform for LinuxPlatform {
             let panel = gtk::Frame::new(None::<&str>);
             panel.set_size_request(width as i32, height as i32);
             let widget = panel.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&panel, x, y);
             }
@@ -640,7 +642,7 @@ impl Platform for LinuxPlatform {
         {
             let menu_bar = gtk::MenuBar::new();
             let widget = menu_bar.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             native.menu_bars.insert(id, menu_bar);
             native.widgets.insert(id, widget);
             let _ = parent;
@@ -668,7 +670,7 @@ impl Platform for LinuxPlatform {
             let menu = gtk::Menu::new();
             let menu_item = gtk::MenuItem::with_label(text);
             menu_item.set_submenu(Some(&menu));
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(menu_bar) = native.menu_bars.get(&parent) {
                 menu_bar.append(&menu_item);
             } else if let Some(parent_menu) = native.menus.get(&parent) {
@@ -697,7 +699,7 @@ impl Platform for LinuxPlatform {
             let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             toolbar.set_size_request(width as i32, height as i32);
             let widget = toolbar.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&toolbar, x, y);
             }
@@ -728,7 +730,7 @@ impl Platform for LinuxPlatform {
             let label = gtk::Label::new(Some(text));
             label.set_size_request(width as i32, height as i32);
             let widget = label.clone().upcast::<gtk::Widget>();
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(container) = native.content_fixed.get(&parent) {
                 container.put(&label, x, y);
             }
@@ -748,7 +750,7 @@ impl Platform for LinuxPlatform {
                 .insert(window, menu_bar);
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             {
-                let native = self.native.lock().expect("linux native lock poisoned");
+                let native = self.native.lock_guard();
                 if let (Some(root), Some(bar)) = (
                     native.root_boxes.get(&window),
                     native.menu_bars.get(&menu_bar),
@@ -789,7 +791,7 @@ impl Platform for LinuxPlatform {
                     .pending_menu_events
                     .push_back(item_id);
             });
-            let mut native = self.native.lock().expect("linux native lock poisoned");
+            let mut native = self.native.lock_guard();
             if let Some(parent) = native.menus.get(&parent_menu) {
                 parent.append(&menu_item);
             }
@@ -845,7 +847,7 @@ impl Platform for LinuxPlatform {
         self.state.set_visible(widget_id, true);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(window) = native.windows.get(&widget_id) {
                 window.show_all();
                 return;
@@ -859,7 +861,7 @@ impl Platform for LinuxPlatform {
         self.state.set_visible(widget_id, false);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(window) = native.windows.get(&widget_id) {
                 window.hide();
                 return;
@@ -878,7 +880,7 @@ impl Platform for LinuxPlatform {
                 let menus = self.menus.lock().expect("linux menu lock poisoned");
                 menus.widget_parent.get(&widget_id).copied()
             };
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(window) = native.windows.get(&widget_id) {
                 window.move_(x, y);
                 window.resize(width as i32, height as i32);
@@ -900,7 +902,7 @@ impl Platform for LinuxPlatform {
         }
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(window) = native.windows.get(&widget_id) {
                 window.set_title(text);
             } else if let Some(widget) = native.widgets.get(&widget_id) {
@@ -935,7 +937,7 @@ impl Platform for LinuxPlatform {
         self.state.set_enabled(widget_id, enabled);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(widget) = native.widgets.get(&widget_id) {
                 widget.set_sensitive(enabled);
             }
@@ -944,7 +946,7 @@ impl Platform for LinuxPlatform {
     fn is_widget_enabled(&self, widget_id: u64) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(widget) = native.widgets.get(&widget_id) {
                 return widget.is_sensitive();
             }
@@ -962,7 +964,7 @@ impl Platform for LinuxPlatform {
     fn is_widget_visible(&self, widget_id: u64) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let native = self.native.lock().expect("linux native lock poisoned");
+            let native = self.native.lock_guard();
             if let Some(window) = native.windows.get(&widget_id) {
                 return window.is_visible();
             }

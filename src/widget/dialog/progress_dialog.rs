@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress dialog widget.
 pub struct ProgressDialog {
@@ -29,7 +30,7 @@ impl ProgressDialog {
             value: 0,
             minimum: 0,
             maximum: 100,
-            cancel_button_text: "Cancel".to_string(),
+            cancel_button_text: tr!("common.button.cancel"),
             was_canceled: false,
             auto_close: true,
             auto_reset: true,

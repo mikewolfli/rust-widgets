@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use std::fmt;
+
 use crate::app::{
     ButtonHandle, CheckBoxHandle, ComboBoxHandle, FrameHandle, GridWidgetHandle, LabelHandle,
     LineEditHandle, ListBoxHandle, ListViewHandle, PanelHandle, ProgressBarHandle,
@@ -29,6 +31,14 @@ use crate::core::ObjectId;
 /// Provides typed widget access via [`widget_by_name`](BoundJsonLayout::widget_by_name).
 pub struct BoundJsonLayout {
     name_map: HashMap<String, ObjectId>,
+}
+
+impl fmt::Debug for BoundJsonLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoundJsonLayout")
+            .field("len", &self.len())
+            .finish()
+    }
 }
 
 impl BoundJsonLayout {
@@ -175,5 +185,108 @@ impl BoundJsonLayout {
 impl Default for BoundJsonLayout {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_empty_layout() {
+        let layout = BoundJsonLayout::new();
+        assert_eq!(layout.len(), 0);
+        assert!(layout.is_empty());
+    }
+
+    #[test]
+    fn register_and_retrieve_id() {
+        let mut layout = BoundJsonLayout::new();
+        let id = 42;
+        layout.register("my_widget", id);
+        assert_eq!(layout.len(), 1);
+        assert!(!layout.is_empty());
+        assert_eq!(layout.id("my_widget"), Some(id));
+    }
+
+    #[test]
+    fn id_returns_none_for_unknown() {
+        let layout = BoundJsonLayout::new();
+        assert_eq!(layout.id("nonexistent"), None);
+    }
+
+    #[test]
+    fn register_multiple_widgets() {
+        let mut layout = BoundJsonLayout::new();
+        layout.register("btn1", 1);
+        layout.register("btn2", 2);
+        layout.register("label1", 3);
+        assert_eq!(layout.len(), 3);
+    }
+
+    #[test]
+    fn duplicate_name_overwrites() {
+        let mut layout = BoundJsonLayout::new();
+        let id1 = 10;
+        let id2 = 20;
+        layout.register("dup", id1);
+        layout.register("dup", id2);
+        assert_eq!(layout.len(), 1);
+        assert_eq!(layout.id("dup"), Some(id2));
+    }
+
+    #[test]
+    fn widget_by_name_not_found_error() {
+        let layout = BoundJsonLayout::new();
+        let result = layout.widget_by_name::<LabelHandle>("missing");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn convenience_handle_methods() {
+        let mut layout = BoundJsonLayout::new();
+        let id = 1;
+        layout.register("my_btn", id);
+        layout.register("my_label", id);
+        layout.register("my_edit", id);
+        // These should succeed since the widget exists in the name map
+        assert!(layout.button("my_btn").is_ok());
+        assert!(layout.label("my_label").is_ok());
+        assert!(layout.line_edit("my_edit").is_ok());
+    }
+
+    #[test]
+    fn convenience_handles_return_err_for_missing() {
+        let layout = BoundJsonLayout::new();
+        assert!(layout.button("no_such").is_err());
+        assert!(layout.checkbox("no_such").is_err());
+        assert!(layout.combo_box("no_such").is_err());
+        assert!(layout.slider("no_such").is_err());
+        assert!(layout.progress_bar("no_such").is_err());
+        assert!(layout.panel("no_such").is_err());
+        assert!(layout.spin_box("no_such").is_err());
+        assert!(layout.scroll_area("no_such").is_err());
+        assert!(layout.tab_widget("no_such").is_err());
+        assert!(layout.grid_widget("no_such").is_err());
+        assert!(layout.frame("no_such").is_err());
+        assert!(layout.window("no_such").is_err());
+    }
+
+    #[test]
+    fn default_is_empty() {
+        let layout = BoundJsonLayout::default();
+        assert!(layout.is_empty());
+        assert_eq!(layout.len(), 0);
+    }
+
+    #[test]
+    fn register_string_and_str() {
+        let mut layout = BoundJsonLayout::new();
+        let id = 99;
+        layout.register("from_str".to_string(), id);
+        layout.register("from_ref", id);
+        assert_eq!(layout.id("from_str"), Some(id));
+        assert_eq!(layout.id("from_ref"), Some(id));
     }
 }

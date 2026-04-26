@@ -1,6 +1,6 @@
 use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use super::types::*;
-use crate::core::PlatformFamily;
+use crate::core::{MutexExt, PlatformFamily};
 
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -129,8 +129,7 @@ impl Platform for HarmonyPlatform {
         }
         let id = self.insert_widget(HarmonyHandleKind::ComboBox, "ComboBox", x, y, width, height);
         self.list_data
-            .lock()
-            .expect("harmony list data lock poisoned")
+            .lock_guard()
             .insert(
                 id,
                 ListData {
@@ -146,8 +145,7 @@ impl Platform for HarmonyPlatform {
         }
         let id = self.insert_widget(HarmonyHandleKind::ListBox, "ListBox", x, y, width, height);
         self.list_data
-            .lock()
-            .expect("harmony list data lock poisoned")
+            .lock_guard()
             .insert(
                 id,
                 ListData {
@@ -163,8 +161,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         let entry = data.entry(list_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -175,8 +172,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -200,8 +196,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         if let Some(entry) = data.get_mut(&list_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -214,8 +209,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -232,8 +226,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&list_box).and_then(|entry| entry.current_index)
     }
     fn list_box_item_count(&self, list_box: u64) -> usize {
@@ -242,8 +235,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&list_box).map_or(0, |entry| entry.items.len())
     }
     fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
@@ -252,8 +244,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&list_box)
             .and_then(|entry| entry.items.get(index))
             .cloned()
@@ -264,8 +255,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         let entry = data.entry(combo_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -276,8 +266,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         if let Some(entry) = data.get_mut(&combo_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -290,8 +279,7 @@ impl Platform for HarmonyPlatform {
         }
         let mut data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         let entry = match data.get_mut(&combo_box) {
             Some(e) => e,
             None => return false,
@@ -308,8 +296,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&combo_box).and_then(|entry| entry.current_index)
     }
     fn combo_box_item_count(&self, combo_box: u64) -> usize {
@@ -318,8 +305,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&combo_box).map_or(0, |entry| entry.items.len())
     }
     fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
@@ -328,8 +314,7 @@ impl Platform for HarmonyPlatform {
         }
         let data = self
             .list_data
-            .lock()
-            .expect("harmony list data lock poisoned");
+            .lock_guard();
         data.get(&combo_box)
             .and_then(|entry| entry.items.get(index))
             .cloned()
@@ -355,8 +340,7 @@ impl Platform for HarmonyPlatform {
         }
         let id = self.insert_widget(HarmonyHandleKind::Menu, text, x, y, width, height);
         self.menus
-            .lock()
-            .expect("harmony menu lock poisoned")
+            .lock_guard()
             .menu_children
             .entry(parent)
             .or_default()
@@ -388,8 +372,7 @@ impl Platform for HarmonyPlatform {
             && matches!(self.kind_of(menu_bar), Some(HarmonyHandleKind::MenuBar))
         {
             self.menus
-                .lock()
-                .expect("harmony menu lock poisoned")
+                .lock_guard()
                 .attached_menu_bar
                 .insert(window, menu_bar);
             return true;
@@ -402,7 +385,7 @@ impl Platform for HarmonyPlatform {
         }
         let item_id = self.insert_widget(HarmonyHandleKind::MenuItem, text, 0, 0, 0, 0);
         let _ = shortcut;
-        let mut menus = self.menus.lock().expect("harmony menu lock poisoned");
+        let mut menus = self.menus.lock_guard();
         menus
             .menu_children
             .entry(parent_menu)
@@ -412,8 +395,7 @@ impl Platform for HarmonyPlatform {
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
         self.menus
-            .lock()
-            .expect("harmony menu lock poisoned")
+            .lock_guard()
             .pending_menu_events
             .pop_front()
     }
@@ -426,8 +408,7 @@ impl Platform for HarmonyPlatform {
             return false;
         }
         self.menus
-            .lock()
-            .expect("harmony menu lock poisoned")
+            .lock_guard()
             .pending_menu_events
             .push_back(menu_item_id);
         true
@@ -438,8 +419,7 @@ impl Platform for HarmonyPlatform {
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.menus
-            .lock()
-            .expect("harmony menu lock poisoned")
+            .lock_guard()
             .pending_widget_events
             .pop_front()
     }
@@ -449,8 +429,7 @@ impl Platform for HarmonyPlatform {
             return false;
         }
         self.menus
-            .lock()
-            .expect("harmony menu lock poisoned")
+            .lock_guard()
             .pending_widget_events
             .push_back(WidgetTriggerEvent { widget_id, kind });
         true
@@ -471,8 +450,7 @@ impl Platform for HarmonyPlatform {
         // Keep line-edit behavior consistent with value-changed semantics.
         if matches!(self.kind_of(widget_id), Some(HarmonyHandleKind::LineEdit)) {
             self.menus
-                .lock()
-                .expect("harmony menu lock poisoned")
+                .lock_guard()
                 .pending_widget_events
                 .push_back(WidgetTriggerEvent {
                     widget_id,

@@ -69,6 +69,7 @@ impl DeviceEnvironment {
     }
 
     /// Resolve device class from profile features and screen dimensions.
+    #[allow(unused_variables)]
     fn resolve_device_class(screen_size: Size, _dpi_scale: f32) -> DeviceClass {
         // Compile-time feature profile takes precedence.
         #[cfg(feature = "tablet")]
@@ -89,6 +90,11 @@ impl DeviceEnvironment {
             } else {
                 DeviceClass::Desktop
             }
+        }
+        #[cfg(any(feature = "tablet", feature = "mobile", feature = "embedded"))]
+        {
+            let _ = screen_size;
+            unreachable!()
         }
     }
 

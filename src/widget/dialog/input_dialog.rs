@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,7 +337,7 @@ impl Draw for InputDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
-            "OK",
+            &tr!("common.button.ok"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -350,7 +351,7 @@ impl Draw for InputDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
-            "Cancel",
+            &tr!("common.button.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );

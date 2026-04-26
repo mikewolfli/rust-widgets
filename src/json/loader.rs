@@ -1168,3 +1168,351 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
 pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
     JsonLoader::load(json_str)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_valid_minimal_window() {
+        let json = r#"{"window": {"id": "main", "title": "Test", "width": 400, "height": 300}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+        let layout = result.unwrap();
+        assert_eq!(layout.len(), 1);
+        assert!(
+            layout.id("main").is_some(),
+            "Expected Some for widget id 'main'"
+        );
+    }
+
+    #[test]
+    fn load_button_with_text() {
+        let json = r#"{"window": {"id": "w", "title": "Window", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"button": {"id": "btn", "text": "Click Me"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+        let layout = result.unwrap();
+        assert!(layout.id("btn").is_some());
+    }
+
+    #[test]
+    fn load_label_with_alignment() {
+        let json = r#"{"window": {"id": "w", "title": "Window", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"label": {"id": "lbl", "text": "Hello", "alignment": "center"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_nested_layouts() {
+        let json = r#"{"window": {"id": "w", "title": "Nested", "width": 500, "height": 400, "layout": {"type": "vbox", "children": [{"layout": {"type": "hbox", "children": [{"button": {"id": "b1", "text": "One"}}, {"button": {"id": "b2", "text": "Two"}}]}}, {"label": {"id": "footer", "text": "Footer"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+        let layout = result.unwrap();
+        assert!(layout.id("b1").is_some());
+        assert!(layout.id("b2").is_some());
+        assert!(layout.id("footer").is_some());
+    }
+
+    #[test]
+    fn load_spacer_widget() {
+        let json = r#"{"window": {"id": "w", "title": "Spacer", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"button": {"id": "b1", "text": "Top"}}, {"spacer": {"stretch": 1}}, {"button": {"id": "b2", "text": "Bottom"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_roundtrip_fields() {
+        let json = r#"{"window": {"id": "main", "title": "Roundtrip", "width": 800, "height": 600, "layout": {"type": "grid", "columns": 2, "spacing": 4, "margin": 2, "children": [{"button": {"id": "ok", "text": "OK", "x": 0, "y": 0, "width": 80, "height": 30, "visible": true, "enabled": true}}, {"label": {"id": "info", "text": "Info", "visible": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+        let layout = result.unwrap();
+        assert!(layout.id("main").is_some());
+        assert!(layout.id("ok").is_some());
+        assert!(layout.id("info").is_some());
+        assert_eq!(layout.len(), 3);
+    }
+
+    #[test]
+    fn load_invalid_json_returns_error() {
+        let json = r#"{"window": {"id": "broken" "title": "Bad"}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("JSON parse error"),
+            "Expected parse error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_empty_string_returns_error() {
+        let result = JsonLoader::load("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_not_an_object_returns_error() {
+        let json = r#""just a string""#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_array_root_returns_error() {
+        let json = r#"["a", "b"]"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_multiple_root_keys_returns_error() {
+        let json = r#"{"window": {"title": "A"}, "button": {"text": "B"}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("one widget type"),
+            "Expected 'one widget type' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_unknown_widget_type_returns_error() {
+        let json = r#"{"bogus_widget": {"id": "x"}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown widget type"),
+            "Expected unknown widget type error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_missing_id_still_works() {
+        let json = r#"{"window": {"title": "No ID", "width": 300, "height": 200}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+        let layout = result.unwrap();
+        assert_eq!(
+            layout.len(),
+            0,
+            "Without 'id', no entries should be registered"
+        );
+    }
+
+    #[test]
+    fn extract_event_handlers_parses_click_and_change() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "on_click".to_string(),
+            Value::String("handle_click".to_string()),
+        );
+        map.insert(
+            "on_change".to_string(),
+            Value::String("handle_change".to_string()),
+        );
+        let (click, change) = extract_event_handlers(&map);
+        assert_eq!(click, Some("handle_click".to_string()));
+        assert_eq!(change, Some("handle_change".to_string()));
+    }
+
+    #[test]
+    fn extract_event_handlers_missing_fields() {
+        let map = serde_json::Map::new();
+        let (click, change) = extract_event_handlers(&map);
+        assert!(click.is_none());
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn extract_extended_event_handlers_all_fields() {
+        let mut map = serde_json::Map::new();
+        map.insert("on_close".to_string(), Value::String("close".to_string()));
+        map.insert(
+            "on_double_click".to_string(),
+            Value::String("dbl".to_string()),
+        );
+        map.insert("on_focus".to_string(), Value::String("focus".to_string()));
+        map.insert("on_blur".to_string(), Value::String("blur".to_string()));
+        map.insert(
+            "on_selection_changed".to_string(),
+            Value::String("sel".to_string()),
+        );
+        map.insert(
+            "on_value_changed".to_string(),
+            Value::String("val".to_string()),
+        );
+        let (close, dbl, focus, blur, sel, val) = extract_extended_event_handlers(&map);
+        assert_eq!(close, Some("close".to_string()));
+        assert_eq!(dbl, Some("dbl".to_string()));
+        assert_eq!(focus, Some("focus".to_string()));
+        assert_eq!(blur, Some("blur".to_string()));
+        assert_eq!(sel, Some("sel".to_string()));
+        assert_eq!(val, Some("val".to_string()));
+    }
+
+    #[test]
+    fn extract_extended_event_handlers_empty() {
+        let map = serde_json::Map::new();
+        let result = extract_extended_event_handlers(&map);
+        assert_eq!(result, (None, None, None, None, None, None));
+    }
+
+    #[test]
+    fn load_layout_from_str_convenience() {
+        let json = r#"{"window": {"id": "w", "title": "Conv", "width": 400, "height": 300}}"#;
+        let result = load_layout_from_str(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_widget_with_tooltip_and_style() {
+        let json = r##"{"window": {"id": "w", "title": "Style", "width": 400, "height": 300, "visible": true, "enabled": true, "layout": {"type": "vbox", "children": [{"button": {"id": "styled_btn", "text": "Styled", "tooltip": "A styled button", "background": "#ff0000", "text_color": "#ffffff", "border_color": "#000000", "border_width": 2, "border_radius": 5, "min_width": 100, "min_height": 30}}]}}}"##;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_spinbox_with_all_properties() {
+        let json = r#"{"window": {"id": "w", "title": "Spin", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"spinbox": {"id": "sb", "min": 0, "max": 100, "value": 50, "single_step": 5, "prefix": "$", "suffix": " USD", "wrapping": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_grid_widget_with_properties() {
+        let json = r#"{"window": {"id": "w", "title": "Grid", "width": 600, "height": 400, "layout": {"type": "vbox", "children": [{"grid": {"id": "g", "rows": 3, "columns": 4, "spacing": 5}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_empty_children_array() {
+        let json = r#"{"window": {"id": "w", "title": "Empty", "width": 400, "height": 300, "layout": {"type": "vbox", "children": []}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_window_default_title() {
+        let json = r#"{"window": {"id": "w", "width": 400, "height": 300}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_checkbox_with_checked() {
+        let json = r#"{"window": {"id": "w", "title": "Check", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"checkbox": {"id": "cb", "text": "Enable feature", "checked": true, "tristate": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_lineedit_with_all_properties() {
+        let json = r#"{"window": {"id": "w", "title": "Edit", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"lineedit": {"id": "le", "value": "initial", "placeholder": "Type here...", "max_length": 100, "password": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_slider_with_range() {
+        let json = r#"{"window": {"id": "w", "title": "Slider", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"slider": {"id": "sl", "min": 0, "max": 200, "value": 75, "orientation": "horizontal", "single_step": 5, "page_step": 20, "tracking": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_progressbar_with_properties() {
+        let json = r#"{"window": {"id": "w", "title": "Progress", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"progressbar": {"id": "pb", "min": 0, "max": 100, "value": 50, "orientation": "horizontal", "text_visible": true, "inverted_appearance": false}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_combobox_with_items() {
+        let json = r#"{"window": {"id": "w", "title": "Combo", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"combobox": {"id": "cb", "items": ["One", "Two", "Three"], "current_index": 1, "editable": true, "max_visible_items": 10}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_listbox_with_selection_mode() {
+        let json = r#"{"window": {"id": "w", "title": "List", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"listbox": {"id": "lb", "items": ["A", "B", "C"], "selection_mode": "multi"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_scrollarea_with_policies() {
+        let json = r#"{"window": {"id": "w", "title": "Scroll", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"scrollarea": {"id": "sa", "widget_resizable": true, "h_policy": "always_on", "v_policy": "as_needed"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_frame_with_shape_and_shadow() {
+        let json = r#"{"window": {"id": "w", "title": "Frame", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"frame": {"id": "f", "frame_shape": "panel", "frame_shadow": "raised", "line_width": 2.0}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_tabwidget_with_properties() {
+        let json = r#"{"window": {"id": "w", "title": "Tabs", "width": 500, "height": 400, "layout": {"type": "vbox", "children": [{"tabwidget": {"id": "tw", "current_index": 0, "tab_position": "north", "closable": true, "movable": false}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_textedit_with_readonly() {
+        let json = r#"{"window": {"id": "w", "title": "Text", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"textedit": {"id": "te", "value": "Multi\nline", "read_only": true, "word_wrap": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_radiobutton_with_group() {
+        let json = r#"{"window": {"id": "w", "title": "Radio", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"radiobutton": {"id": "rb1", "text": "Option A", "checked": true, "group_id": "group1"}}, {"radiobutton": {"id": "rb2", "text": "Option B", "group_id": "group1"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_groupbox_with_title() {
+        let json = r#"{"window": {"id": "w", "title": "Group", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"groupbox": {"id": "gb", "title": "Settings", "checkable": true, "checked": true}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_filedialog_with_mode() {
+        let json = r#"{"window": {"id": "w", "title": "Dialog", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"filedialog": {"id": "fd", "mode": "save_file", "directory": "/tmp"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_colordialog_with_color() {
+        let json = r##"{"window": {"id": "w", "title": "Color", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"colordialog": {"id": "cd", "value": "#ff0000", "alpha": true}}]}}}"##;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_messagebox_with_icon() {
+        let json = r#"{"window": {"id": "w", "title": "Msg", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"messagebox": {"id": "mb", "title": "Warning", "text": "Are you sure?", "icon": "warning"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_listview_widget() {
+        let json = r#"{"window": {"id": "w", "title": "ListView", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"listview": {"id": "lv"}}]}}}"#;
+        let result = JsonLoader::load(json);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+}

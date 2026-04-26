@@ -1,5 +1,5 @@
 use super::PropertyValue;
-use crate::core::{CoreObject, ObjectId};
+use crate::core::{CoreObject, MutexExt, ObjectId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,34 +41,19 @@ impl Object {
     }
     /// Set or replace a dynamic property.
     pub fn set_property(&self, key: impl Into<String>, value: PropertyValue) {
-        self.properties
-            .lock()
-            .expect("object properties lock poisoned")
-            .insert(key.into(), value);
+        self.properties.lock_guard().insert(key.into(), value);
     }
     /// Get a dynamic property by key.
     pub fn property(&self, key: &str) -> Option<PropertyValue> {
-        self.properties
-            .lock()
-            .expect("object properties lock poisoned")
-            .get(key)
-            .cloned()
+        self.properties.lock_guard().get(key).cloned()
     }
     /// Remove a dynamic property.
     pub fn remove_property(&self, key: &str) -> Option<PropertyValue> {
-        self.properties
-            .lock()
-            .expect("object properties lock poisoned")
-            .remove(key)
+        self.properties.lock_guard().remove(key)
     }
     /// List all known property keys.
     pub fn property_keys(&self) -> Vec<String> {
-        self.properties
-            .lock()
-            .expect("object properties lock poisoned")
-            .keys()
-            .cloned()
-            .collect()
+        self.properties.lock_guard().keys().cloned().collect()
     }
 }
 impl CoreObject for Object {

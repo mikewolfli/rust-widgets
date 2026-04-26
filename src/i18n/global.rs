@@ -6,7 +6,9 @@ use std::sync::Mutex;
 static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 /// Initialize the i18n system
 pub fn init() {
-    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    let mut guard = GLOBAL_I18N
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = Some(I18nManager::new());
 }
 /// Initialize the i18n system with options
@@ -39,13 +41,17 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
         }
     }
     report.translations_count = manager.translation_count();
-    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    let mut guard = GLOBAL_I18N
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = Some(manager);
     report
 }
 /// Translate a key to the current language
 pub fn translate(key: &str) -> String {
-    let mut guard = GLOBAL_I18N.lock().expect("i18n lock poisoned");
+    let mut guard = GLOBAL_I18N
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(ref mut manager) = *guard {
         manager.translate(key)
     } else {
@@ -54,7 +60,9 @@ pub fn translate(key: &str) -> String {
 }
 /// Get the global i18n manager
 pub fn get_manager() -> std::sync::MutexGuard<'static, Option<I18nManager>> {
-    GLOBAL_I18N.lock().expect("i18n lock poisoned")
+    GLOBAL_I18N
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 /// Check and reload all modified translation files
 pub fn check_and_reload_all() -> Vec<crate::i18n::types::ReloadEvent> {

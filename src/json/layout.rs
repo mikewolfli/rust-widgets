@@ -373,4 +373,255 @@ mod tests {
         assert_eq!(attrs.stretch, 1);
         assert!(attrs.col.is_none());
     }
+
+    #[test]
+    fn parse_layout_not_an_object_error() {
+        let json: Value = serde_json::from_str(r#""not an object""#).unwrap();
+        let result = parse_layout_kind(&json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn parse_layout_missing_type_error() {
+        let json: Value = serde_json::from_str(r#"{"spacing": 4}"#).unwrap();
+        let result = parse_layout_kind(&json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("'type' field"));
+    }
+
+    #[test]
+    fn parse_layout_type_not_string_error() {
+        let json: Value = serde_json::from_str(r#"{"type": 123}"#).unwrap();
+        let result = parse_layout_kind(&json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_hbox_aliases() {
+        let hbox_json: Value = serde_json::from_str(r#"{"type": "HBox", "spacing": 6}"#).unwrap();
+        let kind = parse_layout_kind(&hbox_json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::HBox {
+                spacing: 6,
+                margin: 0
+            }
+        );
+
+        let horiz_json: Value =
+            serde_json::from_str(r#"{"type": "horizontal", "spacing": 2, "margin": 1}"#).unwrap();
+        let kind2 = parse_layout_kind(&horiz_json).unwrap();
+        assert_eq!(
+            kind2,
+            DeclarativeLayoutKind::HBox {
+                spacing: 2,
+                margin: 1
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vbox_aliases() {
+        let vbox_json: Value = serde_json::from_str(r#"{"type": "VBox", "margin": 3}"#).unwrap();
+        let kind = parse_layout_kind(&vbox_json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::VBox {
+                spacing: 0,
+                margin: 3
+            }
+        );
+
+        let vert_json: Value = serde_json::from_str(r#"{"type": "vertical"}"#).unwrap();
+        let kind2 = parse_layout_kind(&vert_json).unwrap();
+        assert_eq!(
+            kind2,
+            DeclarativeLayoutKind::VBox {
+                spacing: 0,
+                margin: 0
+            }
+        );
+    }
+
+    #[test]
+    fn parse_grid_default_columns() {
+        let json: Value = serde_json::from_str(r#"{"type": "grid"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Grid {
+                columns: 2,
+                spacing: 0,
+                margin: 0
+            }
+        );
+    }
+
+    #[test]
+    fn parse_stack_layout() {
+        let json: Value = serde_json::from_str(r#"{"type": "stack", "spacing": 8}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(kind, DeclarativeLayoutKind::Stack { spacing: 8 });
+    }
+
+    #[test]
+    fn parse_splitter_layout_default_horizontal() {
+        let json: Value = serde_json::from_str(r#"{"type": "splitter", "margin": 2}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Splitter {
+                orientation: Orientation::Horizontal,
+                margin: 2
+            }
+        );
+    }
+
+    #[test]
+    fn parse_splitter_layout_vertical() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "splitter", "orientation": "vertical", "margin": 4}"#)
+                .unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Splitter {
+                orientation: Orientation::Vertical,
+                margin: 4
+            }
+        );
+    }
+
+    #[test]
+    fn parse_form_layout() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "form", "spacing": 6, "margin": 2}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Form {
+                spacing: 6,
+                margin: 2
+            }
+        );
+    }
+
+    #[test]
+    fn create_all_layout_kinds() {
+        let kinds = vec![
+            DeclarativeLayoutKind::HBox {
+                spacing: 4,
+                margin: 2,
+            },
+            DeclarativeLayoutKind::VBox {
+                spacing: 4,
+                margin: 2,
+            },
+            DeclarativeLayoutKind::Grid {
+                columns: 3,
+                spacing: 2,
+                margin: 1,
+            },
+            DeclarativeLayoutKind::Stack { spacing: 8 },
+            DeclarativeLayoutKind::Splitter {
+                orientation: Orientation::Horizontal,
+                margin: 3,
+            },
+            DeclarativeLayoutKind::Form {
+                spacing: 6,
+                margin: 2,
+            },
+        ];
+        for kind in &kinds {
+            let _layout = create_layout_from_kind(kind);
+            // Verify each creates without error
+        }
+    }
+
+    #[test]
+    fn child_layout_attrs_parses_grid_position() {
+        let json: Value = serde_json::from_str(
+            r#"{"stretch": 2, "col": 1, "row": 3, "col_span": 2, "row_span": 1}"#,
+        )
+        .unwrap();
+        let attrs = ChildLayoutAttrs::from_value(&json);
+        assert_eq!(attrs.stretch, 2);
+        assert_eq!(attrs.col, Some(1));
+        assert_eq!(attrs.row, Some(3));
+        assert_eq!(attrs.col_span, Some(2));
+        assert_eq!(attrs.row_span, Some(1));
+    }
+
+    #[test]
+    fn child_layout_attrs_non_object_value() {
+        let json: Value = serde_json::from_str(r#""string value""#).unwrap();
+        let attrs = ChildLayoutAttrs::from_value(&json);
+        assert_eq!(attrs.stretch, 1);
+        assert!(attrs.col.is_none());
+        assert!(attrs.row.is_none());
+    }
+
+    #[test]
+    fn parse_splitter_layout_with_orientation_v_alias() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "splitter", "orientation": "v"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Splitter {
+                orientation: Orientation::Vertical,
+                margin: 0
+            }
+        );
+    }
+
+    #[test]
+    fn parse_splitter_layout_with_orientation_capital_v() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "splitter", "orientation": "V"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Splitter {
+                orientation: Orientation::Vertical,
+                margin: 0
+            }
+        );
+    }
+
+    #[test]
+    fn parse_grid_with_Grid_alias() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "Grid", "columns": 5, "spacing": 3}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Grid {
+                columns: 5,
+                spacing: 3,
+                margin: 0
+            }
+        );
+    }
+
+    #[test]
+    fn parse_stack_with_alias() {
+        let json: Value = serde_json::from_str(r#"{"type": "Stack"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(kind, DeclarativeLayoutKind::Stack { spacing: 0 });
+    }
+
+    #[test]
+    fn parse_form_with_alias() {
+        let json: Value = serde_json::from_str(r#"{"type": "Form"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Form {
+                spacing: 0,
+                margin: 0
+            }
+        );
+    }
 }

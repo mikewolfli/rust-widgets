@@ -37,12 +37,14 @@ mod color;
 pub mod coords;
 mod font;
 mod geometry;
+mod mutex_ext;
 pub mod rect_merge;
 mod types;
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
 pub use geometry::{Orientation, Point, Rect, Size};
+pub use mutex_ext::MutexExt;
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,
     PlatformFamily, RuntimeProfile, Version,

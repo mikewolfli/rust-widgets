@@ -4,6 +4,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+#[cfg(feature = "desktop")]
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,35 @@ impl StandardButton {
             StandardButton::Ignore => "Ignore",
             StandardButton::Help => "Help",
         }
+    }
+
+    /// Returns the translated label for this button using the i18n system.
+    /// Available only on desktop target with i18n support enabled.
+    #[cfg(feature = "desktop")]
+    pub fn translated_label(&self) -> String {
+        match self {
+            StandardButton::Ok => tr!("common.button.ok"),
+            StandardButton::Cancel => tr!("common.button.cancel"),
+            StandardButton::Yes => tr!("common.button.yes"),
+            StandardButton::No => tr!("common.button.no"),
+            StandardButton::YesAll => tr!("common.button.yes_all"),
+            StandardButton::NoAll => tr!("common.button.no_all"),
+            StandardButton::Save => tr!("common.button.save"),
+            StandardButton::Discard => tr!("common.button.discard"),
+            StandardButton::Apply => tr!("common.button.apply"),
+            StandardButton::Close => tr!("common.button.close"),
+            StandardButton::Abort => tr!("common.button.abort"),
+            StandardButton::Retry => tr!("common.button.retry"),
+            StandardButton::Ignore => tr!("common.button.ignore"),
+            StandardButton::Help => tr!("common.button.help"),
+        }
+    }
+
+    /// Returns the translated label for this button using the i18n system.
+    /// Fallback version when i18n is not compiled in — returns English label.
+    #[cfg(not(feature = "desktop"))]
+    pub fn translated_label(&self) -> String {
+        self.label().to_string()
     }
 }
 /// Message box dialog.
@@ -377,7 +408,7 @@ impl Draw for MessageBox {
             );
             context.draw_text(
                 Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
-                btn.label(),
+                &btn.translated_label(),
                 &Font::default(),
                 fg,
             );

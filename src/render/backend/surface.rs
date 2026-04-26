@@ -258,3 +258,645 @@ impl<'a> RenderContext<'a> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Font, Point, Rect, Size};
+    use crate::render::RenderCommand;
+    use crate::render::SoftwarePaintBackend;
+
+    // ── BackBuffer ──────────────────────────────────────────────────────
+
+    #[test]
+    fn back_buffer_new_creates_buffers() {
+        let bb = BackBuffer::new(Size::new(10, 10), 1.0);
+        assert_eq!(bb.size(), Size::new(10, 10));
+        assert!((bb.dpi_scale() - 1.0).abs() < 1e-6);
+        assert_eq!(bb.front().len(), 10 * 10 * 4);
+        assert_eq!(bb.back.len(), 10 * 10 * 4);
+    }
+
+    #[test]
+    fn back_buffer_zero_size() {
+        let bb = BackBuffer::new(Size::new(0, 0), 1.0);
+        assert_eq!(bb.size(), Size::new(0, 0));
+        assert!(bb.front().is_empty());
+        assert!(bb.back.is_empty());
+    }
+
+    #[test]
+    fn back_buffer_resize() {
+        let mut bb = BackBuffer::new(Size::new(10, 10), 1.0);
+        bb.resize(Size::new(20, 20));
+        assert_eq!(bb.size(), Size::new(20, 20));
+        assert_eq!(bb.front().len(), 20 * 20 * 4);
+        assert_eq!(bb.back.len(), 20 * 20 * 4);
+    }
+
+    #[test]
+    fn back_buffer_resize_to_zero() {
+        let mut bb = BackBuffer::new(Size::new(10, 10), 1.0);
+        bb.resize(Size::new(0, 0));
+        assert_eq!(bb.size(), Size::new(0, 0));
+        assert!(bb.front().is_empty());
+        assert!(bb.back.is_empty());
+    }
+
+    #[test]
+    fn back_buffer_set_dpi_scale() {
+        let mut bb = BackBuffer::new(Size::new(10, 10), 1.0);
+        bb.set_dpi_scale(2.5);
+        assert!((bb.dpi_scale() - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn back_buffer_set_dpi_scale_clamps_minimum() {
+        let mut bb = BackBuffer::new(Size::new(10, 10), 1.0);
+        bb.set_dpi_scale(0.0);
+        assert!((bb.dpi_scale() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn back_buffer_back_mut_returns_writable_slice() {
+        let mut bb = BackBuffer::new(Size::new(5, 5), 1.0);
+        let back = bb.back_mut();
+        assert_eq!(back.len(), 5 * 5 * 4);
+        back[0] = 255;
+        assert_eq!(bb.back[0], 255);
+    }
+
+    #[test]
+    fn back_buffer_present_swaps_front_and_back() {
+        let mut bb = BackBuffer::new(Size::new(5, 5), 1.0);
+        // Write to back
+        bb.back_mut()[0] = 42;
+        assert_ne!(bb.front()[0], 42);
+
+        bb.present();
+
+        // After present, back is now front
+        assert_eq!(bb.front()[0], 42);
+        // The old front (zeros) is now back
+        assert_eq!(bb.back[0], 0);
+    }
+
+    #[test]
+    fn back_buffer_present_swaps_again() {
+        let mut bb = BackBuffer::new(Size::new(2, 2), 1.0);
+        bb.back_mut()[0] = 10;
+        bb.present();
+        bb.back_mut()[0] = 20;
+        bb.present();
+
+        // Second present should show 20 on front
+        assert_eq!(bb.front()[0], 20);
+    }
+
+    #[test]
+    fn back_buffer_dpi_scale_initial_clamp() {
+        let bb = BackBuffer::new(Size::new(1, 1), 0.0);
+        assert!((bb.dpi_scale() - 0.1).abs() < 1e-6);
+    }
+
+    // ── SoftwareSurface ─────────────────────────────────────────────────
+
+    #[test]
+    fn software_surface_new_creates_surface() {
+        let surface = SoftwareSurface::new(Size::new(100, 100), 1.0);
+        assert_eq!(surface.size(), Size::new(100, 100));
+        assert!((surface.dpi_scale() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn software_surface_zero_size() {
+        let surface = SoftwareSurface::new(Size::new(0, 0), 1.0);
+        assert_eq!(surface.size(), Size::new(0, 0));
+    }
+
+    #[test]
+    fn software_surface_begin_frame_clears() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.begin_frame(Color::RED);
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        for chunk in rgba.chunks(4) {
+            assert_eq!(chunk[0], 255);
+            assert_eq!(chunk[1], 0);
+            assert_eq!(chunk[2], 0);
+            assert_eq!(chunk[3], 255);
+        }
+    }
+
+    #[test]
+    fn software_surface_fill_rect() {
+        let mut surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
+        surface.begin_frame(Color::WHITE);
+
+        surface.fill_rect(Rect::new(2, 2, 10, 10), Color::BLUE);
+
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let stride = 20 * 4;
+        let idx = 5 * stride + 5 * 4;
+        assert_eq!(rgba[idx], 0); // R
+        assert_eq!(rgba[idx + 1], 0); // G
+        assert_eq!(rgba[idx + 2], 255); // B
+    }
+
+    #[test]
+    fn software_surface_fill_rect_zero_size() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.fill_rect(Rect::new(0, 0, 0, 0), Color::RED);
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        for chunk in rgba.chunks(4) {
+            assert_eq!(chunk[0], 255); // Still white, no fill
+        }
+    }
+
+    #[test]
+    fn software_surface_draw_rect() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.begin_frame(Color::WHITE);
+
+        surface.draw_rect(Rect::new(0, 0, 10, 10), Color::GREEN);
+
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        // Top-left corner should be green (stroke edge)
+        assert_eq!(rgba[0], 0); // R
+        assert_eq!(rgba[1], 255); // G
+        assert_eq!(rgba[2], 0); // B
+    }
+
+    #[test]
+    fn software_surface_resize() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.resize(Size::new(50, 50));
+        assert_eq!(surface.size(), Size::new(50, 50));
+    }
+
+    #[test]
+    fn software_surface_set_dpi_scale() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.set_dpi_scale(1.5);
+        assert!((surface.dpi_scale() - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn software_surface_aa_samples_per_axis_default() {
+        let surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        assert_eq!(surface.aa_samples_per_axis(), 4);
+    }
+
+    #[test]
+    fn software_surface_set_aa_samples() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.set_aa_samples_per_axis(2);
+        assert_eq!(surface.aa_samples_per_axis(), 2);
+    }
+
+    #[test]
+    fn software_surface_apply_render_config_clamps() {
+        let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        surface.apply_render_config(SoftwareRenderConfig {
+            aa_samples_per_axis: 99,
+        });
+        assert_eq!(surface.aa_samples_per_axis(), 8);
+    }
+
+    #[test]
+    fn software_surface_render_config_roundtrip() {
+        let surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
+        let config = surface.render_config();
+        assert_eq!(config.aa_samples_per_axis, 4);
+    }
+
+    // ── RenderContext ───────────────────────────────────────────────────
+
+    #[test]
+    fn render_context_new_wraps_backend() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(50, 50), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        assert_eq!(ctx.size(), Size::new(50, 50));
+    }
+
+    #[test]
+    fn render_context_backend_accessor() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        let mut ctx = RenderContext::new(&mut backend);
+        let be = ctx.backend();
+        assert_eq!(be.size(), Size::new(10, 10));
+    }
+
+    #[test]
+    fn render_context_fill_rect() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.fill_rect(Rect::new(0, 0, 10, 10), Color::RED);
+        // Frame is still zero-initialized (not presented yet)
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 0);
+
+        // After begin/end frame via the backend directly
+        let mut backend2 = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend2.begin_frame(Color::WHITE);
+        let mut ctx2 = RenderContext::new(&mut backend2);
+        ctx2.fill_rect(Rect::new(0, 0, 5, 5), Color::BLUE);
+        backend2.end_frame();
+
+        let rgba = backend2.frame_rgba();
+        assert_eq!(rgba[0], 0); // R
+        assert_eq!(rgba[2], 255); // B
+    }
+
+    #[test]
+    fn render_context_draw_rect() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_rect(Rect::new(0, 0, 10, 10), Color::GREEN);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 0); // R
+        assert_eq!(rgba[1], 255); // G
+    }
+
+    #[test]
+    fn render_context_draw_rect_stroke() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_rect_stroke(Rect::new(0, 0, 10, 10), Color::RED, 2);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 255); // R on edge
+    }
+
+    #[test]
+    fn render_context_fill_rounded_rect() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.fill_rounded_rect(Rect::new(1, 1, 8, 8), 2, Color::BLUE);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_fill_rounded_rect_aa() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.fill_rounded_rect_aa(Rect::new(1, 1, 8, 8), 2, Color::RED);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_rounded_rect_stroke() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_rounded_rect_stroke(Rect::new(1, 1, 8, 8), 2, Color::GREEN, 1);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_rounded_rect_stroke_aa() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_rounded_rect_stroke_aa(Rect::new(1, 1, 8, 8), 2, Color::BLUE, 1);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_line() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_line(Point::new(0, 0), Point::new(9, 9), Color::RED);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 255);
+    }
+
+    #[test]
+    fn render_context_draw_line_aa() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_line_aa(Point::new(0, 0), Point::new(9, 9), Color::BLUE);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_line_stroke() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_line_stroke(Point::new(0, 0), Point::new(9, 9), Color::GREEN, 2);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[1], 255);
+    }
+
+    #[test]
+    fn render_context_draw_line_stroke_aa() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_line_stroke_aa(Point::new(0, 0), Point::new(9, 9), Color::RED, 2);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_fill_circle() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.fill_circle(Point::new(10, 10), 5, Color::BLUE);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 20 * 4;
+        let idx = 10 * stride + 10 * 4;
+        assert_eq!(rgba[idx + 2], 255); // B
+    }
+
+    #[test]
+    fn render_context_fill_circle_aa() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.fill_circle_aa(Point::new(10, 10), 5, Color::RED);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 255);
+    }
+
+    #[test]
+    fn render_context_draw_circle() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_circle(Point::new(10, 10), 5, Color::GREEN);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_circle_stroke() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.draw_circle_stroke(Point::new(10, 10), 5, Color::RED, 2);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_draw_text() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(100, 100), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        let font = Font::simple("Arial", 12.0);
+        ctx.draw_text(Point::new(10, 20), "Hello", &font, Color::BLACK);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+
+    #[test]
+    fn render_context_measure_text() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(100, 100), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        let font = Font::simple("Arial", 12.0);
+        let metrics = ctx.measure_text("Hello", &font);
+        assert!(metrics.width > 0);
+        assert!(metrics.height > 0);
+    }
+
+    #[test]
+    fn render_context_shape_text() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(100, 100), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        let font = Font::simple("Arial", 12.0);
+        let shaped = ctx.shape_text("Hi", &font);
+        assert!(!shaped.clusters.is_empty());
+    }
+
+    #[test]
+    fn render_context_push_clip() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.push_clip(0, 0, 5, 5);
+        ctx.fill_rect(Rect::new(0, 0, 10, 10), Color::RED);
+        ctx.pop_clip();
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 10 * 4;
+        let idx = 2 * stride + 2 * 4;
+        assert_eq!(rgba[idx], 255); // R inside clip region
+    }
+
+    #[test]
+    fn render_context_pop_clip() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.push_clip(0, 0, 5, 5);
+        ctx.pop_clip();
+        // After pop, subsequent commands are not clipped
+        ctx.fill_rect(Rect::new(0, 0, 10, 10), Color::RED);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 10 * 4;
+        let idx = 7 * stride + 7 * 4; // Outside original clip
+        assert_eq!(rgba[idx], 255); // R should be visible
+    }
+
+    #[test]
+    fn render_context_draw_image() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        let data = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        ctx.draw_image(0, 0, 2, 2, &data);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert_eq!(rgba[0], 255); // R from top-left pixel
+    }
+
+    #[test]
+    fn render_context_size_and_dpi_scale() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(80, 60), 1.5);
+        let ctx = RenderContext::new(&mut backend);
+        assert_eq!(ctx.size(), Size::new(80, 60));
+        assert!((ctx.dpi_scale() - 1.5).abs() < 1e-6);
+    }
+
+    // ── SoftwareRenderConfig ─────────────────────────────────────────────
+
+    #[test]
+    fn software_render_config_default_values() {
+        let config = SoftwareRenderConfig::default();
+        assert_eq!(config.aa_samples_per_axis, 4);
+    }
+
+    #[test]
+    fn software_render_config_normalized_clamps_low() {
+        let config = SoftwareRenderConfig {
+            aa_samples_per_axis: 0,
+        };
+        let norm = config.normalized();
+        assert_eq!(norm.aa_samples_per_axis, 1);
+    }
+
+    #[test]
+    fn software_render_config_normalized_clamps_high() {
+        let config = SoftwareRenderConfig {
+            aa_samples_per_axis: 100,
+        };
+        let norm = config.normalized();
+        assert_eq!(norm.aa_samples_per_axis, 8);
+    }
+
+    #[test]
+    fn software_render_config_normalized_preserves_valid() {
+        let config = SoftwareRenderConfig {
+            aa_samples_per_axis: 2,
+        };
+        let norm = config.normalized();
+        assert_eq!(norm.aa_samples_per_axis, 2);
+    }
+
+    #[test]
+    fn software_render_config_normalized_edge_cases() {
+        let config_low = SoftwareRenderConfig {
+            aa_samples_per_axis: 1,
+        };
+        assert_eq!(config_low.normalized().aa_samples_per_axis, 1);
+
+        let config_high = SoftwareRenderConfig {
+            aa_samples_per_axis: 8,
+        };
+        assert_eq!(config_high.normalized().aa_samples_per_axis, 8);
+    }
+
+    #[test]
+    fn software_render_config_equality() {
+        let a = SoftwareRenderConfig {
+            aa_samples_per_axis: 4,
+        };
+        let b = SoftwareRenderConfig {
+            aa_samples_per_axis: 4,
+        };
+        let c = SoftwareRenderConfig {
+            aa_samples_per_axis: 2,
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // ── Global config functions ──────────────────────────────────────────
+
+    #[test]
+    fn default_software_render_config_returns_default() {
+        let config = default_software_render_config();
+        assert_eq!(config.aa_samples_per_axis, 4);
+    }
+
+    #[test]
+    fn set_default_software_render_config_updates_global() {
+        let custom = SoftwareRenderConfig {
+            aa_samples_per_axis: 2,
+        };
+        set_default_software_render_config(custom);
+        let retrieved = default_software_render_config();
+        assert_eq!(retrieved.aa_samples_per_axis, 2);
+
+        // Reset to default for other tests
+        set_default_software_render_config(SoftwareRenderConfig::default());
+    }
+
+    #[test]
+    fn set_default_software_render_config_clamps() {
+        let custom = SoftwareRenderConfig {
+            aa_samples_per_axis: 99,
+        };
+        set_default_software_render_config(custom);
+        let retrieved = default_software_render_config();
+        assert_eq!(retrieved.aa_samples_per_axis, 8);
+
+        // Reset
+        set_default_software_render_config(SoftwareRenderConfig::default());
+    }
+
+    // ── PaintBackend integration via RenderContext ───────────────────────
+
+    #[test]
+    fn render_context_dpi_scale_propagates() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 2.0);
+        let ctx = RenderContext::new(&mut backend);
+        assert!((ctx.dpi_scale() - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn render_context_backend_mutability() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.fill_rect(Rect::new(0, 0, 5, 5), Color::RED);
+        }
+        // After ctx drops, backend can still be used
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 10, 10),
+            color: Color::BLUE,
+        });
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        assert!(!rgba.is_empty());
+    }
+}

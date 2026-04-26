@@ -283,6 +283,434 @@ impl Default for BrowsingData {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── PrivacySettings tests ──
+
+    #[test]
+    fn test_privacy_settings_new() {
+        let settings = PrivacySettings::new();
+        assert!(settings.block_third_party_cookies);
+        assert!(settings.block_tracking_cookies);
+        assert!(!settings.block_all_cookies);
+        assert!(!settings.clear_cookies_on_exit);
+        assert!(settings.do_not_track);
+        assert!(settings.should_block_tracking_type(TrackingType::WebBeacon));
+        assert!(settings.should_block_tracking_type(TrackingType::Fingerprinting));
+        assert!(!settings.should_block_tracking_type(TrackingType::Cookies));
+        assert_eq!(
+            settings.cookie_duration_limit,
+            Some(Duration::from_secs(86400 * 30))
+        );
+    }
+
+    #[test]
+    fn test_privacy_settings_strict() {
+        let settings = PrivacySettings::strict();
+        assert!(settings.block_all_cookies);
+        assert!(settings.clear_cookies_on_exit);
+        assert!(settings.should_block_tracking_type(TrackingType::Cookies));
+        assert!(settings.should_block_tracking_type(TrackingType::LocalStorage));
+        assert!(settings.should_block_tracking_type(TrackingType::SessionStorage));
+        assert!(settings.should_block_tracking_type(TrackingType::ThirdPartyScripts));
+        assert!(settings.should_block_tracking_type(TrackingType::WebBeacon));
+        assert!(settings.should_block_tracking_type(TrackingType::Fingerprinting));
+    }
+
+    #[test]
+    fn test_privacy_settings_balanced() {
+        let balanced = PrivacySettings::balanced();
+        let default = PrivacySettings::new();
+        assert_eq!(
+            balanced.block_third_party_cookies,
+            default.block_third_party_cookies
+        );
+        assert_eq!(
+            balanced.block_tracking_cookies,
+            default.block_tracking_cookies
+        );
+        assert_eq!(balanced.block_all_cookies, default.block_all_cookies);
+        assert_eq!(balanced.do_not_track, default.do_not_track);
+    }
+
+    #[test]
+    fn test_privacy_settings_permissive() {
+        let settings = PrivacySettings::permissive();
+        assert!(!settings.block_third_party_cookies);
+        assert!(!settings.block_tracking_cookies);
+        assert!(!settings.block_all_cookies);
+        assert!(!settings.clear_cookies_on_exit);
+        assert!(!settings.do_not_track);
+        assert!(settings.block_tracking_types.is_empty());
+        assert!(settings.cookie_duration_limit.is_none());
+    }
+
+    #[test]
+    fn test_privacy_settings_allow_domain() {
+        let mut settings = PrivacySettings::new();
+        settings.block_domain("bad-site.com".to_string());
+        assert!(!settings.is_domain_allowed("bad-site.com"));
+        settings.allow_domain("bad-site.com".to_string());
+        assert!(settings.is_domain_allowed("bad-site.com"));
+    }
+
+    #[test]
+    fn test_privacy_settings_block_domain() {
+        let mut settings = PrivacySettings::new();
+        assert!(settings.is_domain_allowed("unknown.com"));
+        settings.block_domain("evil.com".to_string());
+        assert!(!settings.is_domain_allowed("evil.com"));
+    }
+
+    #[test]
+    fn test_privacy_settings_block_domain_removes_from_allowed() {
+        let mut settings = PrivacySettings::new();
+        settings.allow_domain("trusted.com".to_string());
+        assert!(settings.is_domain_allowed("trusted.com"));
+        settings.block_domain("trusted.com".to_string());
+        assert!(!settings.is_domain_allowed("trusted.com"));
+    }
+
+    #[test]
+    fn test_privacy_settings_default_implemented() {
+        let settings = PrivacySettings::default();
+        assert!(!settings.block_all_cookies);
+    }
+
+    // ── Cookie tests ──
+
+    #[test]
+    fn test_cookie_new() {
+        let cookie = Cookie::new(
+            "session".to_string(),
+            "abc123".to_string(),
+            "example.com".to_string(),
+        );
+        assert_eq!(cookie.name, "session");
+        assert_eq!(cookie.value, "abc123");
+        assert_eq!(cookie.domain, "example.com");
+        assert_eq!(cookie.path, "/");
+        assert!(!cookie.secure);
+        assert!(!cookie.http_only);
+        assert_eq!(cookie.same_site, SameSite::Lax);
+    }
+
+    #[test]
+    fn test_cookie_is_expired_when_no_expiry() {
+        let cookie = Cookie::new(
+            "test".to_string(),
+            "val".to_string(),
+            "example.com".to_string(),
+        );
+        assert!(!cookie.is_expired());
+    }
+
+    #[test]
+    fn test_cookie_is_expired() {
+        let cookie = Cookie {
+            name: "test".to_string(),
+            value: "val".to_string(),
+            domain: "example.com".to_string(),
+            path: "/".to_string(),
+            expires: Some(100), // year 1970 — definitely expired
+            max_age: None,
+            secure: false,
+            http_only: false,
+            same_site: SameSite::Lax,
+        };
+        assert!(cookie.is_expired());
+    }
+
+    #[test]
+    fn test_cookie_is_third_party() {
+        let cookie = Cookie::new(
+            "test".to_string(),
+            "val".to_string(),
+            "other.com".to_string(),
+        );
+        assert!(cookie.is_third_party("example.com"));
+    }
+
+    #[test]
+    fn test_cookie_is_not_third_party_same_domain() {
+        let cookie = Cookie::new(
+            "test".to_string(),
+            "val".to_string(),
+            "example.com".to_string(),
+        );
+        assert!(!cookie.is_third_party("example.com"));
+    }
+
+    // ── CookieJar tests ──
+
+    #[test]
+    fn test_cookie_jar_new() {
+        let jar = CookieJar::new();
+        assert!(jar.is_empty());
+        assert_eq!(jar.len(), 0);
+    }
+
+    #[test]
+    fn test_cookie_jar_add_and_get() {
+        let mut jar = CookieJar::new();
+        let cookie = Cookie::new(
+            "session".to_string(),
+            "abc".to_string(),
+            "example.com".to_string(),
+        );
+        jar.add(cookie);
+        assert_eq!(jar.len(), 1);
+        let retrieved = jar.get("example.com", "session");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().value, "abc");
+    }
+
+    #[test]
+    fn test_cookie_jar_remove() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new(
+            "a".to_string(),
+            "1".to_string(),
+            "example.com".to_string(),
+        ));
+        let removed = jar.remove("example.com", "a");
+        assert!(removed.is_some());
+        assert!(jar.is_empty());
+    }
+
+    #[test]
+    fn test_cookie_jar_remove_nonexistent() {
+        let mut jar = CookieJar::new();
+        assert!(jar.remove("example.com", "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_cookie_jar_clear() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new(
+            "a".to_string(),
+            "1".to_string(),
+            "a.com".to_string(),
+        ));
+        jar.add(Cookie::new(
+            "b".to_string(),
+            "2".to_string(),
+            "b.com".to_string(),
+        ));
+        jar.clear();
+        assert!(jar.is_empty());
+    }
+
+    #[test]
+    fn test_cookie_jar_clear_expired() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie {
+            name: "expired".to_string(),
+            value: "old".to_string(),
+            domain: "example.com".to_string(),
+            path: "/".to_string(),
+            expires: Some(1),
+            max_age: None,
+            secure: false,
+            http_only: false,
+            same_site: SameSite::Lax,
+        });
+        jar.add(Cookie::new(
+            "fresh".to_string(),
+            "new".to_string(),
+            "example.com".to_string(),
+        ));
+        jar.clear_expired();
+        assert_eq!(jar.len(), 1);
+        assert!(jar.get("example.com", "fresh").is_some());
+    }
+
+    #[test]
+    fn test_cookie_jar_clear_for_domain() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new(
+            "a".to_string(),
+            "1".to_string(),
+            "example.com".to_string(),
+        ));
+        jar.add(Cookie::new(
+            "b".to_string(),
+            "2".to_string(),
+            "other.com".to_string(),
+        ));
+        jar.clear_for_domain("example.com");
+        assert_eq!(jar.len(), 1);
+        assert!(jar.get("other.com", "b").is_some());
+    }
+
+    #[test]
+    fn test_cookie_jar_cookies_for_domain() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new(
+            "a".to_string(),
+            "1".to_string(),
+            "example.com".to_string(),
+        ));
+        jar.add(Cookie::new(
+            "b".to_string(),
+            "2".to_string(),
+            "api.example.com".to_string(),
+        ));
+        let cookies = jar.cookies_for_domain("example.com");
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn test_cookie_jar_all_cookies() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new(
+            "a".to_string(),
+            "1".to_string(),
+            "a.com".to_string(),
+        ));
+        jar.add(Cookie::new(
+            "b".to_string(),
+            "2".to_string(),
+            "b.com".to_string(),
+        ));
+        assert_eq!(jar.all_cookies().len(), 2);
+    }
+
+    // ── TrackingProtection tests ──
+
+    #[test]
+    fn test_tracking_protection_new() {
+        let tp = TrackingProtection::new(PrivacySettings::balanced());
+        assert_eq!(tp.blocked_count(), 0);
+        assert!(tp.attempts().is_empty());
+    }
+
+    #[test]
+    fn test_tracking_protection_check_tracking_blocks() {
+        let mut tp = TrackingProtection::new(PrivacySettings::strict());
+        let blocked = tp.check_tracking(
+            TrackingType::Fingerprinting,
+            "tracker.com",
+            "https://tracker.com/pixel",
+        );
+        assert!(blocked);
+        assert_eq!(tp.blocked_count(), 1);
+    }
+
+    #[test]
+    fn test_tracking_protection_check_tracking_allows() {
+        let mut tp = TrackingProtection::new(PrivacySettings::permissive());
+        let blocked = tp.check_tracking(
+            TrackingType::Fingerprinting,
+            "tracker.com",
+            "https://tracker.com/pixel",
+        );
+        assert!(!blocked);
+        assert_eq!(tp.blocked_count(), 0);
+    }
+
+    #[test]
+    fn test_tracking_protection_attempts_logged() {
+        let mut tp = TrackingProtection::new(PrivacySettings::strict());
+        tp.check_tracking(TrackingType::Cookies, "ad.com", "https://ad.com/tracker");
+        assert_eq!(tp.attempts().len(), 1);
+        assert_eq!(tp.attempts()[0].domain, "ad.com");
+    }
+
+    #[test]
+    fn test_tracking_protection_clear_attempts() {
+        let mut tp = TrackingProtection::new(PrivacySettings::strict());
+        tp.check_tracking(
+            TrackingType::WebBeacon,
+            "beacon.com",
+            "https://beacon.com/pixel",
+        );
+        assert_eq!(tp.attempts().len(), 1);
+        tp.clear_attempts();
+        assert!(tp.attempts().is_empty());
+        // blocked_count should still be 1
+        assert_eq!(tp.blocked_count(), 1);
+    }
+
+    #[test]
+    fn test_tracking_protection_clear_stats() {
+        let mut tp = TrackingProtection::new(PrivacySettings::strict());
+        tp.check_tracking(
+            TrackingType::Fingerprinting,
+            "tracker.com",
+            "https://tracker.com",
+        );
+        assert_eq!(tp.blocked_count(), 1);
+        tp.clear_stats();
+        assert_eq!(tp.blocked_count(), 0);
+        assert!(tp.attempts().is_empty());
+    }
+
+    #[test]
+    fn test_tracking_protection_settings_access() {
+        let mut tp = TrackingProtection::new(PrivacySettings::permissive());
+        assert!(!tp.settings().do_not_track);
+        tp.settings_mut().do_not_track = true;
+        assert!(tp.settings().do_not_track);
+    }
+
+    // ── BrowsingData tests ──
+
+    #[test]
+    fn test_browsing_data_default() {
+        let data = BrowsingData::default();
+        assert!(data.history);
+        assert!(data.cookies);
+        assert!(data.cache);
+        assert!(data.local_storage);
+        assert!(data.session_storage);
+        assert!(!data.indexed_db);
+        assert!(!data.web_sql);
+        assert!(!data.service_workers);
+        assert!(!data.plugin_data);
+        assert!(!data.downloads);
+        assert!(!data.passwords);
+        assert!(!data.form_data);
+    }
+
+    #[test]
+    fn test_browsing_data_all() {
+        let data = BrowsingData::all();
+        assert!(data.history);
+        assert!(data.cookies);
+        assert!(data.cache);
+        assert!(data.local_storage);
+        assert!(data.session_storage);
+        assert!(data.indexed_db);
+        assert!(data.web_sql);
+        assert!(data.service_workers);
+        assert!(data.plugin_data);
+        assert!(data.downloads);
+        assert!(data.passwords);
+        assert!(data.form_data);
+    }
+
+    #[test]
+    fn test_browsing_data_none() {
+        let data = BrowsingData::none();
+        assert!(!data.history);
+        assert!(!data.cookies);
+        assert!(!data.cache);
+        assert!(!data.local_storage);
+        assert!(!data.session_storage);
+        assert!(!data.indexed_db);
+        assert!(!data.web_sql);
+        assert!(!data.service_workers);
+        assert!(!data.plugin_data);
+        assert!(!data.downloads);
+        assert!(!data.passwords);
+        assert!(!data.form_data);
+    }
+}
 impl BrowsingData {
     pub fn all() -> Self {
         Self {

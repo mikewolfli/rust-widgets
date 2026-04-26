@@ -1,4 +1,4 @@
-//! PieMenu (radial/圆形菜单) widget.
+//! PieMenu (radial menu) widget.
 //!
 //! A circular popup menu that displays items as radial slices.
 //! Users hover to highlight and click to select an item.

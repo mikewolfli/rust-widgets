@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Color dialog for picking RGBA colors.
 pub struct ColorDialog {
@@ -191,7 +192,7 @@ impl Draw for ColorDialog {
         );
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
-            "Select Color",
+            &tr!("color_dialog.title"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -220,7 +221,7 @@ impl Draw for ColorDialog {
         );
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
-            "Current Color",
+            &tr!("color_dialog.current_color"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );
@@ -233,7 +234,7 @@ impl Draw for ColorDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
-            "OK",
+            &tr!("common.button.ok"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -247,7 +248,7 @@ impl Draw for ColorDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
-            "Cancel",
+            &tr!("common.button.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );

@@ -351,3 +351,379 @@ impl BatchRenderer for SoftwarePaintBackend {
         self.batch_state.batch_count()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Point, Rect};
+
+    // ── BatchId construction & conversions ──────────────────────────────
+
+    #[test]
+    fn batch_id_new_and_get() {
+        let id = BatchId::new(42);
+        assert_eq!(id.get(), 42);
+    }
+
+    #[test]
+    fn batch_id_from_u64() {
+        let id: BatchId = 99u64.into();
+        assert_eq!(id.get(), 99);
+    }
+
+    #[test]
+    fn batch_id_equality_and_hash() {
+        let a = BatchId::new(1);
+        let b = BatchId::new(1);
+        let c = BatchId::new(2);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn batch_id_copy_behavior() {
+        let id = BatchId::new(7);
+        let copied = id; // Copy
+        assert_eq!(id, copied);
+    }
+
+    // ── BatchCommand variant construction ───────────────────────────────
+
+    #[test]
+    fn batch_command_fill_rect_roundtrip() {
+        let cmd = BatchCommand::FillRect {
+            rect: Rect::new(10, 20, 100, 200),
+            color: Color::RED,
+        };
+        match cmd {
+            BatchCommand::FillRect { rect, color } => {
+                assert_eq!(rect, Rect::new(10, 20, 100, 200));
+                assert_eq!(color, Color::RED);
+            }
+            _ => panic!("expected FillRect variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_stroke_rect_roundtrip() {
+        let cmd = BatchCommand::StrokeRect {
+            rect: Rect::new(5, 5, 50, 50),
+            color: Color::GREEN,
+            width: 2.0,
+        };
+        match cmd {
+            BatchCommand::StrokeRect { rect, color, width } => {
+                assert_eq!(rect, Rect::new(5, 5, 50, 50));
+                assert_eq!(color, Color::GREEN);
+                assert!((width - 2.0).abs() < 1e-6);
+            }
+            _ => panic!("expected StrokeRect variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_draw_line_roundtrip() {
+        let from = Point::new(0, 0);
+        let to = Point::new(100, 100);
+        let cmd = BatchCommand::DrawLine {
+            from,
+            to,
+            color: Color::BLUE,
+            width: 3.0,
+        };
+        match cmd {
+            BatchCommand::DrawLine {
+                from: f,
+                to: t,
+                color,
+                width,
+            } => {
+                assert_eq!(f, from);
+                assert_eq!(t, to);
+                assert_eq!(color, Color::BLUE);
+                assert!((width - 3.0).abs() < 1e-6);
+            }
+            _ => panic!("expected DrawLine variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_draw_image_roundtrip() {
+        let cmd = BatchCommand::DrawImage {
+            rect: Rect::new(0, 0, 32, 32),
+            image_id: 1u64,
+            opacity: 0.8,
+        };
+        match cmd {
+            BatchCommand::DrawImage {
+                rect,
+                image_id,
+                opacity,
+            } => {
+                assert_eq!(rect, Rect::new(0, 0, 32, 32));
+                assert_eq!(image_id, 1u64);
+                assert!((opacity - 0.8).abs() < 1e-6);
+            }
+            _ => panic!("expected DrawImage variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_draw_image_subrect_roundtrip() {
+        let cmd = BatchCommand::DrawImageSubrect {
+            dest: Rect::new(10, 10, 64, 64),
+            source: Rect::new(0, 0, 32, 32),
+            image_id: 2u64,
+            opacity: 0.5,
+        };
+        match cmd {
+            BatchCommand::DrawImageSubrect {
+                dest,
+                source,
+                image_id,
+                opacity,
+            } => {
+                assert_eq!(dest, Rect::new(10, 10, 64, 64));
+                assert_eq!(source, Rect::new(0, 0, 32, 32));
+                assert_eq!(image_id, 2u64);
+                assert!((opacity - 0.5).abs() < 1e-6);
+            }
+            _ => panic!("expected DrawImageSubrect variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_draw_text_roundtrip() {
+        let cmd = BatchCommand::DrawText {
+            position: Point::new(15, 30),
+            text: "Hello".to_string(),
+            color: Color::WHITE,
+            font_size: 16.0,
+        };
+        match cmd {
+            BatchCommand::DrawText {
+                position,
+                text,
+                color,
+                font_size,
+            } => {
+                assert_eq!(position, Point::new(15, 30));
+                assert_eq!(text, "Hello");
+                assert_eq!(color, Color::WHITE);
+                assert!((font_size - 16.0).abs() < 1e-6);
+            }
+            _ => panic!("expected DrawText variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_push_clip_roundtrip() {
+        let cmd = BatchCommand::PushClip {
+            rect: Rect::new(0, 0, 800, 600),
+        };
+        match cmd {
+            BatchCommand::PushClip { rect } => {
+                assert_eq!(rect, Rect::new(0, 0, 800, 600));
+            }
+            _ => panic!("expected PushClip variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_pop_clip_roundtrip() {
+        let cmd = BatchCommand::PopClip;
+        match cmd {
+            BatchCommand::PopClip => {} // expected
+            _ => panic!("expected PopClip variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_translate_roundtrip() {
+        let cmd = BatchCommand::Translate { dx: 10.0, dy: 20.0 };
+        match cmd {
+            BatchCommand::Translate { dx, dy } => {
+                assert!((dx - 10.0).abs() < 1e-6);
+                assert!((dy - 20.0).abs() < 1e-6);
+            }
+            _ => panic!("expected Translate variant"),
+        }
+    }
+
+    #[test]
+    fn batch_command_set_opacity_roundtrip() {
+        let cmd = BatchCommand::SetOpacity { opacity: 0.75 };
+        match cmd {
+            BatchCommand::SetOpacity { opacity } => {
+                assert!((opacity - 0.75).abs() < 1e-6);
+            }
+            _ => panic!("expected SetOpacity variant"),
+        }
+    }
+
+    // ── BatchState lifecycle ────────────────────────────────────────────
+
+    #[test]
+    fn batch_state_initial_state() {
+        let state = BatchState::new();
+        assert_eq!(state.batch_count(), 0);
+        assert!(!state.contains_batch(BatchId::new(0)));
+        assert!(state.current_batch.is_none());
+    }
+
+    #[test]
+    fn batch_state_begin_end_batch_increments_id() {
+        let mut state = BatchState::new();
+        let id1 = state.begin_batch();
+        assert_eq!(id1, BatchId::new(0));
+        assert_eq!(state.batch_count(), 1);
+        assert!(state.contains_batch(id1));
+        state.end_batch();
+
+        let id2 = state.begin_batch();
+        assert_eq!(id2, BatchId::new(1));
+        assert_eq!(state.batch_count(), 2);
+        state.end_batch();
+    }
+
+    #[test]
+    fn batch_state_record_commands() {
+        let mut state = BatchState::new();
+        let id = state.begin_batch();
+        state.record(BatchCommand::FillRect {
+            rect: Rect::new(0, 0, 50, 50),
+            color: Color::RED,
+        });
+        state.record(BatchCommand::PopClip);
+        state.end_batch();
+
+        let cmds = state.batches.get(&id).unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(cmds[0], BatchCommand::FillRect { .. }));
+        assert!(matches!(cmds[1], BatchCommand::PopClip));
+    }
+
+    #[test]
+    #[should_panic(expected = "called record() without an open batch")]
+    fn batch_state_record_without_begin_panics() {
+        let mut state = BatchState::new();
+        state.record(BatchCommand::PopClip);
+    }
+
+    #[test]
+    fn batch_state_destroy_batch_removes_it() {
+        let mut state = BatchState::new();
+        let id = state.begin_batch();
+        state.end_batch();
+        assert_eq!(state.batch_count(), 1);
+
+        state.destroy_batch(id);
+        assert_eq!(state.batch_count(), 0);
+        assert!(!state.contains_batch(id));
+    }
+
+    #[test]
+    fn batch_state_destroy_batch_clears_current() {
+        let mut state = BatchState::new();
+        let id = state.begin_batch();
+        state.destroy_batch(id); // destroys while still open
+        assert!(state.current_batch.is_none());
+    }
+
+    #[test]
+    fn batch_state_replay_nonexistent_id_is_noop() {
+        let state = BatchState::new();
+        // Should not panic
+        let size = crate::core::Size::new(1, 1);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        state.replay(&mut backend, BatchId::new(999));
+        // If we reach here, no panic occurred
+        assert!(true);
+    }
+
+    #[test]
+    fn batch_state_translate_command_skip_translate_and_set_opacity() {
+        let mut state = BatchState::new();
+        let id = state.begin_batch();
+        state.record(BatchCommand::Translate { dx: 5.0, dy: 5.0 });
+        state.record(BatchCommand::SetOpacity { opacity: 0.5 });
+        state.end_batch();
+
+        // Translate/SetOpacity emit a zero-size FillRect during replay
+        let cmds = state.batches.get(&id).unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(cmds[0], BatchCommand::Translate { .. }));
+        assert!(matches!(cmds[1], BatchCommand::SetOpacity { .. }));
+    }
+
+    // ── BatchRenderer trait via SoftwarePaintBackend ────────────────────
+
+    #[test]
+    fn batch_renderer_trait_begin_end_record() {
+        let size = crate::core::Size::new(100, 100);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        let id = backend.begin_batch();
+        backend.record(BatchCommand::FillRect {
+            rect: Rect::new(0, 0, 10, 10),
+            color: Color::RED,
+        });
+        backend.end_batch();
+        assert!(backend.contains_batch(id));
+    }
+
+    #[test]
+    fn batch_renderer_destroy_batch() {
+        let size = crate::core::Size::new(100, 100);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        let id = backend.begin_batch();
+        backend.end_batch();
+
+        assert_eq!(backend.batch_count(), 1);
+        backend.destroy_batch(id);
+        assert_eq!(backend.batch_count(), 0);
+    }
+
+    #[test]
+    fn batch_renderer_replay_fill_rect() {
+        let size = crate::core::Size::new(50, 50);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+
+        let id = backend.begin_batch();
+        backend.record(BatchCommand::FillRect {
+            rect: Rect::new(5, 5, 10, 10),
+            color: Color::RED,
+        });
+        backend.end_batch();
+
+        backend.replay(id);
+        backend.end_frame();
+
+        // Verify pixel data was written at center of fill region
+        let rgba = backend.frame_rgba();
+        let stride = 50 * 4;
+        // Pixel at (10, 10) should be RED
+        let idx = 10 * stride + 10 * 4;
+        assert_eq!(rgba[idx], 255); // R
+        assert_eq!(rgba[idx + 1], 0); // G
+        assert_eq!(rgba[idx + 2], 0); // B
+        assert_eq!(rgba[idx + 3], 255); // A
+    }
+
+    #[test]
+    fn batch_renderer_contains_batch_after_creation() {
+        let size = crate::core::Size::new(10, 10);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        let id = backend.begin_batch();
+        backend.record(BatchCommand::DrawLine {
+            from: Point::new(0, 0),
+            to: Point::new(10, 10),
+            color: Color::RED,
+            width: 1.0,
+        });
+        backend.end_batch();
+
+        assert!(backend.contains_batch(id));
+        assert_eq!(backend.batch_count(), 1);
+    }
+}

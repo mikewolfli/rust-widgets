@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,7 @@ impl FileFilter {
         }
     }
     pub fn all_files() -> Self {
-        Self::new("All Files (*)", vec!["*"])
+        Self::new(tr!("dialog.file_dialog.all_files_filter"), vec!["*"])
     }
 }
 impl std::fmt::Display for FileFilter {
@@ -57,7 +58,7 @@ impl FileDialog {
         Self {
             base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
             mode: FileDialogMode::OpenFile,
-            title: "Open File".to_string(),
+            title: tr!("dialog.file_dialog.open_file"),
             directory: String::new(),
             selected_files: Vec::new(),
             name_filters: vec![FileFilter::all_files()],
@@ -79,13 +80,13 @@ impl FileDialog {
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::OpenFile;
-        d.title = "Open File".to_string();
+        d.title = tr!("dialog.file_dialog.open_file");
         d
     }
     pub fn save_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::SaveFile;
-        d.title = "Save File".to_string();
+        d.title = tr!("dialog.file_dialog.save_file");
         d
     }
     pub fn mode(&self) -> FileDialogMode {
@@ -111,12 +112,11 @@ impl FileDialog {
     }
     pub fn set_mode(&mut self, mode: FileDialogMode) {
         self.mode = mode;
-        self.title = match mode {
-            FileDialogMode::OpenFile | FileDialogMode::OpenFiles => "Open File",
-            FileDialogMode::SaveFile => "Save File",
-            FileDialogMode::SelectDirectory => "Select Directory",
-        }
-        .to_string();
+        self.title = tr!(match mode {
+            FileDialogMode::OpenFile | FileDialogMode::OpenFiles => "dialog.file_dialog.open_file",
+            FileDialogMode::SaveFile => "dialog.file_dialog.save_file",
+            FileDialogMode::SelectDirectory => "dialog.file_dialog.select_directory",
+        });
     }
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
@@ -296,7 +296,7 @@ impl Draw for FileDialog {
         );
         context.draw_text(
             Point::new(rect.x + 16, list_y + 20),
-            "(file list)",
+            &tr!("dialog.file_dialog.file_list_placeholder"),
             &Font::default(),
             Color::from_rgb(150, 150, 150),
         );
@@ -304,7 +304,7 @@ impl Draw for FileDialog {
         let sel_y = list_y + list_h as i32 + 8;
         context.draw_text(
             Point::new(rect.x + 10, sel_y + 10),
-            "File name:",
+            &tr!("dialog.file_dialog.file_name"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );
@@ -327,9 +327,9 @@ impl Draw for FileDialog {
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
         let btn_w = 80;
         let ok_label = if self.mode == FileDialogMode::SaveFile {
-            "Save"
+            tr!("common.button.save")
         } else {
-            "Open"
+            tr!("common.button.open")
         };
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
@@ -337,7 +337,7 @@ impl Draw for FileDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
-            ok_label,
+            &ok_label,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -351,7 +351,7 @@ impl Draw for FileDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
-            "Cancel",
+            &tr!("common.button.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );

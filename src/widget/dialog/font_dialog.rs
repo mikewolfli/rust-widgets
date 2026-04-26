@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
+use crate::tr;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Font selection dialog.
 pub struct FontDialog {
@@ -184,7 +185,7 @@ impl Draw for FontDialog {
         );
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
-            "Select Font",
+            &tr!("dialog.font.select_font"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -192,11 +193,16 @@ impl Draw for FontDialog {
         let list_y = rect.y + 38;
         let list_h = rect.height.saturating_sub(120);
         // Family, Style, Size columns
-        for (i, label) in ["Font Family", "Style", "Size"].iter().enumerate() {
+        let col_labels = [
+            tr!("dialog.font.font_family"),
+            tr!("dialog.font.style"),
+            tr!("dialog.font.size"),
+        ];
+        for (i, label) in col_labels.iter().enumerate() {
             let col_x = rect.x as f32 + 4.0 + i as f32 * (col_w as f32 + 4.0);
             context.draw_text(
                 Point::new(col_x as i32, list_y - 10),
-                label,
+                label.as_str(),
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
             );
@@ -234,7 +240,7 @@ impl Draw for FontDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
-            "OK",
+            &tr!("dialog.ok"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
         );
@@ -248,7 +254,7 @@ impl Draw for FontDialog {
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
-            "Cancel",
+            &tr!("dialog.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );

@@ -182,3 +182,255 @@ impl Default for SecuritySettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_navigation_entry_default() {
+        let entry = NavigationEntry::default();
+        assert_eq!(entry.url, "about:blank");
+        assert_eq!(entry.title, "Blank Page");
+        assert_eq!(entry.timestamp, 0);
+    }
+
+    #[test]
+    fn test_navigation_history_new() {
+        let history = NavigationHistory::new(10);
+        assert_eq!(history.max_size, 10);
+        assert!(history.current().is_none());
+        assert!(!history.can_go_back());
+        assert!(!history.can_go_forward());
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_navigation_history_push_and_current() {
+        let mut history = NavigationHistory::new(10);
+        history.push(NavigationEntry {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            timestamp: 100,
+        });
+        let current = history.current();
+        assert!(current.is_some());
+        assert_eq!(current.unwrap().url, "https://example.com");
+        assert_eq!(current.unwrap().title, "Example");
+        assert_eq!(history.len(), 1);
+        assert!(!history.is_empty());
+    }
+
+    #[test]
+    fn test_navigation_history_go_back_and_forward() {
+        let mut history = NavigationHistory::new(10);
+        history.push(NavigationEntry {
+            url: "https://page1.com".to_string(),
+            title: "Page 1".to_string(),
+            timestamp: 1,
+        });
+        history.push(NavigationEntry {
+            url: "https://page2.com".to_string(),
+            title: "Page 2".to_string(),
+            timestamp: 2,
+        });
+        assert!(history.can_go_back());
+        assert!(!history.can_go_forward());
+        assert_eq!(history.current().unwrap().url, "https://page2.com");
+
+        let back = history.go_back();
+        assert!(back.is_some());
+        assert_eq!(back.unwrap().url, "https://page1.com");
+        assert!(!history.can_go_back());
+        assert!(history.can_go_forward());
+
+        let fwd = history.go_forward();
+        assert!(fwd.is_some());
+        assert_eq!(fwd.unwrap().url, "https://page2.com");
+        assert!(history.can_go_back());
+        assert!(!history.can_go_forward());
+    }
+
+    #[test]
+    fn test_navigation_history_go_back_at_start() {
+        let mut history = NavigationHistory::new(10);
+        assert!(history.go_back().is_none());
+        assert!(history.go_forward().is_none());
+    }
+
+    #[test]
+    fn test_navigation_history_clear() {
+        let mut history = NavigationHistory::new(10);
+        history.push(NavigationEntry {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            timestamp: 0,
+        });
+        assert!(!history.is_empty());
+        history.clear();
+        assert!(history.is_empty());
+        assert!(history.current().is_none());
+        assert!(!history.can_go_back());
+    }
+
+    #[test]
+    fn test_navigation_history_truncates_forward_on_new_push() {
+        let mut history = NavigationHistory::new(10);
+        history.push(NavigationEntry {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            timestamp: 1,
+        });
+        history.push(NavigationEntry {
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            timestamp: 2,
+        });
+        history.push(NavigationEntry {
+            url: "https://c.com".to_string(),
+            title: "C".to_string(),
+            timestamp: 3,
+        });
+        history.go_back();
+        history.go_back();
+        assert_eq!(history.current().unwrap().url, "https://a.com");
+        // Pushing a new URL after going back truncates forward stack
+        history.push(NavigationEntry {
+            url: "https://d.com".to_string(),
+            title: "D".to_string(),
+            timestamp: 4,
+        });
+        assert!(!history.can_go_forward());
+        assert_eq!(history.current().unwrap().url, "https://d.com");
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_navigation_history_max_size_eviction() {
+        let mut history = NavigationHistory::new(3);
+        history.push(NavigationEntry {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            timestamp: 1,
+        });
+        history.push(NavigationEntry {
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            timestamp: 2,
+        });
+        history.push(NavigationEntry {
+            url: "https://c.com".to_string(),
+            title: "C".to_string(),
+            timestamp: 3,
+        });
+        history.push(NavigationEntry {
+            url: "https://d.com".to_string(),
+            title: "D".to_string(),
+            timestamp: 4,
+        });
+        // The oldest entry should be evicted
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.current().unwrap().url, "https://d.com");
+    }
+
+    #[test]
+    fn test_navigation_history_entries_slice() {
+        let mut history = NavigationHistory::new(10);
+        history.push(NavigationEntry {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            timestamp: 1,
+        });
+        history.push(NavigationEntry {
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            timestamp: 2,
+        });
+        let entries = history.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].url, "https://a.com");
+        assert_eq!(entries[1].url, "https://b.com");
+    }
+
+    #[test]
+    fn test_load_status_variants() {
+        assert_eq!(LoadStatus::NotStarted as u8, 0);
+        assert_eq!(LoadStatus::Loading as u8, 1);
+        assert_eq!(LoadStatus::Loaded as u8, 2);
+        assert_eq!(LoadStatus::Failed as u8, 3);
+        assert_ne!(LoadStatus::NotStarted, LoadStatus::Loading);
+        assert_ne!(LoadStatus::Loaded, LoadStatus::Failed);
+    }
+
+    #[test]
+    fn test_web_resource_new() {
+        let resource = WebResource::new(
+            "https://example.com/data".to_string(),
+            "application/json".to_string(),
+            vec![1, 2, 3],
+        );
+        assert_eq!(resource.url, "https://example.com/data");
+        assert_eq!(resource.mime_type, "application/json");
+        assert_eq!(resource.data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_web_resource_from_text() {
+        let resource = WebResource::from_text("https://example.com/hello", "Hello, World!");
+        assert_eq!(resource.url, "https://example.com/hello");
+        assert_eq!(resource.mime_type, "text/plain");
+        assert_eq!(resource.data, b"Hello, World!");
+    }
+
+    #[test]
+    fn test_web_resource_from_html() {
+        let resource = WebResource::from_html("https://example.com/page", "<h1>Title</h1>");
+        assert_eq!(resource.url, "https://example.com/page");
+        assert_eq!(resource.mime_type, "text/html");
+        assert_eq!(resource.data, b"<h1>Title</h1>");
+    }
+
+    #[test]
+    fn test_web_settings_default() {
+        let settings = WebSettings::default();
+        assert!(settings.javascript_enabled);
+        assert!(!settings.plugins_enabled);
+        assert!(!settings.private_browsing);
+        assert!(settings.images_enabled);
+        assert!(settings.cookies_enabled);
+        assert!(settings.webgl_enabled);
+        assert!(!settings.developer_extras_enabled);
+        assert_eq!(settings.user_agent, "RustWidgets/0.1");
+        assert_eq!(settings.default_encoding, "UTF-8");
+    }
+
+    #[test]
+    fn test_web_settings_mutate() {
+        let mut settings = WebSettings::default();
+        settings.javascript_enabled = false;
+        settings.plugins_enabled = true;
+        settings.private_browsing = true;
+        assert!(!settings.javascript_enabled);
+        assert!(settings.plugins_enabled);
+        assert!(settings.private_browsing);
+    }
+
+    #[test]
+    fn test_security_settings_default() {
+        let security = SecuritySettings::default();
+        assert!(!security.allow_insecure_content);
+        assert!(!security.allow_mixed_content);
+        assert!(security.block_popups);
+        assert!(security.block_tracking);
+        assert!(security.block_malware);
+    }
+
+    #[test]
+    fn test_security_settings_mutate() {
+        let mut security = SecuritySettings::default();
+        security.allow_insecure_content = true;
+        security.block_popups = false;
+        assert!(security.allow_insecure_content);
+        assert!(!security.block_popups);
+    }
+}

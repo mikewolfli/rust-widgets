@@ -48,6 +48,9 @@ mod pipeline;
 // and require integration wiring before they are ready for public consumption.
 #[cfg(feature = "desktop")]
 pub mod web;
+// Projection/presentation-mode rendering (BLUE8 P4-5b, gated behind `projection`)
+#[cfg(feature = "projection")]
+pub mod projection;
 // GPU-accelerated rendering backend
 #[cfg(feature = "gpu-wgpu")]
 pub mod gpu;
@@ -129,6 +132,10 @@ pub use pipeline::{
 // GPU — re-export only when feature is active
 #[cfg(feature = "gpu-wgpu")]
 pub use gpu::{GpuCapability, GpuRenderer};
+
+// Projection types
+#[cfg(feature = "projection")]
+pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionRenderConfig};
 
 /// Web rendering types — available on desktop targets
 #[cfg(feature = "desktop")]

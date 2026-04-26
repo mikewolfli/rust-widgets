@@ -410,3 +410,364 @@ macro_rules! delegate_widget {
 }
 
 pub(crate) use delegate_widget;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+    use crate::web::privacy::{BrowsingData, Cookie};
+
+    #[test]
+    fn test_web_view_core_new() {
+        let core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        assert_eq!(core.url(), "about:blank");
+        assert!(!core.is_loading());
+        assert_eq!(core.title(), "");
+        assert_eq!(core.load_progress(), 0);
+        assert_eq!(core.settings().javascript_enabled, true);
+        assert_eq!(core.security().block_popups, true);
+    }
+
+    #[test]
+    fn test_web_view_core_set_url() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://example.com".to_string());
+        assert_eq!(core.url(), "https://example.com");
+        // set_url simulates loading and completing
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 100);
+    }
+
+    #[test]
+    fn test_web_view_core_duplicate_url() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("about:blank".to_string());
+        // URL unchanged, so load should be short-circuited
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 0);
+    }
+
+    #[test]
+    fn test_web_view_core_load_url() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_url("https://rust-lang.org");
+        assert_eq!(core.url(), "https://rust-lang.org");
+    }
+
+    #[test]
+    fn test_web_view_core_load_html() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<h1>Hello</h1>", Some("https://base.url"));
+        assert_eq!(core.url(), "https://base.url");
+        assert_eq!(core.title(), "HTML Content");
+        assert_eq!(core.content(), "<h1>Hello</h1>");
+        assert!(!core.is_loading());
+    }
+
+    #[test]
+    fn test_web_view_core_load_data() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_data(b"raw data", "text/plain", "https://data.url");
+        assert_eq!(core.url(), "https://data.url");
+        assert_eq!(core.title(), "Data: text/plain");
+        assert_eq!(core.content(), "raw data");
+    }
+
+    #[test]
+    fn test_web_view_core_go_back_forward() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        assert!(!core.can_go_back());
+        assert!(!core.can_go_forward());
+
+        core.set_url("https://page1.com".to_string());
+        core.set_url("https://page2.com".to_string());
+        assert!(core.can_go_back());
+        assert!(!core.can_go_forward());
+
+        core.go_back();
+        // After going back, we can go forward
+        assert!(core.can_go_forward());
+        assert_eq!(core.url(), "https://page1.com");
+
+        core.go_forward();
+        assert_eq!(core.url(), "https://page2.com");
+    }
+
+    #[test]
+    fn test_web_view_core_reload() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        // reload on empty URL does nothing
+        core.reload();
+        assert!(!core.is_loading());
+
+        core.load_url("https://example.com");
+        core.reload();
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 100);
+    }
+
+    #[test]
+    fn test_web_view_core_stop() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        // stop when not loading is a no-op
+        core.stop();
+        assert!(!core.is_loading());
+
+        // Force loading state then stop
+        core.loading = true;
+        core.stop();
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 0);
+    }
+
+    #[test]
+    fn test_web_view_core_set_title() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        assert_eq!(core.title(), "");
+        core.set_title("New Title".to_string());
+        assert_eq!(core.title(), "New Title");
+    }
+
+    #[test]
+    fn test_web_view_core_evaluate_javascript_disabled() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_javascript_enabled(false);
+        let result = core.evaluate_javascript("var x = 1;");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("JavaScript is disabled"));
+    }
+
+    #[test]
+    fn test_web_view_core_evaluate_javascript_enabled() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_javascript_enabled(true);
+        let result = core.evaluate_javascript("42");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), JsValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_web_view_core_clear_browsing_data_cookies_only() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.cookies.add(Cookie::new(
+            "test".to_string(),
+            "value".to_string(),
+            "example.com".to_string(),
+        ));
+        assert!(!core.cookies.is_empty());
+
+        core.clear_browsing_data(BrowsingData {
+            cookies: true,
+            history: false,
+            ..Default::default()
+        });
+        assert!(core.cookies.is_empty());
+    }
+
+    #[test]
+    fn test_web_view_core_clear_browsing_data_history_only() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        // Navigate to two URLs so the session history has a back stack
+        core.set_url("https://page1.com".to_string());
+        core.set_url("https://example.com".to_string());
+        assert!(!core.browser_history.is_empty());
+        assert!(core.history.can_go_back());
+
+        core.clear_browsing_data(BrowsingData {
+            cookies: false,
+            history: true,
+            ..Default::default()
+        });
+        assert!(core.browser_history.is_empty());
+        assert!(!core.history.can_go_back());
+    }
+
+    #[test]
+    fn test_web_view_core_handle_key_event_back() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://page1.com".to_string());
+        core.set_url("https://page2.com".to_string());
+        assert!(core.can_go_back());
+
+        // Left arrow key (37) should trigger go_back
+        core.handle_key_event(37, 0);
+        assert_eq!(core.url(), "https://page1.com");
+    }
+
+    #[test]
+    fn test_web_view_core_handle_key_event_forward() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://page1.com".to_string());
+        core.set_url("https://page2.com".to_string());
+        core.go_back();
+        assert!(core.can_go_forward());
+
+        // Right arrow key (39) should trigger go_forward
+        core.handle_key_event(39, 0);
+        assert_eq!(core.url(), "https://page2.com");
+    }
+
+    #[test]
+    fn test_web_view_core_handle_key_event_reload() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_url("https://example.com");
+        // F5 key (116) should trigger reload
+        core.handle_key_event(116, 0);
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 100);
+    }
+
+    #[test]
+    fn test_web_view_core_handle_key_event_ctrl_r() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_url("https://example.com");
+        // 'R' key (82) with Ctrl modifier (1) should trigger reload
+        core.handle_key_event(82, 1);
+        assert!(!core.is_loading());
+        assert_eq!(core.load_progress(), 100);
+    }
+
+    #[test]
+    fn test_web_view_core_initial_navigation_state() {
+        let core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 1024, 768),
+            "engine_view",
+            "",
+        );
+        assert!(!core.can_go_back());
+        assert!(!core.can_go_forward());
+        assert_eq!(core.url(), "");
+    }
+
+    #[test]
+    fn test_web_view_core_navigation_state_changes() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(10, 10, 640, 480),
+            "nav_test",
+            "about:blank",
+        );
+        core.set_url("https://page1.com".to_string());
+        core.set_url("https://site-a.com".to_string());
+        // After two navigations, we can go back
+        assert!(core.can_go_back());
+        assert!(!core.can_go_forward());
+
+        core.go_back();
+        // After going back, we can go forward again
+        assert!(core.can_go_forward());
+        assert_eq!(core.url(), "https://page1.com");
+    }
+
+    #[test]
+    fn test_web_view_core_signals_are_initialized() {
+        let core = WebViewCore::new(
+            WidgetKind::WebView,
+            Rect::new(0, 0, 800, 600),
+            "signals_test",
+            "",
+        );
+        // Signals should exist and be ready to connect
+        let _ = &core.loading_started;
+        let _ = &core.loading_finished;
+        let _ = &core.loading_progress;
+        let _ = &core.title_changed;
+        let _ = &core.url_changed;
+        let _ = &core.navigation_state_changed;
+        let _ = &core.console_message;
+    }
+}

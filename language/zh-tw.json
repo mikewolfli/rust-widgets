@@ -1,0 +1,92 @@
+{
+  "language": "zh-tw",
+  "translations": {
+    "common.button.ok": {
+      "message": "確定"
+    },
+    "common.button.cancel": {
+      "message": "取消"
+    },
+    "common.button.yes": {
+      "message": "是"
+    },
+    "common.button.no": {
+      "message": "否"
+    },
+    "common.button.yes_all": {
+      "message": "全部是"
+    },
+    "common.button.no_all": {
+      "message": "全部否"
+    },
+    "common.button.save": {
+      "message": "儲存"
+    },
+    "common.button.discard": {
+      "message": "放棄"
+    },
+    "common.button.apply": {
+      "message": "套用"
+    },
+    "common.button.close": {
+      "message": "關閉"
+    },
+    "common.button.abort": {
+      "message": "中止"
+    },
+    "common.button.retry": {
+      "message": "重試"
+    },
+    "common.button.ignore": {
+      "message": "忽略"
+    },
+    "common.button.help": {
+      "message": "說明"
+    },
+    "common.button.open": {
+      "message": "開啟"
+    },
+    "dialog.file_dialog.open_file": {
+      "message": "開啟檔案"
+    },
+    "dialog.file_dialog.save_file": {
+      "message": "儲存檔案"
+    },
+    "dialog.file_dialog.select_directory": {
+      "message": "選擇目錄"
+    },
+    "dialog.file_dialog.file_list_placeholder": {
+      "message": "（檔案列表）"
+    },
+    "dialog.file_dialog.file_name": {
+      "message": "檔名："
+    },
+    "dialog.file_dialog.all_files_filter": {
+      "message": "所有檔案 (*)"
+    },
+    "dialog.font.select_font": {
+      "message": "選擇字型"
+    },
+    "dialog.font.font_family": {
+      "message": "字型"
+    },
+    "dialog.font.style": {
+      "message": "樣式"
+    },
+    "dialog.font.size": {
+      "message": "大小"
+    },
+    "dialog.ok": {
+      "message": "確定"
+    },
+    "dialog.cancel": {
+      "message": "取消"
+    },
+    "color_dialog.title": {
+      "message": "選擇色彩"
+    },
+    "color_dialog.current_color": {
+      "message": "目前色彩"
+    }
+  }
+}

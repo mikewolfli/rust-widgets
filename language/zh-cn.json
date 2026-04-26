@@ -1,0 +1,92 @@
+{
+  "language": "zh-cn",
+  "translations": {
+    "common.button.ok": {
+      "message": "确定"
+    },
+    "common.button.cancel": {
+      "message": "取消"
+    },
+    "common.button.yes": {
+      "message": "是"
+    },
+    "common.button.no": {
+      "message": "否"
+    },
+    "common.button.yes_all": {
+      "message": "全部是"
+    },
+    "common.button.no_all": {
+      "message": "全部否"
+    },
+    "common.button.save": {
+      "message": "保存"
+    },
+    "common.button.discard": {
+      "message": "放弃"
+    },
+    "common.button.apply": {
+      "message": "应用"
+    },
+    "common.button.close": {
+      "message": "关闭"
+    },
+    "common.button.abort": {
+      "message": "中止"
+    },
+    "common.button.retry": {
+      "message": "重试"
+    },
+    "common.button.ignore": {
+      "message": "忽略"
+    },
+    "common.button.help": {
+      "message": "帮助"
+    },
+    "common.button.open": {
+      "message": "打开"
+    },
+    "dialog.file_dialog.open_file": {
+      "message": "打开文件"
+    },
+    "dialog.file_dialog.save_file": {
+      "message": "保存文件"
+    },
+    "dialog.file_dialog.select_directory": {
+      "message": "选择目录"
+    },
+    "dialog.file_dialog.file_list_placeholder": {
+      "message": "（文件列表）"
+    },
+    "dialog.file_dialog.file_name": {
+      "message": "文件名："
+    },
+    "dialog.file_dialog.all_files_filter": {
+      "message": "所有文件 (*)"
+    },
+    "dialog.font.select_font": {
+      "message": "选择字体"
+    },
+    "dialog.font.font_family": {
+      "message": "字体"
+    },
+    "dialog.font.style": {
+      "message": "样式"
+    },
+    "dialog.font.size": {
+      "message": "大小"
+    },
+    "dialog.ok": {
+      "message": "确定"
+    },
+    "dialog.cancel": {
+      "message": "取消"
+    },
+    "color_dialog.title": {
+      "message": "选择颜色"
+    },
+    "color_dialog.current_color": {
+      "message": "当前颜色"
+    }
+  }
+}

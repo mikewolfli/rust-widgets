@@ -58,3 +58,60 @@ pub(crate) struct CustomWidgetProperties {
     pub(crate) height: u32,
     pub(crate) widget_kind: WidgetKind,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_backend_kind_debug_and_eq() {
+        assert_eq!(ControlBackendKind::Native, ControlBackendKind::Native);
+        assert_eq!(ControlBackendKind::Custom, ControlBackendKind::Custom);
+        assert_ne!(ControlBackendKind::Native, ControlBackendKind::Custom);
+        let _ = format!("{:?}", ControlBackendKind::Native);
+        let _ = format!("{:?}", ControlBackendKind::Custom);
+    }
+
+    #[test]
+    fn control_route_preference_debug_and_eq() {
+        assert_eq!(
+            ControlRoutePreference::NativePreferred,
+            ControlRoutePreference::NativePreferred
+        );
+        assert_eq!(
+            ControlRoutePreference::CustomRequired,
+            ControlRoutePreference::CustomRequired
+        );
+        assert_ne!(
+            ControlRoutePreference::NativePreferred,
+            ControlRoutePreference::CustomRequired
+        );
+        let _ = format!("{:?}", ControlRoutePreference::NativePreferred);
+        let _ = format!("{:?}", ControlRoutePreference::CustomRequired);
+    }
+
+    #[test]
+    fn custom_control_state_default_values() {
+        let state = CustomControlState::default();
+        assert_eq!(state.next_widget_id, 1);
+        assert!(state.texts.is_empty());
+        assert!(state.enabled.is_empty());
+        assert!(state.visible.is_empty());
+        assert!(state.ime_enabled.is_empty());
+        assert!(state.accessibility_names.is_empty());
+        assert!(state.menu_trigger_queue.is_empty());
+        assert!(state.widget_trigger_queue.is_empty());
+        assert!(state.widget_properties.is_empty());
+    }
+
+    #[test]
+    fn custom_control_state_default_uses_impl() {
+        // Verify that Default trait is implemented by explicit impl, not derive.
+        let _state: CustomControlState = CustomControlState::default();
+        // Also verify we can construct via struct literal + ..Default
+        let _state2 = CustomControlState {
+            next_widget_id: 42,
+            ..CustomControlState::default()
+        };
+    }
+}

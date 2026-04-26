@@ -1,0 +1,92 @@
+{
+  "language": "en",
+  "translations": {
+    "common.button.ok": {
+      "message": "OK"
+    },
+    "common.button.cancel": {
+      "message": "Cancel"
+    },
+    "common.button.yes": {
+      "message": "Yes"
+    },
+    "common.button.no": {
+      "message": "No"
+    },
+    "common.button.yes_all": {
+      "message": "Yes to All"
+    },
+    "common.button.no_all": {
+      "message": "No to All"
+    },
+    "common.button.save": {
+      "message": "Save"
+    },
+    "common.button.discard": {
+      "message": "Discard"
+    },
+    "common.button.apply": {
+      "message": "Apply"
+    },
+    "common.button.close": {
+      "message": "Close"
+    },
+    "common.button.abort": {
+      "message": "Abort"
+    },
+    "common.button.retry": {
+      "message": "Retry"
+    },
+    "common.button.ignore": {
+      "message": "Ignore"
+    },
+    "common.button.help": {
+      "message": "Help"
+    },
+    "common.button.open": {
+      "message": "Open"
+    },
+    "dialog.file_dialog.open_file": {
+      "message": "Open File"
+    },
+    "dialog.file_dialog.save_file": {
+      "message": "Save File"
+    },
+    "dialog.file_dialog.select_directory": {
+      "message": "Select Directory"
+    },
+    "dialog.file_dialog.file_list_placeholder": {
+      "message": "(file list)"
+    },
+    "dialog.file_dialog.file_name": {
+      "message": "File name:"
+    },
+    "dialog.file_dialog.all_files_filter": {
+      "message": "All Files (*)"
+    },
+    "dialog.font.select_font": {
+      "message": "Select Font"
+    },
+    "dialog.font.font_family": {
+      "message": "Font Family"
+    },
+    "dialog.font.style": {
+      "message": "Style"
+    },
+    "dialog.font.size": {
+      "message": "Size"
+    },
+    "dialog.ok": {
+      "message": "OK"
+    },
+    "dialog.cancel": {
+      "message": "Cancel"
+    },
+    "color_dialog.title": {
+      "message": "Select Color"
+    },
+    "color_dialog.current_color": {
+      "message": "Current Color"
+    }
+  }
+}

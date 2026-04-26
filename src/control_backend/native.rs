@@ -795,3 +795,42 @@ impl ControlBackend for NativeControlBackend {
         get_platform().create_menu(parent, text, x, y, width, height)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control_backend::types::ControlBackendKind;
+
+    #[test]
+    fn native_control_backend_new_creates_instance() {
+        let backend = NativeControlBackend::new();
+        assert_eq!(backend.backend_name(), "native-control-backend");
+        assert_eq!(backend.kind(), ControlBackendKind::Native);
+    }
+
+    #[test]
+    fn native_control_backend_default() {
+        let backend = NativeControlBackend::default();
+        assert_eq!(backend.backend_name(), "native-control-backend");
+        assert_eq!(backend.kind(), ControlBackendKind::Native);
+    }
+
+    #[test]
+    fn backend_name_is_not_empty() {
+        let backend = NativeControlBackend::new();
+        let name = backend.backend_name();
+        assert!(!name.is_empty(), "backend_name must not be empty");
+    }
+
+    #[test]
+    fn kind_is_native() {
+        let backend = NativeControlBackend::new();
+        assert_eq!(backend.kind(), ControlBackendKind::Native);
+    }
+
+    #[test]
+    fn native_backend_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NativeControlBackend>();
+    }
+}
