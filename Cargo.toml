@@ -102,7 +102,7 @@ wayland-cursor = { version = "0.31", optional = true }
 # This section is reserved for future implementation.
 
 [dependencies.wgpu]
-version = "0.16"
+version = "29.0"
 optional = true
 
 [dev-dependencies]
