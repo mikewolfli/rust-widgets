@@ -101,8 +101,9 @@ pub struct TextAnnotation {
     pub icon: TextIcon,
     pub open: bool,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextIcon {
+    #[default]
     Note,
     Comment,
     Key,
@@ -119,11 +120,6 @@ pub enum TextIcon {
     UpArrow,
     UpLeftArrow,
     CrossHairs,
-}
-impl Default for TextIcon {
-    fn default() -> Self {
-        Self::Note
-    }
 }
 #[derive(Debug, Clone)]
 pub struct HighlightAnnotation {
@@ -167,8 +163,9 @@ pub struct LineAnnotation {
     pub caption: bool,
     pub caption_offset: (f32, f32),
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineEndingStyle {
+    #[default]
     None,
     Square,
     Circle,
@@ -179,11 +176,6 @@ pub enum LineEndingStyle {
     ReverseOpenArrow,
     ReverseClosedArrow,
     Slash,
-}
-impl Default for LineEndingStyle {
-    fn default() -> Self {
-        Self::None
-    }
 }
 pub struct AnnotationManager {
     annotations: HashMap<String, Annotation>,

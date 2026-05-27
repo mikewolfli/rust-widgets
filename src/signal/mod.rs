@@ -7,9 +7,9 @@ pub use generic_signal::{GenericSignal, Signal1};
 pub use hub::CustomSignalHub;
 #[cfg(test)]
 mod tests {
+    use super::{ConnectionScope, GenericSignal, Signal};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use super::{ConnectionScope, GenericSignal, Signal};
     #[test]
     fn signal_emits_to_multiple_slots() {
         let signal = Signal::<u32>::new();
@@ -53,5 +53,34 @@ mod tests {
         signal.emit();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(signal.slot_count(), 0);
+    }
+
+    #[test]
+    fn signal_reentrant_emit_does_not_deadlock() {
+        let signal = Signal::<u32>::new();
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let e1 = emitted.clone();
+        let e2 = emitted.clone();
+        let s2 = signal.clone();
+
+        // First callback connects another callback (re-entrant)
+        signal.connect(move |v| {
+            e1.fetch_add(1, Ordering::SeqCst);
+            if *v == 1 {
+                let e2_clone = e2.clone();
+                s2.connect(move |_| {
+                    e2_clone.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+
+        signal.emit(1); // First emit, callback connects another
+        signal.emit(2); // Second emit, both callbacks fire
+
+        assert_eq!(
+            emitted.load(Ordering::SeqCst),
+            3,
+            "Both callbacks should fire without deadlock"
+        );
     }
 }

@@ -54,6 +54,9 @@ pub mod projection;
 // GPU-accelerated rendering backend
 #[cfg(feature = "gpu-wgpu")]
 pub mod gpu;
+// SVG rendering backend
+pub mod svg;
+
 // Adaptive quality
 pub mod quality;
 // Text caching
@@ -65,6 +68,9 @@ pub mod text_cache;
 
 // Core
 pub use core::{RenderCommand, ShapedText, TextCluster, TextMetrics};
+
+// SVG
+pub use svg::SvgPaintBackend;
 
 // Backend
 pub use backend::{

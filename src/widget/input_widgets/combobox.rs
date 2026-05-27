@@ -1,9 +1,9 @@
 //! Combo box widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Combo box widget.
 pub struct ComboBox {
@@ -173,101 +173,24 @@ impl ComboBox {
 }
 // Implement Widget trait
 impl Widget for ComboBox {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        // Find widest item
+        let max_w = self
+            .items()
+            .iter()
+            .map(|s| s.len() as u32)
+            .max()
+            .unwrap_or(8)
+            * 8
+            + 30; // + dropdown arrow
+        Size::new(max_w.max(80), 24)
     }
 }
 impl EventHandler for ComboBox {
@@ -277,10 +200,8 @@ impl EventHandler for ComboBox {
             return;
         }
         match event {
-            Event::MousePress { button, .. } => {
-                if *button == 1 {
-                    self.activate_combo();
-                }
+            Event::MousePress { button, .. } if *button == 1 => {
+                self.activate_combo();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { .. } | Event::Tap { .. } => {
@@ -373,7 +294,7 @@ impl Draw for ComboBox {
         let current_text = self.current_text();
         if !current_text.is_empty() {
             context.draw_text(
-                Point::new(text_x as i32, text_y as i32),
+                Point::new(text_x, text_y as i32),
                 &current_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
@@ -381,11 +302,176 @@ impl Draw for ComboBox {
         } else if self.items.is_empty() {
             // Draw placeholder
             context.draw_text(
-                Point::new(text_x as i32, text_y as i32),
+                Point::new(text_x, text_y as i32),
                 "(Empty)",
                 &Font::default(),
                 Color::from_rgb(150, 150, 150),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn combobox_creation_defaults() {
+        let cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(cb.items().is_empty());
+        assert!(cb.is_empty());
+        assert_eq!(cb.count(), 0);
+        assert_eq!(cb.current_index(), None);
+        assert!(!cb.is_editable());
+        assert_eq!(cb.max_visible_items(), 10);
+    }
+
+    #[test]
+    fn combobox_add_items() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_item("Item 1".to_string());
+        cb.add_item("Item 2".to_string());
+        assert_eq!(cb.items().len(), 2);
+        assert_eq!(cb.items()[0], "Item 1");
+        assert_eq!(cb.items()[1], "Item 2");
+    }
+
+    #[test]
+    fn combobox_add_items_vec() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(cb.count(), 3);
+    }
+
+    #[test]
+    fn combobox_set_current_index() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        cb.set_current_index(Some(1));
+        assert_eq!(cb.current_index(), Some(1));
+        assert_eq!(cb.current_text(), "B".to_string());
+    }
+
+    #[test]
+    fn combobox_set_current_index_none() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "B".to_string()]);
+        cb.set_current_index(Some(1));
+        cb.set_current_index(None);
+        assert_eq!(cb.current_index(), None);
+        assert!(cb.current_text().is_empty());
+    }
+
+    #[test]
+    fn combobox_editable() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(!cb.is_editable());
+        cb.set_editable(true);
+        assert!(cb.is_editable());
+        cb.set_editable(false);
+        assert!(!cb.is_editable());
+    }
+
+    #[test]
+    fn combobox_max_visible_items() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        assert_eq!(cb.max_visible_items(), 10);
+        cb.set_max_visible_items(5);
+        assert_eq!(cb.max_visible_items(), 5);
+        cb.set_max_visible_items(0); // floors at 1
+        assert_eq!(cb.max_visible_items(), 1);
+    }
+
+    #[test]
+    fn combobox_insert_item() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "C".to_string()]);
+        cb.insert_item(1, "B".to_string());
+        assert_eq!(cb.count(), 3);
+        assert_eq!(cb.item(1), Some("B"));
+    }
+
+    #[test]
+    fn combobox_remove_item() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        cb.remove_item(1);
+        assert_eq!(cb.count(), 2);
+        assert_eq!(cb.item(1), Some("C"));
+    }
+
+    #[test]
+    fn combobox_clear() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["A".to_string(), "B".to_string()]);
+        cb.set_current_index(Some(0));
+        cb.clear();
+        assert!(cb.is_empty());
+        assert_eq!(cb.current_index(), None);
+    }
+
+    #[test]
+    fn combobox_find_text() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec![
+            "Apple".to_string(),
+            "Banana".to_string(),
+            "Cherry".to_string(),
+        ]);
+        assert_eq!(cb.find_text("Banana"), Some(1));
+        assert_eq!(cb.find_text("Missing"), None);
+    }
+
+    #[test]
+    fn combobox_set_items() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["X".to_string(), "Y".to_string(), "Z".to_string()]);
+        assert_eq!(cb.count(), 3);
+        assert_eq!(cb.current_index(), None);
+    }
+
+    #[test]
+    fn combobox_geometry_delegation() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_geometry(Rect::new(10, 10, 150, 30));
+        assert_eq!(cb.geometry(), Rect::new(10, 10, 150, 30));
+    }
+
+    #[test]
+    fn combobox_visibility() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(cb.is_visible());
+        cb.hide();
+        assert!(!cb.is_visible());
+        cb.show();
+        assert!(cb.is_visible());
+    }
+
+    #[test]
+    fn combobox_enabled() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(cb.is_enabled());
+        cb.set_enabled(false);
+        assert!(!cb.is_enabled());
+        cb.set_enabled(true);
+        assert!(cb.is_enabled());
+    }
+
+    #[test]
+    fn combobox_id_kind() {
+        let cb_a = ComboBox::new(Rect::new(0, 0, 100, 24));
+        let cb_b = ComboBox::new(Rect::new(0, 0, 100, 24));
+        assert_ne!(cb_a.id(), cb_b.id());
+        assert_eq!(cb_a.kind(), WidgetKind::ComboBox);
+        assert_eq!(cb_b.kind(), WidgetKind::ComboBox);
+    }
+
+    #[test]
+    fn combobox_signal_accessors() {
+        let cb = ComboBox::new(Rect::new(0, 0, 100, 24));
+        let _ = &cb.current_index_changed;
+        let _ = &cb.current_text_changed;
+        let _ = &cb.activated;
     }
 }

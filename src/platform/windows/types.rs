@@ -1,7 +1,10 @@
 //! Windows platform types, structs, enums, and traits.
 
 use super::notify;
+use crate::platform::state::BackendState;
+use crate::platform::{Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WindowsHandleKind {
     Window,
     Button,
@@ -28,7 +31,7 @@ pub enum WindowsHandleKind {
     ScrollArea,
 }
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn rust_widgets_wnd_proc(
+pub(crate) unsafe extern "system" fn rust_widgets_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: usize,
@@ -67,7 +70,11 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
                     if fallback_command_id != 0 {
                         if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
                             if let Some(widget_id) = map.get(&fallback_command_id).copied() {
-                                if notify::enqueue_control_notify_event(platform, widget_id, notify_code) {
+                                if notify::enqueue_control_notify_event(
+                                    platform,
+                                    widget_id,
+                                    notify_code,
+                                ) {
                                     return 0;
                                 }
                             }
@@ -108,7 +115,6 @@ unsafe extern "system" fn rust_widgets_wnd_proc(
     }
 }
 #[cfg(target_os = "windows")]
-
 impl WindowsPlatform {
     pub fn to_wide(s: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
@@ -135,11 +141,17 @@ impl WindowsPlatform {
                 handles.insert(id, hwnd as usize);
             } else {
                 // Handle lock error explicitly
-                return;
             }
         }
     }
     #[cfg(target_os = "windows")]
+    /// # Safety
+    ///
+    /// Caller must ensure that `hwnd` is a valid native window handle
+    /// and that it remains valid for the duration of this call.
+    /// Modifying the window's identifier via `SetWindowLongPtrW` can
+    /// affect window procedure behavior; callers should ensure this
+    /// is done only for windows owned by this platform adapter.
     pub unsafe fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
         use winapi::um::winuser::{SetWindowLongPtrW, GWLP_ID};
         let command_id = self
@@ -165,16 +177,11 @@ impl WindowsPlatform {
 pub trait PlatformDowncast {
     fn downcast_ref<T: 'static>(&self) -> Option<&T>;
 }
-impl PlatformDowncast for dyn super::Platform {
+impl PlatformDowncast for dyn Platform {
     fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         self.as_any().downcast_ref::<T>()
     }
 }
-// Removed unresolved import crate::state::BackendState
-// Win32 API types and functions
-#[cfg(target_os = "windows")]
-
-use winapi::shared::windef::HMENU;
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::HWND;
 #[cfg(not(target_os = "windows"))]
@@ -186,10 +193,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::Mutex;
-#[cfg(target_os = "windows")]
-use std::sync::OnceLock;
-// ...existing code...
-// ...existing code...
 /// Windows platform backend struct definition
 pub struct WindowsPlatform {
     pub state: BackendState<WindowsHandleKind>,
@@ -206,13 +209,13 @@ pub struct WindowsPlatform {
 #[allow(dead_code)]
 pub struct Win32MenuState {
     // SAFETY: HWND is only used on the main thread, and Win32MenuState is not shared across threads in this context.
-    handles: Mutex<HashMap<u64, usize>>,
-    menu_owner_window: Mutex<HashMap<u64, u64>>,
-    menu_command_to_item: Mutex<HashMap<u32, u64>>,
-    control_command_to_widget: Mutex<HashMap<u32, u64>>,
-    pending_menu_events: Mutex<VecDeque<WidgetTriggerEvent>>,
-    pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
-    next_command_id: AtomicU64,
+    pub(crate) handles: Mutex<HashMap<u64, usize>>,
+    pub(crate) menu_owner_window: Mutex<HashMap<u64, u64>>,
+    pub(crate) menu_command_to_item: Mutex<HashMap<u32, u64>>,
+    pub(crate) control_command_to_widget: Mutex<HashMap<u32, u64>>,
+    pub(crate) pending_menu_events: Mutex<VecDeque<WidgetTriggerEvent>>,
+    pub(crate) pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
+    pub(crate) next_command_id: AtomicU64,
 }
 #[cfg(target_os = "windows")]
 impl Win32MenuState {
@@ -230,8 +233,6 @@ impl Win32MenuState {
 }
 #[cfg(target_os = "windows")]
 // Extension trait for native Win32 Slider (Trackbar) integration
-// Stub trait for native Win32 ProgressBar integration
-
 impl WindowsPlatform {
     pub fn new() -> Self {
         WindowsPlatform {
@@ -252,7 +253,7 @@ impl Default for WindowsPlatform {
 
 pub trait WindowsPlatformExtSlider {
     fn try_create_slider(
-        platform: &dyn super::Platform,
+        platform: &dyn Platform,
         parent: u64,
         x: i32,
         y: i32,
@@ -262,7 +263,7 @@ pub trait WindowsPlatformExtSlider {
 }
 impl WindowsPlatformExtSlider for WindowsPlatform {
     fn try_create_slider(
-        platform: &dyn super::Platform,
+        platform: &dyn Platform,
         parent: u64,
         x: i32,
         y: i32,
@@ -322,4 +323,3 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
         }
     }
 }
-#[cfg(all(test, target_os = "windows"))]

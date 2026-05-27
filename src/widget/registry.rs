@@ -19,8 +19,22 @@ pub struct SimpleRegistry {
     entries: HashMap<ObjectId, (DrawClosure, EventClosure)>,
 }
 
-type DrawClosure = Box<dyn FnMut(&mut RenderContext)>;
-type EventClosure = Box<dyn FnMut(&Event)>;
+type DrawClosure = Box<dyn FnMut(&mut RenderContext) + Send>;
+type EventClosure = Box<dyn FnMut(&Event) + Send>;
+
+// SAFETY: SimpleRegistry only stores closures that are Send.
+// It is used in single-threaded contexts via Rc<RefCell<...>>,
+// but the Send bound allows use in Arc<Mutex<...>> contexts.
+// The interior HashMap is only accessed via &mut self, providing
+// exclusive access, so there is no data race risk.
+unsafe impl Send for SimpleRegistry {}
+unsafe impl Sync for SimpleRegistry {}
+
+impl Default for SimpleRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SimpleRegistry {
     /// Creates a new empty registry.
@@ -33,8 +47,8 @@ impl SimpleRegistry {
     /// Register a widget's draw and event handler by ObjectId.
     pub fn register<D, E>(&mut self, id: ObjectId, draw: D, event: E)
     where
-        D: FnMut(&mut RenderContext) + 'static,
-        E: FnMut(&Event) + 'static,
+        D: FnMut(&mut RenderContext) + Send + 'static,
+        E: FnMut(&Event) + Send + 'static,
     {
         self.entries.insert(id, (Box::new(draw), Box::new(event)));
     }

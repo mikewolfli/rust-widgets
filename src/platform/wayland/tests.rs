@@ -193,10 +193,7 @@ fn combo_box_data_methods() {
     assert_eq!(backend.combo_box_current_index(combo), Some(1));
 
     // Clear items.
-    assert!(
-        backend.combo_box_clear_items(combo),
-        "Should clear items"
-    );
+    assert!(backend.combo_box_clear_items(combo), "Should clear items");
     assert_eq!(backend.combo_box_item_count(combo), 0);
     assert_eq!(backend.combo_box_current_index(combo), None);
 }
@@ -265,10 +262,7 @@ fn list_box_data_methods() {
     );
 
     // Clear items.
-    assert!(
-        backend.list_box_clear_items(list_box),
-        "Should clear items"
-    );
+    assert!(backend.list_box_clear_items(list_box), "Should clear items");
     assert_eq!(backend.list_box_item_count(list_box), 0);
     assert_eq!(backend.list_box_current_index(list_box), None);
 }

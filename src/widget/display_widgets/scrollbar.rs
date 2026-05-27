@@ -1,9 +1,8 @@
 //! Scroll bar widget.
-use crate::core::{Color, ObjectId, Orientation, Point, Rect, Size};
+use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Scroll bar widget.
 pub struct ScrollBar {
@@ -222,101 +221,11 @@ pub enum ScrollBarAction {
 }
 // Implement Widget trait
 impl Widget for ScrollBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for ScrollBar {
@@ -326,26 +235,20 @@ impl EventHandler for ScrollBar {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    self.mouse_pressed = true;
-                    self.slider_pressed.emit();
-                    let value = self.pixel_pos_to_value(pos.x as f32);
-                    self.set_value(value);
-                }
+            Event::MousePress { pos, button } if *button == 1 => {
+                self.mouse_pressed = true;
+                self.slider_pressed.emit();
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_value(value);
             }
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.mouse_pressed = false;
-                    self.slider_released.emit();
-                }
+            Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.mouse_pressed = false;
+                self.slider_released.emit();
             }
-            Event::MouseMove { pos } => {
-                if self.mouse_pressed {
-                    let value = self.pixel_pos_to_value(pos.x as f32);
-                    self.set_value(value);
-                    self.slider_moved.emit(value);
-                }
+            Event::MouseMove { pos } if self.mouse_pressed => {
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_value(value);
+                self.slider_moved.emit(value);
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
@@ -417,75 +320,317 @@ impl Draw for ScrollBar {
             Orientation::Horizontal => {
                 let slider_width = (rect.width as f32 * slider_size) as u32;
                 context.fill_rect(
-                    Rect::from_f32(slider_pos, rect.y as f32, slider_width as f32, rect.height as f32),
+                    Rect::from_f32(
+                        slider_pos,
+                        rect.y as f32,
+                        slider_width as f32,
+                        rect.height as f32,
+                    ),
                     Color::from_rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
-                    Rect::from_f32(slider_pos, rect.y as f32, slider_width as f32, rect.height as f32),
+                    Rect::from_f32(
+                        slider_pos,
+                        rect.y as f32,
+                        slider_width as f32,
+                        rect.height as f32,
+                    ),
                     Color::from_rgb(150, 150, 150),
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.height as f32).min(rect.width as f32 * 0.2) as u32;
                 // Left arrow head
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + arrow_size as f32, rect.y as f32 + rect.height as f32 / 4.0),
+                    Point::from_f32(
+                        rect.x as f32 + arrow_size as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + arrow_size as f32,
+                        rect.y as f32 + rect.height as f32 / 4.0,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + arrow_size as f32, rect.y as f32 + rect.height as f32 * 3.0 / 4.0),
+                    Point::from_f32(
+                        rect.x as f32 + arrow_size as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + arrow_size as f32,
+                        rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 // Right arrow head
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32, rect.y as f32 + rect.height as f32 / 4.0),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 - arrow_size as f32,
+                        rect.y as f32 + rect.height as f32 / 4.0,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 - arrow_size as f32, rect.y as f32 + rect.height as f32 * 3.0 / 4.0),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 - arrow_size as f32,
+                        rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
             }
             Orientation::Vertical => {
                 let slider_height = (rect.height as f32 * slider_size) as u32;
                 context.fill_rect(
-                    Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, slider_height as f32),
+                    Rect::from_f32(
+                        rect.x as f32,
+                        slider_pos,
+                        rect.width as f32,
+                        slider_height as f32,
+                    ),
                     Color::from_rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
-                    Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, slider_height as f32),
+                    Rect::from_f32(
+                        rect.x as f32,
+                        slider_pos,
+                        rect.width as f32,
+                        slider_height as f32,
+                    ),
                     Color::from_rgb(150, 150, 150),
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.width as f32).min(rect.height as f32 * 0.2) as u32;
                 // Up arrow head
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + arrow_size as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 4.0, rect.y as f32 + arrow_size as f32),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 2.0,
+                        rect.y as f32 + arrow_size as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 4.0,
+                        rect.y as f32 + arrow_size as f32,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + arrow_size as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 * 3.0 / 4.0, rect.y as f32 + arrow_size as f32),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 2.0,
+                        rect.y as f32 + arrow_size as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
+                        rect.y as f32 + arrow_size as f32,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 // Down arrow head
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 4.0, rect.y as f32 + rect.height as f32 - arrow_size as f32),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 4.0,
+                        rect.y as f32 + rect.height as f32 - arrow_size as f32,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
                 context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0),
-                    Point::from_f32(rect.x as f32 + rect.width as f32 * 3.0 / 4.0, rect.y as f32 + rect.height as f32 - arrow_size as f32),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 / 2.0,
+                        rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
+                    ),
+                    Point::from_f32(
+                        rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
+                        rect.y as f32 + rect.height as f32 - arrow_size as f32,
+                    ),
                     Color::from_rgb(100, 100, 100),
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Orientation, Rect};
+    use crate::style::WidgetStyle;
+
+    #[test]
+    fn scrollbar_creation_defaults() {
+        let sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(sb.minimum(), 0);
+        assert_eq!(sb.maximum(), 100);
+        assert_eq!(sb.value(), 0);
+        assert_eq!(sb.single_step(), 1);
+        assert_eq!(sb.page_step(), 10);
+        assert_eq!(sb.orientation(), Orientation::Horizontal);
+    }
+
+    #[test]
+    fn scrollbar_set_value() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_value(50);
+        assert_eq!(sb.value(), 50);
+        sb.set_value(200); // clamp to max
+        assert_eq!(sb.value(), 100);
+        sb.set_value(-10); // clamp to min
+        assert_eq!(sb.value(), 0);
+    }
+
+    #[test]
+    fn scrollbar_set_range() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_minimum(10);
+        sb.set_maximum(200);
+        assert_eq!(sb.minimum(), 10);
+        assert_eq!(sb.maximum(), 200);
+    }
+
+    #[test]
+    fn scrollbar_set_range_reclamps_value() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_value(50);
+        sb.set_range(60, 100);
+        assert_eq!(sb.value(), 60);
+    }
+
+    #[test]
+    fn scrollbar_single_step() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_single_step(5);
+        assert_eq!(sb.single_step(), 5);
+        sb.set_single_step(0); // floors at 1
+        assert_eq!(sb.single_step(), 1);
+    }
+
+    #[test]
+    fn scrollbar_page_step() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_page_step(25);
+        assert_eq!(sb.page_step(), 25);
+        sb.set_page_step(0); // floors at 1
+        assert_eq!(sb.page_step(), 1);
+    }
+
+    #[test]
+    fn scrollbar_orientation() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_orientation(Orientation::Vertical);
+        assert_eq!(sb.orientation(), Orientation::Vertical);
+        sb.set_orientation(Orientation::Horizontal);
+        assert_eq!(sb.orientation(), Orientation::Horizontal);
+    }
+
+    #[test]
+    fn scrollbar_slider_position() {
+        let sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert!((sb.slider_position() - 0.0).abs() < f32::EPSILON);
+
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_value(50);
+        assert!((sb.slider_position() - 0.5).abs() < f32::EPSILON);
+
+        sb.set_value(100);
+        assert!((sb.slider_position() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scrollbar_trigger_action() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_value(50);
+
+        sb.trigger_action(ScrollBarAction::LineUp);
+        assert_eq!(sb.value(), 49);
+
+        sb.trigger_action(ScrollBarAction::LineDown);
+        assert_eq!(sb.value(), 50);
+
+        sb.trigger_action(ScrollBarAction::PageUp);
+        assert_eq!(sb.value(), 40);
+
+        sb.trigger_action(ScrollBarAction::PageDown);
+        assert_eq!(sb.value(), 50);
+
+        sb.trigger_action(ScrollBarAction::SliderToMinimum);
+        assert_eq!(sb.value(), 0);
+
+        sb.trigger_action(ScrollBarAction::SliderToMaximum);
+        assert_eq!(sb.value(), 100);
+    }
+
+    #[test]
+    fn scrollbar_geometry_delegation() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_geometry(Rect::new(10, 10, 300, 30));
+        assert_eq!(sb.geometry(), Rect::new(10, 10, 300, 30));
+    }
+
+    #[test]
+    fn scrollbar_visibility() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert!(sb.is_visible());
+        sb.hide();
+        assert!(!sb.is_visible());
+        sb.show();
+        assert!(sb.is_visible());
+    }
+
+    #[test]
+    fn scrollbar_enabled() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert!(sb.is_enabled());
+        sb.set_enabled(false);
+        assert!(!sb.is_enabled());
+        sb.set_enabled(true);
+        assert!(sb.is_enabled());
+    }
+
+    #[test]
+    fn scrollbar_tooltip_roundtrip() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert!(sb.tooltip().is_empty());
+        sb.set_tooltip("Scroll".to_string());
+        assert_eq!(sb.tooltip(), "Scroll");
+        sb.set_tooltip(String::new());
+        assert!(sb.tooltip().is_empty());
+    }
+
+    #[test]
+    fn scrollbar_style_roundtrip() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(*sb.style(), WidgetStyle::default());
+        let custom = WidgetStyle::default().with_background(Color::from_rgb(200, 200, 200));
+        sb.set_style(custom.clone());
+        assert_eq!(*sb.style(), custom);
+    }
+
+    #[test]
+    fn scrollbar_id_kind() {
+        let sb_a = ScrollBar::new(Rect::new(0, 0, 100, 16));
+        let sb_b = ScrollBar::new(Rect::new(0, 0, 100, 16));
+        assert_ne!(sb_a.id(), sb_b.id());
+        assert_eq!(sb_a.kind(), WidgetKind::ScrollBar);
+        assert_eq!(sb_b.kind(), WidgetKind::ScrollBar);
+    }
+
+    #[test]
+    fn scrollbar_signal_accessors() {
+        let sb = ScrollBar::new(Rect::new(0, 0, 100, 16));
+        let _value_changed = &sb.value_changed;
+        let _slider_moved = &sb.slider_moved;
+        let _slider_pressed = &sb.slider_pressed;
+        let _slider_released = &sb.slider_released;
     }
 }

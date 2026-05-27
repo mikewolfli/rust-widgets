@@ -4,9 +4,9 @@
 //! - Discrete GPU: GPU timestamp-based monitoring
 //! - Integrated GPU: Frame time + memory bandwidth monitoring
 //! - CPU Software: CPU frame time + thread utilization monitoring
+use super::adapter::GpuDeviceType;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use super::adapter::GpuDeviceType;
 /// Performance monitoring strategy based on hardware type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceMonitorStrategy {
@@ -106,13 +106,13 @@ impl AdaptivePerformanceThresholds {
     pub fn adjust_based_on_performance(&mut self, avg_frame_time: Duration, stability: f32) {
         // If performance is unstable, make thresholds more conservative
         if stability < 0.5 {
-            self.degrade_threshold = self.degrade_threshold * 0.9;
-            self.upgrade_threshold = self.upgrade_threshold * 1.1;
+            self.degrade_threshold *= 0.9;
+            self.upgrade_threshold *= 1.1;
         }
         // If consistently missing target, lower expectations
         let avg_fps = 1.0 / avg_frame_time.as_secs_f32();
         if avg_fps < self.target_fps * 0.5 {
-            self.target_fps = self.target_fps * 0.9;
+            self.target_fps *= 0.9;
         }
     }
 }
@@ -378,14 +378,14 @@ impl PerformanceTrapDetector {
     pub fn check(&mut self, fps: f32) -> Option<PerformanceTrap> {
         if fps < self.low_fps_threshold {
             self.low_fps_counter += 1;
-            if self.low_fps_counter >= self.sustained_low_fps_frames {
-                if self.last_warning.elapsed() > Duration::from_secs(30) {
-                    self.last_warning = Instant::now();
-                    return Some(PerformanceTrap::LowFrameRate {
-                        current_fps: fps,
-                        threshold: self.low_fps_threshold,
-                    });
-                }
+            if self.low_fps_counter >= self.sustained_low_fps_frames
+                && self.last_warning.elapsed() > Duration::from_secs(30)
+            {
+                self.last_warning = Instant::now();
+                return Some(PerformanceTrap::LowFrameRate {
+                    current_fps: fps,
+                    threshold: self.low_fps_threshold,
+                });
             }
         } else {
             self.low_fps_counter = 0;

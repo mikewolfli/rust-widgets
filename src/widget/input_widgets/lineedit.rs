@@ -1,9 +1,9 @@
 //! Single-line text edit widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Single-line text edit widget.
 pub struct LineEdit {
@@ -14,14 +14,16 @@ pub struct LineEdit {
     echo_mode: EchoMode,
     cursor_position: usize,
     selection_start: Option<usize>,
+    read_only: bool,
     pub text_changed: Signal1<String>,
     pub editing_finished: GenericSignal,
     pub return_pressed: GenericSignal,
 }
 /// Text echo mode for password fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EchoMode {
     /// Display characters as entered (default)
+    #[default]
     Normal,
     /// Display asterisks for password fields
     Password,
@@ -29,11 +31,6 @@ pub enum EchoMode {
     NoEcho,
     /// Display asterisks only when editing
     PasswordEchoOnEdit,
-}
-impl Default for EchoMode {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 impl LineEdit {
     /// Creates an empty line edit with geometry.
@@ -46,6 +43,7 @@ impl LineEdit {
             echo_mode: EchoMode::Normal,
             cursor_position: 0,
             selection_start: None,
+            read_only: false,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -156,8 +154,8 @@ impl LineEdit {
         }
         // Handle selection
         let mut new_text = self.text.clone();
-        if self.selection_start.is_some() {
-            let start = self.selection_start.unwrap().min(new_text.len());
+        if let Some(start) = self.selection_start {
+            let start = start.min(new_text.len());
             let end = self.cursor_position.min(new_text.len());
             let (start, end) = if start < end {
                 (start, end)
@@ -209,6 +207,16 @@ impl LineEdit {
             self.set_text(new_text);
         }
     }
+    /// Returns whether the line edit is read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Sets the read-only state.
+    pub fn set_read_only(&mut self, ro: bool) {
+        self.read_only = ro;
+    }
+
     /// Clears all text.
     pub fn clear(&mut self) {
         self.set_text(String::new());
@@ -228,107 +236,25 @@ impl LineEdit {
 }
 // Implement Widget trait
 impl Widget for LineEdit {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        let text_w = self.text().len() as u32 * 8 + 10;
+        Size::new(text_w.max(80), 24)
     }
 }
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            return;
+        }
+        if self.read_only {
             return;
         }
         match event {
@@ -459,7 +385,7 @@ impl Draw for LineEdit {
         };
         if !display_text.is_empty() {
             context.draw_text(
-                Point::new(text_x as i32, text_y as i32),
+                Point::new(text_x, text_y as i32),
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
@@ -467,5 +393,186 @@ impl Draw for LineEdit {
         }
         // Draw cursor if focused
         // Note: Would need focus state tracking
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn lineedit_creation_defaults() {
+        let le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert!(le.text().is_empty());
+        assert!(le.placeholder_text().is_empty());
+        assert_eq!(le.max_length(), None);
+        assert_eq!(le.echo_mode(), EchoMode::Normal);
+        assert_eq!(le.cursor_position(), 0);
+        assert!(le.selection_start().is_none());
+    }
+
+    #[test]
+    fn lineedit_set_text() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        assert_eq!(le.text(), "Hello");
+        assert_eq!(le.cursor_position(), 5);
+    }
+
+    #[test]
+    fn lineedit_set_text_empty() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.set_text(String::new());
+        assert!(le.text().is_empty());
+        assert_eq!(le.cursor_position(), 0);
+    }
+
+    #[test]
+    fn lineedit_placeholder() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert!(le.placeholder_text().is_empty());
+        le.set_placeholder_text("Enter name".to_string());
+        assert_eq!(le.placeholder_text(), "Enter name");
+        le.set_placeholder_text(String::new());
+        assert!(le.placeholder_text().is_empty());
+    }
+
+    #[test]
+    fn lineedit_max_length() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert_eq!(le.max_length(), None);
+        le.set_max_length(Some(5));
+        assert_eq!(le.max_length(), Some(5));
+        le.set_max_length(None);
+        assert_eq!(le.max_length(), None);
+    }
+
+    #[test]
+    fn lineedit_max_length_truncates() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello World".to_string());
+        le.set_max_length(Some(5));
+        assert_eq!(le.text(), "Hello");
+    }
+
+    #[test]
+    fn lineedit_cursor_position() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.set_cursor_position(3);
+        assert_eq!(le.cursor_position(), 3);
+        le.set_cursor_position(100); // clamps to text len
+        assert_eq!(le.cursor_position(), 5);
+    }
+
+    #[test]
+    fn lineedit_echo_mode() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert_eq!(le.echo_mode(), EchoMode::Normal);
+        le.set_echo_mode(EchoMode::Password);
+        assert_eq!(le.echo_mode(), EchoMode::Password);
+        le.set_echo_mode(EchoMode::NoEcho);
+        assert_eq!(le.echo_mode(), EchoMode::NoEcho);
+        le.set_echo_mode(EchoMode::PasswordEchoOnEdit);
+        assert_eq!(le.echo_mode(), EchoMode::PasswordEchoOnEdit);
+        le.set_echo_mode(EchoMode::Normal);
+        assert_eq!(le.echo_mode(), EchoMode::Normal);
+    }
+
+    #[test]
+    fn lineedit_select_all() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello World".to_string());
+        le.select_all();
+        assert_eq!(le.selection_start(), Some(0));
+        assert_eq!(le.cursor_position(), 11);
+        assert_eq!(le.selected_text(), "Hello World");
+    }
+
+    #[test]
+    fn lineedit_clear_selection() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.select_all();
+        le.clear_selection();
+        assert!(le.selection_start().is_none());
+    }
+
+    #[test]
+    fn lineedit_insert_text() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.insert_text("Hello");
+        assert_eq!(le.text(), "Hello");
+    }
+
+    #[test]
+    fn lineedit_backspace() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.backspace();
+        assert_eq!(le.text(), "Hell");
+    }
+
+    #[test]
+    fn lineedit_delete() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.set_cursor_position(0);
+        le.delete();
+        assert_eq!(le.text(), "ello");
+    }
+
+    #[test]
+    fn lineedit_clear() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("Hello".to_string());
+        le.clear();
+        assert!(le.text().is_empty());
+    }
+
+    #[test]
+    fn lineedit_geometry_delegation() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_geometry(Rect::new(10, 10, 150, 30));
+        assert_eq!(le.geometry(), Rect::new(10, 10, 150, 30));
+    }
+
+    #[test]
+    fn lineedit_visibility() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert!(le.is_visible());
+        le.hide();
+        assert!(!le.is_visible());
+        le.show();
+        assert!(le.is_visible());
+    }
+
+    #[test]
+    fn lineedit_enabled() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert!(le.is_enabled());
+        le.set_enabled(false);
+        assert!(!le.is_enabled());
+        le.set_enabled(true);
+        assert!(le.is_enabled());
+    }
+
+    #[test]
+    fn lineedit_id_kind() {
+        let le_a = LineEdit::new(Rect::new(0, 0, 100, 24));
+        let le_b = LineEdit::new(Rect::new(0, 0, 100, 24));
+        assert_ne!(le_a.id(), le_b.id());
+        assert_eq!(le_a.kind(), WidgetKind::LineEdit);
+        assert_eq!(le_b.kind(), WidgetKind::LineEdit);
+    }
+
+    #[test]
+    fn lineedit_signal_accessors() {
+        let le = LineEdit::new(Rect::new(0, 0, 100, 24));
+        let _text_changed = &le.text_changed;
+        let _editing_finished = &le.editing_finished;
+        let _return_pressed = &le.return_pressed;
     }
 }

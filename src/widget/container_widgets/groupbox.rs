@@ -1,10 +1,11 @@
 //! Group box widget.
-use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Alignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::signal::Signal1;
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Group box widget.
 pub struct GroupBox {
     base: BaseWidget,
@@ -15,6 +16,7 @@ pub struct GroupBox {
     pub toggled: Signal1<bool>,
     /// Cached title width computed in draw() via RenderContext::measure_text().
     cached_title_width: Option<u32>,
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 impl GroupBox {
     /// Creates a group box.
@@ -27,6 +29,7 @@ impl GroupBox {
             checked: true,
             toggled: Signal1::new(),
             cached_title_width: None,
+            registry: None,
         }
     }
     /// Returns title.
@@ -69,6 +72,11 @@ impl GroupBox {
     pub fn toggle(&mut self) {
         self.set_checked(!self.checked);
     }
+
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
     /// Returns title rectangle.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
@@ -102,111 +110,23 @@ impl GroupBox {
 }
 // Implement Widget trait
 impl Widget for GroupBox {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for GroupBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if !self.base.is_enabled() || !self.checkable {
+        if !self.base.is_enabled() {
             return;
         }
-        match event {
-            Event::MousePress { pos, button } => {
+        // Handle checkbox toggle
+        if self.checkable {
+            if let Event::MousePress { pos, button } = event {
                 if *button == 1 {
                     if let Some(checkbox_rect) = self.checkbox_rect() {
                         if checkbox_rect.contains(*pos) {
@@ -215,7 +135,12 @@ impl EventHandler for GroupBox {
                     }
                 }
             }
-            _ => {}
+        }
+        // Forward events to children
+        if let Some(ref reg) = self.registry {
+            for child_id in &self.base.children {
+                let _ = reg.borrow_mut().forward_event(*child_id, event);
+            }
         }
     }
 }
@@ -235,7 +160,7 @@ impl Draw for GroupBox {
         let title_bg_width = title_rect.width + 20;
         let title_bg_x = title_rect.x - 10;
         context.fill_rect(
-            Rect::new(title_bg_x, rect.y, title_bg_width as u32, 2),
+            Rect::new(title_bg_x, rect.y, title_bg_width, 2),
             Color::from_rgb(255, 255, 255),
         );
         // Draw checkbox if checkable
@@ -284,5 +209,33 @@ impl Draw for GroupBox {
                 text_color,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn groupbox_creation_defaults() {
+        let gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(gb.geometry(), Rect::new(0, 0, 200, 100));
+        assert!(gb.title().is_empty());
+        assert!(gb.is_checked());
+        assert!(!gb.is_checkable());
+    }
+
+    #[test]
+    fn groupbox_title_and_toggle() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        gb.set_title("Options".to_string());
+        assert_eq!(gb.title(), "Options");
+        gb.set_checkable(true);
+        assert!(gb.is_checkable());
+        gb.set_checked(false);
+        assert!(!gb.is_checked());
+        gb.toggle();
+        assert!(gb.is_checked());
     }
 }

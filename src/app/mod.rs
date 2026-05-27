@@ -15,3 +15,20 @@ pub use handle::{
     ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, TabWidgetHandle,
     TextEditHandle, WebViewHandle, WidgetHandle, WindowHandle,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn app_core_default() {
+        let config = crate::app::app_core::AppConfig::default();
+        assert_eq!(config.app_name, "");
+        assert!(config.enable_i18n);
+    }
+    #[test]
+    fn app_handle_set_get() {
+        // Test basic handle operations
+        let handle = WindowHandle::from_raw(42);
+        assert_eq!(handle.raw_id(), 42);
+    }
+}

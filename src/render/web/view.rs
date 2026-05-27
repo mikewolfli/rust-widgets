@@ -85,8 +85,9 @@ impl WebView {
     pub fn preferred_size(&self) -> Size {
         let base = Size::new(800, 600);
         Size::new(
-            base.width.wrapping_add(self.scroll_offset.x.abs() as u32),
-            base.height.wrapping_add(self.scroll_offset.y.abs() as u32),
+            base.width.wrapping_add(self.scroll_offset.x.unsigned_abs()),
+            base.height
+                .wrapping_add(self.scroll_offset.y.unsigned_abs()),
         )
     }
 }

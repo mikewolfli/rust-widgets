@@ -1,8 +1,8 @@
+use super::{MenuConfig, UserOverrides};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use super::{MenuConfig, UserOverrides};
 /// Configuration persistence manager for saving/loading user preferences.
 pub struct ConfigPersistence {
     config_dir: PathBuf,

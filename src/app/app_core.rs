@@ -189,14 +189,7 @@ impl App {
     }
 
     /// Create a top-level window and return a type-safe handle.
-    pub fn new_window(
-        &self,
-        title: &str,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-    ) -> WindowHandle {
+    pub fn new_window(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> WindowHandle {
         WindowHandle::from_raw(crate::create_window(title, x, y, w, h))
     }
 

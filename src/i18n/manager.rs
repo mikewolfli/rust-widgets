@@ -132,6 +132,17 @@ impl I18nManager {
     pub fn current_language(&self) -> &String {
         &self.current_language
     }
+    /// Return all unique translation keys across all loaded languages.
+    pub fn audit_keys(&self) -> Vec<String> {
+        let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for file in self.translations.values() {
+            for key in file.translations.keys() {
+                keys.insert(key.clone());
+            }
+        }
+        keys.into_iter().collect()
+    }
+
     /// Return loaded translation file count.
     pub fn translation_count(&self) -> usize {
         self.translations.len()

@@ -85,7 +85,7 @@ impl Profiler {
             .filter(|(_, e)| e.duration >= threshold)
             .map(|(name, e)| (name.as_str(), e.duration))
             .collect();
-        hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+        hotspots.sort_by_key(|b| std::cmp::Reverse(b.1));
         hotspots
     }
     pub fn get_all_stats(&self) -> &HashMap<String, ProfileEntry> {
@@ -110,7 +110,7 @@ impl Profiler {
                 },
             })
             .collect();
-        entries.sort_by(|a, b| b.total_duration.cmp(&a.total_duration));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.total_duration));
         ProfileReport {
             entries,
             total_duration: self.get_total_duration(),

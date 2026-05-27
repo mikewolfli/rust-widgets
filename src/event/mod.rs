@@ -13,6 +13,8 @@ pub mod event_queue;
 pub mod focus;
 pub mod r#loop;
 pub mod queue;
+#[cfg(feature = "touch")]
+pub mod translator;
 pub mod types;
 // Re-export public types
 pub use capture::PointerCaptureManager;

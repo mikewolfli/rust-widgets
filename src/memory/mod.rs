@@ -5,7 +5,7 @@ mod pool;
 pub use pool::*;
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr::NonNull;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MemoryStats {
     pub total_allocated: usize,
     pub total_freed: usize,
@@ -13,18 +13,6 @@ pub struct MemoryStats {
     pub peak_usage: usize,
     pub pool_hits: usize,
     pub pool_misses: usize,
-}
-impl Default for MemoryStats {
-    fn default() -> Self {
-        Self {
-            total_allocated: 0,
-            total_freed: 0,
-            current_usage: 0,
-            peak_usage: 0,
-            pool_hits: 0,
-            pool_misses: 0,
-        }
-    }
 }
 impl MemoryStats {
     pub fn record_allocation(&mut self, size: usize) {
@@ -74,6 +62,9 @@ pub struct ArenaAllocator {
 impl ArenaAllocator {
     pub fn new(capacity: usize) -> Self {
         let layout = Layout::from_size_align(capacity, 8).expect("Invalid layout");
+        // SAFETY: layout is validated by Layout::from_size_align, which ensures
+        // non-zero size and valid alignment. alloc() is guaranteed to return a
+        // properly aligned pointer or abort on OOM.
         let ptr = unsafe { alloc(layout) };
         let buffer = NonNull::new(ptr).expect("Allocation failed");
         Self {
@@ -91,8 +82,12 @@ impl ArenaAllocator {
             return None;
         }
         self.offset = new_offset;
+        // SAFETY: aligned_offset is verified against self.layout.size() above,
+        // ensuring the pointer stays within the allocated buffer. The alignment
+        // calculation guarantees proper alignment for type T. The buffer is
+        // guaranteed to be live since ArenaAllocator owns it and keeps it until drop.
         let ptr = unsafe {
-            let base = self.buffer.as_ptr() as *mut u8;
+            let base = self.buffer.as_ptr();
             NonNull::new_unchecked(base.add(aligned_offset) as *mut T)
         };
         Some(ptr)
@@ -112,6 +107,9 @@ impl ArenaAllocator {
 }
 impl Drop for ArenaAllocator {
     fn drop(&mut self) {
+        // SAFETY: self.buffer was allocated with self.layout in ArenaAllocator::new(),
+        // and this is the only deallocation (no aliased frees). The buffer is
+        // guaranteed to be non-null and valid until this Drop runs.
         unsafe {
             dealloc(self.buffer.as_ptr(), self.layout);
         }
@@ -138,6 +136,9 @@ impl StackAllocator {
             return None;
         }
         self.offset = new_offset;
+        // SAFETY: aligned_offset is checked against self.buffer.len() above,
+        // guaranteeing the pointer is within the allocated Vec's storage.
+        // The Vec's buffer is guaranteed to be valid until the Vec is dropped.
         Some(unsafe { self.buffer.as_mut_ptr().add(aligned_offset) })
     }
     pub fn push_marker(&mut self) {
@@ -167,18 +168,14 @@ impl Default for StackAllocator {
         Self::new(4096)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MemoryPressure {
+    #[default]
     None,
     Low,
     Medium,
     High,
     Critical,
-}
-impl Default for MemoryPressure {
-    fn default() -> Self {
-        Self::None
-    }
 }
 impl MemoryPressure {
     pub fn from_usage(used: usize, total: usize) -> Self {

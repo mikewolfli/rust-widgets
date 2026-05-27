@@ -1,11 +1,11 @@
 //! PDF page implementation.
 
-use crate::core::{Color, Rect, Size};
-use crate::pdf::types::*;
-use crate::pdf::PdfPage;
-use crate::pdf::writer::{pdf_escape_literal, pdf_form_field_name};
 use crate::core::coords::to_pdf_y;
+use crate::core::{Color, Rect, Size};
 use crate::pdf::reader::hex_encode;
+use crate::pdf::types::*;
+use crate::pdf::writer::{pdf_escape_literal, pdf_form_field_name};
+use crate::pdf::PdfPage;
 use std::collections::HashMap;
 
 pub(crate) struct PdfPageImpl {
@@ -164,4 +164,3 @@ impl PdfPage for PdfPageImpl {
         fields
     }
 }
-

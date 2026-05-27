@@ -2,8 +2,7 @@
 use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::GenericSignal;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Main application window.
 pub struct Window {
@@ -40,8 +39,15 @@ impl Window {
         self.title = title;
     }
     /// Returns the title bar height.
+    #[deprecated(since = "0.9.0", note = "use title_bar_height() instead")]
     pub fn get_title_bar_height(&self) -> u32 {
         self.title_bar_height
+    }
+
+    /// Returns the title bar height.
+    #[allow(deprecated)]
+    pub fn title_bar_height(&self) -> u32 {
+        self.get_title_bar_height()
     }
 
     /// Sets the title bar height and requests redraw.
@@ -51,8 +57,15 @@ impl Window {
     }
 
     /// Returns the close button size.
+    #[deprecated(since = "0.9.0", note = "use close_button_size() instead")]
     pub fn get_close_button_size(&self) -> u32 {
         self.close_button_size
+    }
+
+    /// Returns the close button size.
+    #[allow(deprecated)]
+    pub fn close_button_size(&self) -> u32 {
+        self.get_close_button_size()
     }
 
     /// Sets the close button size and requests redraw.
@@ -62,8 +75,15 @@ impl Window {
     }
 
     /// Returns the button spacing.
+    #[deprecated(since = "0.9.0", note = "use button_spacing() instead")]
     pub fn get_button_spacing(&self) -> u32 {
         self.button_spacing
+    }
+
+    /// Returns the button spacing.
+    #[allow(deprecated)]
+    pub fn button_spacing(&self) -> u32 {
+        self.get_button_spacing()
     }
 
     /// Sets the button spacing and requests redraw.
@@ -78,101 +98,11 @@ impl Window {
     }
 }
 impl Widget for Window {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<crate::core::Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<crate::core::Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<crate::core::Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<crate::core::Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<crate::core::Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(crate::core::Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(crate::core::Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for Window {
@@ -183,6 +113,7 @@ impl EventHandler for Window {
         }
     }
 }
+
 impl Draw for Window {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -224,21 +155,18 @@ impl Draw for Window {
         context.fill_rect(close_button_rect, Color::rgba(232, 17, 35, 255));
         // Draw close button X
         let padding = 3;
-        let x1 = Point::new(
-            close_button_rect.x + padding as i32,
-            close_button_rect.y + padding as i32,
-        );
+        let x1 = Point::new(close_button_rect.x + padding, close_button_rect.y + padding);
         let x2 = Point::new(
-            close_button_rect.x + close_button_rect.width as i32 - padding as i32,
-            close_button_rect.y + close_button_rect.height as i32 - padding as i32,
+            close_button_rect.x + close_button_rect.width as i32 - padding,
+            close_button_rect.y + close_button_rect.height as i32 - padding,
         );
         let x3 = Point::new(
-            close_button_rect.x + close_button_rect.width as i32 - padding as i32,
-            close_button_rect.y + padding as i32,
+            close_button_rect.x + close_button_rect.width as i32 - padding,
+            close_button_rect.y + padding,
         );
         let x4 = Point::new(
-            close_button_rect.x + padding as i32,
-            close_button_rect.y + close_button_rect.height as i32 - padding as i32,
+            close_button_rect.x + padding,
+            close_button_rect.y + close_button_rect.height as i32 - padding,
         );
         context.draw_line(x1, x2, Color::WHITE);
         context.draw_line(x3, x4, Color::WHITE);

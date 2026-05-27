@@ -58,6 +58,17 @@ pub fn translate(key: &str) -> String {
         key.to_string()
     }
 }
+/// Translate a key with optional context and plural count
+pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String {
+    let mut guard = GLOBAL_I18N
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(ref mut manager) = *guard {
+        manager.translate_with_context(key, context, count)
+    } else {
+        key.to_string()
+    }
+}
 /// Get the global i18n manager
 pub fn get_manager() -> std::sync::MutexGuard<'static, Option<I18nManager>> {
     GLOBAL_I18N

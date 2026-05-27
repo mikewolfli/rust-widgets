@@ -203,6 +203,7 @@ impl Widget for TableWidget {
         &mut self.base
     }
 }
+
 impl Draw for TableWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -223,8 +224,8 @@ impl Draw for TableWidget {
             let col_count = model.column_count();
             let current_row = self.focused_row;
             for r in 0..row_count {
-                let y = rect.y + (row_h as i32) * r as i32;
-                if y + row_h as i32 > rect.y + rect.height as i32 {
+                let y = rect.y + row_h * r as i32;
+                if y + row_h > rect.y + rect.height as i32 {
                     break;
                 }
                 if Some(r) == current_row {
@@ -269,20 +270,17 @@ impl crate::event::EventHandler for TableWidget {
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            crate::event::Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    let rect = self.base.geometry();
-                    let row_h = 20;
-                    if pos.y >= rect.y {
-                        let index = ((pos.y - rect.y) / row_h) as usize;
-                        if index < self.row_count() {
-                            self.select_row(index);
-                        }
+        if let crate::event::Event::MousePress { pos, button } = event {
+            if *button == 1 {
+                let rect = self.base.geometry();
+                let row_h = 20;
+                if pos.y >= rect.y {
+                    let index = ((pos.y - rect.y) / row_h) as usize;
+                    if index < self.row_count() {
+                        self.select_row(index);
                     }
                 }
             }
-            _ => {}
         }
     }
 }

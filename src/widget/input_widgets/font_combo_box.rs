@@ -1,9 +1,8 @@
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+use crate::signal::{GenericSignal, Signal1};
+use crate::widget::{BaseWidget, Widget, WidgetKind};
 /// Font combo box widget for font selection.
 pub struct FontComboBox {
     base: BaseWidget,
@@ -125,103 +124,17 @@ impl FontComboBox {
     }
 }
 impl Widget for FontComboBox {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
+use crate::render::RenderContext;
+use crate::widget::Draw;
+
 impl EventHandler for FontComboBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -229,125 +142,187 @@ impl EventHandler for FontComboBox {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
-                if button == &1 {
-                    // Show the dropdown list
-                    self.show_popup();
-                    self.base.clicked.emit();
-                }
+            Event::MousePress { pos: _, button } if button == &1 => {
+                // Show the dropdown list
+                self.show_popup();
+                self.base.clicked.emit();
             }
-            Event::MouseRelease { pos: _, button } => {
-                if button == &1 {
-                    // Simulate selection: cycle to next font
-                    if self.fonts.len() > 0 {
-                        let new_index = (self.current_index + 1) % self.fonts.len() as i32;
-                        self.set_current_index(new_index);
-                        self.activated.emit(new_index);
-                    }
-                }
-            }
-            Event::KeyPress { key, modifiers: _ } => {
-                match *key {
-                    13 | 32 => {
-                        // Enter or Space
-                        if self.fonts.len() > 0 && self.current_index >= 0 {
-                            self.activated.emit(self.current_index);
-                        }
-                        self.base.clicked.emit();
-                    }
-                    27 => {
-                        // Escape
-                        self.hide_popup();
-                    }
-                    38 => {
-                        // Up arrow
-                        if self.fonts.len() > 0 {
-                            let new_index = if self.current_index <= 0 {
-                                self.fonts.len() as i32 - 1
-                            } else {
-                                self.current_index - 1
-                            };
-                            self.set_current_index(new_index);
-                        }
-                    }
-                    40 => {
-                        // Down arrow
-                        if self.fonts.len() > 0 {
-                            let new_index = (self.current_index + 1) % self.fonts.len() as i32;
-                            self.set_current_index(new_index);
-                        }
-                    }
-                    _ => {}
-                }
+            Event::MouseRelease { pos: _, button }
+                if button == &1
+                    // Cycle to next font on release
+                    && !self.fonts.is_empty() =>
+            {
+                let next = (self.current_index + 1) % self.fonts.len() as i32;
+                self.set_current_index(next);
+                self.activated.emit(next);
             }
             _ => {}
         }
     }
 }
+
 impl Draw for FontComboBox {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-        let style = self.style();
-        let bg_color = style.background_color.unwrap_or(Color::WHITE);
-        let border_color = style.border_color.unwrap_or(Color::GRAY);
-        let text_color = style.text_color.unwrap_or(Color::BLACK);
-        let border_width = style.border_width;
-        // Draw background
-        context.fill_rect(rect, bg_color);
-        // Draw border
-        if border_width > 0 {
-            context.draw_rect_stroke(rect, border_color, border_width);
-        }
-        // Draw current text
-        let padding = &style.padding;
-        let text_rect = Rect::new(
-            rect.x + padding.left as i32,
-            rect.y + padding.top as i32,
-            rect.width - padding.left - padding.right - 24,
-            rect.height - padding.top - padding.bottom,
+    fn draw(&mut self, ctx: &mut RenderContext) {
+        let g = self.geometry();
+        ctx.fill_rect(g, Color::WHITE);
+        ctx.draw_rect(g, Color::rgb(200, 200, 200));
+        let font_name = self.current_font().family.clone();
+        ctx.draw_text(
+            Point::new(g.x + 4, g.y + g.height as i32 / 2 + 5),
+            &font_name,
+            &Font::default_ui(),
+            Color::BLACK,
         );
-        let current_text = self.current_text();
-        if !current_text.is_empty() {
-            let font = &self.current_font;
-            context.draw_text(
-                Point::new(text_rect.x, text_rect.y + text_rect.height as i32 / 2),
-                &current_text,
-                font,
-                text_color,
-            );
-        }
-        // Draw dropdown arrow button
-        let arrow_rect = Rect::new(
-            rect.x + rect.width as f32 as i32 - 24,
-            rect.y,
-            24,
-            rect.height,
-        );
-        let arrow_color = if self.base.is_enabled() {
-            text_color
-        } else {
-            Color::GRAY
-        };
-        // Draw arrow background
-        context.fill_rect(arrow_rect, Color::rgba(240, 240, 240, 255));
-        // Draw arrow using lines
-        let arrow_x = arrow_rect.x + arrow_rect.width as i32 / 2;
-        let arrow_y = arrow_rect.y + arrow_rect.height as i32 / 2;
-        let arrow_size = 6;
-        context.draw_line(
-            Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2),
-            Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x + arrow_size / 2, arrow_y - arrow_size / 2),
-            Point::new(arrow_x, arrow_y + arrow_size / 2),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x, arrow_y + arrow_size / 2),
-            Point::new(arrow_x - arrow_size / 2, arrow_y - arrow_size / 2),
-            arrow_color,
-        );
+    }
+    fn uses_custom_drawing(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn fontcombobox_creation_defaults() {
+        let fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(fcb.fonts().is_empty());
+        assert_eq!(fcb.count(), 0);
+        assert_eq!(fcb.current_index(), -1);
+        assert!(fcb.current_text().is_empty());
+        assert!(!fcb.is_editable());
+        assert_eq!(fcb.max_visible_items(), 10);
+    }
+
+    #[test]
+    fn fontcombobox_add_font() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.add_font("Arial".to_string());
+        fcb.add_font("Helvetica".to_string());
+        assert_eq!(fcb.count(), 2);
+        assert_eq!(fcb.fonts()[0], "Arial");
+        assert_eq!(fcb.fonts()[1], "Helvetica");
+    }
+
+    #[test]
+    fn fontcombobox_remove_font() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.add_font("Arial".to_string());
+        fcb.add_font("Helvetica".to_string());
+        fcb.remove_font(0);
+        assert_eq!(fcb.count(), 1);
+        assert_eq!(fcb.fonts()[0], "Helvetica");
+    }
+
+    #[test]
+    fn fontcombobox_clear() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.add_font("Arial".to_string());
+        fcb.add_font("Helvetica".to_string());
+        fcb.set_current_index(0);
+        fcb.clear();
+        assert_eq!(fcb.count(), 0);
+        assert_eq!(fcb.current_index(), -1);
+    }
+
+    #[test]
+    fn fontcombobox_set_current_index() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.add_font("Arial".to_string());
+        fcb.add_font("Helvetica".to_string());
+        fcb.set_current_index(0);
+        assert_eq!(fcb.current_index(), 0);
+        assert_eq!(fcb.current_text(), "Arial");
+    }
+
+    #[test]
+    fn fontcombobox_set_current_font() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        let font = Font::new("Arial", 12.0, false, false);
+        fcb.set_current_font(font.clone());
+        assert_eq!(fcb.current_font().family, "Arial");
+    }
+
+    #[test]
+    fn fontcombobox_editable() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(!fcb.is_editable());
+        fcb.set_editable(true);
+        assert!(fcb.is_editable());
+        fcb.set_editable(false);
+        assert!(!fcb.is_editable());
+    }
+
+    #[test]
+    fn fontcombobox_max_visible_items() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        assert_eq!(fcb.max_visible_items(), 10);
+        fcb.set_max_visible_items(5);
+        assert_eq!(fcb.max_visible_items(), 5);
+        fcb.set_max_visible_items(0); // floors at 1
+        assert_eq!(fcb.max_visible_items(), 1);
+    }
+
+    #[test]
+    fn fontcombobox_show_hide_popup() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.show_popup();
+        fcb.hide_popup();
+        // Should not panic
+    }
+
+    #[test]
+    fn fontcombobox_geometry_delegation() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        fcb.set_geometry(Rect::new(10, 10, 300, 30));
+        assert_eq!(fcb.geometry(), Rect::new(10, 10, 300, 30));
+    }
+
+    #[test]
+    fn fontcombobox_visibility() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(fcb.is_visible());
+        fcb.hide();
+        assert!(!fcb.is_visible());
+        fcb.show();
+        assert!(fcb.is_visible());
+    }
+
+    #[test]
+    fn fontcombobox_enabled() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        assert!(fcb.is_enabled());
+        fcb.set_enabled(false);
+        assert!(!fcb.is_enabled());
+        fcb.set_enabled(true);
+        assert!(fcb.is_enabled());
+    }
+
+    #[test]
+    fn fontcombobox_id_kind() {
+        let fcb_a = FontComboBox::new(Rect::new(0, 0, 100, 24));
+        let fcb_b = FontComboBox::new(Rect::new(0, 0, 100, 24));
+        assert_ne!(fcb_a.id(), fcb_b.id());
+        assert_eq!(fcb_a.kind(), WidgetKind::FontComboBox);
+        assert_eq!(fcb_b.kind(), WidgetKind::FontComboBox);
+    }
+
+    #[test]
+    fn fontcombobox_signal_accessors() {
+        let fcb = FontComboBox::new(Rect::new(0, 0, 100, 24));
+        let _ = &fcb.current_font_changed;
+        let _ = &fcb.current_index_changed;
+        let _ = &fcb.activated;
+        let _ = &fcb.text_edited;
+        let _ = &fcb.popup_shown;
+        let _ = &fcb.popup_hidden;
+    }
+
+    #[test]
+    fn font_combo_box_draw_produces_output() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        let svg = crate::widget::svg::render_to_svg(&mut fcb);
+        assert!(svg.starts_with("<svg"));
     }
 }

@@ -1090,16 +1090,16 @@ pub fn extract_event_handlers(
 ///
 /// Supports: on_close, on_double_click, on_focus, on_blur,
 /// on_selection_changed, on_value_changed.
-pub fn extract_extended_event_handlers(
-    obj: &serde_json::Map<String, Value>,
-) -> (
+pub type EventHandlerTuple = (
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
-) {
+);
+
+pub fn extract_extended_event_handlers(obj: &serde_json::Map<String, Value>) -> EventHandlerTuple {
     let on_close = obj
         .get("on_close")
         .and_then(|v| v.as_str())

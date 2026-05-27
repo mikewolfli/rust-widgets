@@ -356,7 +356,7 @@ fn test_handle_from_raw_and_back() {
 fn test_handle_debug_and_clone() {
     use rust_widgets::app::ButtonHandle;
     let btn = ButtonHandle::from_raw(5);
-    let btn2 = btn; // Copy
+    let btn2 = btn.clone(); // Clone
     assert_eq!(btn, btn2);
     let _ = format!("{:?}", btn); // Debug
 }

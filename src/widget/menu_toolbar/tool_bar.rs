@@ -1,9 +1,8 @@
 //! Tool bar widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,13 +13,13 @@ pub enum ToolBarOrientation {
 /// A button entry in the toolbar.
 #[derive(Debug, Clone)]
 pub struct ToolBarItem {
-    pub id: String,
-    pub text: String,
-    pub tooltip: String,
-    pub checkable: bool,
-    pub checked: bool,
-    pub enabled: bool,
-    pub separator: bool,
+    id: String,
+    text: String,
+    tooltip: String,
+    checkable: bool,
+    checked: bool,
+    enabled: bool,
+    separator: bool,
 }
 impl ToolBarItem {
     pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
@@ -36,8 +35,66 @@ impl ToolBarItem {
     }
     pub fn separator() -> Self {
         let mut t = Self::new("", "");
-        t.separator = true;
+        t.set_separator(true);
         t
+    }
+
+    // --- Accessors ---
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn set_id(&mut self, id: impl Into<String>) {
+        self.id = id.into();
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+    }
+
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
+        self.tooltip = tooltip.into();
+    }
+
+    pub fn is_checkable(&self) -> bool {
+        self.checkable
+    }
+
+    pub fn set_checkable(&mut self, checkable: bool) {
+        self.checkable = checkable;
+    }
+
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn set_checked(&mut self, checked: bool) {
+        self.checked = checked;
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    pub fn is_separator(&self) -> bool {
+        self.separator
+    }
+
+    pub fn set_separator(&mut self, separator: bool) {
+        self.separator = separator;
     }
 }
 /// Toolbar widget.
@@ -115,13 +172,13 @@ impl ToolBar {
     }
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            item.enabled = enabled;
+            item.set_enabled(enabled);
         }
     }
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            if item.checkable {
-                item.checked = checked;
+            if item.is_checkable() {
+                item.set_checked(checked);
             }
         }
     }
@@ -134,7 +191,7 @@ impl ToolBar {
         let sep_sz = 8u32;
         let mut offset = 2i32;
         for (i, item) in self.items.iter().enumerate() {
-            let sz = if item.separator { sep_sz } else { btn_sz };
+            let sz = if item.is_separator() { sep_sz } else { btn_sz };
             if i == index {
                 return match self.orientation {
                     ToolBarOrientation::Horizontal => Rect {
@@ -175,101 +232,11 @@ impl ToolBar {
     }
 }
 impl Widget for ToolBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for ToolBar {
@@ -285,11 +252,11 @@ impl EventHandler for ToolBar {
             Event::MousePress { pos, button: 1 } => {
                 if let Some(idx) = self.hit_item(*pos) {
                     if let Some(item) = self.items.get_mut(idx) {
-                        if item.enabled && !item.separator {
-                            if item.checkable {
-                                item.checked = !item.checked;
+                        if item.is_enabled() && !item.is_separator() {
+                            if item.is_checkable() {
+                                item.set_checked(!item.is_checked());
                             }
-                            let id = item.id.clone();
+                            let id = item.id().to_string();
                             self.action_triggered.emit(id);
                         }
                     }
@@ -310,46 +277,64 @@ impl Draw for ToolBar {
         );
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
-        context.draw_line(Point::new(rect.x, y), Point::new(rect.x + rect.width as i32, y), Color::from_rgb(200, 200, 200));
+        context.draw_line(
+            Point::new(rect.x, y),
+            Point::new(rect.x + rect.width as i32, y),
+            Color::from_rgb(200, 200, 200),
+        );
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
             let item = &self.items[i];
-            if item.separator {
+            if item.is_separator() {
                 match self.orientation {
                     ToolBarOrientation::Horizontal => {
                         let mid_x = item_r.x + (item_r.width as i32) / 2;
-                        context.draw_line(Point::new(mid_x, rect.y + 4), Point::new(mid_x, rect.y + rect.height as i32 - 4), Color::from_rgb(200, 200, 200));
+                        context.draw_line(
+                            Point::new(mid_x, rect.y + 4),
+                            Point::new(mid_x, rect.y + rect.height as i32 - 4),
+                            Color::from_rgb(200, 200, 200),
+                        );
                     }
                     ToolBarOrientation::Vertical => {
                         let mid_y = item_r.y + item_r.height as i32 / 2;
-                        context.draw_line(Point::new(rect.x + 4, mid_y), Point::new(rect.x + rect.width as i32 - 4, mid_y), Color::from_rgb(200, 200, 200));
+                        context.draw_line(
+                            Point::new(rect.x + 4, mid_y),
+                            Point::new(rect.x + rect.width as i32 - 4, mid_y),
+                            Color::from_rgb(200, 200, 200),
+                        );
                     }
                 }
                 continue;
             }
             let is_hovered = self.hovered_index == Some(i);
-            let bg = if item.checked {
+            let bg = if item.is_checked() {
                 Color::from_rgb(180, 210, 255)
             } else if is_hovered {
                 Color::from_rgb(210, 230, 255)
             } else {
                 Color::from_rgb(245, 245, 245)
             };
-            context.fill_rect(Rect::new(item_r.x, item_r.y, item_r.width, item_r.height), bg);
-            if is_hovered || item.checked {
+            context.fill_rect(
+                Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
+                bg,
+            );
+            if is_hovered || item.is_checked() {
                 context.draw_rect(
                     Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
                     Color::from_rgb(0, 120, 215),
                 );
             }
-            let fg = if !item.enabled {
+            let fg = if !item.is_enabled() {
                 Color::from_rgb(150, 150, 150)
             } else {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),
-                &item.text,
+                Point::new(
+                    item_r.x + item_r.width as i32 / 2,
+                    item_r.y + item_r.height as i32 / 2,
+                ),
+                item.text(),
                 &Font::default(),
                 fg,
             );

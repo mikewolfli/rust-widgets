@@ -1,7 +1,11 @@
 //! Windows platform tests.
 
 mod tests {
-    use super::*;
+    use crate::platform::windows::{
+        notify::{control_notify_kind_for_widget, enqueue_control_notify_event},
+        types::{WindowsHandleKind, WindowsPlatform},
+    };
+    use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
     #[test]
     fn control_notify_mapping_button_click_routes_clicked() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::Button, 0);

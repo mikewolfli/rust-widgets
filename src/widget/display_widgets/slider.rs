@@ -1,9 +1,8 @@
 //! Slider widget.
-use crate::core::{Color, ObjectId, Orientation, Point, Rect, Size};
+use crate::core::{Color, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Slider widget.
 pub struct Slider {
@@ -25,9 +24,10 @@ pub struct Slider {
     pub slider_released: GenericSignal,
 }
 /// Tick mark position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TickPosition {
     /// No tick marks
+    #[default]
     NoTicks,
     /// Tick marks above (for horizontal) or left (for vertical)
     TicksAbove,
@@ -35,11 +35,6 @@ pub enum TickPosition {
     TicksBelow,
     /// Tick marks on both sides
     TicksBothSides,
-}
-impl Default for TickPosition {
-    fn default() -> Self {
-        Self::NoTicks
-    }
 }
 impl Slider {
     /// Creates a slider with default range 0-100.
@@ -248,101 +243,19 @@ pub enum SliderAction {
 }
 // Implement Widget trait
 impl Widget for Slider {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        match self.orientation() {
+            Orientation::Horizontal => Size::new(100, 28),
+            Orientation::Vertical => Size::new(28, 100),
+        }
     }
 }
 impl EventHandler for Slider {
@@ -352,13 +265,11 @@ impl EventHandler for Slider {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    self.mouse_pressed = true;
-                    self.slider_pressed.emit();
-                    let value = self.pixel_pos_to_value(pos.x as f32);
-                    self.set_slider_position(value);
-                }
+            Event::MousePress { pos, button } if *button == 1 => {
+                self.mouse_pressed = true;
+                self.slider_pressed.emit();
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
@@ -367,13 +278,11 @@ impl EventHandler for Slider {
                 let value = self.pixel_pos_to_value(pos.x as f32);
                 self.set_slider_position(value);
             }
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.mouse_pressed = false;
-                    self.slider_released.emit();
-                    if !self.tracking {
-                        self.set_value(self.slider_position);
-                    }
+            Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.mouse_pressed = false;
+                self.slider_released.emit();
+                if !self.tracking {
+                    self.set_value(self.slider_position);
                 }
             }
             #[cfg(feature = "touch")]
@@ -384,11 +293,9 @@ impl EventHandler for Slider {
                     self.set_value(self.slider_position);
                 }
             }
-            Event::MouseMove { pos } => {
-                if self.mouse_pressed {
-                    let value = self.pixel_pos_to_value(pos.x as f32);
-                    self.set_slider_position(value);
-                }
+            Event::MouseMove { pos } if self.mouse_pressed => {
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } => {
@@ -569,6 +476,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Orientation, Rect, Size};
     use crate::event::Event;
+    use crate::style::WidgetStyle;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 

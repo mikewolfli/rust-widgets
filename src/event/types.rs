@@ -3,6 +3,19 @@ use crate::core::{Point, Size};
 /// A unique identifier for a touch contact point (used by `touch` and `holographic` features).
 pub type TouchId = u64;
 
+/// Screen orientation enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScreenOrientation {
+    /// Device in portrait orientation.
+    Portrait,
+    /// Device in landscape orientation.
+    Landscape,
+    /// Device in reverse portrait orientation (180° rotated).
+    ReversePortrait,
+    /// Device in reverse landscape orientation (180° rotated).
+    ReverseLandscape,
+}
+
 /// Gesture complexity / detection tier classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GestureClass {
@@ -57,6 +70,8 @@ pub enum Event {
     Wheel { delta: Point, modifiers: u32 },
     /// Free-form custom event payload.
     Custom { name: String, payload: Vec<u8> },
+    /// Screen orientation changed (portrait ↔ landscape).
+    OrientationChanged { orientation: ScreenOrientation },
     /// Event loop shutdown signal.
     Quit,
     // ── Touch / Gesture events (gated behind `touch` feature) ──
@@ -97,6 +112,23 @@ pub enum Event {
         pos: Point,
         touch_id: TouchId,
         delta: Point,
+    },
+    /// Two-finger tap (≈ right-click equivalent on touchscreens).
+    #[cfg(feature = "touch")]
+    TwoFingerTap { pos: Point },
+    /// Two-finger swipe (e.g., page navigation with two fingers).
+    #[cfg(feature = "touch")]
+    TwoFingerSwipe {
+        centroid_start: Point,
+        centroid_end: Point,
+        velocity: f32,
+    },
+    /// Velocity-based fling/flick with vector velocity (vx, vy).
+    #[cfg(feature = "touch")]
+    Fling {
+        pos: Point,
+        velocity: Point,
+        touch_id: TouchId,
     },
     // ── Holographic / 3D events (BLUE8 P4-5, gated behind `holographic` feature) ──
     /// 3D touch/gesture with depth information (holographic).
@@ -250,6 +282,37 @@ impl Event {
             delta: Point::new(delta_x, delta_y),
         }
     }
+    /// Creates a two-finger tap gesture event.
+    #[cfg(feature = "touch")]
+    pub fn two_finger_tap(x: i32, y: i32) -> Self {
+        Self::TwoFingerTap {
+            pos: Point::new(x, y),
+        }
+    }
+    /// Creates a two-finger swipe gesture event.
+    #[cfg(feature = "touch")]
+    pub fn two_finger_swipe(
+        start_x: i32,
+        start_y: i32,
+        end_x: i32,
+        end_y: i32,
+        velocity: f32,
+    ) -> Self {
+        Self::TwoFingerSwipe {
+            centroid_start: Point::new(start_x, start_y),
+            centroid_end: Point::new(end_x, end_y),
+            velocity,
+        }
+    }
+    /// Creates a fling gesture event.
+    #[cfg(feature = "touch")]
+    pub fn fling(x: i32, y: i32, vx: i32, vy: i32, touch_id: TouchId) -> Self {
+        Self::Fling {
+            pos: Point::new(x, y),
+            velocity: Point::new(vx, vy),
+            touch_id,
+        }
+    }
 
     /// Creates a holographic (3D) touch event.
     #[cfg(feature = "holographic")]
@@ -259,6 +322,11 @@ impl Event {
             depth,
             touch_id,
         }
+    }
+
+    /// Creates an orientation changed event.
+    pub fn orientation_changed(orientation: ScreenOrientation) -> Self {
+        Self::OrientationChanged { orientation }
     }
 
     /// Creates a quit event.
@@ -273,9 +341,13 @@ impl Event {
             Self::Tap { .. }
             | Self::DoubleTap { .. }
             | Self::LongPress { .. }
-            | Self::Swipe { .. } => Some(GestureClass::Single),
+            | Self::Swipe { .. }
+            | Self::Fling { .. } => Some(GestureClass::Single),
             #[cfg(feature = "touch")]
-            Self::Pinch { .. } | Self::Rotate { .. } => Some(GestureClass::Multi),
+            Self::Pinch { .. }
+            | Self::Rotate { .. }
+            | Self::TwoFingerTap { .. }
+            | Self::TwoFingerSwipe { .. } => Some(GestureClass::Multi),
             #[cfg(feature = "holographic")]
             Self::HolographicTouch { .. } => Some(GestureClass::Holographic),
             _ => None,
@@ -298,6 +370,9 @@ impl Event {
                     | Self::Pinch { .. }
                     | Self::Rotate { .. }
                     | Self::Drag { .. }
+                    | Self::TwoFingerTap { .. }
+                    | Self::TwoFingerSwipe { .. }
+                    | Self::Fling { .. }
             ) || {
                 #[cfg(feature = "holographic")]
                 {
@@ -392,6 +467,9 @@ mod tests {
         assert!(Event::pinch(1.0).is_touch());
         assert!(Event::rotate(0.5).is_touch());
         assert!(Event::drag(0, 0, 0, 1, 1).is_touch());
+        assert!(Event::two_finger_tap(0, 0).is_touch());
+        assert!(Event::two_finger_swipe(0, 0, 10, 10, 50.0).is_touch());
+        assert!(Event::fling(0, 0, 1, 1, 0).is_touch());
     }
 
     #[test]
@@ -421,6 +499,105 @@ mod tests {
             }
             _ => panic!("expected Swipe"),
         }
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn two_finger_tap_creation() {
+        let e = Event::two_finger_tap(15, 25);
+        match e {
+            Event::TwoFingerTap { pos } => {
+                assert_eq!(pos.x, 15);
+                assert_eq!(pos.y, 25);
+            }
+            _ => panic!("expected TwoFingerTap"),
+        }
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn two_finger_tap_gesture_class_is_multi() {
+        let e = Event::two_finger_tap(10, 20);
+        assert_eq!(e.gesture_class(), Some(GestureClass::Multi));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn two_finger_swipe_fields_correct() {
+        let e = Event::two_finger_swipe(0, 0, 100, 200, 300.0);
+        match e {
+            Event::TwoFingerSwipe {
+                centroid_start,
+                centroid_end,
+                velocity,
+            } => {
+                assert_eq!(centroid_start.x, 0);
+                assert_eq!(centroid_start.y, 0);
+                assert_eq!(centroid_end.x, 100);
+                assert_eq!(centroid_end.y, 200);
+                assert!((velocity - 300.0).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected TwoFingerSwipe"),
+        }
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn two_finger_swipe_gesture_class_is_multi() {
+        let e = Event::two_finger_swipe(0, 0, 10, 10, 50.0);
+        assert_eq!(e.gesture_class(), Some(GestureClass::Multi));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn fling_creation() {
+        let e = Event::fling(50, 60, 10, -5, 3);
+        match e {
+            Event::Fling {
+                pos,
+                velocity,
+                touch_id,
+            } => {
+                assert_eq!(pos.x, 50);
+                assert_eq!(pos.y, 60);
+                assert_eq!(velocity.x, 10);
+                assert_eq!(velocity.y, -5);
+                assert_eq!(touch_id, 3);
+            }
+            _ => panic!("expected Fling"),
+        }
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn fling_gesture_class_is_single() {
+        let e = Event::fling(0, 0, 100, 50, 0);
+        assert_eq!(e.gesture_class(), Some(GestureClass::Single));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn is_touch_true_for_new_gesture_variants() {
+        assert!(Event::two_finger_tap(0, 0).is_touch());
+        assert!(Event::two_finger_swipe(0, 0, 10, 10, 50.0).is_touch());
+        assert!(Event::fling(0, 0, 1, 1, 0).is_touch());
+    }
+
+    #[test]
+    fn orientation_changed_creation() {
+        let e = Event::orientation_changed(ScreenOrientation::Landscape);
+        match e {
+            Event::OrientationChanged { orientation } => {
+                assert_eq!(orientation, ScreenOrientation::Landscape);
+            }
+            _ => panic!("expected OrientationChanged"),
+        }
+    }
+
+    #[test]
+    fn orientation_changed_not_touch() {
+        let e = Event::orientation_changed(ScreenOrientation::Portrait);
+        assert!(!e.is_touch());
     }
 
     #[cfg(feature = "touch")]

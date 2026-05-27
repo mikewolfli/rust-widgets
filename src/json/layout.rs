@@ -96,6 +96,7 @@ pub fn add_spacer_to_layout(
 }
 
 /// Add a widget to a grid layout with position/size attributes.
+#[allow(clippy::too_many_arguments)]
 pub fn add_widget_to_layout_grid(
     layout: &dyn Layout,
     child_id: u64,
@@ -591,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn parse_grid_with_Grid_alias() {
         let json: Value =
             serde_json::from_str(r#"{"type": "Grid", "columns": 5, "spacing": 3}"#).unwrap();

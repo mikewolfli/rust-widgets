@@ -1,5 +1,5 @@
-use std::io;
 use super::{ConfigPersistence, MenuConfig, PerformanceLevel};
+use std::io;
 /// Menu configuration dialog for user preferences.
 pub struct MenuConfigDialog {
     config: MenuConfig,

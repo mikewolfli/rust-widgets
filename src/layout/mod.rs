@@ -42,6 +42,31 @@ impl LayoutConstraints {
         Self { min, max }
     }
 }
+/// Layout context carrying device adaptation parameters.
+///
+/// Passed to [`Layout::update_with_context`] to enable DPI-aware
+/// spacing, margins, and minimum touch-target sizes.
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutContext {
+    /// Scale factor applied to spacing, margins, and padding.
+    /// Derived from [`DeviceEnvironment::layout_scale`].
+    pub layout_scale: f32,
+    /// Scale factor applied to font/metric sizes.
+    pub font_scale: f32,
+    /// Minimum touch-target size in logical pixels.
+    /// Defaults to 32×32 (recommended minimum for touch).
+    pub min_touch_size: Size,
+}
+impl Default for LayoutContext {
+    fn default() -> Self {
+        Self {
+            layout_scale: 1.0,
+            font_scale: 1.0,
+            min_touch_size: Size::new(32, 32),
+        }
+    }
+}
+
 /// Common interface implemented by all layout managers.
 pub trait Layout {
     /// Add widget into layout with optional stretch factor.
@@ -77,6 +102,21 @@ pub trait Layout {
         log::warn!(
             "Layout::clear() called on a layout that does not override the default (no-op) implementation"
         );
+    }
+
+    /// Update child geometries with device-aware scaling context.
+    ///
+    /// The default implementation ignores the context and delegates
+    /// to [`update`](Layout::update). Override to apply
+    /// [`LayoutContext::layout_scale`] to spacing, margins, etc.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
     }
 
     /// Enables downcasting from `dyn Layout` to concrete types.

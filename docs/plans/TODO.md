@@ -202,7 +202,7 @@ This file mirrors staged execution status.
 - style/
 - theme/
 - widget/
-- xml/
+- json/
 
 (Already optimized: signal/, render/, quality.rs, wgpu_backend.rs, lib.rs)
 

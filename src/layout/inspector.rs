@@ -414,9 +414,8 @@ impl LayoutInspector {
     /// Returns (issues, geometry_map) where geometry_map is a
     /// snapshot of all recorded rects keyed by (parent_id, widget_id).
     fn check_zero_sizes() -> (Vec<Issue>, Vec<(ObjectId, Rect)>) {
-        let issues;
         let geometries = GEOMETRY_SNAPSHOT.with(|snap| snap.borrow().clone());
-        issues = geometries
+        let issues = geometries
             .iter()
             .filter(|(_, rect)| rect.width == 0 || rect.height == 0)
             .map(|(widget_id, rect)| {

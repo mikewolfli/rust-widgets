@@ -50,7 +50,7 @@ impl VerticalAlignment {
 }
 impl HorizontalAlignment {
     /// Creates horizontal alignment from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "left" | "l" => Some(Self::Left),
             "center" | "centre" | "c" => Some(Self::Center),
@@ -81,7 +81,7 @@ impl HorizontalAlignment {
 }
 impl VerticalAlignment {
     /// Creates vertical alignment from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "top" | "t" => Some(Self::Top),
             "center" | "centre" | "c" => Some(Self::Center),
@@ -112,7 +112,7 @@ impl VerticalAlignment {
 }
 impl Alignment {
     /// Creates alignment from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "left" | "l" => Some(Self::Left),
             "center" | "centre" | "c" => Some(Self::Center),
@@ -179,7 +179,10 @@ impl Alignment {
         matches!(self, Self::Bottom)
     }
     /// Creates a combined alignment from horizontal and vertical components.
-    pub fn from_components(horizontal: HorizontalAlignment, vertical: VerticalAlignment) -> (Self, Self) {
+    pub fn from_components(
+        horizontal: HorizontalAlignment,
+        vertical: VerticalAlignment,
+    ) -> (Self, Self) {
         (horizontal.into(), vertical.into())
     }
     /// Returns the opposite alignment.
@@ -231,7 +234,7 @@ impl From<VerticalAlignment> for Alignment {
 }
 impl TryFrom<Alignment> for HorizontalAlignment {
     type Error = ();
-    
+
     fn try_from(value: Alignment) -> Result<Self, Self::Error> {
         match value {
             Alignment::Left => Ok(Self::Left),
@@ -243,7 +246,7 @@ impl TryFrom<Alignment> for HorizontalAlignment {
 }
 impl TryFrom<Alignment> for VerticalAlignment {
     type Error = ();
-    
+
     fn try_from(value: Alignment) -> Result<Self, Self::Error> {
         match value {
             Alignment::Top => Ok(Self::Top),

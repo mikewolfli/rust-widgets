@@ -1,7 +1,5 @@
 //! Win32 helper functions for native control creation.
 
-use crate::platform::state::BackendState;
-use crate::platform::DropEvent;
 use crate::platform::Platform;
 
 /// Attempt to downcast a `&dyn Platform` to `&WindowsPlatform`.
@@ -11,7 +9,7 @@ fn platform_as_windows(platform: &dyn Platform) -> Option<&super::WindowsPlatfor
 
 /// Native Win32 Label (STATIC control) creation
 pub fn try_create_label(
-    platform: &dyn super::Platform,
+    platform: &dyn Platform,
     parent: u64,
     text: &str,
     x: i32,
@@ -27,6 +25,8 @@ pub fn try_create_label(
         use winapi::um::commctrl::InitCommonControls;
         use winapi::um::winuser::{CreateWindowExW, SS_LEFT, SS_NOPREFIX, WS_CHILD, WS_VISIBLE};
 
+        // SAFETY: InitCommonControls() is safe to call multiple times; it registers
+        // common control window classes and has no threading constraints per MSDN.
         unsafe {
             InitCommonControls();
         }
@@ -34,6 +34,10 @@ pub fn try_create_label(
         let parent_hwnd = platform_instance.get_native_handle(parent)?;
         let class: Vec<u16> = OsStr::new("Static").encode_wide().chain(Some(0)).collect();
         let text_wide: Vec<u16> = OsStr::new(text).encode_wide().chain(Some(0)).collect();
+        // SAFETY: CreateWindowExW is called with valid wide strings (null-terminated),
+        // a valid parent HWND from the platform instance, and standard window styles.
+        // The function is documented as safe when parameters are valid. A null return
+        // is handled gracefully by the caller.
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -73,7 +77,7 @@ pub fn try_create_label(
 
 /// Public function for cross-platform slider creation dispatch
 pub fn try_create_slider(
-    platform: &dyn super::Platform,
+    platform: &dyn Platform,
     parent: u64,
     x: i32,
     y: i32,
@@ -87,7 +91,7 @@ pub fn try_create_slider(
 }
 
 pub fn try_create_progress_bar(
-    platform: &dyn super::Platform,
+    platform: &dyn Platform,
     parent: u64,
     x: i32,
     y: i32,
@@ -102,6 +106,7 @@ pub fn try_create_progress_bar(
         use winapi::um::commctrl::{InitCommonControls, PROGRESS_CLASS};
         use winapi::um::winuser::{CreateWindowExW, WS_BORDER, WS_CHILD, WS_VISIBLE};
 
+        // SAFETY: InitCommonControls() is safe to call multiple times per MSDN.
         unsafe {
             InitCommonControls();
         }
@@ -111,6 +116,8 @@ pub fn try_create_progress_bar(
             .encode_wide()
             .chain(Some(0))
             .collect();
+        // SAFETY: CreateWindowExW with a valid PROGRESS_CLASS wide string, valid
+        // parent HWND, and standard styles. Null return is handled gracefully.
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -150,7 +157,7 @@ pub fn try_create_progress_bar(
 
 /// Native Win32 ComboBox creation
 pub fn try_create_combo_box(
-    platform: &dyn super::Platform,
+    platform: &dyn Platform,
     parent: u64,
     x: i32,
     y: i32,
@@ -166,6 +173,7 @@ pub fn try_create_combo_box(
             WS_VISIBLE, WS_VSCROLL,
         };
 
+        // SAFETY: InitCommonControls() is safe to call multiple times per MSDN.
         unsafe {
             InitCommonControls();
         }
@@ -173,6 +181,8 @@ pub fn try_create_combo_box(
         let parent_hwnd = platform_instance.get_native_handle(parent)?;
         let class = super::WindowsPlatform::to_wide("ComboBox");
         let dropdown_height = (height as i32).max(180);
+        // SAFETY: CreateWindowExW with a valid ComboBox class wide string, valid
+        // parent HWND, and standard combo box styles. Null return is handled gracefully.
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -207,7 +217,12 @@ pub fn try_create_combo_box(
             height,
         );
         platform_instance.bind_native_handle(widget_id, hwnd);
-        platform_instance.bind_control_command(widget_id, hwnd);
+        // SAFETY: hwnd was just created by CreateWindowExW above and is guaranteed
+        // to be a valid HWND (null case is already handled). bind_control_command
+        // registers a window subclass procedure which is safe on a valid HWND.
+        unsafe {
+            platform_instance.bind_control_command(widget_id, hwnd);
+        }
         Some(widget_id)
     }
     #[cfg(not(target_os = "windows"))]

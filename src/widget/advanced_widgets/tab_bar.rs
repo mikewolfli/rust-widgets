@@ -1,9 +1,9 @@
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TextMetrics};
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
+
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 
@@ -507,132 +507,12 @@ impl TabBar {
 // Widget trait
 // ---------------------------------------------------------------------------
 impl Widget for TabBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
 
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-
-    fn show(&mut self) {
-        self.base.show();
-    }
-
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 
@@ -653,24 +533,22 @@ impl EventHandler for TabBar {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    // Check close button first.
-                    if self.closable {
-                        for i in 0..self.tabs.len() {
-                            if let Some(close_rect) = self.close_rect(i) {
-                                if close_rect.contains(*pos) && self.tabs[i].enabled {
-                                    self.tab_close_requested.emit(i);
-                                    return;
-                                }
+            Event::MousePress { pos, button } if *button == 1 => {
+                // Check close button first.
+                if self.closable {
+                    for i in 0..self.tabs.len() {
+                        if let Some(close_rect) = self.close_rect(i) {
+                            if close_rect.contains(*pos) && self.tabs[i].enabled {
+                                self.tab_close_requested.emit(i);
+                                return;
                             }
                         }
                     }
-                    // Otherwise, select tab.
-                    if let Some(index) = self.tab_at_position(*pos) {
-                        if self.tabs[index].enabled {
-                            self.set_current_index(index);
-                        }
+                }
+                // Otherwise, select tab.
+                if let Some(index) = self.tab_at_position(*pos) {
+                    if self.tabs[index].enabled {
+                        self.set_current_index(index);
                     }
                 }
             }

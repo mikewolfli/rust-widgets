@@ -154,7 +154,7 @@ impl AdaptiveMetrics {
         let target_frame_time = 1.0 / self.target_fps;
         let ratio = target_frame_time / self.average_frame_time;
         // Clamp between 0.0 and 1.0
-        ratio.min(1.0).max(0.0)
+        ratio.clamp(0.0, 1.0)
     }
 }
 /// Quality-aware rendering context extension.

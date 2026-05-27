@@ -15,7 +15,10 @@
 //!   - [`LongPressGesture`] — hold ≥500ms
 //!   - [`SwipeGesture`] — rapid directional motion
 //!   - [`PinchGesture`] — two-finger distance change
-//!   - [`RotateGesture`] — two-finger angle change
+//! - [`RotateGesture`] — two-finger angle change
+//!   - [`FlingGesture`] — velocity-based fling/flick
+//!   - [`TwoFingerTapGesture`] — two-finger tap (≈ right-click)
+//!   - [`TwoFingerSwipeGesture`] — two-finger directional swipe
 
 use crate::core::Point;
 use crate::event::{Event, TouchId};
@@ -73,6 +76,11 @@ impl GestureEngine {
             Box::new(DoubleTapGesture::new()),
             Box::new(LongPressGesture::new()),
             Box::new(SwipeGesture::new()),
+            Box::new(PanGesture::new()),
+            Box::new(LongPressDragGesture::new()),
+            Box::new(FlingGesture::new()),
+            Box::new(TwoFingerTapGesture::new()),
+            Box::new(TwoFingerSwipeGesture::new()),
             Box::new(PinchGesture::new()),
             Box::new(RotateGesture::new()),
         ];
@@ -448,6 +456,542 @@ impl GestureRecognizer for SwipeGesture {
 }
 
 impl Default for SwipeGesture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────
+// PanGesture (G1)
+// ────────────────────────────────────────────
+
+/// Continuous drag tracking recognizer.
+///
+/// Emits `Event::Drag { pos, touch_id, delta }` on every `TouchMove`
+/// after a matching `TouchBegin`. Useful for scrolling, panning, and
+/// slider drag operations.
+///
+/// ## State machine
+/// - `Idle` — waiting for touch
+/// - `Tracking` — finger down, emitting Drag on every move
+///
+/// ## Events consumed
+/// - `TouchBegin { pos, touch_id }` → starts tracking
+/// - `TouchMove { pos, touch_id }` → emits Drag with delta
+/// - `TouchEnd { pos, touch_id }` → stops tracking (no event emitted)
+#[derive(Debug, Clone)]
+pub struct PanGesture {
+    active: bool,
+    touch_id: Option<TouchId>,
+    last_pos: Option<Point>,
+}
+
+impl PanGesture {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            touch_id: None,
+            last_pos: None,
+        }
+    }
+}
+
+impl GestureRecognizer for PanGesture {
+    fn process(&mut self, event: &Event, _now_ms: u64) -> Option<Event> {
+        match event {
+            Event::TouchBegin { pos, touch_id } if !self.active => {
+                self.active = true;
+                self.touch_id = Some(*touch_id);
+                self.last_pos = Some(*pos);
+                None
+            }
+            Event::TouchMove { pos, touch_id }
+                if self.active && Some(*touch_id) == self.touch_id =>
+            {
+                let delta = if let Some(last) = self.last_pos {
+                    Point::new(pos.x - last.x, pos.y - last.y)
+                } else {
+                    Point::new(0.0, 0.0)
+                };
+                self.last_pos = Some(*pos);
+                Some(Event::Drag {
+                    pos: *pos,
+                    touch_id: *touch_id,
+                    delta,
+                })
+            }
+            Event::TouchEnd { pos: _, touch_id } if Some(*touch_id) == self.touch_id => {
+                self.reset();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+        self.touch_id = None;
+        self.last_pos = None;
+    }
+}
+
+impl Default for PanGesture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────
+// LongPressDragGesture (G4)
+// ────────────────────────────────────────────
+
+/// Long press then drag recognizer.
+///
+/// Emits `Event::LongPress` when the finger is held stationary for
+/// `LONG_PRESS_MIN_MS`, then emits `Event::Drag` on subsequent
+/// `TouchMove` events.
+///
+/// ## State machine
+/// - `Idle` → `Holding` (TouchBegin) → `Fired` (after timeout) → `Dragging` (first move)
+///
+/// ## Events consumed
+/// - `TouchBegin` → starts the hold timer
+/// - `TouchMove` → cancels if before timer; emits Drag if after
+/// - `TouchEnd` → resets
+#[derive(Debug, Clone)]
+pub struct LongPressDragGesture {
+    start_pos: Option<Point>,
+    start_time: Option<u64>,
+    touch_id: Option<TouchId>,
+    long_press_fired: bool,
+    dragging: bool,
+    last_pos: Option<Point>,
+}
+
+impl LongPressDragGesture {
+    pub fn new() -> Self {
+        Self {
+            start_pos: None,
+            start_time: None,
+            touch_id: None,
+            long_press_fired: false,
+            dragging: false,
+            last_pos: None,
+        }
+    }
+}
+
+impl GestureRecognizer for LongPressDragGesture {
+    fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
+        match event {
+            Event::TouchBegin { pos, touch_id } if self.start_pos.is_none() => {
+                self.start_pos = Some(*pos);
+                self.start_time = Some(now_ms);
+                self.touch_id = Some(*touch_id);
+                self.long_press_fired = false;
+                self.dragging = false;
+                self.last_pos = Some(*pos);
+                None
+            }
+            Event::TouchMove { pos, touch_id } if self.touch_id == Some(*touch_id) => {
+                if self.dragging {
+                    // Already in drag mode — emit Drag
+                    let delta = if let Some(last) = self.last_pos {
+                        Point::new(pos.x - last.x, pos.y - last.y)
+                    } else {
+                        Point::new(0.0, 0.0)
+                    };
+                    self.last_pos = Some(*pos);
+                    return Some(Event::Drag {
+                        pos: *pos,
+                        touch_id: *touch_id,
+                        delta,
+                    });
+                }
+                if self.long_press_fired {
+                    // First move after long press — enter drag mode
+                    self.dragging = true;
+                    self.last_pos = Some(*pos);
+                    let delta = if let Some(start) = self.start_pos {
+                        Point::new(pos.x - start.x, pos.y - start.y)
+                    } else {
+                        Point::new(0.0, 0.0)
+                    };
+                    return Some(Event::Drag {
+                        pos: *pos,
+                        touch_id: *touch_id,
+                        delta,
+                    });
+                }
+                // Before long press fired — check if movement exceeds threshold
+                if let Some(start) = self.start_pos {
+                    let dx = (pos.x - start.x).abs();
+                    let dy = (pos.y - start.y).abs();
+                    if dx > LONG_PRESS_MAX_MOVE || dy > LONG_PRESS_MAX_MOVE {
+                        // Moved too much — cancel
+                        self.reset();
+                    }
+                }
+                None
+            }
+            Event::TouchEnd { pos: _, touch_id } if self.touch_id == Some(*touch_id) => {
+                self.reset();
+                None
+            }
+            _ => {
+                // Check for long-press timeout on any event while holding
+                if self.start_pos.is_some() && !self.long_press_fired && !self.dragging {
+                    if let Some(start) = self.start_time {
+                        if now_ms >= start && now_ms - start >= LONG_PRESS_MIN_MS {
+                            self.long_press_fired = true;
+                            return Some(Event::LongPress {
+                                pos: self.start_pos.unwrap(),
+                            });
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.start_pos = None;
+        self.start_time = None;
+        self.touch_id = None;
+        self.long_press_fired = false;
+        self.dragging = false;
+        self.last_pos = None;
+    }
+}
+
+impl Default for LongPressDragGesture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────
+// G2: FlingGesture
+// ────────────────────────────────────────────
+
+const FLING_MIN_VELOCITY: f32 = 0.3;
+const FLING_MIN_DISTANCE: f32 = 15.0;
+const VELOCITY_WINDOW_MS: u64 = 100;
+
+/// Velocity-based fling/flick recognizer.
+///
+/// Detects a short, fast finger flick intended to trigger inertial
+/// scrolling. Unlike [`SwipeGesture`] which requires a minimum
+/// distance of 30px, `FlingGesture` can detect shorter motions
+/// if they are fast enough (velocity > `FLING_MIN_VELOCITY` px/ms).
+///
+/// Uses a sliding-window velocity estimate (last ~100ms of movement)
+/// to distinguish flicks from slow pans.
+///
+/// ## Output event
+/// - [`Event::Fling { pos, velocity, touch_id }`]
+#[derive(Debug)]
+pub struct FlingGesture {
+    start_pos: Option<Point>,
+    start_time: Option<u64>,
+    touch_id: Option<TouchId>,
+    samples: Vec<(Point, u64)>, // (pos, time_ms) ring buffer
+}
+
+impl FlingGesture {
+    pub fn new() -> Self {
+        Self {
+            start_pos: None,
+            start_time: None,
+            touch_id: None,
+            samples: Vec::new(),
+        }
+    }
+
+    fn compute_velocity(&self) -> Option<Point> {
+        let now = self.samples.last()?.1;
+        let cutoff = now.saturating_sub(VELOCITY_WINDOW_MS);
+        // Find samples within the window
+        let recent: Vec<_> = self.samples.iter().filter(|(_, t)| *t >= cutoff).collect();
+        if recent.len() < 2 {
+            return None;
+        }
+        let first = recent.first()?;
+        let last = recent.last()?;
+        let dt = last.1.saturating_sub(first.1).max(1) as f32;
+        let dx = (last.0.x - first.0.x) as f32;
+        let dy = (last.0.y - first.0.y) as f32;
+        Some(Point::new(
+            (dx / dt * 1000.0) as i32,
+            (dy / dt * 1000.0) as i32,
+        ))
+    }
+}
+
+impl GestureRecognizer for FlingGesture {
+    fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
+        match event {
+            Event::TouchBegin { pos, touch_id } if self.start_pos.is_none() => {
+                self.start_pos = Some(*pos);
+                self.start_time = Some(now_ms);
+                self.touch_id = Some(*touch_id);
+                self.samples.clear();
+                self.samples.push((*pos, now_ms));
+                None
+            }
+            Event::TouchMove { pos, touch_id } if self.touch_id == Some(*touch_id) => {
+                self.samples.push((*pos, now_ms));
+                // Trim old samples
+                let cutoff = now_ms.saturating_sub(VELOCITY_WINDOW_MS * 2);
+                self.samples.retain(|(_, t)| *t >= cutoff);
+                None
+            }
+            Event::TouchEnd { pos, touch_id } if self.touch_id == Some(*touch_id) => {
+                self.samples.push((*pos, now_ms));
+                let velocity = self.compute_velocity();
+                let total_distance = if let Some(start) = self.start_pos {
+                    let dx = (pos.x - start.x).abs();
+                    let dy = (pos.y - start.y).abs();
+                    ((dx * dx + dy * dy) as f32).sqrt()
+                } else {
+                    0.0
+                };
+                let speed = if let Some(v) = velocity {
+                    ((v.x * v.x + v.y * v.y) as f32).sqrt()
+                } else {
+                    0.0
+                };
+                self.reset();
+                if total_distance >= FLING_MIN_DISTANCE || speed >= FLING_MIN_VELOCITY * 1000.0 {
+                    Some(Event::Fling {
+                        pos: *pos,
+                        velocity: velocity.unwrap_or(Point::new(0, 0)),
+                        touch_id: *touch_id,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.start_pos = None;
+        self.start_time = None;
+        self.touch_id = None;
+        self.samples.clear();
+    }
+}
+
+impl Default for FlingGesture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────
+// G3a: TwoFingerTapGesture
+// ────────────────────────────────────────────
+
+const TWO_FINGER_TAP_TIMEOUT_MS: u64 = 150;
+const TWO_FINGER_TAP_DURATION_MS: u64 = 300;
+
+/// Two-finger tap recognizer.
+///
+/// Detects a simultaneous two-finger tap (≈ right-click on touchscreens).
+/// Both fingers must land within `TWO_FINGER_TAP_TIMEOUT_MS` of each
+/// other and neither may move significantly.
+///
+/// ## Output event
+/// - [`Event::TwoFingerTap { pos }`] — centroid of both touches
+#[derive(Debug)]
+pub struct TwoFingerTapGesture {
+    touches: Vec<(Point, TouchId, u64)>, // (pos, id, time)
+}
+
+impl TwoFingerTapGesture {
+    pub fn new() -> Self {
+        Self {
+            touches: Vec::new(),
+        }
+    }
+}
+
+impl GestureRecognizer for TwoFingerTapGesture {
+    fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
+        match event {
+            Event::TouchBegin { pos, touch_id } => {
+                if self.touches.len() >= 2 {
+                    return None;
+                }
+                self.touches.push((*pos, *touch_id, now_ms));
+                None
+            }
+            Event::TouchMove { pos, touch_id } => {
+                if let Some(t) = self.touches.iter_mut().find(|(_, id, _)| *id == *touch_id) {
+                    let dx = (pos.x - t.0.x).abs();
+                    let dy = (pos.y - t.0.y).abs();
+                    if dx > MAX_STATIONARY_DISTANCE || dy > MAX_STATIONARY_DISTANCE {
+                        self.reset(); // moved too much
+                    } else {
+                        t.0 = *pos; // update position
+                    }
+                }
+                None
+            }
+            Event::TouchEnd { pos, touch_id } => {
+                if let Some(idx) = self.touches.iter().position(|(_, id, _)| *id == *touch_id) {
+                    let first_time = self.touches[0].2;
+                    let elapsed = now_ms.saturating_sub(first_time);
+                    self.touches.remove(idx);
+                    if self.touches.is_empty() && elapsed <= TWO_FINGER_TAP_DURATION_MS {
+                        let centroid = *pos;
+                        self.reset();
+                        return Some(Event::TwoFingerTap { pos: centroid });
+                    }
+                }
+                None
+            }
+            _ => {
+                // Timeout: if first touch is too old, reset
+                if let Some(first) = self.touches.first() {
+                    if now_ms.saturating_sub(first.2) > TWO_FINGER_TAP_TIMEOUT_MS * 2 {
+                        self.reset();
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.touches.clear();
+    }
+}
+
+impl Default for TwoFingerTapGesture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────
+// G3b: TwoFingerSwipeGesture
+// ────────────────────────────────────────────
+
+/// Two-finger swipe recognizer.
+///
+/// Detects when two fingers move together in the same direction
+/// (e.g., page navigation on a touchpad).
+///
+/// Tracks the centroid (average position) of both fingers and
+/// emits on release if centroid displacement exceeds threshold.
+///
+/// ## Output event
+/// - [`Event::TwoFingerSwipe { centroid_start, centroid_end, velocity }`]
+#[derive(Debug)]
+pub struct TwoFingerSwipeGesture {
+    touches: Vec<(Point, TouchId)>,
+    centroid_start: Option<Point>,
+    last_centroid: Option<Point>,
+    start_time: Option<u64>,
+}
+
+impl TwoFingerSwipeGesture {
+    pub fn new() -> Self {
+        Self {
+            touches: Vec::new(),
+            centroid_start: None,
+            last_centroid: None,
+            start_time: None,
+        }
+    }
+
+    fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
+        if touches.is_empty() {
+            return None;
+        }
+        let sum_x: i32 = touches.iter().map(|(p, _)| p.x).sum();
+        let sum_y: i32 = touches.iter().map(|(p, _)| p.y).sum();
+        Some(Point::new(
+            sum_x / touches.len() as i32,
+            sum_y / touches.len() as i32,
+        ))
+    }
+}
+
+impl GestureRecognizer for TwoFingerSwipeGesture {
+    fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
+        match event {
+            Event::TouchBegin { pos, touch_id } => {
+                if self.touches.len() >= 2 {
+                    return None;
+                }
+                self.touches.push((*pos, *touch_id));
+                // Start tracking centroid when second finger arrives
+                if self.touches.len() == 2 {
+                    self.centroid_start = Self::compute_centroid(&self.touches);
+                    self.last_centroid = self.centroid_start;
+                    self.start_time = Some(now_ms);
+                }
+                None
+            }
+            Event::TouchMove { pos, touch_id } => {
+                if let Some(t) = self.touches.iter_mut().find(|(_, id)| *id == *touch_id) {
+                    t.0 = *pos;
+                }
+                // Update last_centroid when both fingers are active
+                if self.touches.len() == 2 {
+                    self.last_centroid = Self::compute_centroid(&self.touches);
+                }
+                None
+            }
+            Event::TouchEnd { pos: _, touch_id } => {
+                self.touches.retain(|(_, id)| *id != *touch_id);
+                if self.touches.is_empty() {
+                    // Both fingers lifted — evaluate swipe
+                    let result = if let (Some(start), Some(end)) =
+                        (self.centroid_start, self.last_centroid)
+                    {
+                        let dx = (end.x - start.x).abs();
+                        let dy = (end.y - start.y).abs();
+                        let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                        let elapsed = now_ms
+                            .saturating_sub(self.start_time.unwrap_or(now_ms))
+                            .max(1) as f32;
+                        let velocity = dist / elapsed;
+                        if dist >= 30.0 && velocity >= 0.5 {
+                            Some(Event::TwoFingerSwipe {
+                                centroid_start: start,
+                                centroid_end: end,
+                                velocity,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    self.reset();
+                    return result;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.touches.clear();
+        self.centroid_start = None;
+        self.last_centroid = None;
+        self.start_time = None;
+    }
+}
+
+impl Default for TwoFingerSwipeGesture {
     fn default() -> Self {
         Self::new()
     }

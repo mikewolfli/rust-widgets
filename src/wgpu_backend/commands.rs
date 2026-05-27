@@ -3,7 +3,9 @@ use super::types::{PixelRect, Rgba8};
 /// Feature-gated GPU draw command list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WgpuDrawCommand {
-    Clear { color: Rgba8 },
+    Clear {
+        color: Rgba8,
+    },
     FillRect {
         rect: PixelRect,
         color: Rgba8,

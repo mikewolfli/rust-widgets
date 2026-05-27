@@ -6,9 +6,9 @@ mod config;
 mod dialog;
 mod manager;
 mod persistence;
-mod types;
 #[cfg(test)]
 mod tests;
+mod types;
 pub use config::MenuConfig;
 pub use dialog::MenuConfigDialog;
 pub use manager::MenuConfigManager;

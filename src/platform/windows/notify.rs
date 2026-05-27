@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 /// Registers the `RustWidgetsWindowClass` window class via `RegisterClassW`.
 /// Safe to call multiple times — registration happens exactly once.
 #[cfg(target_os = "windows")]
-fn ensure_window_class_registered() {
+pub(crate) fn ensure_window_class_registered() {
     unsafe extern "system" {
         fn GetModuleHandleW(lpModuleName: *const u16) -> *mut std::ffi::c_void;
     }
@@ -63,7 +63,7 @@ pub(crate) fn register_active_platform(platform: &'static WindowsPlatform) {
 
 /// Map a Win32 notification code to a `WidgetTriggerKind` for the given widget kind.
 #[cfg(target_os = "windows")]
-fn control_notify_kind_for_widget(
+pub(crate) fn control_notify_kind_for_widget(
     kind: WindowsHandleKind,
     notify_code: u32,
 ) -> Option<WidgetTriggerKind> {

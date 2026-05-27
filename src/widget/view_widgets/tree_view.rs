@@ -183,6 +183,7 @@ impl Widget for TreeView {
         &mut self.base
     }
 }
+
 impl Draw for TreeView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -197,8 +198,8 @@ impl Draw for TreeView {
             let indent = 15;
             let node_count = model.node_count();
             for i in 0..node_count {
-                let y = rect.y + (item_height as i32) * i as i32;
-                if y + item_height as i32 > rect.y + rect.height as i32 {
+                let y = rect.y + item_height * i as i32;
+                if y + item_height > rect.y + rect.height as i32 {
                     break;
                 }
                 if Some(i) == self.focused_node {
@@ -225,15 +226,13 @@ impl crate::event::EventHandler for TreeView {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    let rect = self.base.geometry();
-                    let item_height = 20;
-                    if pos.y >= rect.y {
-                        let index = ((pos.y - rect.y) / item_height) as usize;
-                        if index < self.node_count() {
-                            self.select_node(index);
-                        }
+            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+                let rect = self.base.geometry();
+                let item_height = 20;
+                if pos.y >= rect.y {
+                    let index = ((pos.y - rect.y) / item_height) as usize;
+                    if index < self.node_count() {
+                        self.select_node(index);
                     }
                 }
             }

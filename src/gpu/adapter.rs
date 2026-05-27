@@ -80,7 +80,7 @@ impl GpuDeviceType {
 }
 impl PartialOrd for GpuDeviceType {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.priority().partial_cmp(&other.priority())
+        Some(self.cmp(other))
     }
 }
 impl Ord for GpuDeviceType {
@@ -219,7 +219,7 @@ impl AdapterInfo {
     }
 }
 /// Strategy for adapter selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdapterSelectionStrategy {
     /// Prefer discrete GPU, fallback to integrated, then CPU
     PreferPerformance,
@@ -232,12 +232,8 @@ pub enum AdapterSelectionStrategy {
     /// Force CPU software rendering
     ForceCpu,
     /// Auto-detect with fallback chain
+    #[default]
     Auto,
-}
-impl Default for AdapterSelectionStrategy {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 /// Adapter selector with hardware auto-detection
 pub struct AdapterSelector {

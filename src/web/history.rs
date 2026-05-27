@@ -79,12 +79,12 @@ impl BrowserHistory {
     }
     pub fn most_visited(&self, limit: usize) -> Vec<&HistoryEntry> {
         let mut entries: Vec<_> = self.entries.iter().collect();
-        entries.sort_by(|a, b| b.visit_count.cmp(&a.visit_count));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.visit_count));
         entries.into_iter().take(limit).collect()
     }
     pub fn recent(&self, limit: usize) -> Vec<&HistoryEntry> {
         let mut entries: Vec<_> = self.entries.iter().collect();
-        entries.sort_by(|a, b| b.last_visit.cmp(&a.last_visit));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.last_visit));
         entries.into_iter().take(limit).collect()
     }
     pub fn len(&self) -> usize {

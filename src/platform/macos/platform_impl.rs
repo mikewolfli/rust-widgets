@@ -26,6 +26,10 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
     fn init(&self) {
+        // SAFETY: NSAutoreleasePool::new(nil) is safe per Apple's documentation
+        // (nil argument is allowed). NSApplication sharedApplication and messaging
+        // are called on the main thread, which is required by Cocoa. All Objective-C
+        // message sends use valid selectors from the cocoa/objc crates.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let app = NSApplication::sharedApplication(nil);
@@ -39,16 +43,26 @@ impl Platform for MacOSPlatform {
         }
     }
     fn run(&self) {
+        // SAFETY: NSApp() returns the shared application instance initialized in init().
+        // run() must be called on the main thread, which is guaranteed by the platform
+        // contract (init is called before run on the same thread).
         unsafe {
             NSApp().run();
         }
     }
     fn quit(&self) {
+        // SAFETY: NSApp().stop_(nil) is safe to call on the main thread after the
+        // application has been initialized. The nil argument tells the app to stop
+        // without a specific sender.
         unsafe {
             NSApp().stop_(nil);
         }
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: Cocoa APIs require the main thread, guaranteed by the platform contract.
+        // NSAutoreleasePool::new(nil) is safe with nil argument. All Objective-C messages
+        // use valid selectors from the cocoa crate. Self::register_handle() stores the
+        // raw pointer cast as usize without aliasing issues.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let window = NSWindow::alloc(nil).initWithContentRect_styleMask_backing_defer_(
@@ -91,6 +105,10 @@ impl Platform for MacOSPlatform {
             parent,
             text
         );
+        // SAFETY: All Objective-C messages in this block use valid selectors from the
+        // cocoa/objc crates, called on the main thread. NSButton::alloc(nil) returns
+        // a valid instance (or nil, which is handled by Cocoa's nil-messaging). The
+        // parent handle is validated against the handle registry before use.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let button = NSButton::initWithFrame_(
@@ -170,6 +188,9 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // SAFETY: All Objective-C messages use valid selectors from the cocoa crate.
+        // NSButton::alloc(nil) returns a valid instance. The parent handle is validated
+        // before dereference. The token NSNumber is retained to prevent premature release.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let button = NSButton::initWithFrame_(
@@ -213,6 +234,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // SAFETY: Same pattern as create_checkbox - valid ObjC selectors,
+        // validated parent handle, retained token for widget ID mapping.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let button = NSButton::initWithFrame_(
@@ -251,6 +274,9 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // SAFETY: ObjC messages for NSScrollView and NSTextView use valid class
+        // names and selectors from the Cocoa runtime. alloc/init pairs are balanced.
+        // The parent handle is validated before adding the scroll view as subview.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             // Create scroll view first
@@ -296,6 +322,8 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSSlider class exists in the Cocoa runtime. alloc/init/frame
+        // messages use valid selectors. Parent handle is validated by add_to_parent_window.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let slider: id = msg_send![class!(NSSlider), alloc];
@@ -315,6 +343,9 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSProgressIndicator is a standard Cocoa class. All selectors used
+        // (setIndeterminate:, setMinValue:, etc.) are valid. Parent validated by
+        // add_to_parent_window.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let progress: id = msg_send![class!(NSProgressIndicator), alloc];
@@ -347,6 +378,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // SAFETY: NSTextField alloc/init and configuration messages use valid
+        // selectors. Parent handle is validated before adding subview.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let field = NSTextField::initWithFrame_(
@@ -371,6 +404,8 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSMenu and NSMenuItem are standard Cocoa classes. App's main menu
+        // is set via NSApp(), which is initialized. alloc/init pairs are balanced.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let menu_bar: id = msg_send![class!(NSMenu), alloc];
@@ -412,6 +447,9 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSMenuItem/NSMenu alloc/init messages use valid selectors.
+        // Parent handle is matched against known HandleKind variants, ensuring
+        // only valid native pointers are dereferenced.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let menu_item: id = msg_send![class!(NSMenuItem), alloc];
@@ -462,6 +500,8 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSView alloc/init/frame messages use valid selectors.
+        // Parent handle is validated by kind matching before adding subview.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let view =
@@ -494,6 +534,8 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // SAFETY: NSTextField messages use valid selectors (setEditable:, setBordered:, etc.).
+        // Parent handle is validated before adding to window content view.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let field = NSTextField::initWithFrame_(
@@ -523,6 +565,8 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSPopUpButton is a standard Cocoa class. alloc/init messages use
+        // valid selectors. Parent handle is validated before adding subview.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let combo: id = msg_send![class!(NSPopUpButton), alloc];
@@ -556,6 +600,8 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSTextField configuration messages use valid selectors.
+        // Parent handle is validated before adding subview.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let field = NSTextField::initWithFrame_(
@@ -693,6 +739,8 @@ impl Platform for MacOSPlatform {
             .and_then(|items| items.get(&list_box).and_then(|v| v.get(index).cloned()))
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // SAFETY: NSView alloc/init/frame messages use valid selectors.
+        // Parent handle is validated by add_to_parent_window.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let view =
@@ -718,6 +766,9 @@ impl Platform for MacOSPlatform {
         if !matches!(handle.kind, HandleKind::ComboBox) {
             return false;
         }
+        // SAFETY: handle has been validated by the matches! check above.
+        // Self::as_id(handle) converts the stored usize back to a valid ObjC id.
+        // addItemWithTitle: is a valid selector on NSPopUpButton.
         unsafe {
             let title = NSString::alloc(nil).init_str(text);
             let _: () = msg_send![Self::as_id(handle), addItemWithTitle: title];
@@ -736,6 +787,8 @@ impl Platform for MacOSPlatform {
         if !matches!(handle.kind, HandleKind::ComboBox) {
             return false;
         }
+        // SAFETY: handle validated by kind match; Self::as_id converts stored
+        // usize to valid ObjC id. removeAllItems is a valid selector on NSPopUpButton.
         unsafe {
             let _: () = msg_send![Self::as_id(handle), removeAllItems];
         }
@@ -762,6 +815,8 @@ impl Platform for MacOSPlatform {
         if index >= count {
             return false;
         }
+        // SAFETY: handle validated by kind match. index is checked against item count.
+        // selectItemAtIndex: is a valid selector on NSPopUpButton.
         unsafe {
             let _: () = msg_send![Self::as_id(handle), selectItemAtIndex: index as isize];
         }
@@ -792,6 +847,8 @@ impl Platform for MacOSPlatform {
             .and_then(|items| items.get(&combo_box).and_then(|v| v.get(index).cloned()))
     }
     fn attach_menu_bar_to_window(&self, _window: u64, menu_bar: u64) -> bool {
+        // SAFETY: handle validated by kind match. NSApp() is initialized.
+        // setMainMenu: is a valid selector on NSApplication.
         unsafe {
             let Some(handle) = self.get_handle(menu_bar) else {
                 return false;
@@ -805,6 +862,9 @@ impl Platform for MacOSPlatform {
         }
     }
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
+        // SAFETY: Parent handle validated by kind match. NSMenuItem/NSMenu alloc/init
+        // and configuration messages use valid selectors. Token NSNumber is retained.
+        // sel!(onMenuItem:) is registered by the ObjC runtime initialization.
         unsafe {
             let Some(parent_handle) = self.get_handle(parent_menu) else {
                 return 0;
@@ -864,6 +924,9 @@ impl Platform for MacOSPlatform {
     }
     fn show_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, true);
+        // SAFETY: handle validated by get_handle; kind is matched to choose the
+        // correct ObjC message. makeKeyAndOrderFront: and setHidden: are valid
+        // selectors on their respective Cocoa classes.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -879,6 +942,8 @@ impl Platform for MacOSPlatform {
     }
     fn hide_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, false);
+        // SAFETY: handle validated by get_handle; kind is matched to choose the
+        // correct ObjC message. orderOut: and setHidden: are valid selectors.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -894,6 +959,8 @@ impl Platform for MacOSPlatform {
     }
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
         self.state.set_geometry(widget_id, x, y, width, height);
+        // SAFETY: handle validated by get_handle; kind is matched to choose the
+        // correct ObjC message (setFrame:display: for windows, setFrame: for views).
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let native = Self::as_id(handle);
@@ -916,6 +983,11 @@ impl Platform for MacOSPlatform {
     }
     fn set_widget_text(&self, widget_id: u64, text: &str) {
         let _ = self.state.set_text(widget_id, text);
+        // SAFETY: handle validated by get_handle; kind is matched to dispatch to
+        // the correct ObjC selector (setTitle:, setStringValue:, setDoubleValue:).
+        // NSString::alloc(nil).init_str(text) produces a valid NSString that is
+        // autoreleased. Main thread dispatch uses performSelectorOnMainThread:withObject:
+        // which is safe when the NSString is retained before dispatch.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 let ns_text = NSString::alloc(nil).init_str(text);
@@ -985,6 +1057,9 @@ impl Platform for MacOSPlatform {
     }
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
         self.state.set_enabled(widget_id, enabled);
+        // SAFETY: handle validated by get_handle; kind is matched to choose the
+        // appropriate Cocoa control. setEnabled: is a valid selector on NSControl
+        // and NSMenuItem. Self::as_id(handle) restores the valid ObjC pointer.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
                 match handle.kind {

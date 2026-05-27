@@ -1,9 +1,8 @@
 //! Frame widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,11 +18,12 @@ pub struct Frame {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 /// Frame shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrameShape {
     /// No frame
     NoFrame,
     /// Box frame
+    #[default]
     Box,
     /// Panel frame
     Panel,
@@ -36,25 +36,16 @@ pub enum FrameShape {
     /// WinPanel frame
     WinPanel,
 }
-impl Default for FrameShape {
-    fn default() -> Self {
-        Self::Box
-    }
-}
 /// Frame shadow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrameShadow {
     /// Plain shadow
+    #[default]
     Plain,
     /// Raised shadow
     Raised,
     /// Sunken shadow
     Sunken,
-}
-impl Default for FrameShadow {
-    fn default() -> Self {
-        Self::Plain
-    }
 }
 impl Frame {
     /// Creates a frame.
@@ -398,101 +389,12 @@ impl Frame {
 }
 // Implement Widget trait
 impl Widget for Frame {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for Frame {
@@ -516,5 +418,163 @@ impl Draw for Frame {
                 reg.borrow_mut().draw_widget(widget_id, context);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, ObjectId, Rect};
+    use crate::style::WidgetStyle;
+
+    #[test]
+    fn frame_creation_defaults() {
+        let f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(f.frame_shape(), FrameShape::Box);
+        assert_eq!(f.frame_shadow(), FrameShadow::Plain);
+        assert!((f.line_width() - 1.0).abs() < f32::EPSILON);
+        assert!((f.mid_line_width() - 0.0).abs() < f32::EPSILON);
+        assert!(f.widget().is_none());
+        assert!(f.registry().is_none());
+    }
+
+    #[test]
+    fn frame_shape_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        f.set_frame_shape(FrameShape::Panel);
+        assert_eq!(f.frame_shape(), FrameShape::Panel);
+        f.set_frame_shape(FrameShape::NoFrame);
+        assert_eq!(f.frame_shape(), FrameShape::NoFrame);
+        f.set_frame_shape(FrameShape::StyledPanel);
+        assert_eq!(f.frame_shape(), FrameShape::StyledPanel);
+        f.set_frame_shape(FrameShape::HLine);
+        assert_eq!(f.frame_shape(), FrameShape::HLine);
+        f.set_frame_shape(FrameShape::VLine);
+        assert_eq!(f.frame_shape(), FrameShape::VLine);
+        f.set_frame_shape(FrameShape::WinPanel);
+        assert_eq!(f.frame_shape(), FrameShape::WinPanel);
+        f.set_frame_shape(FrameShape::Box);
+        assert_eq!(f.frame_shape(), FrameShape::Box);
+    }
+
+    #[test]
+    fn frame_shadow_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        f.set_frame_shadow(FrameShadow::Raised);
+        assert_eq!(f.frame_shadow(), FrameShadow::Raised);
+        f.set_frame_shadow(FrameShadow::Sunken);
+        assert_eq!(f.frame_shadow(), FrameShadow::Sunken);
+        f.set_frame_shadow(FrameShadow::Plain);
+        assert_eq!(f.frame_shadow(), FrameShadow::Plain);
+    }
+
+    #[test]
+    fn frame_line_width_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        f.set_line_width(3.0);
+        assert!((f.line_width() - 3.0).abs() < f32::EPSILON);
+        f.set_line_width(0.5);
+        assert!((f.line_width() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn frame_mid_line_width_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        f.set_mid_line_width(2.0);
+        assert!((f.mid_line_width() - 2.0).abs() < f32::EPSILON);
+        f.set_mid_line_width(0.0);
+        assert!((f.mid_line_width() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn frame_widget_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert!(f.widget().is_none());
+        let wid: ObjectId = 42;
+        f.set_widget(Some(wid));
+        assert_eq!(f.widget(), Some(wid));
+        f.set_widget(None);
+        assert!(f.widget().is_none());
+    }
+
+    #[test]
+    fn frame_geometry_delegation() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        f.set_geometry(Rect::new(10, 20, 300, 150));
+        assert_eq!(f.geometry(), Rect::new(10, 20, 300, 150));
+    }
+
+    #[test]
+    fn frame_visibility() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert!(f.is_visible());
+        f.hide();
+        assert!(!f.is_visible());
+        f.show();
+        assert!(f.is_visible());
+    }
+
+    #[test]
+    fn frame_enabled() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert!(f.is_enabled());
+        f.set_enabled(false);
+        assert!(!f.is_enabled());
+        f.set_enabled(true);
+        assert!(f.is_enabled());
+    }
+
+    #[test]
+    fn frame_parent_children() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert!(f.parent().is_none());
+        let pid: ObjectId = 10;
+        f.set_parent(Some(pid));
+        assert_eq!(f.parent(), Some(pid));
+        f.set_parent(None);
+        assert!(f.parent().is_none());
+
+        let cid: ObjectId = 20;
+        f.add_child(cid);
+        assert_eq!(f.children().len(), 1);
+        assert_eq!(f.children()[0], cid);
+        f.remove_child(cid);
+        assert!(f.children().is_empty());
+    }
+
+    #[test]
+    fn frame_tooltip_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert!(f.tooltip().is_empty());
+        f.set_tooltip("Frame info".to_string());
+        assert_eq!(f.tooltip(), "Frame info");
+        f.set_tooltip(String::new());
+        assert!(f.tooltip().is_empty());
+    }
+
+    #[test]
+    fn frame_style_roundtrip() {
+        let mut f = Frame::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(*f.style(), WidgetStyle::default());
+        let custom = WidgetStyle::default().with_background(Color::from_rgb(240, 240, 240));
+        f.set_style(custom.clone());
+        assert_eq!(*f.style(), custom);
+    }
+
+    #[test]
+    fn frame_id_kind() {
+        let f_a = Frame::new(Rect::new(0, 0, 100, 50));
+        let f_b = Frame::new(Rect::new(0, 0, 100, 50));
+        assert_ne!(f_a.id(), f_b.id());
+        assert_eq!(f_a.kind(), WidgetKind::Panel);
+        assert_eq!(f_b.kind(), WidgetKind::Panel);
+    }
+
+    #[test]
+    fn frame_signal_accessors() {
+        let f = Frame::new(Rect::new(0, 0, 100, 50));
+        let _hover = f.base().hover_signal();
+        let _mouse_down = f.base().mouse_down_signal();
+        let _mouse_up = f.base().mouse_up_signal();
     }
 }

@@ -1,8 +1,7 @@
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,101 +121,11 @@ impl LCDNumber {
     }
 }
 impl Widget for LCDNumber {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for LCDNumber {
@@ -258,7 +167,9 @@ impl Draw for LCDNumber {
         }
     }
 }
+
 impl LCDNumber {
+    #[allow(clippy::too_many_arguments)]
     fn draw_digit(
         &self,
         context: &mut RenderContext,
@@ -418,5 +329,177 @@ impl LCDNumber {
             ' ' => [false, false, false, false, false, false, false],
             _ => [false, false, false, false, false, false, false],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn lcd_creation_defaults() {
+        let lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        assert!((lcd.value() - 0.0).abs() < f64::EPSILON);
+        assert!((lcd.min_value() - (-999999.0)).abs() < f64::EPSILON);
+        assert!((lcd.max_value() - 999999.0).abs() < f64::EPSILON);
+        assert_eq!(lcd.num_digits(), 6);
+        assert!(!lcd.is_small_decimal_point());
+        assert_eq!(lcd.mode(), LCDNumberMode::Dec);
+        assert_eq!(lcd.segment_style(), SegmentStyle::Filled);
+        assert!(!lcd.check_overflow());
+    }
+
+    #[test]
+    fn lcd_set_value() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_value(42.5);
+        assert!((lcd.value() - 42.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn lcd_set_value_clamps() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_value(9999999.0);
+        assert!((lcd.value() - 999999.0).abs() < f64::EPSILON);
+        lcd.set_value(-9999999.0);
+        assert!((lcd.value() - (-999999.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn lcd_set_min_max_value() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_min_value(-100.0);
+        assert!((lcd.min_value() - (-100.0)).abs() < f64::EPSILON);
+        lcd.set_max_value(500.0);
+        assert!((lcd.max_value() - 500.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn lcd_set_num_digits() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_num_digits(4);
+        assert_eq!(lcd.num_digits(), 4);
+        lcd.set_num_digits(0); // floors at 1
+        assert_eq!(lcd.num_digits(), 1);
+    }
+
+    #[test]
+    fn lcd_small_decimal_point() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        assert!(!lcd.is_small_decimal_point());
+        lcd.set_small_decimal_point(true);
+        assert!(lcd.is_small_decimal_point());
+        lcd.set_small_decimal_point(false);
+        assert!(!lcd.is_small_decimal_point());
+    }
+
+    #[test]
+    fn lcd_mode_roundtrip() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_mode(LCDNumberMode::Hex);
+        assert_eq!(lcd.mode(), LCDNumberMode::Hex);
+        lcd.set_mode(LCDNumberMode::Oct);
+        assert_eq!(lcd.mode(), LCDNumberMode::Oct);
+        lcd.set_mode(LCDNumberMode::Bin);
+        assert_eq!(lcd.mode(), LCDNumberMode::Bin);
+        lcd.set_mode(LCDNumberMode::Dec);
+        assert_eq!(lcd.mode(), LCDNumberMode::Dec);
+    }
+
+    #[test]
+    fn lcd_segment_style_roundtrip() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_segment_style(SegmentStyle::Outline);
+        assert_eq!(lcd.segment_style(), SegmentStyle::Outline);
+        lcd.set_segment_style(SegmentStyle::Flat);
+        assert_eq!(lcd.segment_style(), SegmentStyle::Flat);
+        lcd.set_segment_style(SegmentStyle::Filled);
+        assert_eq!(lcd.segment_style(), SegmentStyle::Filled);
+    }
+
+    #[test]
+    fn lcd_display_text_dec() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_value(1234.0);
+        assert_eq!(lcd.display_text(), "1234");
+    }
+
+    #[test]
+    fn lcd_display_text_hex() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_mode(LCDNumberMode::Hex);
+        lcd.set_value(255.0);
+        assert_eq!(lcd.display_text(), "FF");
+    }
+
+    #[test]
+    fn lcd_display_text_oct() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_mode(LCDNumberMode::Oct);
+        lcd.set_value(64.0);
+        assert_eq!(lcd.display_text(), "100");
+    }
+
+    #[test]
+    fn lcd_display_text_bin() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_mode(LCDNumberMode::Bin);
+        lcd.set_value(5.0);
+        assert_eq!(lcd.display_text(), "101");
+    }
+
+    #[test]
+    fn lcd_overflow_detection() {
+        let lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        // check_overflow exists and returns false for normal range
+        assert!(!lcd.check_overflow());
+
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_value(500000.0);
+        assert!(!lcd.check_overflow()); // value is within default range
+    }
+
+    #[test]
+    fn lcd_geometry_delegation() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_geometry(Rect::new(10, 10, 300, 60));
+        assert_eq!(lcd.geometry(), Rect::new(10, 10, 300, 60));
+    }
+
+    #[test]
+    fn lcd_visibility() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        assert!(lcd.is_visible());
+        lcd.hide();
+        assert!(!lcd.is_visible());
+        lcd.show();
+        assert!(lcd.is_visible());
+    }
+
+    #[test]
+    fn lcd_enabled() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        assert!(lcd.is_enabled());
+        lcd.set_enabled(false);
+        assert!(!lcd.is_enabled());
+        lcd.set_enabled(true);
+        assert!(lcd.is_enabled());
+    }
+
+    #[test]
+    fn lcd_id_kind() {
+        let lcd_a = LCDNumber::new(Rect::new(0, 0, 100, 50));
+        let lcd_b = LCDNumber::new(Rect::new(0, 0, 100, 50));
+        assert_ne!(lcd_a.id(), lcd_b.id());
+        assert_eq!(lcd_a.kind(), WidgetKind::LCDNumber);
+        assert_eq!(lcd_b.kind(), WidgetKind::LCDNumber);
+    }
+
+    #[test]
+    fn lcd_signal_accessors() {
+        let lcd = LCDNumber::new(Rect::new(0, 0, 100, 50));
+        let _value_changed = &lcd.value_changed;
+        let _overflow = &lcd.overflow;
     }
 }

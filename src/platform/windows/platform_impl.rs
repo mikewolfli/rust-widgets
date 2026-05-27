@@ -1,14 +1,19 @@
 //! `impl Platform for WindowsPlatform` — the main trait implementation.
 
 use crate::core::{ObjectId, PlatformFamily};
-use crate::error::RwError;
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
     WidgetTriggerEvent, WidgetTriggerKind,
 };
 
+use crate::platform::windows::helpers::*;
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
+use crate::platform::DropEvent;
+use std::sync::atomic::Ordering;
+
+#[cfg(target_os = "windows")]
+use winapi::shared::windef::HMENU;
 
 impl Platform for WindowsPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -140,13 +145,33 @@ impl Platform for WindowsPlatform {
         None
     }
     fn dpi_scale_factor(&self) -> f32 {
-        1.0
+        #[cfg(target_os = "windows")]
+        {
+            // Query the actual DPI of the primary monitor.
+            unsafe {
+                let hdc = winapi::um::winuser::GetDC(std::ptr::null_mut());
+                if hdc.is_null() {
+                    return 1.0;
+                }
+                let dpi = winapi::um::wingdi::GetDeviceCaps(hdc, winapi::um::wingdi::LOGPIXELSX);
+                winapi::um::winuser::ReleaseDC(std::ptr::null_mut(), hdc);
+                dpi as f32 / 96.0
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            1.0
+        }
     }
     fn init(&self) {
         self.runtime_initialized.store(true, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         {
-            let _ = notify::register_active_platform(self as &'static WindowsPlatform);
+            // SAFETY: The platform instance is stored in a `OnceLock<Box<dyn Platform>>`
+            // (see `runtime.rs`), so it lives for the entire program duration (`'static`).
+            let static_self: &'static WindowsPlatform =
+                unsafe { std::mem::transmute::<&WindowsPlatform, &'static WindowsPlatform>(self) };
+            notify::register_active_platform(static_self);
         }
         #[cfg(target_os = "windows")]
         unsafe {
@@ -234,7 +259,7 @@ impl Platform for WindowsPlatform {
                 ShowWindow(hwnd, SW_SHOW);
                 UpdateWindow(hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -289,7 +314,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -312,7 +337,7 @@ impl Platform for WindowsPlatform {
                 return id;
             }
             log::error!("[rust_widgets][windows] create_label failed (parent={parent})");
-            return 0;
+            0
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -368,7 +393,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -424,7 +449,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -487,7 +512,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -541,7 +566,7 @@ impl Platform for WindowsPlatform {
             let text_wide = Self::to_wide(text);
             let result =
                 unsafe { SendMessageW(hwnd, CB_ADDSTRING, 0, text_wide.as_ptr() as isize) };
-            return result != CB_ERR as isize;
+            result != CB_ERR
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -580,7 +605,7 @@ impl Platform for WindowsPlatform {
             let previous = unsafe { SendMessageW(hwnd, CB_GETCURSEL, 0, 0) };
             // CB_SETCURSEL returns the PREVIOUS selection index on success, or CB_ERR (-1) on failure.
             let result = unsafe { SendMessageW(hwnd, CB_SETCURSEL, index, 0) };
-            if result == CB_ERR as isize {
+            if result == CB_ERR {
                 return false;
             }
             // Fire trigger only when the selection actually changes: previous index != new index.
@@ -604,7 +629,7 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETCURSEL};
             let hwnd = self.get_native_handle(combo_box)?;
             let result = unsafe { SendMessageW(hwnd, CB_GETCURSEL, 0, 0) };
-            if result == CB_ERR as isize {
+            if result == CB_ERR {
                 None
             } else {
                 Some(result as usize)
@@ -625,7 +650,7 @@ impl Platform for WindowsPlatform {
                 None => return 0,
             };
             let result = unsafe { SendMessageW(hwnd, CB_GETCOUNT, 0, 0) };
-            if result == CB_ERR as isize || result < 0 {
+            if result == CB_ERR || result < 0 {
                 0
             } else {
                 result as usize
@@ -643,16 +668,16 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{SendMessageW, CB_ERR, CB_GETLBTEXT, CB_GETLBTEXTLEN};
             let hwnd = self.get_native_handle(combo_box)?;
             let len = unsafe { SendMessageW(hwnd, CB_GETLBTEXTLEN, index, 0) };
-            if len == CB_ERR as isize || len < 0 {
+            if len == CB_ERR || len < 0 {
                 return None;
             }
             let mut buf = vec![0u16; len as usize + 1];
             let copied =
                 unsafe { SendMessageW(hwnd, CB_GETLBTEXT, index, buf.as_mut_ptr() as isize) };
-            if copied == CB_ERR as isize || copied < 0 {
+            if copied == CB_ERR || copied < 0 {
                 return None;
             }
-            return Some(String::from_utf16_lossy(&buf[..copied as usize]));
+            Some(String::from_utf16_lossy(&buf[..copied as usize]))
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -712,7 +737,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -731,7 +756,7 @@ impl Platform for WindowsPlatform {
             let text_wide = Self::to_wide(text);
             let result =
                 unsafe { SendMessageW(hwnd, LB_ADDSTRING, 0, text_wide.as_ptr() as isize) };
-            return result != LB_ERR as isize;
+            result != LB_ERR
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -748,7 +773,7 @@ impl Platform for WindowsPlatform {
                 None => return false,
             };
             let result = unsafe { SendMessageW(hwnd, LB_DELETESTRING, index, 0) };
-            return result != LB_ERR as isize;
+            result != LB_ERR
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -784,7 +809,7 @@ impl Platform for WindowsPlatform {
                 None => return false,
             };
             let result = unsafe { SendMessageW(hwnd, LB_SETCURSEL, index, 0) };
-            if result == LB_ERR as isize {
+            if result == LB_ERR {
                 return false;
             }
             let _ = self.inject_widget_trigger_event(list_box, WidgetTriggerKind::SelectionChanged);
@@ -802,7 +827,7 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_GETCURSEL};
             let hwnd = self.get_native_handle(list_box)?;
             let result = unsafe { SendMessageW(hwnd, LB_GETCURSEL, 0, 0) };
-            if result == LB_ERR as isize {
+            if result == LB_ERR {
                 None
             } else {
                 Some(result as usize)
@@ -823,7 +848,7 @@ impl Platform for WindowsPlatform {
                 None => return 0,
             };
             let result = unsafe { SendMessageW(hwnd, LB_GETCOUNT, 0, 0) };
-            if result == LB_ERR as isize || result < 0 {
+            if result == LB_ERR || result < 0 {
                 0
             } else {
                 result as usize
@@ -841,13 +866,13 @@ impl Platform for WindowsPlatform {
             use winapi::um::winuser::{SendMessageW, LB_ERR, LB_GETTEXT, LB_GETTEXTLEN};
             let hwnd = self.get_native_handle(list_box)?;
             let len = unsafe { SendMessageW(hwnd, LB_GETTEXTLEN, index, 0) };
-            if len == LB_ERR as isize || len < 0 {
+            if len == LB_ERR || len < 0 {
                 return None;
             }
             let mut buf = vec![0u16; len as usize + 1];
             let copied =
                 unsafe { SendMessageW(hwnd, LB_GETTEXT, index, buf.as_mut_ptr() as isize) };
-            if copied == LB_ERR as isize || copied < 0 {
+            if copied == LB_ERR || copied < 0 {
                 return None;
             }
             Some(String::from_utf16_lossy(&buf[..copied as usize]))
@@ -892,7 +917,7 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::Panel, "Panel", x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -931,7 +956,7 @@ impl Platform for WindowsPlatform {
             if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
                 owners.insert(widget_id, parent);
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1008,7 +1033,7 @@ impl Platform for WindowsPlatform {
                     }
                 }
             }
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1054,7 +1079,7 @@ impl Platform for WindowsPlatform {
             unsafe {
                 DrawMenuBar(hwnd);
             }
-            return true;
+            true
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1249,7 +1274,7 @@ impl Platform for WindowsPlatform {
                 height,
             );
             self.bind_native_handle(widget_id, hwnd);
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1302,7 +1327,7 @@ impl Platform for WindowsPlatform {
                 self.state
                     .create_widget(WindowsHandleKind::StatusBar, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
-            return widget_id;
+            widget_id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1325,8 +1350,12 @@ impl Platform for WindowsPlatform {
         {
             // State-backed MessageBox surrogate until native MessageBoxW integration lands.
             let _ = (parent, text);
-            log::warn!("[rust_widgets][windows] MessageBox surrogate for '{}'", title);
-            self.state.create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
+            log::warn!(
+                "[rust_widgets][windows] MessageBox surrogate for '{}'",
+                title
+            );
+            self.state
+                .create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1346,7 +1375,8 @@ impl Platform for WindowsPlatform {
         {
             // State-backed FileDialog surrogate until native IFileOpenDialog integration lands.
             log::warn!("[rust_widgets][windows] FileDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
+            self.state
+                .create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1366,7 +1396,8 @@ impl Platform for WindowsPlatform {
         {
             // State-backed ColorDialog surrogate until native CHOOSECOLORW integration lands.
             log::warn!("[rust_widgets][windows] ColorDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
+            self.state
+                .create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1386,7 +1417,8 @@ impl Platform for WindowsPlatform {
         {
             // State-backed FontDialog surrogate until native CHOOSEFONTW integration lands.
             log::warn!("[rust_widgets][windows] FontDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
+            self.state
+                .create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1408,8 +1440,11 @@ impl Platform for WindowsPlatform {
             if self.state.kind_of(parent).is_none() {
                 return 0;
             }
-            log::warn!("[rust_widgets][windows] SpinBox surrogate until native up-down control lands");
-            self.state.create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
+            log::warn!(
+                "[rust_widgets][windows] SpinBox surrogate until native up-down control lands"
+            );
+            self.state
+                .create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1431,8 +1466,11 @@ impl Platform for WindowsPlatform {
             if self.state.kind_of(parent).is_none() {
                 return 0;
             }
-            log::warn!("[rust_widgets][windows] ListView surrogate until native SysListView32 lands");
-            self.state.create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
+            log::warn!(
+                "[rust_widgets][windows] ListView surrogate until native SysListView32 lands"
+            );
+            self.state
+                .create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1455,7 +1493,14 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             log::warn!("[rust_widgets][windows] ScrollArea surrogate until native WS_HSCROLL/WS_VSCROLL lands");
-            self.state.create_widget(WindowsHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
+            self.state.create_widget(
+                WindowsHandleKind::ScrollArea,
+                "ScrollArea",
+                x,
+                y,
+                width,
+                height,
+            )
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1468,12 +1513,15 @@ impl Platform for WindowsPlatform {
         {
             use winapi::um::winbase::GlobalAlloc;
             use winapi::um::winbase::{GlobalLock, GlobalUnlock, GHND};
-            use winapi::um::winuser::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT};
+            use winapi::um::winuser::{
+                CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT,
+            };
 
             let text_utf16: Vec<u16> = _text.encode_utf16().chain(std::iter::once(0)).collect();
             let byte_size = text_utf16.len() * 2;
             // SAFETY: Win32 clipboard API calls with proper error checking.
-            let result = unsafe {
+
+            unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == 0 {
                     return false;
                 }
@@ -1497,8 +1545,7 @@ impl Platform for WindowsPlatform {
                 let ret = SetClipboardData(CF_UNICODETEXT, h_mem as _);
                 CloseClipboard();
                 ret as isize != 0
-            };
-            result
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1510,7 +1557,9 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winbase::GlobalLock;
-            use winapi::um::winuser::{CloseClipboard, OpenClipboard, GetClipboardData, CF_UNICODETEXT};
+            use winapi::um::winuser::{
+                CloseClipboard, GetClipboardData, OpenClipboard, CF_UNICODETEXT,
+            };
 
             // SAFETY: Win32 clipboard API calls with proper error checking.
             let result = unsafe {
@@ -1543,50 +1592,52 @@ impl Platform for WindowsPlatform {
             String::new()
         }
     }
-    fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
+    fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for OLE drag-drop (IDropSource/IDropTarget)
-            // Requires: DoDragDrop, OleInitialize, RegisterDragDrop, RevokeDragDrop
+            // State-backed drag-drop (platform native OLE pending)
+            // Full OLE implementation (IDropSource/IDropTarget) requires:
+            // DoDragDrop, OleInitialize, RegisterDragDrop, RevokeDragDrop
             // See: https://learn.microsoft.com/en-us/windows/win32/shell/dragdrop
-            log::error!("[rust_widgets][windows] OLE drag-drop stubbed");
-            let _ = RwError::not_implemented("Windows OLE drag-drop");
-            false
+            self.state.begin_drag(source_widget_id, mime, payload)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (_source_widget_id, _mime, _payload);
+            let _ = (source_widget_id, mime, payload);
             false
         }
     }
     fn poll_drop_event(&self) -> Option<DropEvent> {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for OLE drag-drop event polling
-            log::error!("[rust_widgets][windows] Drop event polling stubbed");
-            let _ = RwError::not_implemented("Windows OLE drag-drop polling");
-            None
+            // State-backed drop event polling (OLE polling pending)
+            self.state.pop_drop_event()
         }
         #[cfg(not(target_os = "windows"))]
         {
             None
         }
     }
-    fn inject_drop_event(&self, _event: DropEvent) -> bool {
+    fn inject_drop_event(&self, event: DropEvent) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // Reserved for OLE drag-drop event injection
-            log::error!("[rust_widgets][windows] Drop event injection stubbed");
-            let _ = RwError::not_implemented("Windows OLE drag-drop injection");
-            false
+            // State-backed drop event injection (OLE injection pending)
+            self.state.inject_drop_event(event)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = _event;
+            let _ = event;
             false
         }
     }
+
+    // ── IME support ─────────────────────────────────────────────────────────
+
+    fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
 }
-// Core and platform types
-// Stub for WindowsHandleKind enum (should be replaced with actual variants as needed)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

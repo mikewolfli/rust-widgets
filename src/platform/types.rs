@@ -103,7 +103,7 @@ pub enum CapabilityContract {
     Embedded(EmbeddedCapabilityContract),
 }
 impl NativeCapabilityContract {
-    fn from_platform_caps(caps: PlatformCapabilities) -> Self {
+    pub(crate) fn from_platform_caps(caps: PlatformCapabilities) -> Self {
         Self {
             dpi_scaling: caps.dpi_scaling,
             ime: caps.ime,

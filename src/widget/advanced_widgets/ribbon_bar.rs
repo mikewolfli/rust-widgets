@@ -20,11 +20,10 @@
 //! │ Group1   │ Group2   │ Group3   │ Group4           │  ← group title row
 //! └──────────────────────────────────────────────────┘
 
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -47,8 +46,8 @@ const GROUP_TITLE_HEIGHT: i32 = 16;
 /// A group within a ribbon tab.
 #[derive(Debug, Clone)]
 pub struct RibbonGroup {
-    pub title: String,
-    pub items: Vec<RibbonItem>,
+    title: String,
+    items: Vec<RibbonItem>,
 }
 
 impl RibbonGroup {
@@ -59,18 +58,38 @@ impl RibbonGroup {
             items: Vec::new(),
         }
     }
+
+    /// Returns the group title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sets the group title.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = title.into();
+    }
+
+    /// Returns all items in this group.
+    pub fn items(&self) -> &[RibbonItem] {
+        &self.items
+    }
+
+    /// Returns mutable access to all items in this group.
+    pub fn items_mut(&mut self) -> &mut Vec<RibbonItem> {
+        &mut self.items
+    }
 }
 
 /// An item (button) within a ribbon group.
 #[derive(Debug, Clone)]
 pub struct RibbonItem {
-    pub text: String,
-    pub icon_text: String,
-    pub tooltip: String,
-    pub enabled: bool,
-    pub checkable: bool,
-    pub checked: bool,
-    pub large: bool,
+    text: String,
+    icon_text: String,
+    tooltip: String,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    large: bool,
 }
 
 impl RibbonItem {
@@ -86,6 +105,76 @@ impl RibbonItem {
             checked: false,
             large: false,
         }
+    }
+
+    /// Returns the item text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Sets the item text.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+    }
+
+    /// Returns the icon text.
+    pub fn icon_text(&self) -> &str {
+        &self.icon_text
+    }
+
+    /// Sets the icon text.
+    pub fn set_icon_text(&mut self, icon: impl Into<String>) {
+        self.icon_text = icon.into();
+    }
+
+    /// Returns the tooltip.
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    /// Sets the tooltip.
+    pub fn set_tooltip(&mut self, tip: impl Into<String>) {
+        self.tooltip = tip.into();
+    }
+
+    /// Returns whether the item is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Sets whether the item is enabled.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Returns whether the item is checkable.
+    pub fn is_checkable(&self) -> bool {
+        self.checkable
+    }
+
+    /// Sets whether the item is checkable.
+    pub fn set_checkable(&mut self, checkable: bool) {
+        self.checkable = checkable;
+    }
+
+    /// Returns whether the item is checked.
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    /// Sets whether the item is checked.
+    pub fn set_checked(&mut self, checked: bool) {
+        self.checked = checked;
+    }
+
+    /// Returns whether the item is displayed in large mode.
+    pub fn is_large(&self) -> bool {
+        self.large
+    }
+
+    /// Sets whether the item is displayed in large mode.
+    pub fn set_large(&mut self, large: bool) {
+        self.large = large;
     }
 }
 
@@ -197,8 +286,7 @@ impl RibbonBar {
         group_index: usize,
         text: impl Into<String>,
     ) -> usize {
-        let mut item = RibbonItem::new(text);
-        item.large = false;
+        let item = RibbonItem::new(text);
         self.insert_item(tab_index, group_index, item)
     }
 
@@ -210,15 +298,16 @@ impl RibbonBar {
         text: impl Into<String>,
     ) -> usize {
         let mut item = RibbonItem::new(text);
-        item.large = true;
+        item.set_large(true);
         self.insert_item(tab_index, group_index, item)
     }
 
     fn insert_item(&mut self, tab_index: usize, group_index: usize, item: RibbonItem) -> usize {
         if let Some(groups) = self.groups.get_mut(tab_index) {
             if let Some(group) = groups.get_mut(group_index) {
-                let idx = group.items.len();
-                group.items.push(item);
+                let items = group.items_mut();
+                let idx = items.len();
+                items.push(item);
                 return idx;
             }
         }
@@ -230,7 +319,7 @@ impl RibbonBar {
         self.groups
             .get(tab_index)
             .and_then(|g| g.get(group_index))
-            .map(|g| g.items.len())
+            .map(|g| g.items().len())
             .unwrap_or(0)
     }
 
@@ -243,7 +332,7 @@ impl RibbonBar {
         enabled: bool,
     ) {
         if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
-            item.enabled = enabled;
+            item.set_enabled(enabled);
         }
     }
 
@@ -256,8 +345,8 @@ impl RibbonBar {
         checked: bool,
     ) {
         if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
-            if item.checkable {
-                item.checked = checked;
+            if item.is_checkable() {
+                item.set_checked(checked);
             }
         }
     }
@@ -271,12 +360,11 @@ impl RibbonBar {
         self.groups
             .get_mut(tab_index)?
             .get_mut(group_index)?
-            .items
+            .items_mut()
             .get_mut(item_index)
     }
 
-    #[allow(dead_code)]
-    fn item_ref(
+    pub fn item_ref(
         &self,
         tab_index: usize,
         group_index: usize,
@@ -285,7 +373,7 @@ impl RibbonBar {
         self.groups
             .get(tab_index)?
             .get(group_index)?
-            .items
+            .items()
             .get(item_index)
     }
 
@@ -357,7 +445,7 @@ impl RibbonBar {
         let row = self.tab_row_rect();
         let total_tabs = self.tabs.len() as i32;
         // Reserve space for minimize button
-        let reserve = MINIMIZE_BUTTON_SIZE as i32 + MINIMIZE_MARGIN * 2;
+        let reserve = MINIMIZE_BUTTON_SIZE + MINIMIZE_MARGIN * 2;
         let avail = (row.width as i32).saturating_sub(reserve);
         if total_tabs == 0 {
             return None;
@@ -454,7 +542,7 @@ impl RibbonBar {
                 },
                 None => continue,
             };
-            let items = &group_ref.items;
+            let items = group_ref.items();
             if items.is_empty() {
                 continue;
             }
@@ -465,10 +553,9 @@ impl RibbonBar {
                     && pos.x <= ir.x + ir.width as i32
                     && pos.y >= ir.y
                     && pos.y <= ir.y + ir.height as i32
+                    && ii < items.len()
                 {
-                    if ii < items.len() {
-                        return Some((self.current_tab_index, gi, ii));
-                    }
+                    return Some((self.current_tab_index, gi, ii));
                 }
             }
         }
@@ -486,7 +573,7 @@ impl RibbonBar {
             Some(g) => g,
             None => return Vec::new(),
         };
-        let items = &group.items;
+        let items = group.items();
         if items.is_empty() {
             return Vec::new();
         }
@@ -509,13 +596,13 @@ impl RibbonBar {
         let large_items: Vec<usize> = items
             .iter()
             .enumerate()
-            .filter(|(_, it)| it.large)
+            .filter(|(_, it)| it.is_large())
             .map(|(i, _)| i)
             .collect();
         let small_items: Vec<usize> = items
             .iter()
             .enumerate()
-            .filter(|(_, it)| !it.large)
+            .filter(|(_, it)| !it.is_large())
             .map(|(i, _)| i)
             .collect();
 
@@ -542,9 +629,7 @@ impl RibbonBar {
 
             for (chunk_idx, chunk) in small_items.chunks(small_per_row).enumerate() {
                 let y_pos = current_y + chunk_idx as i32 * (small_h + ITEM_SPACING);
-                if y_pos + small_h as i32
-                    > group_rect.y + group_rect.height as i32 - GROUP_TITLE_HEIGHT
-                {
+                if y_pos + small_h > group_rect.y + group_rect.height as i32 - GROUP_TITLE_HEIGHT {
                     break; // Out of space
                 }
                 for (col, &si) in chunk.iter().enumerate() {
@@ -695,9 +780,9 @@ impl RibbonBar {
                     let is_hovered = self.hovered_item == Some((self.current_tab_index, *gi, *ii));
 
                     // Background
-                    let item_bg = if item.checked {
+                    let item_bg = if item.is_checked() {
                         Color::from_rgb(180, 210, 255)
-                    } else if is_hovered && item.enabled {
+                    } else if is_hovered && item.is_enabled() {
                         Color::from_rgb(210, 230, 255)
                     } else {
                         Color::from_rgb(252, 252, 252)
@@ -705,22 +790,22 @@ impl RibbonBar {
                     context.fill_rect(*ir, item_bg);
 
                     // Border on hover/checked
-                    if is_hovered || item.checked {
+                    if is_hovered || item.is_checked() {
                         context.draw_rect(*ir, Color::from_rgb(0, 120, 215));
                     }
 
-                    let fg = if !item.enabled {
+                    let fg = if !item.is_enabled() {
                         Color::from_rgb(180, 180, 180)
                     } else {
                         Color::from_rgb(0, 0, 0)
                     };
 
-                    if item.large {
+                    if item.is_large() {
                         // Large: icon text centered, label below
                         let icon_center =
                             Point::new(ir.x + ir.width as i32 / 2, ir.y + LARGE_ICON_SIZE / 2);
                         // Draw a simulated icon area (first character of icon_text)
-                        let icon_char = item.icon_text.chars().next().unwrap_or('?');
+                        let icon_char = item.icon_text().chars().next().unwrap_or('?');
                         context.draw_text(
                             icon_center,
                             &icon_char.to_string(),
@@ -731,13 +816,13 @@ impl RibbonBar {
                         let label_y = ir.y + LARGE_ICON_SIZE + 2;
                         context.draw_text(
                             Point::new(ir.x + ir.width as i32 / 2, label_y),
-                            &item.text,
+                            item.text(),
                             &Font::default(),
                             fg,
                         );
                     } else {
                         // Small: icon and text side by side
-                        let icon_char = item.icon_text.chars().next().unwrap_or('?');
+                        let icon_char = item.icon_text().chars().next().unwrap_or('?');
                         context.draw_text(
                             Point::new(ir.x + 2, ir.y + ir.height as i32 / 2),
                             &icon_char.to_string(),
@@ -746,7 +831,7 @@ impl RibbonBar {
                         );
                         context.draw_text(
                             Point::new(ir.x + SMALL_ICON_SIZE + 4, ir.y + ir.height as i32 / 2),
-                            &item.text,
+                            item.text(),
                             &Font::default(),
                             fg,
                         );
@@ -770,7 +855,7 @@ impl RibbonBar {
             context.fill_rect(title_rect, Color::from_rgb(245, 245, 248));
             context.draw_text(
                 Point::new(gr.x + 2, title_y + GROUP_TITLE_HEIGHT / 2),
-                &group.title,
+                group.title(),
                 &Font::default(),
                 Color::from_rgb(80, 80, 80),
             );
@@ -781,132 +866,12 @@ impl RibbonBar {
 // ── Widget trait ──────────────────────────────────────────────────────────────
 
 impl Widget for RibbonBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
 
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-
-    fn show(&mut self) {
-        self.base.show();
-    }
-
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 
@@ -922,7 +887,7 @@ impl EventHandler for RibbonBar {
         match event {
             Event::MouseMove { pos } => {
                 let prev_tab = self.hovered_tab;
-                let prev_item = self.hovered_item.clone();
+                let prev_item = self.hovered_item;
                 let prev_min = self.minimize_hovered;
 
                 self.hovered_tab = self.hit_tab(*pos);
@@ -962,9 +927,9 @@ impl EventHandler for RibbonBar {
                 // Check item click
                 if let Some((tab, gi, ii)) = self.hit_item(*pos) {
                     if let Some(item) = self.item_mut(tab, gi, ii) {
-                        if item.enabled {
-                            if item.checkable {
-                                item.checked = !item.checked;
+                        if item.is_enabled() {
+                            if item.is_checkable() {
+                                item.set_checked(!item.is_checked());
                             }
                             self.item_triggered.emit((tab, gi, ii));
                             self.base.request_redraw();

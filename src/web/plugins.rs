@@ -1,6 +1,8 @@
 use std::any::Any;
 use std::collections::HashMap;
 pub type PluginId = u64;
+/// Handler type for content transformation plugins.
+pub type ContentHandler = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginState {
     NotInstalled,
@@ -159,7 +161,7 @@ impl PluginManager {
             if plugin.info().permissions.contains(&permission) {
                 self.allowed_permissions
                     .entry(id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(permission);
                 true
             } else {
@@ -565,7 +567,7 @@ mod tests {
 }
 pub struct ContentPlugin {
     info: PluginInfo,
-    content_handlers: HashMap<String, Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    content_handlers: HashMap<String, ContentHandler>,
 }
 impl ContentPlugin {
     pub fn new(name: &str, version: &str) -> Self {

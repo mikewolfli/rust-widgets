@@ -24,6 +24,7 @@ pub trait ControlBackend: Send + Sync {
     /// This is a convenience helper that calls `create_widget(geom)` with
     /// default text. Override `create_widget` for custom widget creation.
     /// Default returns a no-op (0) handle.
+    #[allow(clippy::too_many_arguments)]
     fn create_widget(
         &self,
         _kind: &str,

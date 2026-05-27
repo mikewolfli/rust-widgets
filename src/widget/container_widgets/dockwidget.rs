@@ -1,9 +1,9 @@
 //! Dock widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
+
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -306,101 +306,12 @@ impl DockWidget {
 }
 // Implement Widget trait
 impl Widget for DockWidget {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for DockWidget {
@@ -410,29 +321,25 @@ impl EventHandler for DockWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    if self.is_in_close_button(*pos) && self.features.dock_widget_closable {
-                        self.hide();
-                    } else if self.is_in_float_button(*pos) && self.features.dock_widget_floatable {
-                        self.toggle_floating();
-                    } else if self.is_in_title_bar(*pos) && self.features.dock_widget_movable {
-                        // Start dragging
-                        self.base.set_mouse_pressed(true);
-                    }
+            Event::MousePress { pos, button } if *button == 1 => {
+                if self.is_in_close_button(*pos) && self.features.dock_widget_closable {
+                    self.hide();
+                } else if self.is_in_float_button(*pos) && self.features.dock_widget_floatable {
+                    self.toggle_floating();
+                } else if self.is_in_title_bar(*pos) && self.features.dock_widget_movable {
+                    // Start dragging
+                    self.base.set_mouse_pressed(true);
                 }
             }
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(false);
-                }
+            Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
             }
-            Event::MouseMove { pos } => {
-                if self.base.is_mouse_pressed() && self.features.dock_widget_movable {
-                    // Move dock widget
-                    let rect = self.geometry();
-                    self.set_geometry(Rect::new(pos.x, pos.y, rect.width, rect.height));
-                }
+            Event::MouseMove { pos }
+                if self.base.is_mouse_pressed() && self.features.dock_widget_movable =>
+            {
+                // Move dock widget
+                let rect = self.geometry();
+                self.set_geometry(Rect::new(pos.x, pos.y, rect.width, rect.height));
             }
             _ => {}
         }

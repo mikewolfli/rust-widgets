@@ -64,7 +64,8 @@ impl Hyperlink {
         self
     }
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        self.rect.contains_point(crate::core::Point::from_f32(x as f32, y as f32))
+        self.rect
+            .contains_point(crate::core::Point::from_f32(x as f32, y as f32))
     }
 }
 #[derive(Debug, Clone)]
@@ -84,17 +85,13 @@ impl Default for LinkBorder {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HighlightMode {
     None,
+    #[default]
     Invert,
     Outline,
     Push,
-}
-impl Default for HighlightMode {
-    fn default() -> Self {
-        Self::Invert
-    }
 }
 #[derive(Debug, Clone)]
 pub struct NamedDestination {

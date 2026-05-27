@@ -57,7 +57,8 @@ impl Shortcut {
         Some(Self::new(key, modifiers))
     }
     /// Returns a string representation of the shortcut.
-    pub fn to_string(&self) -> String {
+    pub fn format_shortcut(&self) -> String {
+        use std::fmt::Write;
         let mut result = String::new();
         if self.modifiers.contains(Modifiers::CTRL) {
             if !result.is_empty() {
@@ -86,7 +87,7 @@ impl Shortcut {
         if !result.is_empty() {
             result.push('+');
         }
-        result.push_str(&self.key.to_string());
+        let _ = write!(result, "{}", self.key);
         result
     }
     /// Returns true if this shortcut conflicts with another.
@@ -97,6 +98,11 @@ impl Shortcut {
 impl Default for Shortcut {
     fn default() -> Self {
         Self::new(Key::None, Modifiers::empty())
+    }
+}
+impl std::fmt::Display for Shortcut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.format_shortcut())
     }
 }
 /// Keyboard keys.
@@ -265,83 +271,88 @@ impl Key {
         }
     }
     /// Returns a string representation of the key.
-    pub fn to_string(&self) -> String {
+    pub fn format_key(&self) -> &'static str {
         match self {
-            Key::None => "None".to_string(),
-            Key::A => "A".to_string(),
-            Key::B => "B".to_string(),
-            Key::C => "C".to_string(),
-            Key::D => "D".to_string(),
-            Key::E => "E".to_string(),
-            Key::F => "F".to_string(),
-            Key::G => "G".to_string(),
-            Key::H => "H".to_string(),
-            Key::I => "I".to_string(),
-            Key::J => "J".to_string(),
-            Key::K => "K".to_string(),
-            Key::L => "L".to_string(),
-            Key::M => "M".to_string(),
-            Key::N => "N".to_string(),
-            Key::O => "O".to_string(),
-            Key::P => "P".to_string(),
-            Key::Q => "Q".to_string(),
-            Key::R => "R".to_string(),
-            Key::S => "S".to_string(),
-            Key::T => "T".to_string(),
-            Key::U => "U".to_string(),
-            Key::V => "V".to_string(),
-            Key::W => "W".to_string(),
-            Key::X => "X".to_string(),
-            Key::Y => "Y".to_string(),
-            Key::Z => "Z".to_string(),
-            Key::Num0 => "0".to_string(),
-            Key::Num1 => "1".to_string(),
-            Key::Num2 => "2".to_string(),
-            Key::Num3 => "3".to_string(),
-            Key::Num4 => "4".to_string(),
-            Key::Num5 => "5".to_string(),
-            Key::Num6 => "6".to_string(),
-            Key::Num7 => "7".to_string(),
-            Key::Num8 => "8".to_string(),
-            Key::Num9 => "9".to_string(),
-            Key::F1 => "F1".to_string(),
-            Key::F2 => "F2".to_string(),
-            Key::F3 => "F3".to_string(),
-            Key::F4 => "F4".to_string(),
-            Key::F5 => "F5".to_string(),
-            Key::F6 => "F6".to_string(),
-            Key::F7 => "F7".to_string(),
-            Key::F8 => "F8".to_string(),
-            Key::F9 => "F9".to_string(),
-            Key::F10 => "F10".to_string(),
-            Key::F11 => "F11".to_string(),
-            Key::F12 => "F12".to_string(),
-            Key::Escape => "Esc".to_string(),
-            Key::Tab => "Tab".to_string(),
-            Key::Enter => "Enter".to_string(),
-            Key::Space => "Space".to_string(),
-            Key::Backspace => "Backspace".to_string(),
-            Key::Delete => "Del".to_string(),
-            Key::Insert => "Ins".to_string(),
-            Key::Home => "Home".to_string(),
-            Key::End => "End".to_string(),
-            Key::PageUp => "PgUp".to_string(),
-            Key::PageDown => "PgDn".to_string(),
-            Key::Left => "Left".to_string(),
-            Key::Right => "Right".to_string(),
-            Key::Up => "Up".to_string(),
-            Key::Down => "Down".to_string(),
-            Key::Minus => "-".to_string(),
-            Key::Equals => "=".to_string(),
-            Key::LeftBracket => "[".to_string(),
-            Key::RightBracket => "]".to_string(),
-            Key::Semicolon => ";".to_string(),
-            Key::Quote => "'".to_string(),
-            Key::Comma => ",".to_string(),
-            Key::Period => ".".to_string(),
-            Key::Slash => "/".to_string(),
-            Key::Backslash => "\\".to_string(),
+            Key::None => "None",
+            Key::A => "A",
+            Key::B => "B",
+            Key::C => "C",
+            Key::D => "D",
+            Key::E => "E",
+            Key::F => "F",
+            Key::G => "G",
+            Key::H => "H",
+            Key::I => "I",
+            Key::J => "J",
+            Key::K => "K",
+            Key::L => "L",
+            Key::M => "M",
+            Key::N => "N",
+            Key::O => "O",
+            Key::P => "P",
+            Key::Q => "Q",
+            Key::R => "R",
+            Key::S => "S",
+            Key::T => "T",
+            Key::U => "U",
+            Key::V => "V",
+            Key::W => "W",
+            Key::X => "X",
+            Key::Y => "Y",
+            Key::Z => "Z",
+            Key::Num0 => "0",
+            Key::Num1 => "1",
+            Key::Num2 => "2",
+            Key::Num3 => "3",
+            Key::Num4 => "4",
+            Key::Num5 => "5",
+            Key::Num6 => "6",
+            Key::Num7 => "7",
+            Key::Num8 => "8",
+            Key::Num9 => "9",
+            Key::F1 => "F1",
+            Key::F2 => "F2",
+            Key::F3 => "F3",
+            Key::F4 => "F4",
+            Key::F5 => "F5",
+            Key::F6 => "F6",
+            Key::F7 => "F7",
+            Key::F8 => "F8",
+            Key::F9 => "F9",
+            Key::F10 => "F10",
+            Key::F11 => "F11",
+            Key::F12 => "F12",
+            Key::Escape => "Esc",
+            Key::Tab => "Tab",
+            Key::Enter => "Enter",
+            Key::Space => "Space",
+            Key::Backspace => "Backspace",
+            Key::Delete => "Del",
+            Key::Insert => "Ins",
+            Key::Home => "Home",
+            Key::End => "End",
+            Key::PageUp => "PgUp",
+            Key::PageDown => "PgDn",
+            Key::Left => "Left",
+            Key::Right => "Right",
+            Key::Up => "Up",
+            Key::Down => "Down",
+            Key::Minus => "-",
+            Key::Equals => "=",
+            Key::LeftBracket => "[",
+            Key::RightBracket => "]",
+            Key::Semicolon => ";",
+            Key::Quote => "'",
+            Key::Comma => ",",
+            Key::Period => ".",
+            Key::Slash => "/",
+            Key::Backslash => "\\",
         }
+    }
+}
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.format_key())
     }
 }
 /// Modifier keys.

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use crate::signal::Signal1;
 use super::{Key, Modifiers, Shortcut, ShortcutEntry};
+use crate::signal::Signal1;
+use std::collections::HashMap;
 /// Global shortcut manager for registering and dispatching shortcuts.
 pub struct ShortcutManager {
     /// Map from shortcut to action ID.

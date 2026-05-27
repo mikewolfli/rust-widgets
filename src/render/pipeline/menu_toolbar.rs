@@ -1,8 +1,8 @@
 //! Menu and toolbar widgets: menu_bar, menu, context_menu, tool_bar, status_bar.
 use crate::core::{Color, Point, Rect};
-use crate::render::{SceneLayer, RenderCommand};
 use crate::render::is_empty_rect;
-use crate::render::pipeline::controls::{push_widget_fill_and_border, centered_text_origin};
+use crate::render::pipeline::controls::{centered_text_origin, push_widget_fill_and_border};
+use crate::render::{RenderCommand, SceneLayer};
 use crate::widget::{ContextMenu, Menu, MenuBar, StatusBar, ToolBar, Widget};
 
 #[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
@@ -35,7 +35,7 @@ pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBa
         let label = menu_bar
             .entries()
             .get(index)
-            .map(|entry| entry.title.clone())
+            .map(|entry| entry.title().to_string())
             .unwrap_or_else(|| format!("Menu{}", index + 1));
         layer.push(RenderCommand::DrawText {
             origin: centered_text_origin(slot_rect),
@@ -95,7 +95,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             });
         }
         // Handle different item types
-        if item.separator {
+        if item.is_separator() {
             // Draw separator line
             layer.push(RenderCommand::DrawLine {
                 from: Point {
@@ -111,8 +111,8 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
         } else {
             // Draw checkmark for checkable items
             let mut text_offset_x = rect.x + 8;
-            if item.checkable {
-                if item.checked {
+            if item.is_checkable() {
+                if item.is_checked() {
                     layer.push(RenderCommand::DrawText {
                         origin: Point {
                             x: text_offset_x,
@@ -127,7 +127,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             }
             text_offset_x += icon_width;
             // Draw item text
-            let text_color = if item.enabled {
+            let text_color = if item.is_enabled() {
                 menu.foreground_color()
                     .unwrap_or(Color::rgba(32, 34, 38, 255))
             } else {
@@ -138,24 +138,24 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
                     x: text_offset_x,
                     y: row_y + 4,
                 },
-                text: item.text.clone(),
+                text: item.text().to_string(),
                 font: menu.font().cloned().unwrap_or_default(),
                 color: text_color,
             });
             // Draw shortcut if present
-            if !item.shortcut.is_empty() {
+            if !item.shortcut().is_empty() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + rect.width as f32 as i32 - shortcut_width,
                         y: row_y + 4,
                     },
-                    text: item.shortcut.clone(),
+                    text: item.shortcut().to_string(),
                     font: menu.font().cloned().unwrap_or_default(),
                     color: Color::rgba(100, 100, 100, 255),
                 });
             }
             // Draw submenu arrow
-            if item.has_submenu {
+            if item.has_submenu() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + rect.width as f32 as i32 - 16,
@@ -204,7 +204,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             }
         }
         // Handle different item types
-        if item.separator {
+        if item.is_separator() {
             // Draw separator line
             layer.push(RenderCommand::DrawLine {
                 from: Point {
@@ -220,8 +220,8 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
         } else {
             // Draw checkmark for checkable items
             let mut text_offset_x = rect.x + 8;
-            if item.checkable {
-                if item.checked {
+            if item.is_checkable() {
+                if item.is_checked() {
                     layer.push(RenderCommand::DrawText {
                         origin: Point {
                             x: text_offset_x,
@@ -236,7 +236,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             }
             text_offset_x += icon_width;
             // Draw item text
-            let text_color = if item.enabled {
+            let text_color = if item.is_enabled() {
                 context_menu
                     .foreground_color()
                     .unwrap_or(Color::rgba(32, 34, 38, 255))
@@ -248,24 +248,24 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
                     x: text_offset_x,
                     y: row_y + 4,
                 },
-                text: item.text.clone(),
+                text: item.text().to_string(),
                 font: context_menu.font().cloned().unwrap_or_default(),
                 color: text_color,
             });
             // Draw shortcut if present
-            if !item.shortcut.is_empty() {
+            if !item.shortcut().is_empty() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + rect.width as f32 as i32 - shortcut_width,
                         y: row_y + 4,
                     },
-                    text: item.shortcut.clone(),
+                    text: item.shortcut().to_string(),
                     font: context_menu.font().cloned().unwrap_or_default(),
                     color: Color::rgba(100, 100, 100, 255),
                 });
             }
             // Draw submenu arrow
-            if item.has_submenu {
+            if item.has_submenu() {
                 layer.push(RenderCommand::DrawText {
                     origin: Point {
                         x: rect.x + rect.width as f32 as i32 - 16,
@@ -295,9 +295,9 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
     let mut cursor_x = rect.x + 4;
     let button_width = 32u32;
     let separator_width = 4u32;
-    for (_index, item) in tool_bar.items().iter().enumerate() {
+    for item in tool_bar.items().iter() {
         // Draw separator
-        if item.separator {
+        if item.is_separator() {
             let separator_rect = Rect {
                 x: cursor_x,
                 y: rect.y + 4,
@@ -319,7 +319,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             height: rect.height.saturating_sub(4),
         };
         // Draw selection highlight
-        if item.checked {
+        if item.is_checked() {
             layer.push(RenderCommand::FillRoundedRect {
                 rect: action_rect,
                 radius: 3,
@@ -333,7 +333,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             color: Color::rgba(216, 225, 238, 255),
         });
         // Draw item text (if no icon or as tooltip)
-        let text_color = if item.enabled {
+        let text_color = if item.is_enabled() {
             tool_bar
                 .foreground_color()
                 .unwrap_or(Color::rgba(30, 32, 36, 255))
@@ -341,10 +341,10 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
             Color::rgba(128, 128, 128, 255)
         };
         // Show first character as compact button text
-        if !item.text.is_empty() {
+        if !item.text().is_empty() {
             layer.push(RenderCommand::DrawText {
                 origin: centered_text_origin(action_rect),
-                text: item.text.chars().take(1).collect::<String>(),
+                text: item.text().chars().take(1).collect::<String>(),
                 font: tool_bar.font().cloned().unwrap_or_default(),
                 color: text_color,
             });

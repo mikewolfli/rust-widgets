@@ -233,6 +233,10 @@ impl<T> PoolHandle<T> {
 }
 impl<T> Drop for PoolHandle<T> {
     fn drop(&mut self) {
+        // SAFETY: pool is guaranteed to be either null (default/after move) or a valid
+        // *mut WidgetPool<T> that outlives this handle. The index was validated against
+        // pool.capacity() during acquire(). The release() call only marks the slot as
+        // unused and does not deallocate, so it is safe even under shared access patterns.
         unsafe {
             if !self.pool.is_null() {
                 (*self.pool).release(self.index);

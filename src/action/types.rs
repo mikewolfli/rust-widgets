@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use crate::core::ObjectId;
 use crate::signal::{ConnectionHandle, GenericSignal};
+use std::sync::Arc;
 /// Represents a user-invokable command with enabled state and trigger signal.
 #[derive(Clone)]
 pub struct Action {

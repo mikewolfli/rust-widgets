@@ -8,7 +8,10 @@ pub struct WidgetDirtyState {
 }
 impl WidgetDirtyState {
     pub fn new() -> Self {
-        Self { dirty_widgets: HashSet::new(), dirty_rects: HashMap::new() }
+        Self {
+            dirty_widgets: HashSet::new(),
+            dirty_rects: HashMap::new(),
+        }
     }
     pub fn mark_dirty(&mut self, id: ObjectId, rect: Rect) {
         self.dirty_widgets.insert(id);
@@ -31,12 +34,18 @@ impl WidgetDirtyState {
         self.dirty_widgets.clear();
         self.dirty_rects.clear();
     }
-    pub fn is_empty(&self) -> bool { self.dirty_widgets.is_empty() }
-    pub fn len(&self) -> usize { self.dirty_widgets.len() }
+    pub fn is_empty(&self) -> bool {
+        self.dirty_widgets.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.dirty_widgets.len()
+    }
     pub fn get_all_rects(&self) -> Vec<Rect> {
         self.dirty_rects.values().copied().collect()
     }
 }
 impl Default for WidgetDirtyState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

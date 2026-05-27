@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum JsValue {
+    #[default]
     Undefined,
     Null,
     Boolean(bool),
@@ -19,11 +20,6 @@ pub enum JsValue {
         body: String,
     },
 }
-impl Default for JsValue {
-    fn default() -> Self {
-        Self::Undefined
-    }
-}
 impl JsValue {
     pub fn is_truthy(&self) -> bool {
         match self {
@@ -37,6 +33,7 @@ impl JsValue {
             JsValue::Function(_) | JsValue::FunctionDef { .. } => true,
         }
     }
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         match self {
             JsValue::Undefined => "undefined".to_string(),
@@ -319,7 +316,8 @@ pub(crate) fn js_parse_expr(tokens: &[(JsToken, usize)], pos: &mut usize) -> JsV
             let name = if let JsToken::Ident(n) = &tokens[*pos].0 {
                 n.clone()
             } else {
-                unreachable!()
+                log::warn!("[js_engine] Expected identifier token at position {}", *pos);
+                return JsValue::Undefined;
             };
             *pos += 1;
             // Function call? "name ( ... )"
@@ -484,7 +482,7 @@ impl SimpleJsEngine {
             let name = rest[..name_end].trim();
             let after_name = rest[name_end..].trim();
             if after_name.starts_with('(') {
-                let paren_end = after_name.find(|c| c == ')').ok_or_else(|| {
+                let paren_end = after_name.find(')').ok_or_else(|| {
                     JsError::with_location(
                         "Unclosed parameter list in function definition".to_string(),
                         0,
@@ -636,25 +634,25 @@ impl SimpleJsEngine {
             return self.eval_block(inner, context);
         }
         // Fallback: try as an ordinary expression
-        if stmt.contains('=')
-            && !stmt.starts_with('=')
+        if !stmt.starts_with('=')
             && !stmt.starts_with("!=")
             && !stmt.starts_with("==")
             && !stmt.starts_with("===")
         {
-            let eq_pos = stmt.find('=').unwrap();
-            // make sure not <=, >=, ==, ===, !=
-            let before = if eq_pos > 0 {
-                stmt.as_bytes()[eq_pos - 1] as char
-            } else {
-                ' '
-            };
-            if before != '<' && before != '>' && before != '!' && before != '=' {
-                let name = stmt[..eq_pos].trim().to_string();
-                let value_str = stmt[eq_pos + 1..].trim();
-                let value = self.parse_value(value_str);
-                self.variables.insert(name, value.clone());
-                return Ok(value);
+            if let Some(eq_pos) = stmt.find('=') {
+                // make sure not <=, >=, ==, ===, !=
+                let before = if eq_pos > 0 {
+                    stmt.as_bytes()[eq_pos - 1] as char
+                } else {
+                    ' '
+                };
+                if before != '<' && before != '>' && before != '!' && before != '=' {
+                    let name = stmt[..eq_pos].trim().to_string();
+                    let value_str = stmt[eq_pos + 1..].trim();
+                    let value = self.parse_value(value_str);
+                    self.variables.insert(name, value.clone());
+                    return Ok(value);
+                }
             }
         }
         Ok(self.parse_value(stmt))

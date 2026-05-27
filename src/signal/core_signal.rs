@@ -131,30 +131,35 @@ impl<T: Clone + Send + 'static> Signal<T> {
     }
     /// Emit a cloned value to all connected slots.
     ///
-    /// # ⚠️ Deadlock risk
-    ///
-    /// This method acquires a **write** lock on the slot map for the entire
-    /// duration of emission. If any callback (slot) tries to call `connect`,
-    /// `disconnect`, `disconnect_all`, or `emit` on **the same Signal**
-    /// from within the callback, a **deadlock** will occur because those
-    /// operations also attempt to acquire the same lock.
-    ///
-    /// To safely mutate connections during emission, consider collecting
-    /// slot handles first under a read lock, then switching to a write lock
-    /// only for once-slot cleanup — or document that callbacks must not
-    /// re-enter the signal.
+    /// This method **avoids** deadlocks by draining all slot entries under
+    /// a single write lock, invoking every callback **outside** the lock,
+    /// and then re-inserting the non-`once` slots afterwards.  This means
+    /// callbacks may safely call `connect`, `disconnect`, `disconnect_all`,
+    /// or `emit` on **the same Signal** without deadlocking.
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
-        let mut slots = self.inner.slots.write().expect("signal lock poisoned");
-        let mut once_handles = Vec::new();
-        for (handle, slot) in slots.iter_mut() {
-            (slot.callback)(arc_value.clone());
-            if slot.once {
-                once_handles.push(*handle);
+
+        // 1. Drain all entries under the write lock.
+        let entries: Vec<(ConnectionHandle, SlotEntry<T>)> = {
+            let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+            slots.drain().collect()
+        };
+
+        // 2. Invoke callbacks outside the lock — safe for re-entrant signals.
+        let mut to_reinsert = Vec::new();
+        for (handle, mut entry) in entries {
+            (entry.callback)(arc_value.clone());
+            if !entry.once {
+                to_reinsert.push((handle, entry));
             }
         }
-        for handle in once_handles {
-            let _ = slots.remove(&handle);
+
+        // 3. Re-insert non-once slots under a fresh write lock.
+        if !to_reinsert.is_empty() {
+            let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+            for (handle, entry) in to_reinsert {
+                slots.insert(handle, entry);
+            }
         }
     }
     /// Return number of currently connected slots.

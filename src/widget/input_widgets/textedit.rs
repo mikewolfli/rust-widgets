@@ -1,9 +1,8 @@
 //! Multi-line text edit widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Multi-line text edit widget.
 pub struct TextEdit {
@@ -124,101 +123,11 @@ impl TextEdit {
 }
 // Implement Widget trait
 impl Widget for TextEdit {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for TextEdit {
@@ -227,36 +136,34 @@ impl EventHandler for TextEdit {
         if !self.base.is_enabled() || self.read_only {
             return;
         }
-        match event {
-            Event::KeyPress { key, .. } => {
-                match *key {
-                    8 => {
-                        // Backspace
-                        if !self.text.is_empty() {
-                            self.text.pop();
-                            self.text_changed.emit(self.text.clone());
-                        }
-                    }
-                    13 => {
-                        // Enter
-                        self.text.push('\n');
+        if let Event::KeyPress { key, .. } = event {
+            match *key {
+                8 => {
+                    // Backspace
+                    if !self.text.is_empty() {
+                        self.text.pop();
                         self.text_changed.emit(self.text.clone());
                     }
-                    _ => {
-                        // Character input
-                        if let Some(ch) = char::from_u32(*key) {
-                            if ch.is_ascii_graphic() || ch == ' ' || ch == '\t' {
-                                self.text.push(ch);
-                                self.text_changed.emit(self.text.clone());
-                            }
+                }
+                13 => {
+                    // Enter
+                    self.text.push('\n');
+                    self.text_changed.emit(self.text.clone());
+                }
+                _ => {
+                    // Character input
+                    if let Some(ch) = char::from_u32(*key) {
+                        if ch.is_ascii_graphic() || ch == ' ' || ch == '\t' {
+                            self.text.push(ch);
+                            self.text_changed.emit(self.text.clone());
                         }
                     }
                 }
             }
-            _ => {}
         }
     }
 }
+
 impl Draw for TextEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
@@ -283,5 +190,165 @@ impl Draw for TextEdit {
                 Color::from_rgb(0, 0, 0),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn textedit_creation_defaults() {
+        let te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(te.text().is_empty());
+        assert!(te.placeholder_text().is_empty());
+        assert_eq!(te.max_length(), None);
+        assert!(!te.is_read_only());
+        assert!(te.line_wrap());
+        assert!(te.is_empty());
+        assert_eq!(te.line_count(), 1);
+    }
+
+    #[test]
+    fn textedit_set_text() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("Hello World".to_string());
+        assert_eq!(te.text(), "Hello World");
+        assert!(!te.is_empty());
+    }
+
+    #[test]
+    fn textedit_set_text_empty() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("Some text".to_string());
+        te.set_text(String::new());
+        assert!(te.text().is_empty());
+    }
+
+    #[test]
+    fn textedit_placeholder() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(te.placeholder_text().is_empty());
+        te.set_placeholder_text("Enter text here".to_string());
+        assert_eq!(te.placeholder_text(), "Enter text here");
+        te.set_placeholder_text(String::new());
+        assert!(te.placeholder_text().is_empty());
+    }
+
+    #[test]
+    fn textedit_max_length() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(te.max_length(), None);
+        te.set_max_length(Some(10));
+        assert_eq!(te.max_length(), Some(10));
+        te.set_max_length(None);
+        assert_eq!(te.max_length(), None);
+    }
+
+    #[test]
+    fn textedit_max_length_truncates() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("Hello World Too Long".to_string());
+        te.set_max_length(Some(10));
+        assert_eq!(te.text().len(), 10);
+    }
+
+    #[test]
+    fn textedit_read_only() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(!te.is_read_only());
+        te.set_read_only(true);
+        assert!(te.is_read_only());
+        te.set_read_only(false);
+        assert!(!te.is_read_only());
+    }
+
+    #[test]
+    fn textedit_line_wrap() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(te.line_wrap());
+        te.set_line_wrap(false);
+        assert!(!te.line_wrap());
+        te.set_line_wrap(true);
+        assert!(te.line_wrap());
+    }
+
+    #[test]
+    fn textedit_line_count() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(te.line_count(), 1);
+        te.set_text("Line 1\nLine 2\nLine 3".to_string());
+        assert_eq!(te.line_count(), 3);
+    }
+
+    #[test]
+    fn textedit_line_text() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("First\nSecond\nThird".to_string());
+        assert_eq!(te.line_text(0), Some("First"));
+        assert_eq!(te.line_text(1), Some("Second"));
+        assert_eq!(te.line_text(2), Some("Third"));
+        assert_eq!(te.line_text(5), None);
+    }
+
+    #[test]
+    fn textedit_append() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.append("Hello");
+        assert_eq!(te.text(), "Hello");
+        te.append(" World");
+        assert_eq!(te.text(), "Hello World");
+    }
+
+    #[test]
+    fn textedit_clear() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("Some text".to_string());
+        te.clear();
+        assert!(te.is_empty());
+    }
+
+    #[test]
+    fn textedit_geometry_delegation() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_geometry(Rect::new(10, 10, 400, 300));
+        assert_eq!(te.geometry(), Rect::new(10, 10, 400, 300));
+    }
+
+    #[test]
+    fn textedit_visibility() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(te.is_visible());
+        te.hide();
+        assert!(!te.is_visible());
+        te.show();
+        assert!(te.is_visible());
+    }
+
+    #[test]
+    fn textedit_enabled() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        assert!(te.is_enabled());
+        te.set_enabled(false);
+        assert!(!te.is_enabled());
+        te.set_enabled(true);
+        assert!(te.is_enabled());
+    }
+
+    #[test]
+    fn textedit_id_kind() {
+        let te_a = TextEdit::new(Rect::new(0, 0, 100, 100));
+        let te_b = TextEdit::new(Rect::new(0, 0, 100, 100));
+        assert_ne!(te_a.id(), te_b.id());
+        assert_eq!(te_a.kind(), WidgetKind::TextEdit);
+        assert_eq!(te_b.kind(), WidgetKind::TextEdit);
+    }
+
+    #[test]
+    fn textedit_signal_accessors() {
+        let te = TextEdit::new(Rect::new(0, 0, 100, 100));
+        let _ = &te.text_changed;
+        let _ = &te.cursor_position_changed;
     }
 }

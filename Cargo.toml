@@ -1,9 +1,15 @@
 [package]
 name = "rust_widgets"
-version = "0.8.1"
+version = "0.9.1"
 edition = "2021"
-description = "Cross-platform native GUI library"
+description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
+keywords = ["gui", "ui", "widget", "cross-platform", "native"]
+categories = ["gui", "rendering", "graphics"]
+readme = "README.md"
+homepage = "https://github.com/your-repo/rust-widgets"
+repository = "https://github.com/your-repo/rust-widgets"
+rust-version = "1.75"
 
 [lints.rust]
 unexpected_cfgs = "allow"
@@ -24,7 +30,8 @@ mobile = ["touch", "gpu-wgpu", "quality-management", "mobile-api", "controls-nat
 embedded = []
 
 # ── Interaction features (composable atop device profiles) ──
-## Touch events + gesture recognizer engine.
+## Touch events + 11 gesture recognizers (Tap, DoubleTap, LongPress, Swipe,
+## Pan, Fling, TwoFingerTap, TwoFingerSwipe, LongPressDrag, Pinch, Rotate).
 touch = []
 ## Laser holographic keyboard/screen (Z-axis depth events).
 holographic = []
@@ -71,7 +78,11 @@ dirs = "5.0"
 log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "commctrl", "winbase", "synchapi"] }
+winapi = { version = "0.3", features = [
+    "winuser", "commctrl", "commdlg", "winbase", "synchapi",
+    "wingdi", "shellapi", "ole2", "combaseapi", "objbase",
+    "knownfolders", "shlobj",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
@@ -86,7 +97,9 @@ wayland-protocols = { version = "0.32", features = ["staging"], optional = true 
 wayland-cursor = { version = "0.31", optional = true }
 
 [target.'cfg(target_os = "harmony")'.dependencies]
-# dependency for Huawei HarmonyOS, if applicable. Placeholder for now since HarmonyOS support is in early stages and may require custom bindings or FFI.
+# HarmonyOS support is in early evaluation stage. Custom FFI bindings
+# will be required for native control creation and event handling.
+# This section is reserved for future implementation.
 
 [dependencies.wgpu]
 version = "0.16"
@@ -95,3 +108,12 @@ optional = true
 [dev-dependencies]
 criterion = "0.8.2"
 tempfile = "3.8"
+
+[package.metadata.docs.rs]
+features = ["full", "touch", "holographic", "projection"]
+rustc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

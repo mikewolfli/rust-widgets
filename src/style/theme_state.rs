@@ -7,8 +7,9 @@ use std::rc::Rc;
 /// Callback type for theme mode change notifications.
 pub type ModeChangedCallback = Rc<RefCell<Option<Box<dyn FnMut(ThemeMode)>>>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum WidgetState {
+    #[default]
     Normal,
     Hover,
     Pressed,
@@ -21,11 +22,6 @@ pub enum WidgetState {
     Error,
     Warning,
     Success,
-}
-impl Default for WidgetState {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 #[derive(Debug, Clone)]
 pub struct StateTheme {
@@ -118,16 +114,12 @@ impl StatefulTheme {
         &self.name
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeMode {
+    #[default]
     Light,
     Dark,
     Auto,
-}
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::Light
-    }
 }
 pub struct ThemeStateManager {
     light_theme: StatefulTheme,

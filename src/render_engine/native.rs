@@ -1,8 +1,8 @@
 //! Native desktop render engine backed by platform adapters.
 
+use super::engine_trait::RenderEngine;
 use crate::core::RuntimeProfile;
 use crate::platform::get_platform;
-use super::engine_trait::RenderEngine;
 
 /// Native desktop engine backed by platform adapters.
 pub struct NativeRenderEngine;

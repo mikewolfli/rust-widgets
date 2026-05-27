@@ -1,9 +1,8 @@
 //! Scroll area widget.
-use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
+use crate::core::{Alignment, Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,37 +21,36 @@ pub struct ScrollArea {
     content_size: Size,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Current scroll position (x, y) in content coordinates.
+    scroll_position: (i32, i32),
 }
 /// Scroll bar policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollBarPolicy {
     /// Scroll bar is always shown
     AlwaysOn,
     /// Scroll bar is always hidden
     AlwaysOff,
     /// Scroll bar is shown when needed
+    #[default]
     AsNeeded,
-}
-impl Default for ScrollBarPolicy {
-    fn default() -> Self {
-        Self::AsNeeded
-    }
 }
 impl ScrollArea {
     /// Creates a scroll area.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ScrollArea, geometry, "ScrollArea"),
-            widget_resizable: false,
+            widget_resizable: true,
             alignment: Alignment::Center,
             horizontal_scroll_bar_policy: ScrollBarPolicy::AsNeeded,
             vertical_scroll_bar_policy: ScrollBarPolicy::AsNeeded,
             _horizontal_scroll_bar: None,
             _vertical_scroll_bar: None,
-            viewport: Rect::new(0, 0, geometry.width, geometry.height),
+            viewport: Rect::new(0, 0, 0, 0),
             widget: None,
-            content_size: Size::new(geometry.width, geometry.height),
+            content_size: Size::new(0, 0),
             registry: None,
+            scroll_position: (0, 0),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -114,10 +112,28 @@ impl ScrollArea {
     pub fn set_viewport(&mut self, viewport: Rect) {
         self.viewport = viewport;
     }
+    /// Returns the current scroll position.
+    pub fn scroll_position(&self) -> (i32, i32) {
+        self.scroll_position
+    }
+
+    /// Sets the scroll position, clamped within the content extent.
+    pub fn set_scroll_position(&mut self, x: i32, y: i32) {
+        let view_w = self.viewport.width as i32;
+        let view_h = self.viewport.height as i32;
+        let content_w = self.content_size.width as i32;
+        let content_h = self.content_size.height as i32;
+        let max_x = (content_w - view_w).max(0);
+        let max_y = (content_h - view_h).max(0);
+        self.scroll_position = (x.clamp(0, max_x), y.clamp(0, max_y));
+        self.base.request_redraw();
+    }
+
     /// Sets the total content size (used for AsNeeded scroll bar calculation).
     pub fn set_content_size(&mut self, size: Size) {
         self.content_size = size;
     }
+
     /// Returns the total content size.
     pub fn content_size(&self) -> Size {
         self.content_size
@@ -211,109 +227,27 @@ impl ScrollArea {
 }
 // Implement Widget trait
 impl Widget for ScrollArea {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
+
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.viewport.width = geometry.width;
         self.viewport.height = geometry.height;
         self.update_scroll_bars();
     }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
-    }
 }
 impl EventHandler for ScrollArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         // Handle scroll events (mouse wheel + touch swipe)
         match event {
             Event::Wheel {
@@ -401,9 +335,9 @@ impl Draw for ScrollArea {
                     * (self.viewport.x / self.viewport.width.max(1) as i32);
             context.fill_rect(
                 Rect::new(
-                    thumb_x as i32,
+                    thumb_x,
                     scroll_bar_y as i32,
-                    thumb_width as u32,
+                    thumb_width,
                     scroll_bar_height as u32,
                 ),
                 Color::from_rgb(180, 180, 180),
@@ -439,9 +373,9 @@ impl Draw for ScrollArea {
             context.fill_rect(
                 Rect::new(
                     scroll_bar_x as i32,
-                    thumb_y as i32,
+                    thumb_y,
                     scroll_bar_width as u32,
-                    thumb_height as u32,
+                    thumb_height,
                 ),
                 Color::from_rgb(180, 180, 180),
             );
@@ -461,5 +395,20 @@ impl Draw for ScrollArea {
                 Color::from_rgb(240, 240, 240),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn scrollarea_creation_defaults() {
+        let sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(sa.geometry(), Rect::new(0, 0, 200, 200));
+        assert_eq!(sa.scroll_position(), (0, 0));
+        assert_eq!(sa.horizontal_scroll_bar_policy(), ScrollBarPolicy::AsNeeded);
+        assert_eq!(sa.vertical_scroll_bar_policy(), ScrollBarPolicy::AsNeeded);
     }
 }

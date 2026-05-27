@@ -1,9 +1,9 @@
 //! Spin box widget for numeric input.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Spin box widget for integer input.
 pub struct SpinBox {
@@ -156,101 +156,17 @@ impl SpinBox {
 }
 // Implement Widget trait
 impl Widget for SpinBox {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        // Value digits + up/down buttons (~20px)
+        let val_w = format!("{}", self.value()).len() as u32 * 10 + 25;
+        Size::new(val_w.max(60), 24)
     }
 }
 impl SpinBox {
@@ -422,11 +338,191 @@ impl Draw for SpinBox {
         let display_text = self.display_text();
         if !display_text.is_empty() {
             context.draw_text(
-                Point::new(text_x as i32, text_y as i32),
+                Point::new(text_x, text_y as i32),
                 &display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn spinbox_creation_defaults() {
+        let sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert_eq!(sb.value(), 0);
+        assert_eq!(sb.minimum(), 0);
+        assert_eq!(sb.maximum(), 99);
+        assert_eq!(sb.single_step(), 1);
+        assert!(sb.prefix().is_empty());
+        assert!(sb.suffix().is_empty());
+        assert!(!sb.wrapping());
+        assert!(sb.special_value_text().is_none());
+    }
+
+    #[test]
+    fn spinbox_set_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(50);
+        assert_eq!(sb.value(), 50);
+        sb.set_value(200); // clamp to max
+        assert_eq!(sb.value(), 99);
+        sb.set_value(-10); // clamp to min
+        assert_eq!(sb.value(), 0);
+    }
+
+    #[test]
+    fn spinbox_set_range() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_minimum(-50);
+        sb.set_maximum(200);
+        assert_eq!(sb.minimum(), -50);
+        assert_eq!(sb.maximum(), 200);
+    }
+
+    #[test]
+    fn spinbox_set_range_reclamps_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(50);
+        sb.set_range(60, 100);
+        assert_eq!(sb.value(), 60);
+    }
+
+    #[test]
+    fn spinbox_prefix_suffix() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_prefix("$".to_string());
+        assert_eq!(sb.prefix(), "$");
+        sb.set_suffix(" USD".to_string());
+        assert_eq!(sb.suffix(), " USD");
+        sb.set_prefix(String::new());
+        assert!(sb.prefix().is_empty());
+    }
+
+    #[test]
+    fn spinbox_single_step() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_single_step(5);
+        assert_eq!(sb.single_step(), 5);
+        sb.set_single_step(0); // floors at 1
+        assert_eq!(sb.single_step(), 1);
+    }
+
+    #[test]
+    fn spinbox_wrapping() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert!(!sb.wrapping());
+        sb.set_wrapping(true);
+        assert!(sb.wrapping());
+        sb.set_wrapping(false);
+        assert!(!sb.wrapping());
+    }
+
+    #[test]
+    fn spinbox_step_up() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(50);
+        sb.step_up();
+        assert_eq!(sb.value(), 51);
+    }
+
+    #[test]
+    fn spinbox_step_up_clamps() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(99);
+        sb.step_up();
+        assert_eq!(sb.value(), 99); // clamped to max
+    }
+
+    #[test]
+    fn spinbox_step_up_wraps() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_wrapping(true);
+        sb.set_value(99);
+        sb.step_up();
+        assert_eq!(sb.value(), 0); // wraps to min
+    }
+
+    #[test]
+    fn spinbox_step_down() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(50);
+        sb.step_down();
+        assert_eq!(sb.value(), 49);
+    }
+
+    #[test]
+    fn spinbox_step_down_clamps() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(0);
+        sb.step_down();
+        assert_eq!(sb.value(), 0); // clamped to min
+    }
+
+    #[test]
+    fn spinbox_step_down_wraps() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_wrapping(true);
+        sb.set_value(0);
+        sb.step_down();
+        assert_eq!(sb.value(), 99); // wraps to max
+    }
+
+    #[test]
+    fn spinbox_special_value_text() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert!(sb.special_value_text().is_none());
+        sb.set_special_value_text(Some("Zero".to_string()));
+        assert_eq!(sb.special_value_text(), Some("Zero"));
+        sb.set_special_value_text(None);
+        assert!(sb.special_value_text().is_none());
+    }
+
+    #[test]
+    fn spinbox_geometry_delegation() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_geometry(Rect::new(10, 10, 200, 30));
+        assert_eq!(sb.geometry(), Rect::new(10, 10, 200, 30));
+    }
+
+    #[test]
+    fn spinbox_visibility() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert!(sb.is_visible());
+        sb.hide();
+        assert!(!sb.is_visible());
+        sb.show();
+        assert!(sb.is_visible());
+    }
+
+    #[test]
+    fn spinbox_enabled() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert!(sb.is_enabled());
+        sb.set_enabled(false);
+        assert!(!sb.is_enabled());
+        sb.set_enabled(true);
+        assert!(sb.is_enabled());
+    }
+
+    #[test]
+    fn spinbox_id_kind() {
+        let sb_a = SpinBox::new(Rect::new(0, 0, 100, 24));
+        let sb_b = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert_ne!(sb_a.id(), sb_b.id());
+        assert_eq!(sb_a.kind(), WidgetKind::SpinBox);
+        assert_eq!(sb_b.kind(), WidgetKind::SpinBox);
+    }
+
+    #[test]
+    fn spinbox_signal_accessors() {
+        let sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        let _value_changed = &sb.value_changed;
+        let _editing_finished = &sb.editing_finished;
     }
 }

@@ -56,11 +56,11 @@ impl NavigationHistory {
         self.current_index.and_then(|idx| self.entries.get(idx))
     }
     pub fn can_go_back(&self) -> bool {
-        self.current_index.map_or(false, |idx| idx > 0)
+        self.current_index.is_some_and(|idx| idx > 0)
     }
     pub fn can_go_forward(&self) -> bool {
         self.current_index
-            .map_or(false, |idx| idx < self.entries.len() - 1)
+            .is_some_and(|idx| idx < self.entries.len() - 1)
     }
     pub fn go_back(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_back() {

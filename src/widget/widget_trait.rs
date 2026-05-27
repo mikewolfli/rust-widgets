@@ -121,6 +121,15 @@ pub trait Widget: EventHandler {
     fn tooltip(&self) -> &str {
         self.base().tooltip()
     }
+    fn dpi_scale(&self) -> f32 {
+        self.base().dpi_scale()
+    }
+    fn set_dpi_scale(&mut self, scale: f32) {
+        self.base_mut().set_dpi_scale(scale);
+    }
+    fn set_translated_tooltip(&mut self, key: &str) {
+        self.base_mut().set_translated_tooltip(key);
+    }
     fn style(&self) -> &WidgetStyle {
         self.base().style()
     }
@@ -223,10 +232,12 @@ pub trait Widget: EventHandler {
     fn clicked_signal(&self) -> &GenericSignal {
         &self.base().clicked
     }
-    /// Optional changed signal (legacy API compatibility) — reserved for future use.
-    /// Currently returns a reference to the clicked signal as a placeholder.
+    /// Optional changed signal (legacy API compatibility).
+    /// Emitted when a stateful value changes (e.g., slider value, checkbox state,
+    /// line edit text). Concrete widgets with changeable state should wire their
+    /// own value-change emission to `self.base_mut().changed.emit()`.
     fn changed_signal(&self) -> &GenericSignal {
-        &self.base().clicked
+        &self.base().changed
     }
     /// Emits on hover/move interactions while pointer is over widget.
     fn hover_signal(&self) -> &Signal1<Point> {
@@ -275,5 +286,14 @@ pub trait Widget: EventHandler {
     /// Returns the preferred size hint for layout calculations.
     fn size_hint(&self) -> Size {
         self.size()
+    }
+
+    /// Checks whether the given point falls within this widget's interactive area.
+    ///
+    /// By default, this respects the touch-target expansion set via
+    /// `WidgetStyle::with_touch_target()`, so that small widgets remain
+    /// easily tappable on touch devices.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
     }
 }

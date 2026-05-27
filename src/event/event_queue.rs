@@ -1,7 +1,7 @@
 //! Event queue implementation.
+use super::types::{Event, EventPriority};
 use crate::core::ObjectId;
 use std::sync::mpsc::{self, Receiver, Sender};
-use super::types::{Event, EventPriority};
 #[derive(Debug, Clone)]
 struct EventEnvelope {
     target: ObjectId,

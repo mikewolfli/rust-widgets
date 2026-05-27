@@ -22,7 +22,7 @@ pub mod detector;
 #[cfg(feature = "holographic")]
 pub mod holographic;
 mod runtime;
-mod state;
+pub mod state;
 mod stub;
 pub mod types;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).

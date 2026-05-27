@@ -39,9 +39,6 @@ impl<T: Poolable> ObjectPool<T> {
             obj.reset();
             self.allocated += 1;
             obj
-        } else if self.pool.len() < self.config.max_size {
-            self.allocated += 1;
-            T::default()
         } else {
             self.allocated += 1;
             T::default()
@@ -86,10 +83,16 @@ impl<T: Poolable + Send> SharedPool<T> {
         }
     }
     pub fn acquire(&self) -> T {
-        self.pool.lock().unwrap_or_else(|e| e.into_inner()).acquire()
+        self.pool
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .acquire()
     }
     pub fn release(&self, obj: T) {
-        self.pool.lock().unwrap_or_else(|e| e.into_inner()).release(obj);
+        self.pool
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .release(obj);
     }
     pub fn stats(&self) -> PoolStats {
         let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());

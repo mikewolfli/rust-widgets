@@ -128,23 +128,132 @@ impl Draw for RichEdit {
         }
     }
 }
+
 impl crate::event::EventHandler for RichEdit {
     fn handle_event(&mut self, event: &crate::event::Event) {
         if !self.base.is_enabled() || self.read_only {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(true);
-                }
+            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
             }
-            crate::event::Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(false);
-                }
+            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn richedit_creation_defaults() {
+        let re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        assert!(re.text().is_empty());
+        assert!(re.selection().is_none());
+        assert!(!re.is_read_only());
+        assert_eq!(re.cursor_position(), 0);
+    }
+
+    #[test]
+    fn richedit_set_text() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("Hello RichEdit".to_string());
+        assert_eq!(re.text(), "Hello RichEdit");
+    }
+
+    #[test]
+    fn richedit_set_text_read_only() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_read_only(true);
+        re.set_text("Should not change".to_string());
+        assert!(re.text().is_empty());
+    }
+
+    #[test]
+    fn richedit_read_only() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        assert!(!re.is_read_only());
+        re.set_read_only(true);
+        assert!(re.is_read_only());
+        re.set_read_only(false);
+        assert!(!re.is_read_only());
+    }
+
+    #[test]
+    fn richedit_set_selection() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("Hello World".to_string());
+        re.set_selection(0, 5);
+        assert_eq!(re.selection(), Some((0, 5)));
+    }
+
+    #[test]
+    fn richedit_clear_selection() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("Hello World".to_string());
+        re.set_selection(0, 5);
+        re.clear_selection();
+        assert!(re.selection().is_none());
+    }
+
+    #[test]
+    fn richedit_set_cursor_position() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("Hello".to_string());
+        re.set_cursor_position(3);
+        assert_eq!(re.cursor_position(), 3);
+        re.set_cursor_position(100); // clamps
+        assert_eq!(re.cursor_position(), 5);
+    }
+
+    #[test]
+    fn richedit_geometry_delegation() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_geometry(Rect::new(10, 10, 500, 400));
+        assert_eq!(re.geometry(), Rect::new(10, 10, 500, 400));
+    }
+
+    #[test]
+    fn richedit_visibility() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        assert!(re.is_visible());
+        re.hide();
+        assert!(!re.is_visible());
+        re.show();
+        assert!(re.is_visible());
+    }
+
+    #[test]
+    fn richedit_enabled() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        assert!(re.is_enabled());
+        re.set_enabled(false);
+        assert!(!re.is_enabled());
+        re.set_enabled(true);
+        assert!(re.is_enabled());
+    }
+
+    #[test]
+    fn richedit_id_kind() {
+        let re_a = RichEdit::new(Rect::new(0, 0, 100, 100));
+        let re_b = RichEdit::new(Rect::new(0, 0, 100, 100));
+        assert_ne!(re_a.id(), re_b.id());
+        assert_eq!(re_a.kind(), WidgetKind::RichEdit);
+        assert_eq!(re_b.kind(), WidgetKind::RichEdit);
+    }
+
+    #[test]
+    fn richedit_signal_accessors() {
+        let re = RichEdit::new(Rect::new(0, 0, 100, 100));
+        let _ = &re.text_changed;
+        let _ = &re.selection_changed;
+        let _ = &re.read_only_changed;
+        let _ = &re.cursor_position_changed;
     }
 }

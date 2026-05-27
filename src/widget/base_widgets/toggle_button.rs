@@ -149,20 +149,179 @@ impl crate::event::EventHandler for ToggleButton {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.set_pressed(true);
-                }
+            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
+                self.set_pressed(true);
             }
-            crate::event::Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    if self.pressed {
-                        self.toggle();
-                    }
-                    self.set_pressed(false);
+            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+                if self.pressed {
+                    self.toggle();
                 }
+                self.set_pressed(false);
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, ObjectId, Rect};
+    use crate::style::WidgetStyle;
+
+    #[test]
+    fn toggle_creation_defaults() {
+        let tb = ToggleButton::new("Toggle".to_string(), Rect::new(0, 0, 100, 30));
+        assert!(!tb.is_checked());
+        assert_eq!(tb.text(), "Toggle");
+        assert!(!tb.is_auto_exclusive());
+        assert!(tb.group_id().is_none());
+        assert!(!tb.is_pressed());
+        assert_eq!(tb.state(), ToggleButtonState::Normal);
+    }
+
+    #[test]
+    fn toggle_set_checked() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        tb.set_checked(true);
+        assert!(tb.is_checked());
+        assert_eq!(tb.state(), ToggleButtonState::Checked);
+        tb.set_checked(false);
+        assert!(!tb.is_checked());
+        assert_eq!(tb.state(), ToggleButtonState::Normal);
+    }
+
+    #[test]
+    fn toggle_toggle_method() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        assert!(!tb.is_checked());
+        tb.toggle();
+        assert!(tb.is_checked());
+        tb.toggle();
+        assert!(!tb.is_checked());
+    }
+
+    #[test]
+    fn toggle_set_text() {
+        let mut tb = ToggleButton::new("Old".to_string(), Rect::new(0, 0, 100, 30));
+        assert_eq!(tb.text(), "Old");
+        tb.set_text("New".to_string());
+        assert_eq!(tb.text(), "New");
+    }
+
+    #[test]
+    fn toggle_auto_exclusive() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        assert!(!tb.is_auto_exclusive());
+        tb.set_auto_exclusive(true);
+        assert!(tb.is_auto_exclusive());
+        tb.set_auto_exclusive(false);
+        assert!(!tb.is_auto_exclusive());
+    }
+
+    #[test]
+    fn toggle_group_id() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        assert!(tb.group_id().is_none());
+        tb.set_group_id(Some("group1".to_string()));
+        assert_eq!(tb.group_id(), Some("group1"));
+        tb.set_group_id(None);
+        assert!(tb.group_id().is_none());
+    }
+
+    #[test]
+    fn toggle_pressed_state() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        assert!(!tb.is_pressed());
+        tb.set_pressed(true);
+        assert!(tb.is_pressed());
+        tb.set_pressed(false);
+        assert!(!tb.is_pressed());
+    }
+
+    #[test]
+    fn toggle_geometry_delegation() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        tb.set_geometry(Rect::new(10, 10, 200, 50));
+        assert_eq!(tb.geometry(), Rect::new(10, 10, 200, 50));
+    }
+
+    #[test]
+    fn toggle_visibility_delegation() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert!(tb.is_visible());
+        tb.hide();
+        assert!(!tb.is_visible());
+        tb.show();
+        assert!(tb.is_visible());
+    }
+
+    #[test]
+    fn toggle_enabled_delegation() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert!(tb.is_enabled());
+        tb.set_enabled(false);
+        assert!(!tb.is_enabled());
+        assert_eq!(tb.state(), ToggleButtonState::Disabled);
+        tb.set_enabled(true);
+        assert!(tb.is_enabled());
+    }
+
+    #[test]
+    fn toggle_parent_children() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert!(tb.parent().is_none());
+        let pid: ObjectId = 42;
+        tb.set_parent(Some(pid));
+        assert_eq!(tb.parent(), Some(pid));
+        tb.set_parent(None);
+        assert!(tb.parent().is_none());
+
+        let cid: ObjectId = 100;
+        tb.add_child(cid);
+        assert_eq!(tb.children().len(), 1);
+        assert_eq!(tb.children()[0], cid);
+        tb.remove_child(cid);
+        assert!(tb.children().is_empty());
+    }
+
+    #[test]
+    fn toggle_tooltip_roundtrip() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert!(tb.tooltip().is_empty());
+        tb.set_tooltip("Helpful tip".to_string());
+        assert_eq!(tb.tooltip(), "Helpful tip");
+        tb.set_tooltip(String::new());
+        assert!(tb.tooltip().is_empty());
+    }
+
+    #[test]
+    fn toggle_style_roundtrip() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert_eq!(*tb.style(), WidgetStyle::default());
+        let custom = WidgetStyle::default().with_background(Color::from_rgb(200, 200, 200));
+        tb.set_style(custom.clone());
+        assert_eq!(*tb.style(), custom);
+    }
+
+    #[test]
+    fn toggle_id_kind() {
+        let tb_a = ToggleButton::new("A".to_string(), Rect::new(0, 0, 50, 30));
+        let tb_b = ToggleButton::new("B".to_string(), Rect::new(0, 0, 50, 30));
+        assert_ne!(tb_a.id(), tb_b.id());
+        assert_eq!(tb_a.kind(), WidgetKind::ToggleButton);
+        assert_eq!(tb_b.kind(), WidgetKind::ToggleButton);
+    }
+
+    #[test]
+    fn toggle_signal_accessors() {
+        let tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 50, 30));
+        // Signal1<bool>
+        let _toggled = &tb.toggled;
+        let _checked = &tb.checked_changed;
+        let _state = &tb.state_changed;
+        // GenericSignal
+        let _pressed = &tb.pressed_signal;
+        let _released = &tb.released_signal;
     }
 }

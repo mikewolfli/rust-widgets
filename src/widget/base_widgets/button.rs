@@ -1,9 +1,8 @@
 //! Button widget implementation.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 /// Button interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +18,8 @@ pub struct Button {
     icon: Option<Image>,
     pressed: bool,
     default_button: bool,
+    focused: bool,
+    hovered: bool,
     pub pressed_signal: GenericSignal,
     pub released_signal: GenericSignal,
     pub state_changed: Signal1<ButtonState>,
@@ -32,6 +33,8 @@ impl Button {
             icon: None,
             pressed: false,
             default_button: false,
+            focused: false,
+            hovered: false,
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
@@ -108,118 +111,47 @@ impl Button {
         self.default_button = default;
         self.base.request_redraw();
     }
+
     /// Returns whether this button is the default button.
     pub fn is_default(&self) -> bool {
         self.default_button
     }
+
+    /// Programmatically clicks the button (press, release, emit clicked signal).
+    pub fn click(&mut self) {
+        if !self.base.is_enabled() {
+            return;
+        }
+        self.press();
+        self.release();
+        self.base.clicked.emit();
+    }
 }
 impl Widget for Button {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
+
     fn set_enabled(&mut self, enabled: bool) {
         self.set_enabled_state(enabled);
     }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        // Approximate: text length * ~8px + padding, minimum 75x28
+        let text_w = self.text().len() as u32 * 8 + 20;
+        Size::new(text_w.max(75), 28)
     }
 }
 impl EventHandler for Button {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MouseDown((_, _)) => {
-                if self.base.is_enabled() {
-                    self.press();
-                    return;
-                }
+            Event::MouseDown((_, _)) if self.base.is_enabled() => {
+                self.press();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { .. } => {
@@ -228,12 +160,9 @@ impl EventHandler for Button {
                     return;
                 }
             }
-            Event::MouseUp((_, _)) => {
-                if self.pressed {
-                    self.release();
-                    self.base.clicked.emit();
-                    return;
-                }
+            Event::MouseUp((_, _)) if self.pressed => {
+                self.release();
+                self.base.clicked.emit();
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { .. } => {
@@ -250,6 +179,25 @@ impl EventHandler for Button {
                     self.state_changed.emit(self.state());
                     return;
                 }
+            }
+            Event::FocusGained => {
+                self.focused = true;
+                self.base.request_redraw();
+            }
+            Event::FocusLost => {
+                self.focused = false;
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, .. } if (*key == 13 || *key == 32) && self.base.is_enabled() => {
+                self.click();
+            }
+            Event::MouseEnter { .. } => {
+                self.hovered = true;
+                self.base.request_redraw();
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered = false;
+                self.base.request_redraw();
             }
             _ => {}
         }
@@ -531,6 +479,106 @@ mod tests {
     }
 
     // ── 7. Event handling ──────────────────────────────────────────────
+    #[test]
+    fn focus_gained_sets_focused_flag() {
+        let mut btn = make_button();
+        assert!(!btn.focused, "Button should not be focused by default");
+        btn.handle_event(&Event::FocusGained);
+        assert!(btn.focused, "Button should be focused after FocusGained");
+    }
+
+    #[test]
+    fn focus_lost_clears_focused_flag() {
+        let mut btn = make_button();
+        btn.handle_event(&Event::FocusGained);
+        assert!(btn.focused);
+        btn.handle_event(&Event::FocusLost);
+        assert!(!btn.focused, "Button should not be focused after FocusLost");
+    }
+
+    #[test]
+    fn key_press_enter_triggers_click() {
+        let mut btn = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        btn.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        btn.handle_event(&Event::KeyPress {
+            key: 13,
+            modifiers: 0,
+        });
+        assert!(
+            clicked.load(Ordering::SeqCst),
+            "Enter key should trigger click"
+        );
+    }
+
+    #[test]
+    fn key_press_space_triggers_click() {
+        let mut btn = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        btn.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        btn.handle_event(&Event::KeyPress {
+            key: 32,
+            modifiers: 0,
+        });
+        assert!(
+            clicked.load(Ordering::SeqCst),
+            "Space key should trigger click"
+        );
+    }
+
+    #[test]
+    fn key_press_other_key_does_not_trigger_click() {
+        let mut btn = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        btn.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        btn.handle_event(&Event::KeyPress {
+            key: 65,
+            modifiers: 0,
+        }); // 'A'
+        assert!(
+            !clicked.load(Ordering::SeqCst),
+            "Non-Enter/Space key should NOT trigger click"
+        );
+    }
+
+    #[test]
+    fn mouse_enter_sets_hovered() {
+        let mut btn = make_button();
+        assert!(!btn.hovered);
+        btn.handle_event(&Event::MouseEnter {
+            pos: Point::new(10, 10),
+        });
+        assert!(btn.hovered);
+    }
+
+    #[test]
+    fn mouse_leave_clears_hovered() {
+        let mut btn = make_button();
+        btn.handle_event(&Event::MouseEnter {
+            pos: Point::new(10, 10),
+        });
+        assert!(btn.hovered);
+        btn.handle_event(&Event::MouseLeave {
+            pos: Point::new(10, 10),
+        });
+        assert!(!btn.hovered);
+    }
+
     #[test]
     fn event_mouse_down_presses_button() {
         let mut b = make_button();

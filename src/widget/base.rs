@@ -21,6 +21,7 @@ pub struct BaseWidget {
     pub(crate) enabled: bool,
     pub(crate) mouse_pressed: bool,
     pub(crate) tooltip: String,
+    pub(crate) dpi_scale: f32,
     pub(crate) style: WidgetStyle,
     pub(crate) connection_scope: ConnectionScope,
     /// Emitted when a click-like interaction is received.
@@ -43,6 +44,8 @@ pub struct BaseWidget {
     pub redraw_requested: GenericSignal,
     /// Emitted when layout is requested.
     pub layout_requested: GenericSignal,
+    /// Emitted when a stateful value changes (e.g., slider value, checkbox state).
+    pub changed: GenericSignal,
 }
 impl BaseWidget {
     /// Create base widget state and core signals.
@@ -59,6 +62,7 @@ impl BaseWidget {
             enabled: true,
             mouse_pressed: false,
             tooltip: String::new(),
+            dpi_scale: 1.0,
             style: WidgetStyle::default(),
             connection_scope: ConnectionScope::new(),
             clicked: GenericSignal::new(),
@@ -71,6 +75,7 @@ impl BaseWidget {
             focus_lost: GenericSignal::new(),
             redraw_requested: GenericSignal::new(),
             layout_requested: GenericSignal::new(),
+            changed: GenericSignal::new(),
         }
     }
     // -- Base accessors --
@@ -133,6 +138,15 @@ impl BaseWidget {
     }
     pub fn tooltip(&self) -> &str {
         &self.tooltip
+    }
+    pub fn dpi_scale(&self) -> f32 {
+        self.dpi_scale
+    }
+    pub fn set_dpi_scale(&mut self, scale: f32) {
+        self.dpi_scale = scale.max(0.1);
+    }
+    pub fn set_translated_tooltip(&mut self, key: &str) {
+        self.tooltip = crate::i18n::translate(key);
     }
     pub fn style(&self) -> &WidgetStyle {
         &self.style

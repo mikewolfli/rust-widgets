@@ -1,5 +1,5 @@
 //! Box layout manager — arranges items in a single row or column.
-use super::{Layout, LayoutConstraints, Orientation, SizePolicy};
+use super::{Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
 use crate::core::{ObjectId, Rect};
 struct BoxLayoutItem {
     widget_id: Option<ObjectId>,
@@ -143,6 +143,54 @@ impl BoxLayout {
     }
 }
 impl Layout for BoxLayout {
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        if self.items.is_empty() {
+            return;
+        }
+        let scale = context.layout_scale;
+        let scaled_spacing = (self.spacing as f32 * scale) as u32;
+        let scaled_margin = (self.margin as f32 * scale) as u32;
+        let gaps = (self.items.len().saturating_sub(1)) as u32;
+        let primary = match self.orientation {
+            Orientation::Horizontal => rect.width,
+            Orientation::Vertical => rect.height,
+        }
+        .saturating_sub(scaled_margin * 2)
+        .saturating_sub(gaps * scaled_spacing);
+        let majors = self.allocate_major_lengths(primary);
+        let mut cursor_x = rect.x + scaled_margin as i32;
+        let mut cursor_y = rect.y + scaled_margin as i32;
+        for (index, item) in self.items.iter().enumerate() {
+            let major = majors.get(index).copied().unwrap_or(0);
+            let child_rect = match self.orientation {
+                Orientation::Horizontal => Rect::new(
+                    cursor_x,
+                    cursor_y,
+                    major,
+                    rect.height.saturating_sub(scaled_margin * 2),
+                ),
+                Orientation::Vertical => Rect::new(
+                    cursor_x,
+                    cursor_y,
+                    rect.width.saturating_sub(scaled_margin * 2),
+                    major,
+                ),
+            };
+            if let Some(widget_id) = item.widget_id {
+                widgets(widget_id, child_rect);
+            }
+            match self.orientation {
+                Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
+            }
+        }
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -245,6 +293,15 @@ impl HBoxLayout {
     }
 }
 impl Layout for HBoxLayout {
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.inner.update_with_context(rect, context, widgets);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -303,6 +360,15 @@ impl VBoxLayout {
     }
 }
 impl Layout for VBoxLayout {
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.inner.update_with_context(rect, context, widgets);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

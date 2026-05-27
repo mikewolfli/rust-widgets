@@ -24,7 +24,9 @@ mod tests;
 mod types;
 mod watcher;
 pub use crate::tr;
-pub use global::{check_and_reload_all, get_manager, init, init_with_options, translate};
+pub use global::{
+    check_and_reload_all, get_manager, init, init_with_options, translate, translate_with_context,
+};
 pub use manager::I18nManager;
 pub use options::{InitOptions, InitReport};
 pub use types::{ReloadEvent, Translation, TranslationFile};

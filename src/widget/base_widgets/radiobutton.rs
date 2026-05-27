@@ -1,9 +1,8 @@
 //! Radio button widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Radio button widget.
 pub struct RadioButton {
@@ -75,101 +74,12 @@ impl RadioButton {
 }
 // Implement Widget trait
 impl Widget for RadioButton {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for RadioButton {
@@ -179,26 +89,19 @@ impl EventHandler for RadioButton {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.set_checked(true);
-                    self.base.clicked.emit();
-                }
+            Event::MousePress { pos: _, button } if *button == 1 => {
+                self.set_checked(true);
+                self.base.clicked.emit();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { .. } | Event::Tap { .. } => {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
-            Event::KeyPress { key, modifiers: _ } => {
-                match *key {
-                    32 | 13 => {
-                        // Space or Enter
-                        self.set_checked(true);
-                        self.base.clicked.emit();
-                    }
-                    _ => {}
-                }
+            Event::KeyPress { key, .. } if *key == 32 || *key == 13 => {
+                // Space or Enter
+                self.set_checked(true);
+                self.base.clicked.emit();
             }
             _ => {}
         }
@@ -212,7 +115,7 @@ impl Draw for RadioButton {
             rect.x + rect.width as i32 / 2,
             rect.y + rect.height as i32 / 2,
         );
-        let radius = (rect.height.min(rect.width) / 4) as u32;
+        let radius = rect.height.min(rect.width) / 4;
         // Draw outer circle
         context.draw_circle(center, radius, Color::from_rgb(100u8, 100, 100));
         // Draw inner circle if checked
@@ -235,6 +138,8 @@ impl Draw for RadioButton {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::core::Size;
+    use crate::style::WidgetStyle;
 
     // -----------------------------------------------------------------------
     // 1. Creation: default unchecked, empty text, no group_id

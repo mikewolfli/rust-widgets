@@ -84,8 +84,9 @@ impl Default for AbsolutePosition {
         Self::new(0, 0)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Anchor {
+    #[default]
     TopLeft,
     TopCenter,
     TopRight,
@@ -98,11 +99,6 @@ pub enum Anchor {
 }
 /// Alias for Anchor to match test expectations
 pub use Anchor as AbsoluteAnchor;
-impl Default for Anchor {
-    fn default() -> Self {
-        Self::TopLeft
-    }
-}
 #[derive(Debug, Clone, Copy)]
 pub struct Constraint {
     pub min_width: Option<u32>,

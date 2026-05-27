@@ -280,23 +280,17 @@ impl WebViewCore {
     /// Handle common key events for navigation.
     pub fn handle_key_event(&mut self, key: u32, modifiers: u32) {
         match key {
-            37 => {
-                if modifiers == 0 {
-                    self.go_back();
-                }
+            37 if modifiers == 0 => {
+                self.go_back();
             }
-            39 => {
-                if modifiers == 0 {
-                    self.go_forward();
-                }
+            39 if modifiers == 0 => {
+                self.go_forward();
             }
             116 => {
                 self.reload();
             }
-            82 => {
-                if modifiers == 1 {
-                    self.reload();
-                }
+            82 if modifiers == 1 => {
+                self.reload();
             }
             _ => {}
         }

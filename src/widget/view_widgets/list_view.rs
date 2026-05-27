@@ -73,6 +73,12 @@ pub struct SelectionModel {
     /// Currently focused row.
     current_row: Option<usize>,
 }
+impl Default for SelectionModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SelectionModel {
     /// Creates a new selection model.
     pub fn new() -> Self {
@@ -126,17 +132,12 @@ impl SelectionModel {
         self.selected_rows.clone()
     }
     fn normalize(&mut self) {
-        match self.mode {
-            SelectionMode::Single => {
-                if self.selected_rows.len() > 1 {
-                    if let Some(&last) = self.selected_rows.last() {
-                        self.selected_rows = vec![last];
-                    } else {
-                        self.selected_rows.clear();
-                    }
-                }
+        if self.mode == SelectionMode::Single && self.selected_rows.len() > 1 {
+            if let Some(&last) = self.selected_rows.last() {
+                self.selected_rows = vec![last];
+            } else {
+                self.selected_rows.clear();
             }
-            _ => {}
         }
     }
 }
@@ -150,6 +151,16 @@ pub enum SelectionMode {
     /// Extended selection (Ctrl+Click, Shift+Click).
     Extended,
 }
+/// View mode for list views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    List,
+    Icon,
+    Details,
+    Thumbnails,
+}
+
 /// List view widget.
 pub struct ListView {
     base: BaseWidget,
@@ -161,6 +172,8 @@ pub struct ListView {
     selection: SelectionModel,
     /// View-side focused row.
     focused_row: Option<usize>,
+    /// View mode for rendering items.
+    view_mode: ViewMode,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
@@ -175,6 +188,7 @@ impl ListView {
             model_connection_scope: ConnectionScope::new(),
             selection: SelectionModel::new(),
             focused_row: None,
+            view_mode: ViewMode::default(),
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
         }
@@ -264,6 +278,17 @@ impl ListView {
     pub fn selection_mode(&self) -> SelectionMode {
         self.selection.mode()
     }
+
+    /// Returns the current view mode.
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
+    }
+
+    /// Sets the view mode.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        self.view_mode = mode;
+        self.base.request_redraw();
+    }
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
         self.selection.selected_rows.retain(|row| *row < row_count);
@@ -279,6 +304,7 @@ impl Widget for ListView {
         &mut self.base
     }
 }
+
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -293,8 +319,8 @@ impl Draw for ListView {
             let row_count = model.row_count();
             let current_row = self.focused_row;
             for i in 0..row_count {
-                let y = rect.y + (item_height as i32) * i as i32;
-                if y + item_height as i32 > rect.y + rect.height as i32 {
+                let y = rect.y + item_height * i as i32;
+                if y + item_height > rect.y + rect.height as i32 {
                     break;
                 }
                 if Some(i) == current_row {
@@ -321,20 +347,18 @@ impl crate::event::EventHandler for ListView {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    let rect = self.base.geometry();
-                    let item_height = 20;
-                    if pos.y >= rect.y {
-                        let index = ((pos.y - rect.y) / item_height) as usize;
-                        let row_count = self.row_count();
-                        if index < row_count {
-                            self.focused_row = Some(index);
-                            self.selection.select_row(index);
-                            if let Some(row) = self.focused_row {
-                                self.selection_changed.emit(row);
-                                self.focused_row_changed.emit(Some(row));
-                            }
+            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+                let rect = self.base.geometry();
+                let item_height = 20;
+                if pos.y >= rect.y {
+                    let index = ((pos.y - rect.y) / item_height) as usize;
+                    let row_count = self.row_count();
+                    if index < row_count {
+                        self.focused_row = Some(index);
+                        self.selection.select_row(index);
+                        if let Some(row) = self.focused_row {
+                            self.selection_changed.emit(row);
+                            self.focused_row_changed.emit(Some(row));
                         }
                     }
                 }

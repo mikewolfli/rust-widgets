@@ -102,7 +102,7 @@ impl Layout for UniformGridLayout {
     }
 
     fn has_child(&self, id: ObjectId) -> bool {
-        self.cells.iter().any(|cell| *cell == Some(id))
+        self.cells.contains(&Some(id))
     }
 
     fn clear(&mut self) {

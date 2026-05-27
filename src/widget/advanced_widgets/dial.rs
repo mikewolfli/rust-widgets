@@ -1,9 +1,8 @@
 //! Dial (knob) widget.
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Dial (rotary knob) widget.
 pub struct Dial {
@@ -82,8 +81,7 @@ impl Dial {
             if range <= 0 {
                 self.minimum
             } else {
-                let v = (value - self.minimum).rem_euclid(range) + self.minimum;
-                v
+                (value - self.minimum).rem_euclid(range) + self.minimum
             }
         } else {
             value.clamp(self.minimum, self.maximum)
@@ -123,101 +121,16 @@ impl Dial {
     }
 }
 impl Widget for Dial {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        Size::new(64, 64)
     }
 }
 impl EventHandler for Dial {
@@ -254,14 +167,14 @@ impl Draw for Dial {
             y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
-        context.fill_circle(center, radius as u32, Color::from_rgb(230, 230, 230));
-        context.draw_circle(center, radius as u32, Color::from_rgb(150, 150, 150));
+        context.fill_circle(center, radius, Color::from_rgb(230, 230, 230));
+        context.draw_circle(center, radius, Color::from_rgb(150, 150, 150));
         // Draw a simple value needle.
         let angle = self.value_angle();
         let needle_len = (radius as f32 * 0.7) as i32;
         let to = Point {
-            x: center.x + (needle_len as f32 * angle.cos() as f32 as f32) as i32,
-            y: center.y + (needle_len as f32 * angle.sin() as f32 as f32) as i32,
+            x: center.x + (needle_len as f32 * angle.cos() as f32) as i32,
+            y: center.y + (needle_len as f32 * angle.sin() as f32) as i32,
         };
         context.draw_line(center, to, Color::from_rgb(0, 0, 0));
         context.fill_circle(center, 3, Color::from_rgb(80, 80, 80));

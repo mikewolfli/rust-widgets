@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use super::{ConnectionHandle, GenericSignal};
+use std::collections::HashMap;
 /// Registry of dynamically named zero-argument signals.
 #[derive(Default)]
 pub struct CustomSignalHub {

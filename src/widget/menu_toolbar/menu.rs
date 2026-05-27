@@ -1,20 +1,19 @@
 //! Menu widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
 pub struct MenuItem {
-    pub text: String,
-    pub shortcut: String,
-    pub checkable: bool,
-    pub checked: bool,
-    pub enabled: bool,
-    pub separator: bool,
-    pub has_submenu: bool,
+    text: String,
+    shortcut: String,
+    checkable: bool,
+    checked: bool,
+    enabled: bool,
+    separator: bool,
+    has_submenu: bool,
 }
 impl MenuItem {
     pub fn new(text: impl Into<String>) -> Self {
@@ -30,12 +29,70 @@ impl MenuItem {
     }
     pub fn separator() -> Self {
         let mut m = Self::new("");
-        m.separator = true;
+        m.set_separator(true);
         m
     }
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = shortcut.into();
         self
+    }
+
+    // --- Accessors ---
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+    }
+
+    pub fn shortcut(&self) -> &str {
+        &self.shortcut
+    }
+
+    pub fn set_shortcut(&mut self, shortcut: impl Into<String>) {
+        self.shortcut = shortcut.into();
+    }
+
+    pub fn is_checkable(&self) -> bool {
+        self.checkable
+    }
+
+    pub fn set_checkable(&mut self, checkable: bool) {
+        self.checkable = checkable;
+    }
+
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn set_checked(&mut self, checked: bool) {
+        self.checked = checked;
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    pub fn is_separator(&self) -> bool {
+        self.separator
+    }
+
+    pub fn set_separator(&mut self, separator: bool) {
+        self.separator = separator;
+    }
+
+    pub fn has_submenu(&self) -> bool {
+        self.has_submenu
+    }
+
+    pub fn set_has_submenu(&mut self, has: bool) {
+        self.has_submenu = has;
     }
 }
 /// Menu widget.
@@ -65,6 +122,10 @@ impl Menu {
     pub fn title(&self) -> &str {
         &self.title
     }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.base.request_redraw();
+    }
     pub fn items(&self) -> &[MenuItem] {
         &self.items
     }
@@ -93,13 +154,13 @@ impl Menu {
     }
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            item.enabled = enabled;
+            item.set_enabled(enabled);
         }
     }
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            if item.checkable {
-                item.checked = checked;
+            if item.is_checkable() {
+                item.set_checked(checked);
             }
         }
     }
@@ -116,7 +177,7 @@ impl Menu {
         let rect = self.geometry();
         let mut y = base_y;
         for (i, item) in self.items.iter().enumerate() {
-            let h = if item.separator {
+            let h = if item.is_separator() {
                 Self::separator_height()
             } else {
                 Self::item_height()
@@ -142,7 +203,7 @@ impl Menu {
         self.items
             .iter()
             .map(|item| {
-                if item.separator {
+                if item.is_separator() {
                     Self::separator_height()
                 } else {
                     Self::item_height()
@@ -153,44 +214,11 @@ impl Menu {
     }
 }
 impl Widget for Menu {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
     fn show(&mut self) {
         self.about_to_show.emit();
@@ -199,57 +227,6 @@ impl Widget for Menu {
     fn hide(&mut self) {
         self.base.hide();
         self.about_to_hide.emit();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
     }
 }
 impl EventHandler for Menu {
@@ -263,12 +240,12 @@ impl EventHandler for Menu {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
                 for (i, item) in self.items.iter().enumerate() {
-                    let h = if item.separator {
+                    let h = if item.is_separator() {
                         Self::separator_height()
                     } else {
                         Self::item_height()
                     };
-                    if !item.separator && pos.y >= y as i32 && pos.y < (y + h) as i32 {
+                    if !item.is_separator() && pos.y >= y as i32 && pos.y < (y + h) as i32 {
                         self.hovered_index = Some(i);
                         break;
                     }
@@ -278,18 +255,18 @@ impl EventHandler for Menu {
             Event::MousePress { pos, button: 1 } => {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
-                for (_i, item) in self.items.iter().enumerate() {
-                    let h = if item.separator {
+                for item in self.items.iter() {
+                    let h = if item.is_separator() {
                         Self::separator_height()
                     } else {
                         Self::item_height()
                     };
-                    if !item.separator
-                        && item.enabled
+                    if !item.is_separator()
+                        && item.is_enabled()
                         && pos.y >= y as i32
                         && pos.y < (y + h) as i32
                     {
-                        let text = item.text.clone();
+                        let text = item.text().to_string();
                         self.triggered.emit(text);
                         self.hide();
                         break;
@@ -302,17 +279,17 @@ impl EventHandler for Menu {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
                 for (_i, item) in self.items.iter().enumerate() {
-                    let h = if item.separator {
+                    let h = if item.is_separator() {
                         Self::separator_height()
                     } else {
                         Self::item_height()
                     };
-                    if !item.separator
-                        && item.enabled
+                    if !item.is_separator()
+                        && item.is_enabled()
                         && pos.y >= y as i32
                         && pos.y < (y + h) as i32
                     {
-                        let text = item.text.clone();
+                        let text = item.text().to_string();
                         self.triggered.emit(text);
                         self.hide();
                         break;
@@ -329,8 +306,8 @@ impl EventHandler for Menu {
                     // Enter — trigger hovered
                     if let Some(idx) = self.hovered_index {
                         if let Some(item) = self.items.get(idx) {
-                            if !item.separator && item.enabled {
-                                let text = item.text.clone();
+                            if !item.is_separator() && item.is_enabled() {
+                                let text = item.text().to_string();
                                 self.triggered.emit(text);
                                 self.hide();
                             }
@@ -359,7 +336,7 @@ impl Draw for Menu {
         );
         let mut y = rect.y as f32 + 2.0;
         for (i, item) in self.items.iter().enumerate() {
-            if item.separator {
+            if item.is_separator() {
                 let sep_y = y + Self::separator_height() / 2.0;
                 context.draw_line(
                     Point::new(rect.x + 4, sep_y as i32),
@@ -381,15 +358,15 @@ impl Draw for Menu {
                     Color::from_rgb(0, 120, 215),
                 );
             }
-            let fg = if !item.enabled {
+            let fg = if !item.is_enabled() {
                 Color::from_rgb(150, 150, 150)
             } else if is_hovered {
                 Color::from_rgb(255, 255, 255)
             } else {
                 Color::from_rgb(0, 0, 0)
             };
-            if item.checkable {
-                let check_sym = if item.checked { "✓" } else { " " };
+            if item.is_checkable() {
+                let check_sym = if item.is_checked() { "✓" } else { " " };
                 context.draw_text(
                     Point::from_f32(rect.x as f32 + 8.0, y + Self::item_height() / 2.0),
                     check_sym,
@@ -399,22 +376,22 @@ impl Draw for Menu {
             }
             context.draw_text(
                 Point::from_f32(rect.x as f32 + 28.0, y + Self::item_height() / 2.0),
-                &item.text,
+                item.text(),
                 &Font::default(),
                 fg,
             );
-            if !item.shortcut.is_empty() {
+            if !item.shortcut().is_empty() {
                 context.draw_text(
                     Point::new(
                         rect.x + rect.width as i32 - 8,
                         (y + Self::item_height() / 2.0) as i32,
                     ),
-                    &item.shortcut,
+                    item.shortcut(),
                     &Font::default(),
                     fg,
                 );
             }
-            if item.has_submenu {
+            if item.has_submenu() {
                 context.draw_text(
                     Point::new(
                         rect.x + rect.width as i32 - 4,

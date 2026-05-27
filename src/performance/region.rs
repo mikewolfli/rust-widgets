@@ -135,7 +135,7 @@ impl DirtyRegionTracker {
         if self.regions.len() > self.max_regions {
             self.merge();
             if self.regions.len() > self.max_regions {
-                self.regions.sort_by(|a, b| b.priority.cmp(&a.priority));
+                self.regions.sort_by_key(|b| std::cmp::Reverse(b.priority));
                 self.regions.truncate(self.max_regions);
             }
         }

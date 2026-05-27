@@ -1,17 +1,35 @@
 //! Popup window widget.
-use crate::core::Rect;
+use crate::core::{ObjectId, Rect};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Popup window widget.
 pub struct PopupWindow {
     base: BaseWidget,
+    content_widget: Option<ObjectId>,
 }
 impl PopupWindow {
     /// Creates a popup window with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupWindow"),
+            content_widget: None,
         }
+    }
+    /// Returns the content widget ID, if any.
+    pub fn content_widget(&self) -> Option<ObjectId> {
+        self.content_widget
+    }
+
+    /// Sets the content widget for this popup.
+    pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
+        if let Some(old) = self.content_widget {
+            self.base.remove_child(old);
+        }
+        self.content_widget = widget;
+        if let Some(id) = widget {
+            self.base.add_child(id);
+        }
+        self.base.request_redraw();
     }
 }
 impl Widget for PopupWindow {
@@ -38,15 +56,11 @@ impl crate::event::EventHandler for PopupWindow {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(true);
-                }
+            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
             }
-            crate::event::Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(false);
-                }
+            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
             }
             _ => {}
         }

@@ -1,0 +1,608 @@
+//! SVG rendering backend — converts `RenderCommand`s into SVG elements.
+//!
+//! This backend implements [`PaintBackend`] by generating SVG markup
+//! instead of rasterizing pixels. Any widget's `Draw::draw()` method
+//! can produce SVG output by simply swapping the backend.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use rust_widgets::render::svg::SvgPaintBackend;
+//! use rust_widgets::core::{Color, Size};
+//!
+//! let mut svg = SvgPaintBackend::new(Size::new(100, 50));
+//! svg.begin_frame(Color::WHITE);
+//! // ... execute commands via RenderContext ...
+//! svg.end_frame();
+//! let output = svg.finish();
+//! ```
+
+use crate::core::{Color, Font, Size};
+use crate::render::core::command::RenderCommand;
+use crate::render::core::types::{ShapedText, TextMetrics};
+use crate::render::{PaintBackend, SoftwareRenderConfig};
+use convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
+
+mod convert;
+
+/// PaintBackend implementation that generates SVG markup from render commands.
+///
+/// Every [`RenderCommand`] is converted into an equivalent SVG element.
+/// The resulting SVG document is produced when [`finish()`](SvgPaintBackend::finish) is called.
+pub struct SvgPaintBackend {
+    size: Size,
+    dpi_scale: f32,
+    elements: Vec<String>,
+    clip_depth: u32,
+    svg_output: Option<String>,
+}
+
+impl SvgPaintBackend {
+    /// Create a new SVG backend with the given canvas size.
+    pub fn new(size: Size) -> Self {
+        Self {
+            size,
+            dpi_scale: 1.0,
+            elements: Vec::new(),
+            clip_depth: 0,
+            svg_output: None,
+        }
+    }
+
+    /// Finalize and retrieve the full SVG document string.
+    ///
+    /// Once called, the backend is consumed and no further commands can be added.
+    pub fn finish(&mut self) -> String {
+        if let Some(svg) = self.svg_output.take() {
+            return svg;
+        }
+        self.build_svg()
+    }
+
+    /// Build the SVG document from the collected elements.
+    fn build_svg(&self) -> String {
+        let mut svg = String::from(r#"<svg xmlns="http://www.w3.org/2000/svg""#);
+        svg.push_str(&format!(
+            r#" width="{}" height="{}""#,
+            self.size.width, self.size.height
+        ));
+        svg.push_str(&format!(
+            r#" viewBox="0 0 {} {}">"#,
+            self.size.width, self.size.height
+        ));
+        for element in &self.elements {
+            svg.push('\n');
+            svg.push_str("  ");
+            svg.push_str(element);
+        }
+        svg.push_str("\n</svg>");
+        svg
+    }
+
+    /// Add a raw SVG element string to the internal list.
+    fn push_element(&mut self, element: String) {
+        self.elements.push(element);
+    }
+}
+
+// ─── PaintBackend implementation ─────────────────────────────────────────────
+
+impl PaintBackend for SvgPaintBackend {
+    fn begin_frame(&mut self, clear: Color) {
+        self.elements.clear();
+        self.clip_depth = 0;
+        // Background fill rect matching clear color
+        if clear.a > 0 {
+            let fill = color_to_rgba(&clear);
+            let bg_rect = crate::core::Rect::new(0, 0, self.size.width, self.size.height);
+            self.push_element(format!(
+                r#"<rect {} fill="{}" />"#,
+                rect_attrs(&bg_rect),
+                fill
+            ));
+        }
+    }
+
+    fn end_frame(&mut self) {
+        // Close any remaining clip groups
+        for _ in 0..self.clip_depth {
+            self.push_element("</g>".to_string());
+        }
+        self.clip_depth = 0;
+        self.svg_output = Some(self.build_svg());
+    }
+
+    fn execute_command(&mut self, command: &RenderCommand) {
+        match command {
+            // ── Filled rectangles ──────────────────────────────────────
+            RenderCommand::FillRect { rect, color } => {
+                self.push_element(format!(
+                    r#"<rect {} fill="{}" />"#,
+                    rect_attrs(rect),
+                    color_to_rgba(color)
+                ));
+            }
+
+            RenderCommand::FillRoundedRect {
+                rect,
+                radius,
+                color,
+            }
+            | RenderCommand::FillRoundedRectAA {
+                rect,
+                radius,
+                color,
+            } => {
+                self.push_element(format!(
+                    r#"<rect {} rx="{}" ry="{}" fill="{}" />"#,
+                    rect_attrs(rect),
+                    radius,
+                    radius,
+                    color_to_rgba(color)
+                ));
+            }
+
+            // ── Rectangle outlines ─────────────────────────────────────
+            RenderCommand::DrawRect { rect, color } => {
+                self.push_element(format!(
+                    r#"<rect {} fill="none" stroke="{}" stroke-width="1" />"#,
+                    rect_attrs(rect),
+                    color_to_rgba(color)
+                ));
+            }
+
+            RenderCommand::DrawRectStroke { rect, color, width } => {
+                self.push_element(format!(
+                    r#"<rect {} fill="none" stroke="{}" stroke-width="{}" />"#,
+                    rect_attrs(rect),
+                    color_to_rgba(color),
+                    width
+                ));
+            }
+
+            // ── Rounded rectangle outlines ─────────────────────────────
+            RenderCommand::DrawRoundedRectStroke {
+                rect,
+                radius,
+                color,
+                width,
+            }
+            | RenderCommand::DrawRoundedRectStrokeAA {
+                rect,
+                radius,
+                color,
+                width,
+            } => {
+                self.push_element(format!(
+                    r#"<rect {} rx="{}" ry="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
+                    rect_attrs(rect),
+                    radius,
+                    radius,
+                    color_to_rgba(color),
+                    width
+                ));
+            }
+
+            // ── Lines ──────────────────────────────────────────────────
+            RenderCommand::DrawLine { from, to, color }
+            | RenderCommand::DrawLineAA { from, to, color } => {
+                self.push_element(format!(
+                    r#"<line {} x2="{}" y2="{}" stroke="{}" stroke-width="1" />"#,
+                    point_attrs(from),
+                    to.x,
+                    to.y,
+                    color_to_rgba(color)
+                ));
+            }
+
+            RenderCommand::DrawLineStroke {
+                from,
+                to,
+                color,
+                width,
+            }
+            | RenderCommand::DrawLineStrokeAA {
+                from,
+                to,
+                color,
+                width,
+            } => {
+                self.push_element(format!(
+                    r#"<line {} x2="{}" y2="{}" stroke="{}" stroke-width="{}" />"#,
+                    point_attrs(from),
+                    to.x,
+                    to.y,
+                    color_to_rgba(color),
+                    width
+                ));
+            }
+
+            // ── Filled circles ─────────────────────────────────────────
+            RenderCommand::FillCircle {
+                center,
+                radius,
+                color,
+            }
+            | RenderCommand::FillCircleAA {
+                center,
+                radius,
+                color,
+            } => {
+                self.push_element(format!(
+                    r#"<circle cx="{}" cy="{}" r="{}" fill="{}" />"#,
+                    center.x,
+                    center.y,
+                    radius,
+                    color_to_rgba(color)
+                ));
+            }
+
+            // ── Circle outlines ────────────────────────────────────────
+            RenderCommand::DrawCircle {
+                center,
+                radius,
+                color,
+            } => {
+                self.push_element(format!(
+                    r#"<circle cx="{}" cy="{}" r="{}" fill="none" stroke="{}" stroke-width="1" />"#,
+                    center.x,
+                    center.y,
+                    radius,
+                    color_to_rgba(color)
+                ));
+            }
+
+            RenderCommand::DrawCircleStroke {
+                center,
+                radius,
+                color,
+                width,
+            } => {
+                self.push_element(format!(
+                    r#"<circle cx="{}" cy="{}" r="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
+                    center.x,
+                    center.y,
+                    radius,
+                    color_to_rgba(color),
+                    width
+                ));
+            }
+
+            // ── Text ───────────────────────────────────────────────────
+            RenderCommand::DrawText {
+                origin,
+                text,
+                font,
+                color,
+            } => {
+                self.push_element(format!(
+                    r#"<text x="{}" y="{}" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
+                    origin.x,
+                    origin.y,
+                    escape_xml(&font.family),
+                    font.size,
+                    font.style_css(),
+                    font.weight_css(),
+                    color_to_rgba(color),
+                    escape_xml(text)
+                ));
+            }
+
+            // ── Image (placeholder in SVG) ─────────────────────────────
+            RenderCommand::DrawImage {
+                x,
+                y,
+                width,
+                height,
+                data: _,
+            } => {
+                // Images show as a dashed-outline placeholder rectangle
+                // with an "Image" label; actual pixel data is not embedded.
+                self.push_element(format!(
+                    r##"<rect x="{}" y="{}" width="{}" height="{}" fill="#eee" stroke="#999" stroke-width="1" stroke-dasharray="4" />"##,
+                    x, y, width, height
+                ));
+                let cx = x + (*width as i32) / 2;
+                let cy = y + (*height as i32) / 2;
+                self.push_element(format!(
+                    r##"<text x="{}" y="{}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#666">Image</text>"##,
+                    cx, cy
+                ));
+            }
+
+            // ── Clipping ───────────────────────────────────────────────
+            RenderCommand::PushClip {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let clip_id = format!("clip_{}", self.clip_depth);
+                // Build a minimal <defs> clipPath — SVG renderers need the
+                // definition available before the referencing <g> element.
+                let clip_def = format!(
+                    r#"<clipPath id="{}"><rect x="{}" y="{}" width="{}" height="{}" /></clipPath>"#,
+                    clip_id, x, y, width, height
+                );
+                self.push_element(clip_def);
+                self.push_element(format!(r#"<g clip-path="url(#{})">"#, clip_id));
+                self.clip_depth += 1;
+            }
+
+            RenderCommand::PopClip => {
+                if self.clip_depth > 0 {
+                    self.push_element("</g>".to_string());
+                    self.clip_depth -= 1;
+                }
+            }
+        }
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn set_size(&mut self, size: Size) {
+        self.size = size;
+    }
+
+    fn dpi_scale(&self) -> f32 {
+        self.dpi_scale
+    }
+
+    fn set_dpi_scale(&mut self, dpi_scale: f32) {
+        self.dpi_scale = dpi_scale;
+    }
+
+    fn measure_text(&self, text: &str, _font: &Font) -> TextMetrics {
+        // Approximate measurement: 8px per character width, 16px height.
+        TextMetrics {
+            width: text.len() as u32 * 8,
+            height: 16,
+            ascent: 12,
+            descent: 4,
+        }
+    }
+
+    fn shape_text(&self, text: &str, _font: &Font) -> ShapedText {
+        ShapedText {
+            clusters: vec![],
+            advance: text.len() as f32 * 8.0,
+        }
+    }
+
+    fn frame_rgba(&self) -> &[u8] {
+        &[]
+    }
+
+    fn apply_render_config(&mut self, _config: SoftwareRenderConfig) {}
+
+    fn render_config(&self) -> SoftwareRenderConfig {
+        SoftwareRenderConfig::default()
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Font, Point, Rect};
+
+    #[test]
+    fn svg_backend_creates_valid_document() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 50));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(10, 10, 30, 20),
+            color: Color::rgb(255, 0, 0),
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("<svg"));
+        assert!(result.contains("</svg>"));
+        assert!(result.contains("fill=\"rgba(255,0,0,1.00)\""));
+    }
+
+    #[test]
+    fn svg_backend_text_escaping() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 50));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::DrawText {
+            origin: Point::new(10, 20),
+            text: "<hello> & world".to_string(),
+            font: Font::default_ui(),
+            color: Color::BLACK,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("&lt;hello&gt; &amp; world"));
+    }
+
+    #[test]
+    fn svg_backend_all_command_types() {
+        let mut svg = SvgPaintBackend::new(Size::new(200, 200));
+        svg.begin_frame(Color::WHITE);
+
+        // Test all command types compile and produce output
+        svg.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 50, 50),
+            color: Color::RED,
+        });
+        svg.execute_command(&RenderCommand::FillRoundedRect {
+            rect: Rect::new(50, 0, 50, 50),
+            radius: 5,
+            color: Color::GREEN,
+        });
+        svg.execute_command(&RenderCommand::DrawRect {
+            rect: Rect::new(0, 50, 50, 50),
+            color: Color::BLUE,
+        });
+        svg.execute_command(&RenderCommand::DrawRectStroke {
+            rect: Rect::new(50, 50, 50, 50),
+            color: Color::BLACK,
+            width: 2,
+        });
+        svg.execute_command(&RenderCommand::DrawLine {
+            from: Point::new(0, 100),
+            to: Point::new(50, 150),
+            color: Color::RED,
+        });
+        svg.execute_command(&RenderCommand::DrawLineStroke {
+            from: Point::new(50, 100),
+            to: Point::new(100, 150),
+            color: Color::GREEN,
+            width: 3,
+        });
+        svg.execute_command(&RenderCommand::FillCircle {
+            center: Point::new(30, 130),
+            radius: 15,
+            color: Color::BLUE,
+        });
+        svg.execute_command(&RenderCommand::DrawCircle {
+            center: Point::new(80, 130),
+            radius: 15,
+            color: Color::BLACK,
+        });
+        svg.execute_command(&RenderCommand::DrawCircleStroke {
+            center: Point::new(130, 130),
+            radius: 15,
+            color: Color::RED,
+            width: 2,
+        });
+        svg.execute_command(&RenderCommand::DrawText {
+            origin: Point::new(10, 180),
+            text: "Test".to_string(),
+            font: Font::default_ui(),
+            color: Color::BLACK,
+        });
+        svg.execute_command(&RenderCommand::PushClip {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        });
+        svg.execute_command(&RenderCommand::PopClip);
+        svg.execute_command(&RenderCommand::DrawImage {
+            x: 100,
+            y: 0,
+            width: 50,
+            height: 50,
+            data: vec![],
+        });
+
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("<svg"));
+        assert!(result.contains("</svg>"));
+        assert!(result.contains("stroke"));
+        assert!(result.contains("fill"));
+        assert!(result.contains("Image"));
+    }
+
+    #[test]
+    fn svg_backend_begin_frame_clears() {
+        let mut svg = SvgPaintBackend::new(Size::new(10, 10));
+        svg.begin_frame(Color::rgb(200, 200, 200));
+        assert!(svg.elements.len() == 1);
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("200"));
+    }
+
+    #[test]
+    fn svg_backend_draw_rounded_rect_stroke() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::DrawRoundedRectStroke {
+            rect: Rect::new(10, 10, 80, 80),
+            radius: 8,
+            color: Color::BLUE,
+            width: 2,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("rx=\"8\""));
+        assert!(result.contains("ry=\"8\""));
+        assert!(result.contains("stroke-width=\"2\""));
+    }
+
+    #[test]
+    fn svg_backend_draw_line_aa() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+        svg.begin_frame(Color::TRANSPARENT);
+        svg.execute_command(&RenderCommand::DrawLineAA {
+            from: Point::new(5, 5),
+            to: Point::new(95, 95),
+            color: Color::RED,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("x1=\"5\""));
+        assert!(result.contains("y1=\"5\""));
+        assert!(result.contains("x2=\"95\""));
+        assert!(result.contains("y2=\"95\""));
+    }
+
+    #[test]
+    fn svg_backend_fill_circle_aa() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::FillCircleAA {
+            center: Point::new(50, 50),
+            radius: 25,
+            color: Color::GREEN,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("<circle"));
+        assert!(result.contains("cx=\"50\""));
+        assert!(result.contains("r=\"25\""));
+    }
+
+    #[test]
+    fn svg_backend_multiple_frames() {
+        let mut svg = SvgPaintBackend::new(Size::new(50, 50));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 25, 25),
+            color: Color::RED,
+        });
+        svg.end_frame();
+
+        let frame1 = svg.finish();
+        assert!(frame1.contains("rgba(255,0,0"));
+
+        // Start second frame
+        svg.begin_frame(Color::BLACK);
+        // Background fill rect is pushed (BLACK has alpha > 0)
+        assert!(svg.elements.len() == 1);
+        svg.end_frame();
+        let frame2 = svg.finish();
+        assert!(frame2.contains("rgba(0,0,0"));
+    }
+
+    #[test]
+    fn svg_backend_clip_nesting() {
+        let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::PushClip {
+            x: 10,
+            y: 10,
+            width: 50,
+            height: 50,
+        });
+        svg.execute_command(&RenderCommand::PushClip {
+            x: 20,
+            y: 20,
+            width: 30,
+            height: 30,
+        });
+        svg.execute_command(&RenderCommand::PopClip);
+        svg.execute_command(&RenderCommand::PopClip);
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("clip_0"));
+        assert!(result.contains("clip_1"));
+    }
+}

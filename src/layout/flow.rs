@@ -1,28 +1,20 @@
 use super::Layout;
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
+    #[default]
     Horizontal,
     Vertical,
 }
-impl Default for FlowDirection {
-    fn default() -> Self {
-        Self::Horizontal
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowAlignment {
+    #[default]
     Start,
     Center,
     End,
     SpaceBetween,
     SpaceAround,
-}
-impl Default for FlowAlignment {
-    fn default() -> Self {
-        Self::Start
-    }
 }
 #[derive(Debug, Clone, Copy)]
 pub struct FlowLayoutConfig {

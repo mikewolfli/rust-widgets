@@ -1,14 +1,10 @@
 use crate::core::{Color, Point};
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum GradientType {
+    #[default]
     Linear,
     Radial,
     Conic,
-}
-impl Default for GradientType {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientStop {
@@ -73,14 +69,12 @@ impl Gradient {
     }
     pub fn add_stop(mut self, position: f32, color: Color) -> Self {
         self.stops.push(GradientStop::new(position, color));
-        self.stops
-            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.stops.sort_by(|a, b| a.position.total_cmp(&b.position));
         self
     }
     pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
         self.stops = stops;
-        self.stops
-            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.stops.sort_by(|a, b| a.position.total_cmp(&b.position));
         self
     }
     pub fn interpolate(&self, position: f32) -> Color {
@@ -158,7 +152,7 @@ impl GradientBuilder {
     pub fn build(mut self) -> Gradient {
         self.gradient
             .stops
-            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+            .sort_by(|a, b| a.position.total_cmp(&b.position));
         self.gradient
     }
 }

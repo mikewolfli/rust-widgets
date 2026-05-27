@@ -1,7 +1,7 @@
 //! Custom drawing trait for widgets that want to render their own content.
 
-use crate::render::RenderContext;
 use super::Widget;
+use crate::render::RenderContext;
 
 /// Custom drawing trait for widgets that want to render their own content.
 /// Widgets implementing this trait can provide custom drawing logic instead of

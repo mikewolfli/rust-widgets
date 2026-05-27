@@ -259,8 +259,8 @@ impl BatchState {
                 RenderCommand::DrawImage {
                     x: rect.x,
                     y: rect.y,
-                    width: rect.width as u32,
-                    height: rect.height as u32,
+                    width: rect.width,
+                    height: rect.height,
                     data,
                 }
             }
@@ -275,8 +275,8 @@ impl BatchState {
                 RenderCommand::DrawImage {
                     x: dest.x,
                     y: dest.y,
-                    width: dest.width as u32,
-                    height: dest.height as u32,
+                    width: dest.width,
+                    height: dest.height,
                     data,
                 }
             }
@@ -299,8 +299,8 @@ impl BatchState {
             BatchCommand::PushClip { rect } => RenderCommand::PushClip {
                 x: rect.x,
                 y: rect.y,
-                width: rect.width as u32,
-                height: rect.height as u32,
+                width: rect.width,
+                height: rect.height,
             },
 
             BatchCommand::PopClip => RenderCommand::PopClip,

@@ -27,6 +27,19 @@ use crate::core::DeviceClass;
 
 use crate::core::Size;
 
+/// Screen orientation enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScreenOrientation {
+    /// Device in portrait orientation.
+    Portrait,
+    /// Device in landscape orientation.
+    Landscape,
+    /// Device in reverse portrait orientation (180° rotated).
+    ReversePortrait,
+    /// Device in reverse landscape orientation (180° rotated).
+    ReverseLandscape,
+}
+
 /// Runtime device environment descriptor.
 #[derive(Debug, Clone)]
 pub struct DeviceEnvironment {
@@ -44,6 +57,14 @@ pub struct DeviceEnvironment {
     pub touch_target_min: Size,
     /// Recommended spacing between interactive elements.
     pub touch_spacing: u32,
+    /// Screen orientation.
+    pub orientation: ScreenOrientation,
+    /// High-contrast display mode (accessibility).
+    pub high_contrast: bool,
+    /// Reduced motion preference (accessibility).
+    pub reduced_motion: bool,
+    /// Font scale factor (accessibility, default 1.0).
+    pub font_scale: f32,
 }
 
 impl DeviceEnvironment {
@@ -56,6 +77,7 @@ impl DeviceEnvironment {
         let touch_capable = Self::resolve_touch_capability(&device_class);
         let projection_mode = device_class == DeviceClass::Projector;
         let (touch_target_min, touch_spacing) = Self::touch_target_params(device_class);
+        let orientation = Self::resolve_orientation(screen_size);
 
         Self {
             device_class,
@@ -65,6 +87,10 @@ impl DeviceEnvironment {
             projection_mode,
             touch_target_min,
             touch_spacing,
+            orientation,
+            high_contrast: false,
+            reduced_motion: false,
+            font_scale: 1.0,
         }
     }
 
@@ -80,21 +106,14 @@ impl DeviceEnvironment {
         return DeviceClass::Embedded;
 
         // Fallback: heuristic based on screen width (logical points).
-        #[cfg(not(any(feature = "tablet", feature = "mobile", feature = "embedded")))]
-        {
-            let width = screen_size.width.max(320);
-            if width < 480 {
-                DeviceClass::Mobile
-            } else if width < 1024 {
-                DeviceClass::Tablet
-            } else {
-                DeviceClass::Desktop
-            }
-        }
-        #[cfg(any(feature = "tablet", feature = "mobile", feature = "embedded"))]
-        {
-            let _ = screen_size;
-            unreachable!()
+        // Only reached when no feature flag above is active.
+        let width = screen_size.width.max(320);
+        if width < 480 {
+            DeviceClass::Mobile
+        } else if width < 1024 {
+            DeviceClass::Tablet
+        } else {
+            DeviceClass::Desktop
         }
     }
 
@@ -145,6 +164,48 @@ impl DeviceEnvironment {
         self.touch_spacing
     }
 
+    /// Resolve screen orientation from screen size.
+    fn resolve_orientation(screen_size: Size) -> ScreenOrientation {
+        if screen_size.width > screen_size.height {
+            ScreenOrientation::Landscape
+        } else {
+            ScreenOrientation::Portrait
+        }
+    }
+
+    /// Set screen orientation manually.
+    pub fn set_orientation(&mut self, orientation: ScreenOrientation) {
+        self.orientation = orientation;
+    }
+
+    /// Re-detect orientation and update environment after a screen/DPI change.
+    pub fn recheck(&mut self, screen_size: Size, dpi_scale: f32) {
+        self.screen_size = screen_size;
+        self.dpi_scale = dpi_scale;
+        // Re-detect orientation
+        self.orientation = Self::resolve_orientation(screen_size);
+    }
+
+    /// Set the DPI scale factor directly.
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32) {
+        self.dpi_scale = dpi_scale;
+    }
+
+    /// Set high-contrast mode (accessibility).
+    pub fn set_high_contrast(&mut self, enabled: bool) {
+        self.high_contrast = enabled;
+    }
+
+    /// Set reduced-motion preference (accessibility).
+    pub fn set_reduced_motion(&mut self, enabled: bool) {
+        self.reduced_motion = enabled;
+    }
+
+    /// Set font scale factor (accessibility, clamped to [0.5, 3.0]).
+    pub fn set_font_scale(&mut self, scale: f32) {
+        self.font_scale = scale.clamp(0.5, 3.0);
+    }
+
     /// Suggest layout scale factor for text and chrome adjustments.
     ///
     /// Projection mode increases scale by 20% for readability.
@@ -168,6 +229,10 @@ impl Default for DeviceEnvironment {
             projection_mode: false,
             touch_target_min: Size::new(32, 32),
             touch_spacing: 8,
+            orientation: ScreenOrientation::Landscape,
+            high_contrast: false,
+            reduced_motion: false,
+            font_scale: 1.0,
         }
     }
 }
@@ -316,5 +381,43 @@ mod tests {
             DeviceEnvironment::touch_target_params(DeviceClass::Projector).1,
             6
         );
+    }
+
+    #[test]
+    fn orientation_landscape_when_width_greater_than_height() {
+        let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
+        assert_eq!(env.orientation, ScreenOrientation::Landscape);
+    }
+
+    #[test]
+    fn orientation_portrait_when_height_greater_than_width() {
+        let env = DeviceEnvironment::detect(Size::new(1080, 1920), 1.0);
+        assert_eq!(env.orientation, ScreenOrientation::Portrait);
+    }
+
+    #[test]
+    fn orientation_square_defaults_to_portrait() {
+        let env = DeviceEnvironment::detect(Size::new(1024, 1024), 1.0);
+        // width == height, so portrait (not >)
+        assert_eq!(env.orientation, ScreenOrientation::Portrait);
+    }
+
+    #[test]
+    fn set_orientation_changes_value() {
+        let mut env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
+        assert_eq!(env.orientation, ScreenOrientation::Landscape);
+        env.set_orientation(ScreenOrientation::Portrait);
+        assert_eq!(env.orientation, ScreenOrientation::Portrait);
+        env.set_orientation(ScreenOrientation::ReverseLandscape);
+        assert_eq!(env.orientation, ScreenOrientation::ReverseLandscape);
+        env.set_orientation(ScreenOrientation::ReversePortrait);
+        assert_eq!(env.orientation, ScreenOrientation::ReversePortrait);
+    }
+
+    #[test]
+    fn default_orientation_is_landscape() {
+        let env = DeviceEnvironment::default();
+        // Default screen_size is 1024x768, width > height -> Landscape
+        assert_eq!(env.orientation, ScreenOrientation::Landscape);
     }
 }

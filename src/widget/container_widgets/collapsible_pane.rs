@@ -1,10 +1,11 @@
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::signal::Signal1;
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A container widget that can be collapsed/expanded by clicking its header bar.
 ///
@@ -20,6 +21,7 @@ pub struct CollapsiblePane {
     header_height: u32,
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
     pub toggled: Signal1<bool>,
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 
 impl CollapsiblePane {
@@ -36,6 +38,7 @@ impl CollapsiblePane {
             content_child: None,
             header_height: 24,
             toggled: Signal1::new(),
+            registry: None,
         }
     }
 
@@ -95,6 +98,11 @@ impl CollapsiblePane {
         self.header_height = height;
     }
 
+    /// Sets the shared widget registry for child forwarding.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
     /// Returns the geometry of the header area.
     fn header_rect(&self) -> Rect {
         let rect = self.geometry();
@@ -105,59 +113,19 @@ impl CollapsiblePane {
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let y_offset = rect.y + self.header_height as i32;
-        let height = if rect.height > self.header_height {
-            rect.height - self.header_height
-        } else {
-            0
-        };
+        let height = rect.height.saturating_sub(self.header_height);
         Rect::new(rect.x, y_offset, rect.width, height)
     }
 }
 
 // Implement Widget trait
 impl Widget for CollapsiblePane {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
 
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 
     fn remove_child(&mut self, child: ObjectId) {
@@ -165,86 +133,6 @@ impl Widget for CollapsiblePane {
         if self.content_child == Some(child) {
             self.content_child = None;
         }
-    }
-
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-
-    fn show(&mut self) {
-        self.base.show();
-    }
-
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
     }
 }
 
@@ -254,17 +142,22 @@ impl EventHandler for CollapsiblePane {
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    // Check if click is within the header area.
-                    let hdr = self.header_rect();
-                    if hdr.contains(*pos) {
-                        self.toggle();
-                    }
+        if let Event::MousePress { pos, button } = event {
+            if *button == 1 {
+                // Check if click is within the header area.
+                let hdr = self.header_rect();
+                if hdr.contains(*pos) {
+                    self.toggle();
                 }
             }
-            _ => {}
+        }
+        // Forward events to content child
+        if self.base.is_enabled() {
+            if let Some(content) = self.content_child {
+                if let Some(ref reg) = self.registry {
+                    let _ = reg.borrow_mut().forward_event(content, event);
+                }
+            }
         }
     }
 }
@@ -362,5 +255,27 @@ impl Draw for CollapsiblePane {
                 border_color,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn collapsible_pane_creation_defaults() {
+        let cp = CollapsiblePane::new(Rect::new(0, 0, 200, 100), "Title".to_string());
+        assert_eq!(cp.title(), "Title");
+        assert!(!cp.is_collapsed());
+    }
+
+    #[test]
+    fn collapsible_pane_toggle() {
+        let mut cp = CollapsiblePane::new(Rect::new(0, 0, 100, 50), "T".to_string());
+        cp.set_collapsed(true);
+        assert!(cp.is_collapsed());
+        cp.set_collapsed(false);
+        assert!(!cp.is_collapsed());
     }
 }

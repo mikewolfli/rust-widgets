@@ -4,6 +4,7 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::render::TextCluster;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_bitmap_glyph(
     frame: &mut [u8],
     surface_width: u32,
@@ -131,7 +132,13 @@ pub(crate) fn circle_fill_coverage(distance: f32, radius: f32) -> f32 {
     }
     (radius + 1.0 - distance).clamp(0.0, 1.0)
 }
-pub(crate) fn circle_fill_coverage_grid(px: i32, py: i32, center: Point, radius: f32, grid: u8) -> f32 {
+pub(crate) fn circle_fill_coverage_grid(
+    px: i32,
+    py: i32,
+    center: Point,
+    radius: f32,
+    grid: u8,
+) -> f32 {
     let sample_count = grid.clamp(1, 8) as u32;
     let total = sample_count * sample_count;
     let mut coverage_sum = 0.0f32;
@@ -177,7 +184,14 @@ pub(crate) fn circle_stroke_coverage_grid(
     }
     (coverage_sum / total as f32).clamp(0.0, 1.0)
 }
-pub(crate) fn point_to_segment_distance(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+pub(crate) fn point_to_segment_distance(
+    px: f32,
+    py: f32,
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+) -> f32 {
     let abx = bx - ax;
     let aby = by - ay;
     let apx = px - ax;
@@ -317,7 +331,13 @@ pub(crate) fn point_in_rounded_rect_f32(px: f32, py: f32, rect: Rect, radius: u3
 pub(crate) fn rounded_rect_coverage(px: i32, py: i32, rect: Rect, radius: u32) -> f32 {
     rounded_rect_coverage_grid(px, py, rect, radius, 2)
 }
-pub(crate) fn rounded_rect_coverage_grid(px: i32, py: i32, rect: Rect, radius: u32, grid: u8) -> f32 {
+pub(crate) fn rounded_rect_coverage_grid(
+    px: i32,
+    py: i32,
+    rect: Rect,
+    radius: u32,
+    grid: u8,
+) -> f32 {
     let sample_count = grid.clamp(1, 8) as u32;
     let mut covered = 0u32;
     let total = sample_count * sample_count;

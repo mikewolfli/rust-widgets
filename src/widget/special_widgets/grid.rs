@@ -18,8 +18,9 @@
 //! ```
 
 use crate::core::Color;
-use crate::core::{ObjectId, Point, Rect, Size};
+use crate::core::{Point, Rect, Size};
 use crate::render::RenderContext;
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Grid widget for layout management.
@@ -200,16 +201,6 @@ impl Widget for GridWidget {
         &mut self.base
     }
 
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-
     /// Returns a size hint proportional to rows x columns.
     fn size_hint(&self) -> Size {
         // Each cell at least 20×20 px, times row/col count, plus spacing.
@@ -279,15 +270,11 @@ impl crate::event::EventHandler for GridWidget {
             return;
         }
         match *event {
-            crate::event::Event::MousePress { pos: _, button } => {
-                if button == 1 {
-                    self.base.set_mouse_pressed(true);
-                }
+            crate::event::Event::MousePress { pos: _, button: 1 } => {
+                self.base.set_mouse_pressed(true);
             }
-            crate::event::Event::MouseRelease { pos: _, button } => {
-                if button == 1 {
-                    self.base.set_mouse_pressed(false);
-                }
+            crate::event::Event::MouseRelease { pos: _, button: 1 } => {
+                self.base.set_mouse_pressed(false);
             }
             _ => {}
         }

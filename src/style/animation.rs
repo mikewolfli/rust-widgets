@@ -1,7 +1,8 @@
 use crate::core::Color;
 use std::time::{Duration, Instant};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EasingFunction {
+    #[default]
     Linear,
     EaseIn,
     EaseOut,
@@ -12,11 +13,6 @@ pub enum EasingFunction {
     ElasticOut,
     BackIn,
     BackOut,
-}
-impl Default for EasingFunction {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 impl EasingFunction {
     pub fn apply(&self, t: f32) -> f32 {
@@ -79,29 +75,21 @@ impl EasingFunction {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationDirection {
+    #[default]
     Normal,
     Reverse,
     Alternate,
     AlternateReverse,
 }
-impl Default for AnimationDirection {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationFillMode {
+    #[default]
     None,
     Forwards,
     Backwards,
     Both,
-}
-impl Default for AnimationFillMode {
-    fn default() -> Self {
-        Self::None
-    }
 }
 #[derive(Debug, Clone)]
 pub struct AnimationConfig {
@@ -234,14 +222,14 @@ impl Animation {
             AnimationDirection::Normal => eased_progress,
             AnimationDirection::Reverse => 1.0 - eased_progress,
             AnimationDirection::Alternate => {
-                if self.current_iteration % 2 == 0 {
+                if self.current_iteration.is_multiple_of(2) {
                     eased_progress
                 } else {
                     1.0 - eased_progress
                 }
             }
             AnimationDirection::AlternateReverse => {
-                if self.current_iteration % 2 == 0 {
+                if self.current_iteration.is_multiple_of(2) {
                     1.0 - eased_progress
                 } else {
                     eased_progress

@@ -18,6 +18,7 @@ pub mod special_widgets;
 pub mod view_widgets;
 pub mod web_widgets;
 // Individual widget files (not in subfolders)
+pub mod svg;
 pub mod window;
 pub use window::Window;
 // Legacy module aliases for backward compatibility paths.

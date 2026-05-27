@@ -1,9 +1,9 @@
 //! List box widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// List box widget.
 pub struct ListBox {
@@ -18,21 +18,17 @@ pub struct ListBox {
     pub selection_changed: GenericSignal,
 }
 /// Selection mode for list box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionMode {
     /// No selection allowed
     NoSelection,
     /// Single item selection
+    #[default]
     SingleSelection,
     /// Multiple item selection
     MultiSelection,
     /// Extended selection with shift/ctrl
     ExtendedSelection,
-}
-impl Default for SelectionMode {
-    fn default() -> Self {
-        Self::SingleSelection
-    }
 }
 impl ListBox {
     /// Creates an empty list box.
@@ -131,11 +127,9 @@ impl ListBox {
                 self.current_row = None;
                 self.selection_changed.emit();
             }
-            SelectionMode::SingleSelection => {
-                if self.selected_indices.len() > 1 {
-                    self.selected_indices.truncate(1);
-                    self.selection_changed.emit();
-                }
+            SelectionMode::SingleSelection if self.selected_indices.len() > 1 => {
+                self.selected_indices.truncate(1);
+                self.selection_changed.emit();
             }
             _ => {}
         }
@@ -154,7 +148,7 @@ impl ListBox {
             return;
         }
         match self.selection_mode {
-            SelectionMode::NoSelection => return,
+            SelectionMode::NoSelection => (),
             SelectionMode::SingleSelection => {
                 self.selected_indices.clear();
                 self.selected_indices.push(index);
@@ -272,101 +266,11 @@ impl ListBox {
 }
 // Implement Widget trait
 impl Widget for ListBox {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for ListBox {
@@ -376,15 +280,11 @@ impl EventHandler for ListBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    self.select_at_pos(*pos);
-                }
+            Event::MousePress { pos, button } if *button == 1 => {
+                self.select_at_pos(*pos);
             }
-            Event::MouseDoubleClick { pos, button } => {
-                if *button == 1 {
-                    self.activate_at_pos(*pos);
-                }
+            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                self.activate_at_pos(*pos);
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
@@ -416,18 +316,16 @@ impl EventHandler for ListBox {
                             self.select(0);
                         }
                     }
-                    36 => {
+                    36
                         // Home
-                        if !self.items.is_empty() {
+                        if !self.items.is_empty() => {
                             self.select(0);
                         }
-                    }
-                    35 => {
+                    35
                         // End
-                        if !self.items.is_empty() {
+                        if !self.items.is_empty() => {
                             self.select(self.items.len() - 1);
                         }
-                    }
                     13 => {
                         // Enter - activate current item
                         if let Some(current) = self.current_row {
@@ -441,6 +339,7 @@ impl EventHandler for ListBox {
         }
     }
 }
+
 impl Draw for ListBox {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
@@ -483,7 +382,7 @@ impl Draw for ListBox {
                 };
                 context.draw_text(
                     Point::new(
-                        item_rect.x + padding as i32,
+                        item_rect.x + padding,
                         (item_rect.y as f32 + self.item_height / 2.0) as i32,
                     ),
                     text,
@@ -493,7 +392,7 @@ impl Draw for ListBox {
             }
             // Draw item separator
             if i < end - 1 {
-                let sep_y = item_rect.y as i32 + item_rect.height as i32;
+                let sep_y = item_rect.y + item_rect.height as i32;
                 context.draw_line(
                     Point::new(item_rect.x, sep_y),
                     Point::new(item_rect.x + item_rect.width as i32, sep_y),
@@ -501,5 +400,186 @@ impl Draw for ListBox {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn listbox_creation_defaults() {
+        let lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        assert!(lb.items().is_empty());
+        assert!(lb.is_empty());
+        assert_eq!(lb.count(), 0);
+        assert_eq!(lb.current_row(), None);
+        assert!(lb.selected_indices().is_empty());
+        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
+        assert!((lb.item_height() - 20.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn listbox_add_items() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_item("Item A".to_string());
+        lb.add_item("Item B".to_string());
+        assert_eq!(lb.count(), 2);
+        assert_eq!(lb.item(0), Some("Item A"));
+        assert_eq!(lb.item(1), Some("Item B"));
+    }
+
+    #[test]
+    fn listbox_add_items_vec() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["X".to_string(), "Y".to_string(), "Z".to_string()]);
+        assert_eq!(lb.count(), 3);
+        assert!(!lb.is_empty());
+    }
+
+    #[test]
+    fn listbox_insert_item() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "C".to_string()]);
+        lb.insert_item(1, "B".to_string());
+        assert_eq!(lb.count(), 3);
+        assert_eq!(lb.item(1), Some("B"));
+    }
+
+    #[test]
+    fn listbox_remove_item() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        lb.remove_item(1);
+        assert_eq!(lb.count(), 2);
+        assert_eq!(lb.item(1), Some("C"));
+    }
+
+    #[test]
+    fn listbox_clear() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string()]);
+        lb.select(0);
+        lb.clear();
+        assert!(lb.is_empty());
+        assert!(lb.selected_indices().is_empty());
+        assert_eq!(lb.current_row(), None);
+    }
+
+    #[test]
+    fn listbox_current_row() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(lb.current_row(), None);
+        lb.set_current_row(Some(1));
+        assert_eq!(lb.current_row(), Some(1));
+        lb.set_current_row(None);
+        assert_eq!(lb.current_row(), None);
+    }
+
+    #[test]
+    fn listbox_select() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        lb.select(1);
+        assert!(lb.is_selected(1));
+        assert_eq!(lb.selected_indices().len(), 1);
+    }
+
+    #[test]
+    fn listbox_deselect() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string()]);
+        lb.select(0);
+        assert!(lb.is_selected(0));
+        lb.deselect(0);
+        assert!(!lb.is_selected(0));
+    }
+
+    #[test]
+    fn listbox_clear_selection() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string()]);
+        lb.select(0);
+        lb.select(1);
+        lb.clear_selection();
+        assert!(lb.selected_indices().is_empty());
+    }
+
+    #[test]
+    fn listbox_select_all() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        lb.set_selection_mode(SelectionMode::MultiSelection);
+        lb.select_all();
+        assert_eq!(lb.selected_indices().len(), 3);
+    }
+
+    #[test]
+    fn listbox_selection_mode() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
+        lb.set_selection_mode(SelectionMode::MultiSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::MultiSelection);
+        lb.set_selection_mode(SelectionMode::NoSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::NoSelection);
+        lb.set_selection_mode(SelectionMode::ExtendedSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::ExtendedSelection);
+        lb.set_selection_mode(SelectionMode::SingleSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
+    }
+
+    #[test]
+    fn listbox_item_height() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.set_item_height(32.0);
+        assert!((lb.item_height() - 32.0).abs() < f32::EPSILON);
+        lb.set_item_height(0.0);
+        assert!((lb.item_height() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn listbox_geometry_delegation() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.set_geometry(Rect::new(10, 10, 250, 300));
+        assert_eq!(lb.geometry(), Rect::new(10, 10, 250, 300));
+    }
+
+    #[test]
+    fn listbox_visibility() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        assert!(lb.is_visible());
+        lb.hide();
+        assert!(!lb.is_visible());
+        lb.show();
+        assert!(lb.is_visible());
+    }
+
+    #[test]
+    fn listbox_enabled() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        assert!(lb.is_enabled());
+        lb.set_enabled(false);
+        assert!(!lb.is_enabled());
+        lb.set_enabled(true);
+        assert!(lb.is_enabled());
+    }
+
+    #[test]
+    fn listbox_id_kind() {
+        let lb_a = ListBox::new(Rect::new(0, 0, 100, 100));
+        let lb_b = ListBox::new(Rect::new(0, 0, 100, 100));
+        assert_ne!(lb_a.id(), lb_b.id());
+        assert_eq!(lb_a.kind(), WidgetKind::ListBox);
+        assert_eq!(lb_b.kind(), WidgetKind::ListBox);
+    }
+
+    #[test]
+    fn listbox_signal_accessors() {
+        let lb = ListBox::new(Rect::new(0, 0, 100, 100));
+        let _ = &lb.item_selected;
+        let _ = &lb.item_activated;
+        let _ = &lb.selection_changed;
     }
 }

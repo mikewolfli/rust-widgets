@@ -1,5 +1,5 @@
-use crate::gpu::{GpuAdapter, GpuType};
 use super::{HardwareCapabilities, PerformanceLevel, UserOverrides};
+use crate::gpu::{GpuAdapter, GpuType};
 /// Menu system configuration with hardware-adaptive features.
 #[derive(Debug, Clone)]
 pub struct MenuConfig {

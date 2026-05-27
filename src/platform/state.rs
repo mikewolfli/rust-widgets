@@ -40,6 +40,15 @@ pub struct BackendState<K> {
     clipboard_text: Mutex<String>,
     drop_events: Mutex<VecDeque<DropEvent>>,
 }
+impl<K> Default for BackendState<K>
+where
+    K: Copy + Eq + Hash,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K> BackendState<K>
 where
     K: Copy + Eq + Hash,

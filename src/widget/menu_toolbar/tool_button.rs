@@ -1,10 +1,10 @@
 //! Tool button widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::path::{Path, PathBuf};
 /// Tool button popup mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonPopupMode {
@@ -25,6 +25,7 @@ pub enum ToolButtonStyle {
 pub struct ToolButton {
     base: BaseWidget,
     text: String,
+    icon: Option<PathBuf>,
     checkable: bool,
     checked: bool,
     popup_mode: ToolButtonPopupMode,
@@ -42,6 +43,7 @@ impl ToolButton {
         Self {
             base: BaseWidget::new(WidgetKind::ToolButton, geometry, "ToolButton"),
             text,
+            icon: None,
             checkable: false,
             checked: false,
             popup_mode: ToolButtonPopupMode::DelayedPopup,
@@ -56,6 +58,9 @@ impl ToolButton {
     }
     pub fn text(&self) -> &str {
         &self.text
+    }
+    pub fn icon(&self) -> Option<&Path> {
+        self.icon.as_deref()
     }
     pub fn is_checkable(&self) -> bool {
         self.checkable
@@ -74,6 +79,9 @@ impl ToolButton {
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
+    }
+    pub fn set_icon(&mut self, icon: Option<PathBuf>) {
+        self.icon = icon;
     }
     pub fn set_checkable(&mut self, v: bool) {
         self.checkable = v;
@@ -105,101 +113,11 @@ impl ToolButton {
     }
 }
 impl Widget for ToolButton {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for ToolButton {
@@ -219,11 +137,9 @@ impl EventHandler for ToolButton {
             Event::MousePress { button: 1, .. } => {
                 self.pressed = true;
             }
-            Event::MouseRelease { button: 1, .. } => {
-                if self.pressed {
-                    self.pressed = false;
-                    self.click();
-                }
+            Event::MouseRelease { button: 1, .. } if self.pressed => {
+                self.pressed = false;
+                self.click();
             }
             Event::KeyPress { key: 13, .. } | Event::KeyPress { key: 32, .. } => {
                 self.click();
@@ -274,14 +190,20 @@ impl Draw for ToolButton {
             rect.x as f32 + rect.width as f32
         };
         context.draw_text(
-            Point::from_f32(rect.x as f32 + (text_right - rect.x as f32) / 2.0, rect.y as f32 + rect.height as f32 / 2.0),
+            Point::from_f32(
+                rect.x as f32 + (text_right - rect.x as f32) / 2.0,
+                rect.y as f32 + rect.height as f32 / 2.0,
+            ),
             label,
             &Font::default(),
             fg,
         );
         if has_popup {
             context.draw_text(
-                Point::from_f32(rect.x as f32 + rect.width as f32 - 8.0, rect.y as f32 + rect.height as f32 - 6.0),
+                Point::from_f32(
+                    rect.x as f32 + rect.width as f32 - 8.0,
+                    rect.y as f32 + rect.height as f32 - 6.0,
+                ),
                 "▾",
                 &Font::default(),
                 fg,

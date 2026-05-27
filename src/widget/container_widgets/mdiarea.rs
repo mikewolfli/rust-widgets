@@ -1,9 +1,9 @@
 //! MDI area widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
+
 use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,49 +33,37 @@ pub struct MdiSubWindow {
     z_order: i32,
 }
 /// MDI view mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
     /// Sub-window mode
+    #[default]
     SubWindowView,
     /// Tabbed view
     TabbedView,
 }
-impl Default for ViewMode {
-    fn default() -> Self {
-        Self::SubWindowView
-    }
-}
 /// MDI background.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Background {
     /// No background
     NoBackground,
     /// Plain color background
+    #[default]
     Plain,
     /// Gradient background
     Gradient,
     /// Pattern background
     Pattern,
 }
-impl Default for Background {
-    fn default() -> Self {
-        Self::Plain
-    }
-}
 /// MDI activation order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActivationOrder {
     /// Activation follows creation order
     CreationOrder,
     /// Activation follows stacking order
+    #[default]
     StackingOrder,
     /// Activation follows history order
     HistoryOrder,
-}
-impl Default for ActivationOrder {
-    fn default() -> Self {
-        Self::StackingOrder
-    }
 }
 impl MdiSubWindow {
     /// Creates a new MDI sub-window.
@@ -335,12 +323,11 @@ impl MdiArea {
         for (i, subwindow) in minimized.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let x =
-                area_rect.x + spacing as i32 + (icon_width as i32 + spacing as i32) * col as i32;
+            let x = area_rect.x + spacing + (icon_width as i32 + spacing) * col as i32;
             let y = area_rect.y + area_rect.height as i32
-                - icon_height as i32
-                - spacing as i32
-                - (icon_height as i32 + spacing as i32) * row as i32;
+                - icon_height
+                - spacing
+                - (icon_height + spacing) * row as i32;
             subwindow.geometry = Rect::new(x, y, icon_width, icon_height as u32);
         }
     }
@@ -382,115 +369,23 @@ impl MdiArea {
 }
 // Implement Widget trait
 impl Widget for MdiArea {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for MdiArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    if let Some(index) = self.sub_window_at_position(*pos) {
-                        self.set_active_sub_window(self.subwindows[index].widget);
-                    }
+        if let Event::MousePress { pos, button } = event {
+            if *button == 1 {
+                if let Some(index) = self.sub_window_at_position(*pos) {
+                    self.set_active_sub_window(self.subwindows[index].widget);
                 }
             }
-            _ => {}
         }
         // Forward events to active sub-window via registry
         if let Some(widget_id) = self.active_sub_window() {
@@ -522,8 +417,8 @@ impl Draw for MdiArea {
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                     );
                     context.draw_line(
-                        Point::new(rect.x, rect.y + y as i32),
-                        Point::new(rect.x + rect.width as i32, rect.y + y as i32),
+                        Point::new(rect.x, rect.y + y),
+                        Point::new(rect.x + rect.width as i32, rect.y + y),
                         color,
                     );
                 }
@@ -542,8 +437,8 @@ impl Draw for MdiArea {
                             Rect::new(
                                 (rect.x as f32 + x as f32 * pattern_size as f32) as i32,
                                 (rect.y as f32 + y as f32 * pattern_size as f32) as i32,
-                                pattern_size as u32,
-                                pattern_size as u32,
+                                pattern_size,
+                                pattern_size,
                             ),
                             color,
                         );

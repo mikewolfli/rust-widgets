@@ -1,17 +1,17 @@
 //! Time editor widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
+
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Time value (hour, minute, second, millisecond).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time {
-    pub hour: u8,   // 0-23
-    pub minute: u8, // 0-59
-    pub second: u8, // 0-59
-    pub msec: u16,  // 0-999
+    hour: u8,   // 0-23
+    minute: u8, // 0-59
+    second: u8, // 0-59
+    msec: u16,  // 0-999
 }
 impl Time {
     pub fn new(hour: u8, minute: u8, second: u8, msec: u16) -> Self {
@@ -21,6 +21,30 @@ impl Time {
             second: second.min(59),
             msec: msec.min(999),
         }
+    }
+    pub fn hour(&self) -> u8 {
+        self.hour
+    }
+    pub fn minute(&self) -> u8 {
+        self.minute
+    }
+    pub fn second(&self) -> u8 {
+        self.second
+    }
+    pub fn msec(&self) -> u16 {
+        self.msec
+    }
+    pub fn set_hour(&mut self, hour: u8) {
+        self.hour = hour.min(23);
+    }
+    pub fn set_minute(&mut self, minute: u8) {
+        self.minute = minute.min(59);
+    }
+    pub fn set_second(&mut self, second: u8) {
+        self.second = second.min(59);
+    }
+    pub fn set_msec(&mut self, msec: u16) {
+        self.msec = msec.min(999);
     }
     pub fn is_valid(&self) -> bool {
         self.hour <= 23 && self.minute <= 59 && self.second <= 59 && self.msec <= 999
@@ -88,31 +112,31 @@ impl TimeEdit {
     }
     pub fn step_up(&mut self) {
         let mut t = self.time;
-        t.second += 1;
-        if t.second >= 60 {
-            t.second = 0;
-            t.minute += 1;
+        t.set_second(t.second() + 1);
+        if t.second() >= 60 {
+            t.set_second(0);
+            t.set_minute(t.minute() + 1);
         }
-        if t.minute >= 60 {
-            t.minute = 0;
-            if t.hour < 23 {
-                t.hour += 1;
+        if t.minute() >= 60 {
+            t.set_minute(0);
+            if t.hour() < 23 {
+                t.set_hour(t.hour() + 1);
             }
         }
         self.set_time(t);
     }
     pub fn step_down(&mut self) {
         let mut t = self.time;
-        if t.second > 0 {
-            t.second -= 1;
+        if t.second() > 0 {
+            t.set_second(t.second() - 1);
         } else {
-            t.second = 59;
-            if t.minute > 0 {
-                t.minute -= 1;
+            t.set_second(59);
+            if t.minute() > 0 {
+                t.set_minute(t.minute() - 1);
             } else {
-                t.minute = 59;
-                if t.hour > 0 {
-                    t.hour -= 1;
+                t.set_minute(59);
+                if t.hour() > 0 {
+                    t.set_hour(t.hour() - 1);
                 }
             }
         }
@@ -120,101 +144,12 @@ impl TimeEdit {
     }
 }
 impl Widget for TimeEdit {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for TimeEdit {
@@ -223,13 +158,12 @@ impl EventHandler for TimeEdit {
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            Event::KeyPress { key, .. } => match *key {
+        if let Event::KeyPress { key, .. } = event {
+            match *key {
                 38 => self.step_up(),
                 40 => self.step_down(),
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }

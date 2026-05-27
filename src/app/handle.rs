@@ -160,6 +160,19 @@ thread_local! {
     static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, ValueChangedCallback>> = RefCell::new(HashMap::new());
 }
 
+/// Remove all registered callbacks for the given widget id.
+///
+/// Call this when a widget is destroyed to prevent callback leaks
+/// from thread-local storage.
+pub fn remove_callbacks(id: ObjectId) {
+    CLICK_CALLBACKS.with(|map| {
+        map.borrow_mut().remove(&id);
+    });
+    VALUE_CALLBACKS.with(|map| {
+        map.borrow_mut().remove(&id);
+    });
+}
+
 /// Dispatch a trigger event to the registered callback for `widget_id`.
 /// Returns `true` if a callback was found and invoked.
 pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
@@ -185,7 +198,11 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 }
             })
         }
-        WidgetTriggerKind::Closed => false,
+        WidgetTriggerKind::Closed => {
+            // Clean up callbacks when a widget is closed/destroyed.
+            remove_callbacks(widget_id);
+            false
+        }
     }
 }
 
@@ -197,7 +214,7 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
 ///
 /// In addition to the common widget operations, `WindowHandle` provides
 /// factory methods for creating child widgets inside the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WindowHandle {
     id: ObjectId,
 }
@@ -231,6 +248,12 @@ impl WidgetHandle for WindowHandle {
         VALUE_CALLBACKS.with(|map| {
             map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
         });
+    }
+}
+
+impl Drop for WindowHandle {
+    fn drop(&mut self) {
+        remove_callbacks(self.id);
     }
 }
 
@@ -350,7 +373,7 @@ thread_local! {
 macro_rules! impl_handle {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $name {
             id: ObjectId,
         }
@@ -380,6 +403,12 @@ macro_rules! impl_handle {
                 VALUE_CALLBACKS.with(|map| {
                     map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
                 });
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                remove_callbacks(self.id);
             }
         }
     };
@@ -439,7 +468,7 @@ impl_handle!(
 /// Unlike normal widgets, a message-box exposes only dialog-oriented
 /// operations — it does **not** support `set_text`, `enable`, or
 /// `set_geometry` because those semantics do not apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MessageBoxHandle {
     id: ObjectId,
 }
@@ -488,6 +517,12 @@ impl WidgetHandle for MessageBoxHandle {
         VALUE_CALLBACKS.with(|map| {
             map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
         });
+    }
+}
+
+impl Drop for MessageBoxHandle {
+    fn drop(&mut self) {
+        remove_callbacks(self.id);
     }
 }
 
@@ -796,19 +831,10 @@ impl CheckBoxHandle {
 // RadioButtonHandle – extended state
 // ═══════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct RadioButtonState {
     selected: bool,
     group: String,
-}
-
-impl Default for RadioButtonState {
-    fn default() -> Self {
-        Self {
-            selected: false,
-            group: String::new(),
-        }
-    }
 }
 
 thread_local! {
@@ -968,23 +994,12 @@ impl LineEditHandle {
 // ScrollAreaHandle – extended state
 // ═══════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ScrollAreaState {
     scroll_x: i32,
     scroll_y: i32,
     content_w: u32,
     content_h: u32,
-}
-
-impl Default for ScrollAreaState {
-    fn default() -> Self {
-        Self {
-            scroll_x: 0,
-            scroll_y: 0,
-            content_w: 0,
-            content_h: 0,
-        }
-    }
 }
 
 thread_local! {
@@ -1220,17 +1235,9 @@ impl SpinBoxHandle {
 // PanelHandle – extended state
 // ═══════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct PanelState {
     title: String,
-}
-
-impl Default for PanelState {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-        }
-    }
 }
 
 thread_local! {
@@ -1464,5 +1471,26 @@ impl WindowHandle {
         // Since we don't have direct access to window geometry here,
         // we place the window at a reasonable default position.
         crate::set_widget_geometry(self.raw_id(), screen_w / 4, screen_h / 4, 640, 480);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ObjectId;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn remove_callbacks_cleans_up() {
+        let id: ObjectId = 42;
+        CLICK_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(id, Rc::new(RefCell::new(|| {})));
+            assert!(map.borrow().contains_key(&id));
+        });
+        remove_callbacks(id);
+        CLICK_CALLBACKS.with(|map| {
+            assert!(!map.borrow().contains_key(&id));
+        });
     }
 }

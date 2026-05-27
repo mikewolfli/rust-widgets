@@ -1,8 +1,7 @@
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Command link widget for command link buttons.
 pub struct CommandLink {
@@ -54,111 +53,22 @@ impl CommandLink {
     }
 }
 impl Widget for CommandLink {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
     fn is_enabled(&self) -> bool {
         self.enabled && self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
     }
 }
 impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MousePress { button: 1, .. } => {
-                if self.enabled {
-                    self.clicked.emit();
-                }
+            Event::MousePress { button: 1, .. } if self.enabled => {
+                self.clicked.emit();
             }
             Event::MouseEnter { .. } => {
                 self.hovered.emit(true);
@@ -230,5 +140,104 @@ impl Draw for CommandLink {
                 current_text_color,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Rect};
+    use crate::style::WidgetStyle;
+
+    #[test]
+    fn commandlink_creation_defaults() {
+        let cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert_eq!(cl.text(), "Command");
+        assert!(cl.description().is_empty());
+        assert!(cl.is_enabled());
+    }
+
+    #[test]
+    fn commandlink_set_text() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        cl.set_text("Save".to_string());
+        assert_eq!(cl.text(), "Save");
+    }
+
+    #[test]
+    fn commandlink_set_description() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        cl.set_description("Save the current document".to_string());
+        assert_eq!(cl.description(), "Save the current document");
+        cl.set_description(String::new());
+        assert!(cl.description().is_empty());
+    }
+
+    #[test]
+    fn commandlink_set_enabled() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert!(cl.is_enabled());
+        cl.set_enabled(false);
+        assert!(!cl.is_enabled());
+        cl.set_enabled(true);
+        assert!(cl.is_enabled());
+    }
+
+    #[test]
+    fn commandlink_click() {
+        let cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        cl.click(); // Should not panic
+    }
+
+    #[test]
+    fn commandlink_geometry_delegation() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        cl.set_geometry(Rect::new(10, 10, 400, 80));
+        assert_eq!(cl.geometry(), Rect::new(10, 10, 400, 80));
+    }
+
+    #[test]
+    fn commandlink_visibility() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert!(cl.is_visible());
+        cl.hide();
+        assert!(!cl.is_visible());
+        cl.show();
+        assert!(cl.is_visible());
+    }
+
+    #[test]
+    fn commandlink_tooltip_roundtrip() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert!(cl.tooltip().is_empty());
+        cl.set_tooltip("Click here".to_string());
+        assert_eq!(cl.tooltip(), "Click here");
+        cl.set_tooltip(String::new());
+        assert!(cl.tooltip().is_empty());
+    }
+
+    #[test]
+    fn commandlink_style_roundtrip() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert_eq!(*cl.style(), WidgetStyle::default());
+        let custom = WidgetStyle::default().with_background(Color::from_rgb(240, 240, 240));
+        cl.set_style(custom.clone());
+        assert_eq!(*cl.style(), custom);
+    }
+
+    #[test]
+    fn commandlink_id_kind() {
+        let cl_a = CommandLink::new(Rect::new(0, 0, 100, 50));
+        let cl_b = CommandLink::new(Rect::new(0, 0, 100, 50));
+        assert_ne!(cl_a.id(), cl_b.id());
+        assert_eq!(cl_a.kind(), WidgetKind::CommandLink);
+        assert_eq!(cl_b.kind(), WidgetKind::CommandLink);
+    }
+
+    #[test]
+    fn commandlink_signal_accessors() {
+        let cl = CommandLink::new(Rect::new(0, 0, 100, 50));
+        let _clicked = &cl.clicked;
+        let _hovered = &cl.hovered;
     }
 }

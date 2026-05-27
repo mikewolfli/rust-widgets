@@ -22,6 +22,7 @@ impl Widget for Canvas {
         &mut self.base
     }
 }
+
 impl Draw for Canvas {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -38,15 +39,11 @@ impl crate::event::EventHandler for Canvas {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(true);
-                }
+            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
             }
-            crate::event::Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    self.base.set_mouse_pressed(false);
-                }
+            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
             }
             _ => {}
         }

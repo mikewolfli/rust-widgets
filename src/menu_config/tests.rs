@@ -1,6 +1,6 @@
-use std::fs;
-use crate::gpu::GpuType;
 use super::*;
+use crate::gpu::GpuType;
+use std::fs;
 #[test]
 fn test_menu_config_default() {
     let config = MenuConfig::new();

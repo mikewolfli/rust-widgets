@@ -126,7 +126,7 @@ impl ChartContext for SvgChartContext {
         let cy = center.y as f64;
         let r = radius as f64;
         let sweep = end_angle - start_angle;
-        let steps = (sweep.abs().ceil() as u32).max(3).min(90);
+        let steps = (sweep.abs().ceil() as u32).clamp(3, 90);
         let mut pts = Vec::with_capacity(steps as usize + 2);
         // Start from center, then arc boundary points
         pts.push(Point::from_f64(cx, cy));

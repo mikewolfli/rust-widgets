@@ -121,6 +121,12 @@ impl RwError {
         )
     }
 
+    /// Create a new error from a message string (uses SUCCESS code —
+    /// prefer [`RwError::new`] when a specific [`ErrorId`] is known).
+    pub fn msg(message: impl Into<String>) -> Self {
+        Self::new(ErrorId::SUCCESS, message)
+    }
+
     /// Convert panic info (from `catch_unwind`) into an `RwError`.
     pub fn from_panic(panic_info: &dyn std::any::Any) -> Self {
         let msg = panic_info
@@ -200,5 +206,21 @@ pub fn to_error_id(result: RwResult<()>) -> i32 {
             log::error!("[rust_widgets] {}", e);
             e.id.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rw_error_display() {
+        let e = RwError::msg("test error");
+        assert!(e.to_string().contains("test"));
+    }
+    #[test]
+    fn rw_error_not_implemented() {
+        let e = RwError::not_implemented("feature");
+        assert!(e.to_string().contains("not implemented"));
+        assert!(e.to_string().contains("feature"));
     }
 }

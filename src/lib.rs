@@ -244,8 +244,7 @@ pub fn create_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    let result = platform::get_platform().create_button(parent, text, x, y, width, height);
-    result
+    platform::get_platform().create_button(parent, text, x, y, width, height)
 }
 /// Create a checkbox control as a child of specified parent.
 ///

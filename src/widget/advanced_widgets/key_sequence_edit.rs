@@ -1,16 +1,15 @@
 //! Key sequence editor widget for capturing keyboard shortcuts.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Represents a key sequence (modifier + key name).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeySequence {
-    pub modifiers: u32, // Bit flags: 0x01=Ctrl, 0x02=Alt, 0x04=Shift, 0x08=Meta
-    pub key_code: u32,
-    pub key_name: String,
+    modifiers: u32, // Bit flags: 0x01=Ctrl, 0x02=Alt, 0x04=Shift, 0x08=Meta
+    key_code: u32,
+    key_name: String,
 }
 impl KeySequence {
     pub fn new(modifiers: u32, key_code: u32, key_name: impl Into<String>) -> Self {
@@ -26,6 +25,24 @@ impl KeySequence {
             key_code: 0,
             key_name: String::new(),
         }
+    }
+    pub fn modifiers(&self) -> u32 {
+        self.modifiers
+    }
+    pub fn key_code(&self) -> u32 {
+        self.key_code
+    }
+    pub fn key_name(&self) -> &str {
+        &self.key_name
+    }
+    pub fn set_modifiers(&mut self, modifiers: u32) {
+        self.modifiers = modifiers;
+    }
+    pub fn set_key_code(&mut self, key_code: u32) {
+        self.key_code = key_code;
+    }
+    pub fn set_key_name(&mut self, key_name: impl Into<String>) {
+        self.key_name = key_name.into();
     }
     pub fn is_empty(&self) -> bool {
         self.key_code == 0
@@ -86,10 +103,10 @@ impl KeySequenceEdit {
     pub fn clear(&mut self) {
         self.set_key_sequence(KeySequence::empty());
     }
-    fn start_recording(&mut self) {
+    pub fn start_recording(&mut self) {
         self.recording = true;
     }
-    fn stop_recording(&mut self) {
+    pub fn stop_recording(&mut self) {
         if self.recording {
             self.recording = false;
             self.editing_finished.emit();
@@ -97,101 +114,12 @@ impl KeySequenceEdit {
     }
 }
 impl Widget for KeySequenceEdit {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for KeySequenceEdit {
@@ -255,8 +183,8 @@ fn key_code_to_name(key: u32) -> String {
         121 => "F10".into(),
         122 => "F11".into(),
         123 => "F12".into(),
-        k if k >= 65 && k <= 90 => (k as u8 as char).to_string(),
-        k if k >= 48 && k <= 57 => (((k - 48) as u8 + b'0') as char).to_string(),
+        k if (65..=90).contains(&k) => (k as u8 as char).to_string(),
+        k if (48..=57).contains(&k) => (((k - 48) as u8 + b'0') as char).to_string(),
         k => format!("Key{}", k),
     }
 }

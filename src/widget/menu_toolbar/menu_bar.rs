@@ -1,15 +1,14 @@
 //! Menu bar widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// A top-level menu entry in the menu bar.
 #[derive(Debug, Clone)]
 pub struct MenuBarEntry {
-    pub title: String,
-    pub enabled: bool,
+    title: String,
+    enabled: bool,
 }
 impl MenuBarEntry {
     pub fn new(title: impl Into<String>) -> Self {
@@ -17,6 +16,24 @@ impl MenuBarEntry {
             title: title.into(),
             enabled: true,
         }
+    }
+
+    // --- Accessors ---
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = title.into();
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 }
 /// Menu bar widget.
@@ -60,7 +77,7 @@ impl MenuBar {
     }
     pub fn set_menu_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(e) = self.entries.get_mut(index) {
-            e.enabled = enabled;
+            e.set_enabled(enabled);
         }
     }
     pub fn clear(&mut self) {
@@ -76,7 +93,7 @@ impl MenuBar {
         let rect = self.geometry();
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(&entry.title) as i32;
+            let w = Self::entry_width(entry.title()) as i32;
             if i == index {
                 return Rect {
                     x,
@@ -101,7 +118,7 @@ impl MenuBar {
         }
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(&entry.title) as i32;
+            let w = Self::entry_width(entry.title()) as i32;
             if pos.x >= x && pos.x < x + w {
                 return Some(i);
             }
@@ -111,101 +128,11 @@ impl MenuBar {
     }
 }
 impl Widget for MenuBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, g: Rect) {
-        self.base.set_geometry(g);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, s: Option<Size>) {
-        self.base.set_min_size(s);
-    }
-    fn set_max_size(&mut self, s: Option<Size>) {
-        self.base.set_max_size(s);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, p: Option<ObjectId>) {
-        self.base.set_parent(p);
-    }
-    fn add_child(&mut self, c: ObjectId) {
-        self.base.add_child(c);
-    }
-    fn remove_child(&mut self, c: ObjectId) {
-        self.base.remove_child(c);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.base.set_enabled(e);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, t: String) {
-        self.base.set_tooltip(t);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, s: WidgetStyle) {
-        self.base.set_style(s);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
 impl EventHandler for MenuBar {
@@ -220,8 +147,8 @@ impl EventHandler for MenuBar {
                 self.hovered_index = self.hit_entry(*pos);
                 if self.hovered_index != prev {
                     if let Some(idx) = self.hovered_index {
-                        if self.entries[idx].enabled {
-                            let title = self.entries[idx].title.clone();
+                        if self.entries[idx].is_enabled() {
+                            let title = self.entries[idx].title().to_string();
                             self.hovered_entry.emit(title);
                         }
                     }
@@ -229,17 +156,15 @@ impl EventHandler for MenuBar {
             }
             Event::MousePress { pos, button: 1 } => {
                 if let Some(idx) = self.hit_entry(*pos) {
-                    if self.entries[idx].enabled {
+                    if self.entries[idx].is_enabled() {
                         self.active_index = Some(idx);
-                        let title = self.entries[idx].title.clone();
+                        let title = self.entries[idx].title().to_string();
                         self.triggered.emit(title);
                     }
                 }
             }
-            Event::KeyPress { key, .. } => {
-                if *key == 27 {
-                    self.active_index = None;
-                }
+            Event::KeyPress { key, .. } if *key == 27 => {
+                self.active_index = None;
             }
             _ => {}
         }
@@ -250,10 +175,14 @@ impl Draw for MenuBar {
         let rect = self.geometry();
         // Menu bar background
         context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-        context.draw_line(Point::new(rect.x, rect.y + rect.height as i32 - 1), Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1), Color::from_rgb(200, 200, 200));
+        context.draw_line(
+            Point::new(rect.x, rect.y + rect.height as i32 - 1),
+            Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1),
+            Color::from_rgb(200, 200, 200),
+        );
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(&entry.title) as i32;
+            let w = Self::entry_width(entry.title()) as i32;
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect {
@@ -267,7 +196,7 @@ impl Draw for MenuBar {
             } else if is_hovered {
                 context.fill_rect(entry_rect, Color::from_rgb(210, 230, 255));
             }
-            let fg = if !entry.enabled {
+            let fg = if !entry.is_enabled() {
                 Color::from_rgb(150, 150, 150)
             } else if is_active {
                 Color::from_rgb(255, 255, 255)
@@ -276,7 +205,7 @@ impl Draw for MenuBar {
             };
             context.draw_text(
                 Point::new(x + w / 2, rect.y + rect.height as i32 / 2),
-                &entry.title,
+                entry.title(),
                 &Font::default(),
                 fg,
             );

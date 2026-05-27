@@ -45,9 +45,9 @@ impl GpuMemoryProfile {
     /// Returns the maximum upload batch size
     pub fn max_upload_batch_size(&self) -> usize {
         match self {
-            Self::Discrete => 4 * 1024 * 1024,   // 4 MB batches
-            Self::Integrated => 1 * 1024 * 1024, // 1 MB batches
-            Self::Cpu => 256 * 1024,             // 256 KB batches
+            Self::Discrete => 4 * 1024 * 1024, // 4 MB batches
+            Self::Integrated => 1024 * 1024,   // 1 MB batches
+            Self::Cpu => 256 * 1024,           // 256 KB batches
         }
     }
     /// Returns whether to merge small uploads
@@ -533,7 +533,7 @@ pub mod integration {
     pub fn create_gpu_buffer_pool_config(profile: GpuMemoryProfile) -> PoolConfig {
         let _buffer_size = match profile {
             GpuMemoryProfile::Discrete => 4 * 1024 * 1024, // 4 MB
-            GpuMemoryProfile::Integrated => 1 * 1024 * 1024, // 1 MB
+            GpuMemoryProfile::Integrated => 1024 * 1024,   // 1 MB
             GpuMemoryProfile::Cpu => 256 * 1024,           // 256 KB
         };
         PoolConfig {
@@ -546,7 +546,7 @@ pub mod integration {
     pub fn create_fallback_pool(profile: GpuMemoryProfile) -> BufferPool {
         let buffer_size = match profile {
             GpuMemoryProfile::Discrete => 4 * 1024 * 1024,
-            GpuMemoryProfile::Integrated => 1 * 1024 * 1024,
+            GpuMemoryProfile::Integrated => 1024 * 1024,
             GpuMemoryProfile::Cpu => 256 * 1024,
         };
         BufferPool::new(

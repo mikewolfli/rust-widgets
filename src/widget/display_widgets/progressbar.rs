@@ -1,9 +1,8 @@
 //! Progress bar widget.
-use crate::core::{Color, Font, ObjectId, Orientation, Point, Rect, Size};
+use crate::core::{Color, Font, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress bar widget.
 pub struct ProgressBar {
@@ -119,101 +118,18 @@ impl ProgressBar {
 }
 // Implement Widget trait
 impl Widget for ProgressBar {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+
+    fn size_hint(&self) -> Size {
+        match self.orientation() {
+            Orientation::Horizontal => Size::new(120, 20),
+            Orientation::Vertical => Size::new(20, 120),
+        }
     }
 }
 impl EventHandler for ProgressBar {
@@ -277,5 +193,178 @@ impl Draw for ProgressBar {
                 Color::from_rgb(0, 0, 0),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Orientation, Rect, Size};
+    use crate::style::WidgetStyle;
+
+    #[test]
+    fn progressbar_creation_defaults() {
+        let pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert_eq!(pb.value(), 0);
+        assert_eq!(pb.minimum(), 0);
+        assert_eq!(pb.maximum(), 100);
+        assert!(pb.is_text_visible());
+        assert_eq!(pb.orientation(), Orientation::Horizontal);
+        assert!(!pb.is_inverted_appearance());
+    }
+
+    #[test]
+    fn progressbar_set_value() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_value(50);
+        assert_eq!(pb.value(), 50);
+        pb.set_value(200); // clamp to max
+        assert_eq!(pb.value(), 100);
+        pb.set_value(-10); // clamp to min
+        assert_eq!(pb.value(), 0);
+    }
+
+    #[test]
+    fn progressbar_set_range() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_minimum(10);
+        pb.set_maximum(200);
+        assert_eq!(pb.minimum(), 10);
+        assert_eq!(pb.maximum(), 200);
+    }
+
+    #[test]
+    fn progressbar_set_range_reclamps_value() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_value(50);
+        pb.set_range(60, 100);
+        assert_eq!(pb.value(), 60);
+    }
+
+    #[test]
+    fn progressbar_orientation() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_orientation(Orientation::Vertical);
+        assert_eq!(pb.orientation(), Orientation::Vertical);
+        pb.set_orientation(Orientation::Horizontal);
+        assert_eq!(pb.orientation(), Orientation::Horizontal);
+    }
+
+    #[test]
+    fn progressbar_text_visible() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!(pb.is_text_visible());
+        pb.set_text_visible(false);
+        assert!(!pb.is_text_visible());
+        pb.set_text_visible(true);
+        assert!(pb.is_text_visible());
+    }
+
+    #[test]
+    fn progressbar_inverted_appearance() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!(!pb.is_inverted_appearance());
+        pb.set_inverted_appearance(true);
+        assert!(pb.is_inverted_appearance());
+        pb.set_inverted_appearance(false);
+        assert!(!pb.is_inverted_appearance());
+    }
+
+    #[test]
+    fn progressbar_reset() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_value(75);
+        assert_eq!(pb.value(), 75);
+        pb.reset();
+        assert_eq!(pb.value(), 0);
+    }
+
+    #[test]
+    fn progressbar_progress_percentage() {
+        let pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!((pb.progress() - 0.0).abs() < f32::EPSILON);
+
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_value(50);
+        assert!((pb.progress() - 0.5).abs() < f32::EPSILON);
+
+        pb.set_value(100);
+        assert!((pb.progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn progressbar_geometry_delegation() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_geometry(Rect::new(10, 10, 300, 30));
+        assert_eq!(pb.geometry(), Rect::new(10, 10, 300, 30));
+    }
+
+    #[test]
+    fn progressbar_visibility() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!(pb.is_visible());
+        pb.hide();
+        assert!(!pb.is_visible());
+        pb.show();
+        assert!(pb.is_visible());
+    }
+
+    #[test]
+    fn progressbar_enabled() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!(pb.is_enabled());
+        pb.set_enabled(false);
+        assert!(!pb.is_enabled());
+        pb.set_enabled(true);
+        assert!(pb.is_enabled());
+    }
+
+    #[test]
+    fn progressbar_tooltip_roundtrip() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert!(pb.tooltip().is_empty());
+        pb.set_tooltip("Progress info".to_string());
+        assert_eq!(pb.tooltip(), "Progress info");
+        pb.set_tooltip(String::new());
+        assert!(pb.tooltip().is_empty());
+    }
+
+    #[test]
+    fn progressbar_style_roundtrip() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        assert_eq!(*pb.style(), WidgetStyle::default());
+        let custom = WidgetStyle::default().with_background(Color::from_rgb(220, 220, 220));
+        pb.set_style(custom.clone());
+        assert_eq!(*pb.style(), custom);
+    }
+
+    #[test]
+    fn progressbar_id_kind() {
+        let pb_a = ProgressBar::new(Rect::new(0, 0, 100, 20));
+        let pb_b = ProgressBar::new(Rect::new(0, 0, 100, 20));
+        assert_ne!(pb_a.id(), pb_b.id());
+        assert_eq!(pb_a.kind(), WidgetKind::ProgressBar);
+        assert_eq!(pb_b.kind(), WidgetKind::ProgressBar);
+    }
+
+    #[test]
+    fn progressbar_signal_accessors() {
+        let pb = ProgressBar::new(Rect::new(0, 0, 100, 20));
+        let _value_changed = &pb.value_changed;
+    }
+
+    #[test]
+    fn progressbar_size_hint_horizontal() {
+        let pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        let hint = pb.size_hint();
+        assert_eq!(hint, Size::new(120, 20));
+    }
+
+    #[test]
+    fn progressbar_size_hint_vertical() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_orientation(Orientation::Vertical);
+        let hint = pb.size_hint();
+        assert_eq!(hint, Size::new(20, 120));
     }
 }

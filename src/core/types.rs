@@ -118,31 +118,6 @@ impl Version {
     pub const fn to_u32(&self) -> u32 {
         ((self.major as u32) << 16) | ((self.minor as u32) << 8) | (self.patch as u32)
     }
-    /// Creates version from string (e.g., "1.2.3").
-    pub fn from_str(s: &str) -> Result<Self> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() != 3 {
-            return Err(CoreError::InvalidArgument(format!(
-                "Invalid version format: {}",
-                s
-            )));
-        }
-        let major = parts[0].parse().map_err(|_| {
-            CoreError::InvalidArgument(format!("Invalid major version: {}", parts[0]))
-        })?;
-        let minor = parts[1].parse().map_err(|_| {
-            CoreError::InvalidArgument(format!("Invalid minor version: {}", parts[1]))
-        })?;
-        let patch = parts[2].parse().map_err(|_| {
-            CoreError::InvalidArgument(format!("Invalid patch version: {}", parts[2]))
-        })?;
-        Ok(Self::new(major, minor, patch))
-    }
-    /// Converts version to string.
-    pub fn to_string(&self) -> String {
-        format!("{}.{}.{}", self.major, self.minor, self.patch)
-    }
-    /// Checks if this version is compatible with another (same major version).
     pub fn is_compatible_with(&self, other: &Self) -> bool {
         self.major == other.major
     }
@@ -156,10 +131,41 @@ impl Version {
     pub fn is_older_than(&self, other: &Self) -> bool {
         other.is_newer_than(self)
     }
+
+    /// Parses a version string in "major.minor.patch" format.
+    pub fn parse_str(s: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "Invalid version format: '{}'. Expected 'major.minor.patch'",
+                s
+            ));
+        }
+        let major = parts[0]
+            .parse::<u16>()
+            .map_err(|e| format!("Invalid major version: {}", e))?;
+        let minor = parts[1]
+            .parse::<u16>()
+            .map_err(|e| format!("Invalid minor version: {}", e))?;
+        let patch = parts[2]
+            .parse::<u16>()
+            .map_err(|e| format!("Invalid patch version: {}", e))?;
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+impl std::str::FromStr for Version {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_str(s)
+    }
 }
 impl Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 /// Platform capabilities descriptor.
@@ -284,18 +290,18 @@ mod tests {
     }
 
     #[test]
-    fn test_version_from_str() {
-        let v = Version::from_str("1.2.3").unwrap();
+    fn test_version_parse_str() {
+        let v = Version::parse_str("1.2.3").unwrap();
         assert_eq!(v.major, 1);
         assert_eq!(v.minor, 2);
         assert_eq!(v.patch, 3);
     }
 
     #[test]
-    fn test_version_from_str_invalid() {
-        assert!(Version::from_str("1.2").is_err());
-        assert!(Version::from_str("1.2.3.4").is_err());
-        assert!(Version::from_str("a.b.c").is_err());
+    fn test_version_parse_str_invalid() {
+        assert!(Version::parse_str("1.2").is_err());
+        assert!(Version::parse_str("1.2.3.4").is_err());
+        assert!(Version::parse_str("a.b.c").is_err());
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Quality manager for dynamic quality adjustment.
-use std::time::Duration;
-use super::level::QualityLevel;
 use super::config::QualityConfig;
 use super::gpu::GpuCapability;
+use super::level::QualityLevel;
 use super::monitor::FrameTimeMonitor;
+use std::time::Duration;
 /// Quality manager for dynamic quality adjustment with hysteresis.
 ///
 /// # Examples

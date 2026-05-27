@@ -398,7 +398,6 @@ impl Chart for LineChart {
     }
 }
 /// Bar chart
-
 pub struct BarChart {
     title: String,
     x_axis_label: String,
@@ -573,7 +572,6 @@ impl Chart for BarChart {
     }
 }
 /// Pie chart
-
 pub struct PieChart {
     title: String,
     series: Vec<ChartSeries>,
@@ -712,7 +710,7 @@ impl Chart for PieChart {
                 let cx = center.x as f64;
                 let cy = center.y as f64;
                 let r = radius as f64;
-                let steps = (sweep.abs().ceil() as u32).max(3).min(90);
+                let steps = (sweep.abs().ceil() as u32).clamp(3, 90);
                 let mut vertices = Vec::with_capacity((steps + 2) as usize);
                 // Center point
                 vertices.push(Point {
@@ -735,7 +733,6 @@ impl Chart for PieChart {
     }
 }
 /// Scatter plot chart
-
 pub struct ScatterChart {
     title: String,
     x_axis_label: String,
@@ -912,7 +909,6 @@ impl Chart for ScatterChart {
     }
 }
 /// Area chart
-
 pub struct AreaChart {
     title: String,
     x_axis_label: String,
@@ -1080,10 +1076,7 @@ impl Chart for AreaChart {
             // Determine effective y-values for this series (stacked or raw)
             let effective_y: Vec<f64> = if self.stacked {
                 // Ensure accumulator is sized to match this series
-                if accum
-                    .as_ref()
-                    .map_or(true, |a| a.len() != series.data.len())
-                {
+                if accum.as_ref().is_none_or(|a| a.len() != series.data.len()) {
                     accum = Some(vec![0.0_f64; series.data.len()]);
                 }
                 let acc = accum.as_mut().unwrap();
@@ -1106,19 +1099,18 @@ impl Chart for AreaChart {
             let x0 = layout.plot_x + (((p0.x - min_x) / span_x) as f32) * layout.plot_w;
             let y0 = baseline - (((effective_y[0] - min_y) / span_y) as f32) * layout.plot_h;
             // Start at baseline below first point, go up to first point
-            pts.push(Point::from_f32(x0, baseline as f32));
+            pts.push(Point::from_f32(x0, baseline));
             pts.push(Point::from_f32(x0, y0));
             // Walk through intermediate data points
-            for i in 1..series.data.len() {
-                let p = &series.data[i];
+            for (p, ey) in series.data.iter().zip(effective_y.iter()).skip(1) {
                 let x = layout.plot_x + (((p.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y = baseline - (((effective_y[i] - min_y) / span_y) as f32) * layout.plot_h;
+                let y = baseline - (((ey - min_y) / span_y) as f32) * layout.plot_h;
                 pts.push(Point::from_f32(x, y));
             }
             // Drop back down to baseline from last point
             let last = &series.data[series.data.len() - 1];
             let last_x = layout.plot_x + (((last.x - min_x) / span_x) as f32) * layout.plot_w;
-            pts.push(Point::from_f32(last_x, baseline as f32));
+            pts.push(Point::from_f32(last_x, baseline));
             // Fill the enclosed area with semi-transparent color
             context.draw_polygon(&pts, series.color.with_alpha_f32(0.3));
             // Overdraw the top line for visual clarity

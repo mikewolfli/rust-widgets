@@ -1,7 +1,6 @@
-use crate::core::{ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
@@ -192,6 +191,13 @@ impl WebEngineView {
     pub fn title(&self) -> &str {
         &self.title
     }
+    pub fn set_title(&mut self, title: String) {
+        if self.title != title {
+            self.title = title.clone();
+            self.title_changed.emit(title);
+            self.base.request_redraw();
+        }
+    }
     pub fn can_go_back(&self) -> bool {
         self.can_go_back
     }
@@ -309,103 +315,17 @@ impl WebEngineView {
     }
 }
 impl Widget for WebEngineView {
-    fn id(&self) -> ObjectId {
-        self.base.id()
+    fn base(&self) -> &BaseWidget {
+        &self.base
     }
-    fn kind(&self) -> WidgetKind {
-        self.base.kind()
-    }
-    fn geometry(&self) -> Rect {
-        self.base.geometry()
-    }
-    fn set_geometry(&mut self, geometry: Rect) {
-        self.base.set_geometry(geometry);
-    }
-    fn min_size(&self) -> Option<Size> {
-        self.base.min_size()
-    }
-    fn max_size(&self) -> Option<Size> {
-        self.base.max_size()
-    }
-    fn set_min_size(&mut self, min_size: Option<Size>) {
-        self.base.set_min_size(min_size);
-    }
-    fn set_max_size(&mut self, max_size: Option<Size>) {
-        self.base.set_max_size(max_size);
-    }
-    fn parent(&self) -> Option<ObjectId> {
-        self.base.parent()
-    }
-    fn set_parent(&mut self, parent: Option<ObjectId>) {
-        self.base.set_parent(parent);
-    }
-    fn children(&self) -> &[ObjectId] {
-        self.base.children()
-    }
-    fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
-    }
-    fn remove_child(&mut self, child: ObjectId) {
-        self.base.remove_child(child);
-    }
-    fn show(&mut self) {
-        self.base.show();
-    }
-    fn hide(&mut self) {
-        self.base.hide();
-    }
-    fn is_visible(&self) -> bool {
-        self.base.is_visible()
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
-    }
-    fn is_enabled(&self) -> bool {
-        self.base.is_enabled()
-    }
-    fn set_tooltip(&mut self, tooltip: String) {
-        self.base.set_tooltip(tooltip);
-    }
-    fn tooltip(&self) -> &str {
-        self.base.tooltip()
-    }
-    fn style(&self) -> &WidgetStyle {
-        self.base.style()
-    }
-    fn set_style(&mut self, style: WidgetStyle) {
-        self.base.set_style(style);
-    }
-    fn connection_scope(&self) -> &ConnectionScope {
-        self.base.connection_scope()
-    }
-    fn hover_signal(&self) -> &Signal1<Point> {
-        self.base.hover_signal()
-    }
-    fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_down_signal()
-    }
-    fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
-        self.base.mouse_up_signal()
-    }
-    fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_down_signal()
-    }
-    fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
-        self.base.key_up_signal()
-    }
-    fn focus_gained_signal(&self) -> &GenericSignal {
-        self.base.focus_gained_signal()
-    }
-    fn focus_lost_signal(&self) -> &GenericSignal {
-        self.base.focus_lost_signal()
-    }
-    fn redraw_requested_signal(&self) -> &GenericSignal {
-        self.base.redraw_requested_signal()
-    }
-    fn layout_requested_signal(&self) -> &GenericSignal {
-        self.base.layout_requested_signal()
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
     }
 }
+
+use crate::render::RenderContext;
+use crate::widget::Draw;
+
 impl EventHandler for WebEngineView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -413,13 +333,12 @@ impl EventHandler for WebEngineView {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
+            Event::MousePress { pos: _, button }
                 // Handle mouse click — simulate link navigation
-                if *button == 1 {
+                if *button == 1 => {
                     let new_url = format!("https://example.com/{}", 12345);
                     self.set_url(new_url);
                 }
-            }
             Event::KeyPress { key, modifiers } => {
                 match *key {
                     37 => {
@@ -434,16 +353,66 @@ impl EventHandler for WebEngineView {
                         // F5 — reload
                         self.reload();
                     }
-                    82 => {
+                    82
                         // Ctrl+R — reload
-                        if *modifiers == 1 {
+                        if *modifiers == 1 => {
                             self.reload();
                         }
-                    }
                     _ => {}
                 }
             }
             _ => {}
         }
+    }
+}
+
+impl Draw for WebEngineView {
+    fn draw(&mut self, ctx: &mut RenderContext) {
+        let g = self.geometry();
+        ctx.fill_rect(g, Color::WHITE);
+        ctx.draw_rect(g, Color::rgb(200, 200, 200));
+        // Draw URL bar
+        let bar = Rect::new(g.x, g.y, g.width, 28);
+        ctx.fill_rect(bar, Color::rgb(240, 240, 240));
+        ctx.draw_text(
+            Point::new(g.x + 4, g.y + 20),
+            self.url(),
+            &Font::default_ui(),
+            Color::rgb(100, 100, 100),
+        );
+        // Content area hint
+        if self.is_loading() {
+            ctx.draw_text(
+                Point::new(g.x + 4, g.y + g.height as i32 / 2),
+                "Loading...",
+                &Font::default_ui(),
+                Color::rgb(150, 150, 150),
+            );
+        }
+    }
+    fn uses_custom_drawing(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn web_engine_view_draw_produces_svg() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        let svg = crate::widget::svg::render_to_svg(&mut wv);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn web_engine_view_url_and_title() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        assert!(wv.url().is_empty());
+        assert!(wv.title().is_empty());
+        wv.set_url("https://example.com".to_string());
+        assert_eq!(wv.url(), "https://example.com");
     }
 }

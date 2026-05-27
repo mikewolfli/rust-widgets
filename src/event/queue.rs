@@ -258,7 +258,7 @@ impl<T> BlockingQueue<T> {
             if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
-            queue = self.condvar.wait(queue).unwrap();
+            queue = self.condvar.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
     }
     pub fn pop_timeout(&self, timeout: Duration) -> Result<T, QueueError> {
@@ -276,7 +276,10 @@ impl<T> BlockingQueue<T> {
                 return Err(QueueError::Empty);
             }
             let remaining = timeout - elapsed;
-            let result = self.condvar.wait_timeout(queue, remaining).unwrap();
+            let result = self
+                .condvar
+                .wait_timeout(queue, remaining)
+                .unwrap_or_else(|e| e.into_inner());
             queue = result.0;
         }
     }
@@ -295,7 +298,10 @@ impl<T> BlockingQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
     pub fn clear(&self) {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -329,7 +335,10 @@ impl<T> BoundedQueue<T> {
             if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
-            queue = self.condvar_not_full.wait(queue).unwrap();
+            queue = self
+                .condvar_not_full
+                .wait(queue)
+                .unwrap_or_else(|e| e.into_inner());
         }
         queue.push_back(item);
         self.condvar_not_empty.notify_one();
@@ -357,7 +366,10 @@ impl<T> BoundedQueue<T> {
             if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
-            queue = self.condvar_not_empty.wait(queue).unwrap();
+            queue = self
+                .condvar_not_empty
+                .wait(queue)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
     pub fn try_pop(&self) -> Option<T> {
@@ -380,7 +392,10 @@ impl<T> BoundedQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
     pub fn is_full(&self) -> bool {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len() >= self.capacity

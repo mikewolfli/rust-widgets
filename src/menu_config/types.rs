@@ -36,17 +36,13 @@ pub struct HardwareCapabilities {
     pub performance_level: PerformanceLevel,
 }
 /// Performance level for adaptive feature selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PerformanceLevel {
     /// Low-end hardware - minimal effects.
     Low,
     /// Mid-range hardware - balanced effects.
+    #[default]
     Medium,
     /// High-end hardware - all effects enabled.
     High,
-}
-impl Default for PerformanceLevel {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
