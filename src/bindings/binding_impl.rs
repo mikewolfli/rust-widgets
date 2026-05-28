@@ -732,6 +732,9 @@ mod tests {
     use super::*;
     #[test]
     fn render_aa_sample_abi_roundtrip_clamps_values() {
+        let _guard = crate::render::software_render_config_test_lock()
+            .lock()
+            .expect("software render config test lock poisoned");
         let original = rust_widgets_get_render_aa_samples_per_axis();
         let low = rust_widgets_set_render_aa_samples_per_axis(0);
         assert_eq!(low, 1);

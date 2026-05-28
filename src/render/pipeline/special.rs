@@ -183,7 +183,7 @@ pub fn append_font_combo_box_visual_commands(
             });
             // Draw sample font list
             if rect.height > 70 {
-                let sample_fonts = vec!["Arial", "Times New Roman", "Courier New", "Helvetica"];
+                let sample_fonts = ["Arial", "Times New Roman", "Courier New", "Helvetica"];
                 for (i, font_name) in sample_fonts.iter().enumerate() {
                     let y = rect.y + 60 + (i as i32 * 24);
                     if y + 20 < rect.y + rect.height as i32 {

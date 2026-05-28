@@ -358,7 +358,7 @@ impl Event {
     pub fn is_touch(&self) -> bool {
         #[cfg(feature = "touch")]
         {
-            return matches!(
+            matches!(
                 self,
                 Self::TouchBegin { .. }
                     | Self::TouchEnd { .. }
@@ -382,7 +382,7 @@ impl Event {
                 {
                     false
                 }
-            };
+            }
         }
         #[cfg(not(feature = "touch"))]
         {

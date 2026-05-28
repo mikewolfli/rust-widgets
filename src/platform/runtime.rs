@@ -45,7 +45,11 @@ use std::sync::OnceLock;
 ///  1. `$WAYLAND_DISPLAY` environment variable is set → Wayland
 ///  2. `$XDG_SESSION_TYPE` equals `"wayland"` → Wayland
 ///  3. Otherwise → assume X11/"plain" Linux
-#[cfg(all(target_os = "linux", not(feature = "embedded")))]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native"
+))]
 fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")
@@ -213,13 +217,28 @@ pub fn dpi_scale_factor() -> f32 {
 // ---------------------------------------------------------------------------
 
 /// Returns the mobile backend name.
-#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
+#[cfg(feature = "mobile-api")]
 pub fn mobile_backend_name() -> &'static str {
-    mobile::get_mobile_platform().backend_name()
+    #[cfg(not(feature = "embedded"))]
+    {
+        mobile::get_mobile_platform().backend_name()
+    }
+    #[cfg(feature = "embedded")]
+    {
+        "embedded"
+    }
 }
 
 /// Attaches the mobile backend to a native view handle.
-#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
+#[cfg(feature = "mobile-api")]
 pub fn mobile_attach_to_native_view(native_handle: usize) -> bool {
-    mobile::get_mobile_platform().attach_to_native_view(native_handle)
+    #[cfg(not(feature = "embedded"))]
+    {
+        mobile::get_mobile_platform().attach_to_native_view(native_handle)
+    }
+    #[cfg(feature = "embedded")]
+    {
+        let _ = native_handle;
+        false
+    }
 }

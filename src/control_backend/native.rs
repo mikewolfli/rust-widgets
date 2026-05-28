@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn native_control_backend_default() {
-        let backend = NativeControlBackend::default();
+        let backend = NativeControlBackend;
         assert_eq!(backend.backend_name(), "native-control-backend");
         assert_eq!(backend.kind(), ControlBackendKind::Native);
     }

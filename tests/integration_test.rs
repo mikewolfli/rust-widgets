@@ -370,7 +370,7 @@ fn json_engine_loads_minimal_window() {
     use rust_widgets::json::JsonLoader;
     let json = r#"{"window":{"id":"main","title":"Hello","width":400,"height":300}}"#;
     let layout = JsonLoader::load(json).expect("minimal window should load");
-    assert!(layout.len() >= 1, "at least one widget registered");
+    assert!(!layout.is_empty(), "at least one widget registered");
     // The window's id is "main", findable via button() (WindowHandle not exposed as convenience)
     assert!(
         layout.id("main").is_some(),

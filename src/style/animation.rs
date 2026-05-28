@@ -222,14 +222,14 @@ impl Animation {
             AnimationDirection::Normal => eased_progress,
             AnimationDirection::Reverse => 1.0 - eased_progress,
             AnimationDirection::Alternate => {
-                if self.current_iteration.is_multiple_of(2) {
+                if self.current_iteration % 2 == 0 {
                     eased_progress
                 } else {
                     1.0 - eased_progress
                 }
             }
             AnimationDirection::AlternateReverse => {
-                if self.current_iteration.is_multiple_of(2) {
+                if self.current_iteration % 2 == 0 {
                     1.0 - eased_progress
                 } else {
                     eased_progress
@@ -360,6 +360,6 @@ mod tests {
         let mut animation = FloatAnimation::new(config, 0.0, 100.0);
         animation.start();
         let value = animation.current_value();
-        assert!(value >= 0.0 && value <= 100.0);
+        assert!((0.0..=100.0).contains(&value));
     }
 }

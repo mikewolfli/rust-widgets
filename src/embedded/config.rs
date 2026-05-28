@@ -64,17 +64,13 @@ impl Default for EmbeddedConfig {
         Self::new(Size::new(800, 600))
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResourceConstraint {
+    #[default]
     None,
     Low,
     Medium,
     High,
-}
-impl Default for ResourceConstraint {
-    fn default() -> Self {
-        Self::None
-    }
 }
 pub struct ResourceManager {
     // constraint: ResourceConstraint,

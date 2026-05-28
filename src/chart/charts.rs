@@ -1076,7 +1076,11 @@ impl Chart for AreaChart {
             // Determine effective y-values for this series (stacked or raw)
             let effective_y: Vec<f64> = if self.stacked {
                 // Ensure accumulator is sized to match this series
-                if accum.as_ref().is_none_or(|a| a.len() != series.data.len()) {
+                if accum
+                    .as_ref()
+                    .map(|a| a.len() != series.data.len())
+                    .unwrap_or(true)
+                {
                     accum = Some(vec![0.0_f64; series.data.len()]);
                 }
                 let acc = accum.as_mut().unwrap();

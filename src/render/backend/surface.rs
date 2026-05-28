@@ -85,6 +85,12 @@ fn global_software_render_config() -> &'static Mutex<SoftwareRenderConfig> {
     static CONFIG: OnceLock<Mutex<SoftwareRenderConfig>> = OnceLock::new();
     CONFIG.get_or_init(|| Mutex::new(SoftwareRenderConfig::default()))
 }
+
+#[cfg(test)]
+pub(crate) fn software_render_config_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 /// Set process-wide default software render configuration.
 pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
     *global_software_render_config()
@@ -265,6 +271,30 @@ mod tests {
     use crate::core::{Color, Font, Point, Rect, Size};
     use crate::render::RenderCommand;
     use crate::render::SoftwarePaintBackend;
+
+    struct SoftwareRenderConfigTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        original: SoftwareRenderConfig,
+    }
+
+    impl SoftwareRenderConfigTestGuard {
+        fn new() -> Self {
+            let lock = software_render_config_test_lock()
+                .lock()
+                .expect("software render config test lock poisoned");
+            let original = default_software_render_config();
+            Self {
+                _lock: lock,
+                original,
+            }
+        }
+    }
+
+    impl Drop for SoftwareRenderConfigTestGuard {
+        fn drop(&mut self) {
+            set_default_software_render_config(self.original);
+        }
+    }
 
     // ── BackBuffer ──────────────────────────────────────────────────────
 
@@ -842,34 +872,32 @@ mod tests {
 
     #[test]
     fn default_software_render_config_returns_default() {
+        let _guard = SoftwareRenderConfigTestGuard::new();
+        set_default_software_render_config(SoftwareRenderConfig::default());
         let config = default_software_render_config();
         assert_eq!(config.aa_samples_per_axis, 4);
     }
 
     #[test]
     fn set_default_software_render_config_updates_global() {
+        let _guard = SoftwareRenderConfigTestGuard::new();
         let custom = SoftwareRenderConfig {
             aa_samples_per_axis: 2,
         };
         set_default_software_render_config(custom);
         let retrieved = default_software_render_config();
         assert_eq!(retrieved.aa_samples_per_axis, 2);
-
-        // Reset to default for other tests
-        set_default_software_render_config(SoftwareRenderConfig::default());
     }
 
     #[test]
     fn set_default_software_render_config_clamps() {
+        let _guard = SoftwareRenderConfigTestGuard::new();
         let custom = SoftwareRenderConfig {
             aa_samples_per_axis: 99,
         };
         set_default_software_render_config(custom);
         let retrieved = default_software_render_config();
         assert_eq!(retrieved.aa_samples_per_axis, 8);
-
-        // Reset
-        set_default_software_render_config(SoftwareRenderConfig::default());
     }
 
     // ── PaintBackend integration via RenderContext ───────────────────────

@@ -406,10 +406,12 @@ mod tests {
 
     #[test]
     fn test_web_settings_mutate() {
-        let mut settings = WebSettings::default();
-        settings.javascript_enabled = false;
-        settings.plugins_enabled = true;
-        settings.private_browsing = true;
+        let settings = WebSettings {
+            javascript_enabled: false,
+            plugins_enabled: true,
+            private_browsing: true,
+            ..WebSettings::default()
+        };
         assert!(!settings.javascript_enabled);
         assert!(settings.plugins_enabled);
         assert!(settings.private_browsing);
@@ -427,9 +429,11 @@ mod tests {
 
     #[test]
     fn test_security_settings_mutate() {
-        let mut security = SecuritySettings::default();
-        security.allow_insecure_content = true;
-        security.block_popups = false;
+        let security = SecuritySettings {
+            allow_insecure_content: true,
+            block_popups: false,
+            ..SecuritySettings::default()
+        };
         assert!(security.allow_insecure_content);
         assert!(!security.block_popups);
     }

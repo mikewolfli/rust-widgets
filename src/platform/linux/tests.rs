@@ -7,6 +7,10 @@ use crate::platform::linux::LinuxPlatform;
 use crate::platform::Platform;
 
 #[test]
+#[cfg_attr(
+    feature = "gtk-native",
+    ignore = "gtk requires main-thread test execution"
+)]
 fn platform_creates_and_runs() {
     let backend = LinuxPlatform::new();
     backend.init();
@@ -45,6 +49,10 @@ fn platform_creates_and_runs() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "gtk-native",
+    ignore = "gtk requires main-thread test execution"
+)]
 fn widget_lifecycle() {
     let backend = LinuxPlatform::new();
     backend.init();
@@ -106,6 +114,10 @@ fn widget_lifecycle() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "gtk-native",
+    ignore = "gtk requires main-thread test execution"
+)]
 fn clipboard_roundtrip() {
     let backend = LinuxPlatform::new();
     backend.init();

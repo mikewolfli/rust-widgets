@@ -151,9 +151,4 @@ impl WaylandPlatform {
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, width, height)
     }
-
-    /// Query widget kind for an existing widget.
-    pub(crate) fn kind_of(&self, id: u64) -> Option<WaylandHandleKind> {
-        self.state.kind_of(id)
-    }
 }

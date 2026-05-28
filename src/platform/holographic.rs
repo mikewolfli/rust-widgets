@@ -402,11 +402,6 @@ impl HolographicKeyboardDetector {
         &mut self.layout
     }
 
-    /// Returns the current finger tracking state.
-    pub(crate) fn finger_state(&self) -> FingerState {
-        self.state
-    }
-
     /// Compute a confidence score from the release depth.
     fn compute_confidence(depth: f32, release_threshold: f32) -> f32 {
         if depth <= 0.0 {

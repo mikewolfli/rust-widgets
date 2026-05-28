@@ -99,21 +99,34 @@ impl DeviceEnvironment {
     fn resolve_device_class(screen_size: Size, _dpi_scale: f32) -> DeviceClass {
         // Compile-time feature profile takes precedence.
         #[cfg(feature = "tablet")]
-        return DeviceClass::Tablet;
-        #[cfg(feature = "mobile")]
-        return DeviceClass::Mobile;
-        #[cfg(feature = "embedded")]
-        return DeviceClass::Embedded;
+        {
+            DeviceClass::Tablet
+        }
+        #[cfg(all(not(feature = "tablet"), feature = "mobile"))]
+        {
+            DeviceClass::Mobile
+        }
+        #[cfg(all(not(feature = "tablet"), not(feature = "mobile"), feature = "embedded"))]
+        {
+            DeviceClass::Embedded
+        }
 
         // Fallback: heuristic based on screen width (logical points).
         // Only reached when no feature flag above is active.
-        let width = screen_size.width.max(320);
-        if width < 480 {
-            DeviceClass::Mobile
-        } else if width < 1024 {
-            DeviceClass::Tablet
-        } else {
-            DeviceClass::Desktop
+        #[cfg(all(
+            not(feature = "tablet"),
+            not(feature = "mobile"),
+            not(feature = "embedded")
+        ))]
+        {
+            let width = screen_size.width.max(320);
+            if width < 480 {
+                DeviceClass::Mobile
+            } else if width < 1024 {
+                DeviceClass::Tablet
+            } else {
+                DeviceClass::Desktop
+            }
         }
     }
 
@@ -124,7 +137,7 @@ impl DeviceEnvironment {
             let _ = class;
             // When touch feature is enabled, all form factors support touch
             // except projector (which uses remote control).
-            return !matches!(class, DeviceClass::Projector);
+            !matches!(class, DeviceClass::Projector)
         }
         #[cfg(not(feature = "touch"))]
         {

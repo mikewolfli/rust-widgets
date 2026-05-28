@@ -81,6 +81,9 @@ pub use backend::{
     SoftwareSurface,
 };
 
+#[cfg(test)]
+pub(crate) use backend::software_render_config_test_lock;
+
 // Pipeline — all append_* functions
 #[allow(deprecated)]
 pub use pipeline::{

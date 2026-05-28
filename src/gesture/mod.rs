@@ -42,7 +42,7 @@ const SWIPE_MIN_DISTANCE: f32 = 30.0;
 
 /// A single gesture recognizer that processes raw events and optionally
 /// produces a semantic gesture event.
-pub trait GestureRecognizer: std::fmt::Debug {
+pub trait GestureRecognizer: std::fmt::Debug + Send {
     /// Feed a raw event into the recognizer.
     ///
     /// Returns `Some(Event)` if the recognizer has completed a gesture,
@@ -340,8 +340,8 @@ impl GestureRecognizer for LongPressGesture {
             }
             _ => {
                 // Check time threshold on non-touch events (e.g. timer ticks)
-                if self.start_time.is_some() {
-                    let elapsed = now_ms.saturating_sub(self.start_time.unwrap());
+                if let Some(start_time) = self.start_time {
+                    let elapsed = now_ms.saturating_sub(start_time);
                     // Only fire on a timer event or when duration is exceeded
                     if elapsed >= LONG_PRESS_MIN_MS && matches!(event, Event::Timer { .. }) {
                         if let Some(pos) = self.start_pos {
@@ -511,7 +511,7 @@ impl GestureRecognizer for PanGesture {
                 let delta = if let Some(last) = self.last_pos {
                     Point::new(pos.x - last.x, pos.y - last.y)
                 } else {
-                    Point::new(0.0, 0.0)
+                    Point::new(0, 0)
                 };
                 self.last_pos = Some(*pos);
                 Some(Event::Drag {
@@ -599,7 +599,7 @@ impl GestureRecognizer for LongPressDragGesture {
                     let delta = if let Some(last) = self.last_pos {
                         Point::new(pos.x - last.x, pos.y - last.y)
                     } else {
-                        Point::new(0.0, 0.0)
+                        Point::new(0, 0)
                     };
                     self.last_pos = Some(*pos);
                     return Some(Event::Drag {
@@ -615,7 +615,7 @@ impl GestureRecognizer for LongPressDragGesture {
                     let delta = if let Some(start) = self.start_pos {
                         Point::new(pos.x - start.x, pos.y - start.y)
                     } else {
-                        Point::new(0.0, 0.0)
+                        Point::new(0, 0)
                     };
                     return Some(Event::Drag {
                         pos: *pos,
@@ -627,7 +627,7 @@ impl GestureRecognizer for LongPressDragGesture {
                 if let Some(start) = self.start_pos {
                     let dx = (pos.x - start.x).abs();
                     let dy = (pos.y - start.y).abs();
-                    if dx > LONG_PRESS_MAX_MOVE || dy > LONG_PRESS_MAX_MOVE {
+                    if (dx as f32) > LONG_PRESS_MAX_MOVE || (dy as f32) > LONG_PRESS_MAX_MOVE {
                         // Moved too much — cancel
                         self.reset();
                     }
@@ -640,13 +640,11 @@ impl GestureRecognizer for LongPressDragGesture {
             }
             _ => {
                 // Check for long-press timeout on any event while holding
-                if self.start_pos.is_some() && !self.long_press_fired && !self.dragging {
-                    if let Some(start) = self.start_time {
+                if !self.long_press_fired && !self.dragging {
+                    if let (Some(start_pos), Some(start)) = (self.start_pos, self.start_time) {
                         if now_ms >= start && now_ms - start >= LONG_PRESS_MIN_MS {
                             self.long_press_fired = true;
-                            return Some(Event::LongPress {
-                                pos: self.start_pos.unwrap(),
-                            });
+                            return Some(Event::LongPress { pos: start_pos });
                         }
                     }
                 }
@@ -833,7 +831,9 @@ impl GestureRecognizer for TwoFingerTapGesture {
                 if let Some(t) = self.touches.iter_mut().find(|(_, id, _)| *id == *touch_id) {
                     let dx = (pos.x - t.0.x).abs();
                     let dy = (pos.y - t.0.y).abs();
-                    if dx > MAX_STATIONARY_DISTANCE || dy > MAX_STATIONARY_DISTANCE {
+                    if (dx as f32) > MAX_STATIONARY_DISTANCE
+                        || (dy as f32) > MAX_STATIONARY_DISTANCE
+                    {
                         self.reset(); // moved too much
                     } else {
                         t.0 = *pos; // update position
@@ -1237,7 +1237,7 @@ mod tests {
         rec.process(&Event::tap(50, 50), 0);
         // Second tap after 500ms → too slow
         let result = rec.process(&Event::tap(55, 55), 500);
-        assert!(matches!(result, None));
+        assert!(result.is_none());
         // But a third tap within the window should still work
         let result2 = rec.process(&Event::tap(55, 55), 700); // 200ms after second
         assert!(matches!(result2, Some(Event::DoubleTap { .. })));

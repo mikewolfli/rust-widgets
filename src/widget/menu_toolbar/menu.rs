@@ -278,7 +278,7 @@ impl EventHandler for Menu {
             Event::Tap { pos } => {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
-                for (_i, item) in self.items.iter().enumerate() {
+                for item in &self.items {
                     let h = if item.is_separator() {
                         Self::separator_height()
                     } else {

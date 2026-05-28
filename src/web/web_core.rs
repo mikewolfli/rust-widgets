@@ -423,8 +423,8 @@ mod tests {
         assert!(!core.is_loading());
         assert_eq!(core.title(), "");
         assert_eq!(core.load_progress(), 0);
-        assert_eq!(core.settings().javascript_enabled, true);
-        assert_eq!(core.security().block_popups, true);
+        assert!(core.settings().javascript_enabled);
+        assert!(core.security().block_popups);
     }
 
     #[test]

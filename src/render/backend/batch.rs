@@ -637,8 +637,6 @@ mod tests {
         let size = crate::core::Size::new(1, 1);
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
         state.replay(&mut backend, BatchId::new(999));
-        // If we reach here, no panic occurred
-        assert!(true);
     }
 
     #[test]

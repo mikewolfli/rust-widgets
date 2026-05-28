@@ -1,5 +1,3 @@
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
-use super::types::LinuxNativeState;
 use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;
@@ -8,7 +6,11 @@ use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
 use std::sync::atomic::Ordering;
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use std::sync::Arc;
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::time::Duration;
 
 impl Platform for LinuxPlatform {
@@ -38,14 +40,16 @@ impl Platform for LinuxPlatform {
         {
             // Enter GTK event loop for native-backed Linux runtime.
             gtk::main();
-            return;
         }
-        if !self.runtime.initialized.load(Ordering::SeqCst) {
-            self.init();
-        }
-        self.runtime.running.store(true, Ordering::SeqCst);
-        while self.runtime.running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(16));
+        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        {
+            if !self.runtime.initialized.load(Ordering::SeqCst) {
+                self.init();
+            }
+            self.runtime.running.store(true, Ordering::SeqCst);
+            while self.runtime.running.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(16));
+            }
         }
     }
     fn quit(&self) {
@@ -292,7 +296,7 @@ impl Platform for LinuxPlatform {
             .insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let slider = gtk::Scale::new_with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+            let slider = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
             slider.set_size_request(width as i32, height as i32);
             slider.set_draw_value(false);
             let menus = Arc::clone(&self.menus);

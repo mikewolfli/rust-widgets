@@ -154,31 +154,22 @@ impl EventHandler for Button {
                 self.press();
             }
             #[cfg(feature = "touch")]
-            Event::TouchBegin { .. } => {
-                if self.base.is_enabled() {
-                    self.press();
-                    return;
-                }
+            Event::TouchBegin { .. } if self.base.is_enabled() => {
+                self.press();
             }
             Event::MouseUp((_, _)) if self.pressed => {
                 self.release();
                 self.base.clicked.emit();
             }
             #[cfg(feature = "touch")]
-            Event::TouchEnd { .. } => {
-                if self.pressed {
-                    self.release();
-                    self.base.clicked.emit();
-                    return;
-                }
+            Event::TouchEnd { .. } if self.pressed => {
+                self.release();
+                self.base.clicked.emit();
             }
             #[cfg(feature = "touch")]
-            Event::Tap { .. } => {
-                if self.base.is_enabled() {
-                    self.base.clicked.emit();
-                    self.state_changed.emit(self.state());
-                    return;
-                }
+            Event::Tap { .. } if self.base.is_enabled() => {
+                self.base.clicked.emit();
+                self.state_changed.emit(self.state());
             }
             Event::FocusGained => {
                 self.focused = true;

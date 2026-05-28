@@ -11,13 +11,11 @@
 //! - Deterministic ID allocation via `insert_widget()`
 
 use crate::core::ObjectId;
+use crate::core::PlatformFamily;
 use crate::platform::types::{
-    DropEvent, Platform, PlatformCapabilities, PlatformFamily, WidgetTriggerEvent,
-    WidgetTriggerKind,
+    DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
-use crate::platform::wayland::types::{
-    ListData, WaylandHandleKind, WaylandMenuState, WaylandPlatform, WaylandRuntimeState,
-};
+use crate::platform::wayland::types::{ListData, WaylandHandleKind, WaylandPlatform};
 
 // ---------------------------------------------------------------------------
 // Platform trait implementation
@@ -85,7 +83,7 @@ impl Platform for WaylandPlatform {
 
     fn create_button(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -97,7 +95,7 @@ impl Platform for WaylandPlatform {
 
     fn create_checkbox(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -109,7 +107,7 @@ impl Platform for WaylandPlatform {
 
     fn create_line_edit(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -121,7 +119,7 @@ impl Platform for WaylandPlatform {
 
     fn create_label(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -133,7 +131,7 @@ impl Platform for WaylandPlatform {
 
     fn create_radio_button(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -143,13 +141,20 @@ impl Platform for WaylandPlatform {
         self.insert_widget(WaylandHandleKind::RadioButton, text, x, y, width, height)
     }
 
-    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+    fn create_slider(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
         self.insert_widget(WaylandHandleKind::Slider, "Slider", x, y, width, height)
     }
 
     fn create_progress_bar(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -167,7 +172,7 @@ impl Platform for WaylandPlatform {
 
     fn create_combo_box(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -183,7 +188,7 @@ impl Platform for WaylandPlatform {
 
     fn create_list_box(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -197,13 +202,13 @@ impl Platform for WaylandPlatform {
         id
     }
 
-    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+    fn create_panel(&self, _parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.insert_widget(WaylandHandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu_bar(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -214,7 +219,7 @@ impl Platform for WaylandPlatform {
 
     fn create_menu(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -226,7 +231,7 @@ impl Platform for WaylandPlatform {
 
     fn create_tool_bar(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -237,7 +242,7 @@ impl Platform for WaylandPlatform {
 
     fn create_status_bar(
         &self,
-        parent: ObjectId,
+        _parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,

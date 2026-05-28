@@ -38,9 +38,6 @@ pub struct EventLoop {
     running: Arc<Mutex<bool>>,
     /// Processing thread handle.
     thread_handle: Option<thread::JoinHandle<()>>,
-    /// Gesture recognition engine (touch feature only).
-    #[cfg(feature = "touch")]
-    gesture_engine: GestureEngine,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
 }
@@ -52,8 +49,6 @@ impl EventLoop {
             queue: Arc::new(Mutex::new(EventQueue::new())),
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
-            #[cfg(feature = "touch")]
-            gesture_engine: GestureEngine::new(),
             dispatch_fn: None,
         }
     }

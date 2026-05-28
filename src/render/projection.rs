@@ -220,7 +220,7 @@ impl ProjectionRenderConfig {
 
     /// Set a custom text scale factor.
     pub fn with_text_scale(mut self, scale: f32) -> Self {
-        self.text_scale = scale.max(0.5).min(3.0);
+        self.text_scale = scale.clamp(0.5, 3.0);
         self
     }
 

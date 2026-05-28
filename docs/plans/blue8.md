@@ -89,7 +89,7 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 
 ### P2-4: Mobile 后端
 
-- 14 个 ComboBox/ListBox 方法返回 false/None/0
+- ✅ R14 已修复：ComboBox/ListBox 14 个方法已改为 state-backed（不再返回固定 false/None/0）
 - 无实际移动端 FFI 集成
 - 标注为预留状态
 
@@ -97,7 +97,7 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 
 - MessageBox、FileDialog、ColorDialog、FontDialog 为 state surrogate（无 MessageBoxW/IFileOpenDialog/CHOOSECOLORW/CHOOSEFONTW 调用）
 - SpinBox、ListView、ScrollArea 为 state surrogate
-- DPI scale 硬编码为 1.0（需 `GetDpiForWindow`/`GetDeviceCaps` 查询）
+- ✅ R3 已修复：DPI scale 已使用 `GetDC`/`GetDeviceCaps` 查询（不再硬编码 1.0）
 - 这些已在 BLUE7 中从 `return 0` 改为 state-backed，但非原生实现
 
 ---
@@ -346,6 +346,50 @@ IME、无障碍、拖放等方法是 trait 强制方法但所有后端返回 fal
 ---
 
 ## ✅ 完成状态（截至 2026-05-02）
+
+### R14 增量闭环（2026-05-28）
+
+#### R14-1: Mobile 后端 ComboBox/ListBox 14 个硬编码返回值修复 ✅
+
+`src/platform/mobile.rs` 原先以下方法为固定返回值（`false`/`None`/`0`），导致移动端后端在组合框与列表框上仅有壳结构、无真实数据行为：
+
+- `list_box_add_item/remove_item/clear_items/set_current_index/current_index/item_count/item_text`
+- `combo_box_add_item/clear_items/set_current_index/current_index/item_count/item_text`
+
+本轮改为 **state-backed** 实现：
+
+- 新增状态存储：`combo_items`、`combo_current_index`、`list_items`、`list_current_index`
+- 在 `create_combo_box/create_list_box` 时初始化状态槽
+- 索引变更、清空、删除项时同步修正 `current_index`
+
+新增单元测试（2）：
+
+- `mobile_combo_box_item_operations_are_state_backed`
+- `mobile_list_box_item_operations_are_state_backed`
+
+#### R14-2: 间歇性 101 根因闭环（测试并发污染）✅
+
+在高强度循环下捕获到 `render::backend::surface` 全局渲染配置测试被并发测试污染，导致偶发失败。
+
+修复：
+
+- `src/render/backend/surface.rs` 增加测试专用全局互斥锁与 guard 自动恢复
+- `src/render/backend/mod.rs`、`src/render/mod.rs` 透出测试锁
+- `src/bindings/binding_impl.rs` 的渲染 AA ABI 测试接入同一把锁
+
+结果：test→check 压测序列稳定通过，无再次复现。
+
+#### R14 验证证据 ✅
+
+- `cargo check --all-features -q` 通过
+- `cargo test --all-features -q` 通过（**1427 passed**, 0 failed）
+- `cargo clippy --all-targets --all-features -- -D warnings` 通过
+
+### R15 稳定性复验（2026-05-28）✅
+
+- `cargo check --all-features -q` 连续 **20 轮** 压测全部通过（未复现 Exit 101）
+- `cargo test --all-features -q` 再次通过（**1427 passed**, 0 failed）
+- `cargo clippy --all-targets --all-features -- -D warnings` 再次通过
 
 ### Feature 架构重构 ✅
 
@@ -620,7 +664,9 @@ Windows 有真实 Win32 调用，Linux 有部分 GTK 集成，其余 4 个后端
 
 ---
 
-## 📋 质量评分基线缺失项明细（满分 10/10 未达成的维度）
+## 📋 历史缺失项明细（归档）
+
+> 以下内容为早期扫描快照（R3 之前）的缺口记录，保留用于审计追溯；当前执行状态以“完成状态总表”和 R14/R15 为准。
 
 以下列出各维度未达 10/10 的具体缺失项，按维度分节。每项均附明确的改进方向和估计工作量。
 

@@ -86,7 +86,6 @@ pub(crate) use pixel_ops::pixel_bytes_len;
 /// These functions are reserved for the future widget rendering pipeline.
 /// Gated behind `unstable-pipeline-routing` to suppress dead-code warnings
 /// without blanket `#[allow(dead_code)]`.
-
 /// Routing logic for native vs custom widget drawing.
 /// Reserved for future widget rendering pipeline integration.
 /// Currently unused while the pipeline architecture is being stabilized.

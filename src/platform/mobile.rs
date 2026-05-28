@@ -37,6 +37,10 @@ pub struct AndroidMobilePlatform {
     state: BackendState<MobileHandleKind>,
     attached_native_view: AtomicUsize,
     menus: Mutex<MobileMenuState>,
+    combo_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    combo_current_index: Mutex<HashMap<ObjectId, Option<usize>>>,
+    list_items: Mutex<HashMap<ObjectId, Vec<String>>>,
+    list_current_index: Mutex<HashMap<ObjectId, Option<usize>>>,
 }
 impl AndroidMobilePlatform {
     /// Creates a new Android mobile platform adapter.
@@ -45,6 +49,10 @@ impl AndroidMobilePlatform {
             state: BackendState::new(),
             attached_native_view: AtomicUsize::new(0),
             menus: Mutex::new(MobileMenuState::default()),
+            combo_items: Mutex::new(HashMap::new()),
+            combo_current_index: Mutex::new(HashMap::new()),
+            list_items: Mutex::new(HashMap::new()),
+            list_current_index: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -233,7 +241,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(
+        let id = self.create_child_widget(
             parent,
             MobileHandleKind::ComboBox,
             "ComboBox",
@@ -241,7 +249,20 @@ impl Platform for AndroidMobilePlatform {
             y,
             width,
             height,
-        )
+        );
+        if id != 0 {
+            self.combo_items
+                .lock()
+                .expect("mobile combo lock poisoned")
+                .entry(id)
+                .or_default();
+            self.combo_current_index
+                .lock()
+                .expect("mobile combo index lock poisoned")
+                .entry(id)
+                .or_insert(None);
+        }
+        id
     }
     fn create_list_box(
         &self,
@@ -251,7 +272,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(
+        let id = self.create_child_widget(
             parent,
             MobileHandleKind::ListBox,
             "ListBox",
@@ -259,46 +280,192 @@ impl Platform for AndroidMobilePlatform {
             y,
             width,
             height,
-        )
+        );
+        if id != 0 {
+            self.list_items
+                .lock()
+                .expect("mobile list lock poisoned")
+                .entry(id)
+                .or_default();
+            self.list_current_index
+                .lock()
+                .expect("mobile list index lock poisoned")
+                .entry(id)
+                .or_insert(None);
+        }
+        id
     }
-    fn list_box_add_item(&self, _list_box: ObjectId, _text: &str) -> bool {
-        false
+    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return false;
+        }
+        self.list_items
+            .lock()
+            .expect("mobile list lock poisoned")
+            .entry(list_box)
+            .or_default()
+            .push(text.to_string());
+        true
     }
-    fn list_box_remove_item(&self, _list_box: ObjectId, _index: usize) -> bool {
-        false
+    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return false;
+        }
+        let mut items = self.list_items.lock().expect("mobile list lock poisoned");
+        let Some(vec) = items.get_mut(&list_box) else {
+            return false;
+        };
+        if index >= vec.len() {
+            return false;
+        }
+        vec.remove(index);
+        drop(items);
+        let mut current = self
+            .list_current_index
+            .lock()
+            .expect("mobile list index lock poisoned");
+        if let Some(sel) = current.get_mut(&list_box) {
+            *sel = match *sel {
+                Some(i) if i == index => None,
+                Some(i) if i > index => Some(i - 1),
+                other => other,
+            };
+        }
+        true
     }
-    fn list_box_clear_items(&self, _list_box: ObjectId) -> bool {
-        false
+    fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return false;
+        }
+        self.list_items
+            .lock()
+            .expect("mobile list lock poisoned")
+            .entry(list_box)
+            .or_default()
+            .clear();
+        self.list_current_index
+            .lock()
+            .expect("mobile list index lock poisoned")
+            .insert(list_box, None);
+        true
     }
-    fn list_box_set_current_index(&self, _list_box: ObjectId, _index: usize) -> bool {
-        false
+    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return false;
+        }
+        let count = self.list_box_item_count(list_box);
+        if index >= count {
+            return false;
+        }
+        self.list_current_index
+            .lock()
+            .expect("mobile list index lock poisoned")
+            .insert(list_box, Some(index));
+        true
     }
-    fn list_box_current_index(&self, _list_box: ObjectId) -> Option<usize> {
-        None
+    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return None;
+        }
+        self.list_current_index
+            .lock()
+            .expect("mobile list index lock poisoned")
+            .get(&list_box)
+            .copied()
+            .flatten()
     }
-    fn list_box_item_count(&self, _list_box: ObjectId) -> usize {
-        0
+    fn list_box_item_count(&self, list_box: ObjectId) -> usize {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return 0;
+        }
+        self.list_items
+            .lock()
+            .expect("mobile list lock poisoned")
+            .get(&list_box)
+            .map_or(0, Vec::len)
     }
-    fn list_box_item_text(&self, _list_box: ObjectId, _index: usize) -> Option<String> {
-        None
+    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
+            return None;
+        }
+        self.list_items
+            .lock()
+            .expect("mobile list lock poisoned")
+            .get(&list_box)
+            .and_then(|items| items.get(index).cloned())
     }
-    fn combo_box_add_item(&self, _combo_box: ObjectId, _text: &str) -> bool {
-        false
+    fn combo_box_add_item(&self, combo_box: ObjectId, text: &str) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return false;
+        }
+        self.combo_items
+            .lock()
+            .expect("mobile combo lock poisoned")
+            .entry(combo_box)
+            .or_default()
+            .push(text.to_string());
+        true
     }
-    fn combo_box_clear_items(&self, _combo_box: ObjectId) -> bool {
-        false
+    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return false;
+        }
+        self.combo_items
+            .lock()
+            .expect("mobile combo lock poisoned")
+            .entry(combo_box)
+            .or_default()
+            .clear();
+        self.combo_current_index
+            .lock()
+            .expect("mobile combo index lock poisoned")
+            .insert(combo_box, None);
+        true
     }
-    fn combo_box_set_current_index(&self, _combo_box: ObjectId, _index: usize) -> bool {
-        false
+    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return false;
+        }
+        let count = self.combo_box_item_count(combo_box);
+        if index >= count {
+            return false;
+        }
+        self.combo_current_index
+            .lock()
+            .expect("mobile combo index lock poisoned")
+            .insert(combo_box, Some(index));
+        true
     }
-    fn combo_box_current_index(&self, _combo_box: ObjectId) -> Option<usize> {
-        None
+    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return None;
+        }
+        self.combo_current_index
+            .lock()
+            .expect("mobile combo index lock poisoned")
+            .get(&combo_box)
+            .copied()
+            .flatten()
     }
-    fn combo_box_item_count(&self, _combo_box: ObjectId) -> usize {
-        0
+    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return 0;
+        }
+        self.combo_items
+            .lock()
+            .expect("mobile combo lock poisoned")
+            .get(&combo_box)
+            .map_or(0, Vec::len)
     }
-    fn combo_box_item_text(&self, _combo_box: ObjectId, _index: usize) -> Option<String> {
-        None
+    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
+        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
+            return None;
+        }
+        self.combo_items
+            .lock()
+            .expect("mobile combo lock poisoned")
+            .get(&combo_box)
+            .and_then(|items| items.get(index).cloned())
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.create_child_widget(
@@ -649,5 +816,58 @@ mod tests {
         assert!(platform.inject_menu_trigger(menu_item));
         assert_eq!(platform.poll_menu_triggered(), Some(menu_item));
         assert!(!platform.inject_menu_trigger(tool_bar));
+    }
+
+    #[test]
+    fn mobile_combo_box_item_operations_are_state_backed() {
+        let platform = AndroidMobilePlatform::new();
+        let window = platform.create_window("mobile", 0, 0, 320, 480);
+        let combo = platform.create_combo_box(window, 10, 10, 120, 24);
+        assert_ne!(combo, 0);
+
+        assert!(platform.combo_box_add_item(combo, "One"));
+        assert!(platform.combo_box_add_item(combo, "Two"));
+        assert_eq!(platform.combo_box_item_count(combo), 2);
+        assert_eq!(
+            platform.combo_box_item_text(combo, 0).as_deref(),
+            Some("One")
+        );
+        assert_eq!(
+            platform.combo_box_item_text(combo, 1).as_deref(),
+            Some("Two")
+        );
+
+        assert!(platform.combo_box_set_current_index(combo, 1));
+        assert_eq!(platform.combo_box_current_index(combo), Some(1));
+
+        assert!(platform.combo_box_clear_items(combo));
+        assert_eq!(platform.combo_box_item_count(combo), 0);
+        assert_eq!(platform.combo_box_current_index(combo), None);
+    }
+
+    #[test]
+    fn mobile_list_box_item_operations_are_state_backed() {
+        let platform = AndroidMobilePlatform::new();
+        let window = platform.create_window("mobile", 0, 0, 320, 480);
+        let list = platform.create_list_box(window, 10, 10, 120, 120);
+        assert_ne!(list, 0);
+
+        assert!(platform.list_box_add_item(list, "A"));
+        assert!(platform.list_box_add_item(list, "B"));
+        assert!(platform.list_box_add_item(list, "C"));
+        assert_eq!(platform.list_box_item_count(list), 3);
+        assert_eq!(platform.list_box_item_text(list, 2).as_deref(), Some("C"));
+
+        assert!(platform.list_box_set_current_index(list, 2));
+        assert_eq!(platform.list_box_current_index(list), Some(2));
+
+        assert!(platform.list_box_remove_item(list, 1));
+        assert_eq!(platform.list_box_item_count(list), 2);
+        assert_eq!(platform.list_box_item_text(list, 1).as_deref(), Some("C"));
+        assert_eq!(platform.list_box_current_index(list), Some(1));
+
+        assert!(platform.list_box_clear_items(list));
+        assert_eq!(platform.list_box_item_count(list), 0);
+        assert_eq!(platform.list_box_current_index(list), None);
     }
 }

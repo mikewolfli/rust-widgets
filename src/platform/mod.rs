@@ -34,7 +34,7 @@ pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapability
 pub use crate::platform::runtime::RuntimeGuiMode;
 pub use crate::platform::runtime::{capabilities, get_platform, init, quit, run};
 pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
-#[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
+#[cfg(feature = "mobile-api")]
 pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_name};
 pub use crate::platform::stub::StubPlatform;
 pub use crate::platform::types::*;

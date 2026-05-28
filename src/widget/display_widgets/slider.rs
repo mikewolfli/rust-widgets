@@ -298,11 +298,9 @@ impl EventHandler for Slider {
                 self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
-            Event::TouchMove { pos, .. } => {
-                if self.mouse_pressed {
-                    let value = self.pixel_pos_to_value(pos.x as f32);
-                    self.set_slider_position(value);
-                }
+            Event::TouchMove { pos, .. } if self.mouse_pressed => {
+                let value = self.pixel_pos_to_value(pos.x as f32);
+                self.set_slider_position(value);
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
@@ -993,8 +991,10 @@ mod tests {
     #[test]
     fn widget_style_roundtrip() {
         let mut s = make_slider();
-        let mut style = WidgetStyle::default();
-        style.background_color = Some(Color::from_rgb(255, 0, 0));
+        let style = WidgetStyle {
+            background_color: Some(Color::from_rgb(255, 0, 0)),
+            ..WidgetStyle::default()
+        };
         s.set_style(style.clone());
         assert_eq!(s.style().background_color, Some(Color::from_rgb(255, 0, 0)));
     }

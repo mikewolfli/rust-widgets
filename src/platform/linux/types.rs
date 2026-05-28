@@ -1,8 +1,6 @@
 //! Linux backend shell.
 use crate::platform::state::BackendState;
 use crate::platform::WidgetTriggerEvent;
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
-use gtk::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -81,16 +79,25 @@ pub struct LinuxPlatform {
 #[derive(Default)]
 pub(crate) struct LinuxNativeState {
     /// Native GTK windows indexed by logical widget id.
-    windows: HashMap<u64, gtk::Window>,
+    pub(crate) windows: HashMap<u64, gtk::Window>,
     /// Root vertical containers hosting menu bar and content area.
-    root_boxes: HashMap<u64, gtk::Box>,
+    pub(crate) root_boxes: HashMap<u64, gtk::Box>,
     /// Absolute-position container for child controls.
-    content_fixed: HashMap<u64, gtk::Fixed>,
+    pub(crate) content_fixed: HashMap<u64, gtk::Fixed>,
     /// Generic widget registry for visibility/text/enabled operations.
-    widgets: HashMap<u64, gtk::Widget>,
-    menu_bars: HashMap<u64, gtk::MenuBar>,
-    menus: HashMap<u64, gtk::Menu>,
+    pub(crate) widgets: HashMap<u64, gtk::Widget>,
+    pub(crate) menu_bars: HashMap<u64, gtk::MenuBar>,
+    pub(crate) menus: HashMap<u64, gtk::Menu>,
 }
+
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+unsafe impl Send for LinuxNativeState {}
+
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+unsafe impl Send for LinuxPlatform {}
+
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+unsafe impl Sync for LinuxPlatform {}
 impl LinuxPlatform {
     /// Creates a new Linux platform adapter.
     pub fn new() -> Self {

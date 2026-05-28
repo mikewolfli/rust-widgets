@@ -15,3 +15,6 @@ pub use surface::{
     default_software_render_config, set_default_software_render_config, BackBuffer, RenderContext,
     SoftwareRenderConfig, SoftwareSurface,
 };
+
+#[cfg(test)]
+pub(crate) use surface::software_render_config_test_lock;

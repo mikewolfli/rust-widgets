@@ -26,9 +26,9 @@ use std::collections::HashMap;
 /// # Example
 ///
 /// ```rust
-/// use crate::event::translator::TouchEventTranslator;
-/// use crate::event::Event;
-/// use crate::core::Point;
+/// use rust_widgets::core::Point;
+/// use rust_widgets::event::translator::TouchEventTranslator;
+/// use rust_widgets::event::Event;
 ///
 /// let mut translator = TouchEventTranslator::new();
 /// let touch = Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 };
@@ -88,8 +88,10 @@ impl TouchEventTranslator {
                 ]
             }
             Event::TouchMove { pos, touch_id } => {
-                if self.active_touches.contains_key(&touch_id) {
-                    self.active_touches.insert(touch_id, (pos.x, pos.y));
+                if let std::collections::hash_map::Entry::Occupied(mut e) =
+                    self.active_touches.entry(touch_id)
+                {
+                    e.insert((pos.x, pos.y));
                     vec![Event::MouseMove { pos }]
                 } else {
                     Vec::new()
