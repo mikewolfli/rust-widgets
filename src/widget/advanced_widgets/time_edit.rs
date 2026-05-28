@@ -103,6 +103,8 @@ impl TimeEdit {
     pub fn set_maximum_time(&mut self, time: Time) {
         self.maximum = time;
     }
+    /// Sets both minimum and maximum times in one call.
+    /// Query current bounds via `minimum_time()` and `maximum_time()`.
     pub fn set_time_range(&mut self, min: Time, max: Time) {
         self.minimum = min;
         self.maximum = max;

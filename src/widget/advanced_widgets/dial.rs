@@ -70,6 +70,8 @@ impl Dial {
         self.maximum = max;
         self.set_value(self.value);
     }
+    /// Sets both minimum and maximum in one call.
+    /// Query the current bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, min: i32, max: i32) {
         self.minimum = min;
         self.maximum = max.max(min);

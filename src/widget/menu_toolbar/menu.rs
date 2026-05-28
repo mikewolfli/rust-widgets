@@ -157,12 +157,20 @@ impl Menu {
             item.set_enabled(enabled);
         }
     }
+    /// Returns enabled state for item at index.
+    pub fn item_enabled(&self, index: usize) -> Option<bool> {
+        self.items.get(index).map(|item| item.is_enabled())
+    }
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
             if item.is_checkable() {
                 item.set_checked(checked);
             }
         }
+    }
+    /// Returns checked state for item at index.
+    pub fn item_checked(&self, index: usize) -> Option<bool> {
+        self.items.get(index).map(|item| item.is_checked())
     }
     pub fn clear(&mut self) {
         self.items.clear();

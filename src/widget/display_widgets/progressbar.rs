@@ -53,7 +53,8 @@ impl ProgressBar {
         }
         self.set_value(self.value); // Re-clamp
     }
-    /// Sets range.
+    /// Sets both minimum and maximum in one call.
+    /// Query the current bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);

@@ -80,6 +80,9 @@ impl MenuBar {
             e.set_enabled(enabled);
         }
     }
+    pub fn menu_enabled(&self, index: usize) -> Option<bool> {
+        self.entries.get(index).map(|entry| entry.is_enabled())
+    }
     pub fn clear(&mut self) {
         self.entries.clear();
         self.active_index = None;

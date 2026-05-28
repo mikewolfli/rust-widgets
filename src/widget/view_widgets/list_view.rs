@@ -209,6 +209,14 @@ impl ListView {
         self.base.request_layout();
         self.base.request_redraw();
     }
+    /// Returns whether a model is currently bound.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+    /// Returns the bound list model, if present.
+    pub fn model_ref(&self) -> Option<&Arc<dyn ListModel>> {
+        self.model.as_ref()
+    }
     /// Returns visible row count.
     pub fn row_count(&self) -> usize {
         self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)

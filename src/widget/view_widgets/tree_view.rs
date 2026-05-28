@@ -109,6 +109,14 @@ impl TreeView {
         self.base.request_layout();
         self.base.request_redraw();
     }
+    /// Returns whether a model is currently bound.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+    /// Returns the bound tree model, if present.
+    pub fn model_ref(&self) -> Option<&Arc<dyn TreeModel>> {
+        self.model.as_ref()
+    }
     /// Deprecated: add_node is no longer supported. TreeView requires a bound model.
     #[deprecated(note = "Imperative add_node is removed. Use set_model with a TreeModel.")]
     pub fn add_node(&mut self, _node: impl Into<String>) {

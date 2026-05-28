@@ -119,6 +119,8 @@ impl DateEdit {
     pub fn set_maximum_date(&mut self, date: Date) {
         self.maximum = date;
     }
+    /// Sets both minimum and maximum dates in one call.
+    /// Query current bounds via `minimum_date()` and `maximum_date()`.
     pub fn set_date_range(&mut self, min: Date, max: Date) {
         self.minimum = min;
         self.maximum = max;

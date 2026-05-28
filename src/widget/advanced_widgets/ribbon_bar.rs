@@ -336,6 +336,17 @@ impl RibbonBar {
         }
     }
 
+    /// Returns enabled state for an item.
+    pub fn item_enabled(
+        &self,
+        tab_index: usize,
+        group_index: usize,
+        item_index: usize,
+    ) -> Option<bool> {
+        self.item_ref(tab_index, group_index, item_index)
+            .map(|item| item.is_enabled())
+    }
+
     /// Sets the checked state of an item.
     pub fn set_item_checked(
         &mut self,
@@ -349,6 +360,17 @@ impl RibbonBar {
                 item.set_checked(checked);
             }
         }
+    }
+
+    /// Returns checked state for an item.
+    pub fn item_checked(
+        &self,
+        tab_index: usize,
+        group_index: usize,
+        item_index: usize,
+    ) -> Option<bool> {
+        self.item_ref(tab_index, group_index, item_index)
+            .map(|item| item.is_checked())
     }
 
     fn item_mut(

@@ -5,9 +5,10 @@ use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::EventHandler;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
+use std::any::Any;
 
 /// Common widget contract implemented by all widget models.
-pub trait Widget: EventHandler {
+pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
     fn base(&self) -> &BaseWidget {
         panic!(

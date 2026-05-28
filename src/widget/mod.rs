@@ -1,6 +1,7 @@
 //! Widget models and controls.
 // Base widget types
 pub mod base;
+pub mod capability;
 pub mod draw;
 pub mod image;
 pub mod kind;
@@ -25,6 +26,10 @@ pub use window::Window;
 
 // Re-export base types
 pub use base::BaseWidget;
+pub use capability::{
+    CapabilityAccessError, CapabilityValue, PropertySchema, PropertyValueKind, WidgetCapability,
+    WidgetFactory,
+};
 pub use draw::Draw;
 pub use image::Image;
 pub use image::ImageFormat;

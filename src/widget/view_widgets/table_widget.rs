@@ -86,6 +86,14 @@ impl TableWidget {
         self.base.request_layout();
         self.base.request_redraw();
     }
+    /// Returns whether a model is currently bound.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+    /// Returns the bound table model, if present.
+    pub fn model_ref(&self) -> Option<&Arc<dyn TableModel>> {
+        self.model.as_ref()
+    }
     /// Returns visible row count.
     pub fn row_count(&self) -> usize {
         self.model.as_ref().map(|m| m.row_count()).unwrap_or(0)
@@ -167,14 +175,30 @@ impl TableWidget {
         self.column_widths.insert(column, width);
         self.base.request_layout();
     }
+    /// Returns explicit column width override when present.
+    pub fn column_width(&self, column: usize) -> Option<u32> {
+        self.column_widths.get(&column).copied()
+    }
     /// Sets row height.
     pub fn set_row_height(&mut self, row: usize, height: u32) {
         self.row_heights.insert(row, height);
         self.base.request_layout();
     }
+    /// Returns explicit row height override when present.
+    pub fn row_height(&self, row: usize) -> Option<u32> {
+        self.row_heights.get(&row).copied()
+    }
     /// Sets item delegate.
     pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
         self.delegate = Some(delegate);
+    }
+    /// Returns whether a delegate is currently bound.
+    pub fn has_delegate(&self) -> bool {
+        self.delegate.is_some()
+    }
+    /// Returns the bound item delegate, if present.
+    pub fn delegate_ref(&self) -> Option<&Arc<dyn ItemDelegate>> {
+        self.delegate.as_ref()
     }
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
