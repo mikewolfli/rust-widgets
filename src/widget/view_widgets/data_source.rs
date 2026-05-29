@@ -268,4 +268,164 @@ mod tests {
         let empty = source.fetch_window(10, 2, 0, 1);
         assert!(empty.is_empty());
     }
+
+    #[test]
+    fn default_revision_is_zero() {
+        struct NoRevision;
+        impl IncrementalTableDataSource for NoRevision {
+            fn row_count(&self) -> usize {
+                5
+            }
+            fn column_count(&self) -> usize {
+                3
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{}:{}", row, column))
+            }
+        }
+
+        let source = NoRevision;
+        assert_eq!(source.revision(), 0);
+        assert!(source.data_changed_signal().is_none());
+    }
+
+    #[test]
+    fn data_changed_signal_default_is_none() {
+        struct NoSignalSource;
+        impl IncrementalTableDataSource for NoSignalSource {
+            fn row_count(&self) -> usize {
+                3
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, row: usize, _: usize) -> Option<String> {
+                Some(format!("row-{}", row))
+            }
+        }
+
+        let source = NoSignalSource;
+        assert!(source.data_changed_signal().is_none());
+    }
+
+    #[test]
+    fn fetch_window_bounds_min_window() {
+        struct SmallSource;
+        impl IncrementalTableDataSource for SmallSource {
+            fn row_count(&self) -> usize {
+                1
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{}:{}", row, column))
+            }
+        }
+
+        let source = SmallSource;
+
+        // Full window within bounds
+        let window = source.fetch_window(0, 1, 0, 1);
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0][0], Some("0:0".to_string()));
+
+        // Window exceeding bounds should clamp
+        let window2 = source.fetch_window(0, 10, 0, 10);
+        assert_eq!(window2.len(), 1);
+        assert_eq!(window2[0].len(), 1);
+    }
+
+    #[test]
+    fn fetch_window_column_offset_window() {
+        struct WideSource;
+        impl IncrementalTableDataSource for WideSource {
+            fn row_count(&self) -> usize {
+                2
+            }
+            fn column_count(&self) -> usize {
+                5
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{}:{}", row, column))
+            }
+        }
+
+        let source = WideSource;
+        let window = source.fetch_window(0, 2, 2, 2);
+        assert_eq!(window.len(), 2);
+        assert_eq!(window[0].len(), 2);
+        assert_eq!(window[0][0], Some("0:2".to_string()));
+        assert_eq!(window[1][1], Some("1:3".to_string()));
+
+        // Column start out of bounds
+        let empty = source.fetch_window(0, 2, 10, 2);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn list_model_adapter_model_ref() {
+        use crate::widget::view_widgets::list_view::ListModel;
+
+        struct MyList;
+        impl ListModel for MyList {
+            fn row_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize) -> Option<String> {
+                Some(format!("item-{}", row))
+            }
+        }
+
+        let inner = Arc::new(MyList);
+        let adapter = ListModelDataSource::new(inner.clone());
+        let recovered = adapter.model_ref();
+        assert_eq!(recovered.row_count(), 2);
+        assert_eq!(recovered.data(0), Some("item-0".to_string()));
+    }
+
+    #[test]
+    fn table_model_adapter_model_ref() {
+        use crate::widget::view_widgets::table_widget::TableModel;
+
+        struct MyTable;
+        impl TableModel for MyTable {
+            fn row_count(&self) -> usize {
+                3
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{}-{}", row, column))
+            }
+        }
+
+        let inner = Arc::new(MyTable);
+        let adapter = TableModelDataSource::new(inner.clone());
+        let recovered = adapter.model_ref();
+        assert_eq!(recovered.row_count(), 3);
+        assert_eq!(recovered.data(1, 1), Some("1-1".to_string()));
+    }
+
+    #[test]
+    fn tree_model_adapter_model_ref() {
+        use crate::widget::view_widgets::tree_view::TreeModel;
+
+        struct MyTree;
+        impl TreeModel for MyTree {
+            fn node_count(&self) -> usize {
+                2
+            }
+            fn node_path(&self, index: usize) -> Option<String> {
+                Some(format!("node-{}", index))
+            }
+        }
+
+        let inner = Arc::new(MyTree);
+        let adapter = TreeModelDataSource::new(inner.clone());
+        let recovered = adapter.model_ref();
+        assert_eq!(recovered.node_count(), 2);
+        assert_eq!(recovered.node_path(1), Some("node-1".to_string()));
+    }
 }

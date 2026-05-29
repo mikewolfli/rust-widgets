@@ -491,6 +491,9 @@ impl crate::event::EventHandler for DataGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::GenericSignal;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     struct StaticSource {
         rows: usize,
@@ -582,5 +585,335 @@ mod tests {
 
         grid.clear_data_source();
         assert_eq!(grid.frozen_columns(), 0);
+    }
+
+    #[test]
+    fn new_creates_default_state() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        assert!(!grid.has_data_source());
+        assert_eq!(grid.scroll_row(), 0);
+        assert_eq!(grid.scroll_column(), 0);
+        assert_eq!(grid.row_height(), 20);
+        assert_eq!(grid.column_width(), 120);
+        assert_eq!(grid.frozen_columns(), 0);
+        assert!(grid.sort_specs().is_empty());
+        assert!(grid.filters().is_empty());
+        assert_eq!(grid.row_count(), 0);
+        assert_eq!(grid.column_count(), 0);
+        assert!(grid.fetch_visible_cells().is_empty());
+    }
+
+    #[test]
+    fn has_data_source_before_and_after() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        assert!(!grid.has_data_source());
+
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 3,
+            cols: 3,
+            data: vec![
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                vec!["d".to_string(), "e".to_string(), "f".to_string()],
+                vec!["g".to_string(), "h".to_string(), "i".to_string()],
+            ],
+        }));
+        assert!(grid.has_data_source());
+
+        grid.clear_data_source();
+        assert!(!grid.has_data_source());
+    }
+
+    #[test]
+    fn row_and_column_count_queries() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(grid.row_count(), 0);
+        assert_eq!(grid.column_count(), 0);
+
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 5,
+            cols: 4,
+            data: vec![],
+        }));
+        assert_eq!(grid.row_count(), 5);
+        assert_eq!(grid.column_count(), 4);
+
+        grid.clear_data_source();
+        assert_eq!(grid.row_count(), 0);
+        assert_eq!(grid.column_count(), 0);
+    }
+
+    #[test]
+    fn scroll_position_clamping() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 10,
+            cols: 6,
+            data: (0..10)
+                .map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect())
+                .collect(),
+        }));
+
+        grid.set_scroll_row(5);
+        assert_eq!(grid.scroll_row(), 5);
+
+        grid.set_scroll_row(999);
+        assert_eq!(grid.scroll_row(), 9);
+
+        grid.set_scroll_column(3);
+        assert_eq!(grid.scroll_column(), 3);
+
+        grid.set_scroll_column(999);
+        assert_eq!(grid.scroll_column(), 5);
+    }
+
+    #[test]
+    fn clear_data_source_resets_state() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 5,
+            cols: 3,
+            data: vec![],
+        }));
+        grid.set_scroll_row(2);
+        grid.set_scroll_column(1);
+        grid.set_frozen_columns(2);
+        grid.set_sort_specs(vec![SortSpec {
+            column: 0,
+            descending: false,
+        }]);
+
+        grid.clear_data_source();
+        assert!(!grid.has_data_source());
+        assert_eq!(grid.scroll_row(), 0);
+        assert_eq!(grid.scroll_column(), 0);
+        assert_eq!(grid.frozen_columns(), 0);
+        assert!(grid.fetch_visible_cells().is_empty());
+    }
+
+    #[test]
+    fn sort_specs_set_get_invalidate_cache() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 3,
+            cols: 2,
+            data: vec![
+                vec!["c".to_string(), "x".to_string()],
+                vec!["a".to_string(), "y".to_string()],
+                vec!["b".to_string(), "z".to_string()],
+            ],
+        }));
+
+        assert!(grid.sort_specs().is_empty());
+
+        let specs = vec![SortSpec {
+            column: 0,
+            descending: false,
+        }];
+        grid.set_sort_specs(specs.clone());
+        assert_eq!(grid.sort_specs().len(), 1);
+        assert_eq!(grid.sort_specs()[0].column, 0);
+
+        // Fetch with sort applied
+        let rows = grid.fetch_visible_cells();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][0], Some("a".to_string()));
+        assert_eq!(rows[1][0], Some("b".to_string()));
+        assert_eq!(rows[2][0], Some("c".to_string()));
+
+        // Change sort - should clear cache
+        grid.set_sort_specs(vec![SortSpec {
+            column: 0,
+            descending: true,
+        }]);
+        let rows2 = grid.fetch_visible_cells();
+        assert_eq!(rows2[0][0], Some("c".to_string()));
+        assert_eq!(rows2[2][0], Some("a".to_string()));
+
+        grid.set_sort_specs(Vec::new());
+        assert!(grid.sort_specs().is_empty());
+    }
+
+    #[test]
+    fn filters_set_get_invalidate_cache() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 2,
+            data: vec![
+                vec!["apple".to_string(), "red".to_string()],
+                vec!["banana".to_string(), "yellow".to_string()],
+                vec!["cherry".to_string(), "red".to_string()],
+                vec!["date".to_string(), "brown".to_string()],
+            ],
+        }));
+
+        assert!(grid.filters().is_empty());
+
+        let filters = vec![ColumnFilter {
+            column: 1,
+            query: "red".to_string(),
+        }];
+        grid.set_filters(filters.clone());
+        assert_eq!(grid.filters().len(), 1);
+
+        let rows = grid.fetch_visible_cells();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], Some("apple".to_string()));
+        assert_eq!(rows[1][0], Some("cherry".to_string()));
+
+        // Change filter - should recalc
+        grid.set_filters(vec![ColumnFilter {
+            column: 0,
+            query: "b".to_string(),
+        }]);
+        let rows2 = grid.fetch_visible_cells();
+        assert_eq!(rows2.len(), 1);
+        assert_eq!(rows2[0][0], Some("banana".to_string()));
+
+        grid.set_filters(Vec::new());
+        assert!(grid.filters().is_empty());
+    }
+
+    #[test]
+    fn frozen_columns_set_get() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 2,
+            cols: 5,
+            data: vec![],
+        }));
+
+        assert_eq!(grid.frozen_columns(), 0);
+
+        grid.set_frozen_columns(3);
+        assert_eq!(grid.frozen_columns(), 3);
+
+        // Clamped to column count
+        grid.set_frozen_columns(999);
+        assert_eq!(grid.frozen_columns(), 5);
+    }
+
+    #[test]
+    fn visible_window_changed_signal_emission() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 240, 60));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 10,
+            cols: 6,
+            data: (0..10)
+                .map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect())
+                .collect(),
+        }));
+
+        let emitted = Arc::new(Mutex::new(false));
+        let sink = emitted.clone();
+        grid.visible_window_changed.connect(move |_win| {
+            *sink.lock().unwrap() = true;
+        });
+
+        grid.set_scroll_row(3);
+        assert!(*emitted.lock().unwrap());
+    }
+
+    #[test]
+    fn empty_source_returns_empty_window() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 0,
+            cols: 0,
+            data: vec![],
+        }));
+
+        assert_eq!(grid.visible_window(), (0, 0, 0, 0));
+        assert!(grid.fetch_visible_cells().is_empty());
+    }
+
+    struct RevisionSource {
+        rows: usize,
+        cols: usize,
+        rev: AtomicU64,
+        changed: GenericSignal,
+        call_count: AtomicUsize,
+    }
+
+    impl RevisionSource {
+        fn new(rows: usize, cols: usize) -> Self {
+            Self {
+                rows,
+                cols,
+                rev: AtomicU64::new(1),
+                changed: GenericSignal::new(),
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn bump(&self) {
+            self.rev.fetch_add(1, Ordering::Relaxed);
+            self.changed.emit();
+        }
+    }
+
+    impl IncrementalTableDataSource for RevisionSource {
+        fn row_count(&self) -> usize {
+            self.rows
+        }
+
+        fn column_count(&self) -> usize {
+            self.cols
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            Some(format!("{}:{}", row, column))
+        }
+
+        fn revision(&self) -> u64 {
+            self.rev.load(Ordering::Relaxed)
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.changed)
+        }
+    }
+
+    #[test]
+    fn cache_invalidation_on_revision_change() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 240, 60));
+        let source = Arc::new(RevisionSource::new(10, 4));
+        grid.set_data_source(source.clone());
+
+        let _a = grid.fetch_visible_cells();
+        let calls_after_a = source.call_count.load(Ordering::Relaxed);
+        assert!(calls_after_a > 0);
+
+        // Second fetch should hit cache
+        let _b = grid.fetch_visible_cells();
+        assert_eq!(source.call_count.load(Ordering::Relaxed), calls_after_a);
+
+        // Bump revision -> cache invalidated
+        source.bump();
+        let _c = grid.fetch_visible_cells();
+        assert!(source.call_count.load(Ordering::Relaxed) > calls_after_a);
+    }
+
+    #[test]
+    fn row_height_and_column_width_minimum_clamp() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 3,
+            cols: 3,
+            data: vec![],
+        }));
+
+        grid.set_row_height(0);
+        assert_eq!(grid.row_height(), 1);
+
+        grid.set_row_height(25);
+        assert_eq!(grid.row_height(), 25);
+
+        grid.set_column_width(0);
+        assert_eq!(grid.column_width(), 1);
+
+        grid.set_column_width(100);
+        assert_eq!(grid.column_width(), 100);
     }
 }

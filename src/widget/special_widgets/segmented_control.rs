@@ -278,4 +278,95 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(got, vec!["history".to_string()]);
     }
+
+    #[test]
+    fn default_state() {
+        let control = SegmentedControl::new(Rect::new(0, 0, 800, 600));
+        assert!(control.items().is_empty());
+        assert_eq!(control.selected_index(), None);
+        assert_eq!(control.selected_id(), None);
+    }
+
+    #[test]
+    fn set_selected_index_get_set() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 800, 600));
+        control.set_items(vec![
+            SegmentItem::new("tab1", "Tab 1"),
+            SegmentItem::new("tab2", "Tab 2"),
+            SegmentItem::new("tab3", "Tab 3"),
+        ]);
+
+        assert_eq!(control.selected_index(), Some(0));
+        assert_eq!(control.selected_id(), Some("tab1"));
+
+        assert!(control.set_selected_index(2));
+        assert_eq!(control.selected_index(), Some(2));
+        assert_eq!(control.selected_id(), Some("tab3"));
+
+        assert!(control.set_selected_index(0));
+        assert_eq!(control.selected_index(), Some(0));
+        assert_eq!(control.selected_id(), Some("tab1"));
+    }
+
+    #[test]
+    fn invalid_index_handling() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 800, 600));
+        control.set_items(vec![SegmentItem::new("a", "A")]);
+
+        // Out of bounds returns false
+        assert!(!control.set_selected_index(10));
+        assert_eq!(control.selected_index(), Some(0));
+
+        // Valid index returns true
+        assert!(control.set_selected_index(0));
+
+        // Move out of bounds clamped
+        control.move_selection(10);
+        assert_eq!(control.selected_index(), Some(0));
+
+        control.move_selection(-10);
+        assert_eq!(control.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn empty_segments() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 800, 600));
+        // Navigation on empty should not panic
+        control.move_selection(1);
+        assert_eq!(control.selected_index(), None);
+
+        // set_selected_index on empty returns false
+        assert!(!control.set_selected_index(0));
+
+        // handle event on empty should not panic
+        control.handle_event(&Event::key_press(39, 0));
+        assert_eq!(control.selected_index(), None);
+
+        control.handle_event(&Event::key_press(37, 0));
+        assert_eq!(control.selected_index(), None);
+    }
+
+    #[test]
+    fn move_selection_previous_next() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 800, 600));
+        control.set_items(vec![
+            SegmentItem::new("x", "X"),
+            SegmentItem::new("y", "Y"),
+            SegmentItem::new("z", "Z"),
+        ]);
+
+        // Start at 0, move forward
+        control.move_selection(1);
+        assert_eq!(control.selected_id(), Some("y"));
+
+        control.move_selection(1);
+        assert_eq!(control.selected_id(), Some("z"));
+
+        // Move backward
+        control.move_selection(-1);
+        assert_eq!(control.selected_id(), Some("y"));
+
+        control.move_selection(-1);
+        assert_eq!(control.selected_id(), Some("x"));
+    }
 }

@@ -111,16 +111,15 @@ impl EventHandler for TerminalView {
             return;
         }
 
-        match event {
-            Event::KeyPress { key, modifiers: _ } => match *key {
+        if let Event::KeyPress { key, modifiers: _ } = event {
+            match *key {
                 13 => {
                     let _ = self.submit();
                 }
                 38 => self.recall_history(true),
                 40 => self.recall_history(false),
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }
@@ -215,5 +214,88 @@ mod tests {
             terminal.lines().first().map(|s| s.as_str()),
             Some("line 20")
         );
+    }
+
+    #[test]
+    fn default_state() {
+        let terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        assert!(terminal.lines().is_empty());
+        assert_eq!(terminal.input_line(), "");
+    }
+
+    #[test]
+    fn append_output_adds_lines() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        terminal.append_output("first line");
+        terminal.append_output("second line");
+
+        assert_eq!(terminal.lines().len(), 2);
+        assert_eq!(terminal.lines()[0], "first line");
+        assert_eq!(terminal.lines()[1], "second line");
+    }
+
+    #[test]
+    fn empty_submit_returns_false() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        // Empty input line
+        assert!(!terminal.submit());
+
+        // Whitespace-only input
+        terminal.set_input_line("   ");
+        assert!(!terminal.submit());
+
+        // Still no lines appended
+        assert!(terminal.lines().is_empty());
+    }
+
+    #[test]
+    fn clear_input_after_submit() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        terminal.set_input_line("command");
+        assert!(terminal.submit());
+        assert_eq!(
+            terminal.input_line(),
+            "",
+            "input must be cleared after submit"
+        );
+    }
+
+    #[test]
+    fn input_line_set_get() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        terminal.set_input_line("custom input");
+        assert_eq!(terminal.input_line(), "custom input");
+
+        terminal.set_input_line("");
+        assert_eq!(terminal.input_line(), "");
+    }
+
+    #[test]
+    fn history_recall_bounds() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        // No history yet
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "");
+
+        terminal.set_input_line("cmd1");
+        assert!(terminal.submit());
+        terminal.set_input_line("cmd2");
+        assert!(terminal.submit());
+
+        // Up twice: cmd2 -> cmd1
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd2");
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd1");
+        // Up again stays at oldest
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd1");
+
+        // Down goes back
+        terminal.handle_event(&Event::key_press(40, 0));
+        assert_eq!(terminal.input_line(), "cmd2");
+        // Down again clears
+        terminal.handle_event(&Event::key_press(40, 0));
+        assert_eq!(terminal.input_line(), "");
     }
 }

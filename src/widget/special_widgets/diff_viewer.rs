@@ -129,8 +129,8 @@ impl EventHandler for DiffViewer {
             return;
         }
 
-        match event {
-            Event::KeyPress { key, modifiers: _ } => match *key {
+        if let Event::KeyPress { key, modifiers: _ } = event {
+            match *key {
                 38 => {
                     if let Some(index) = self.selected_index {
                         if index > 0 {
@@ -146,8 +146,7 @@ impl EventHandler for DiffViewer {
                     }
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }

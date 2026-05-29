@@ -419,4 +419,111 @@ mod tests {
         assert_eq!(palette.query(), "");
         assert_eq!(palette.filtered_count(), 3);
     }
+
+    #[test]
+    fn default_state() {
+        let palette = CommandPalette::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.filtered_count(), 0);
+        assert_eq!(palette.highlighted_index(), None);
+        assert!(palette.entries().is_empty());
+    }
+
+    #[test]
+    fn empty_entries_handling() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 800, 600));
+        palette.set_entries(Vec::new());
+        assert_eq!(palette.filtered_count(), 0);
+        assert_eq!(palette.highlighted_index(), None);
+        // Activation should not panic
+        assert!(!palette.activate_highlighted());
+
+        // Navigation should not panic
+        palette.move_highlight(1);
+        assert_eq!(palette.highlighted_index(), None);
+    }
+
+    #[test]
+    fn set_query_programmatically() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 800, 600));
+        palette.set_entries(vec![
+            CommandEntry::new("a", "Alpha"),
+            CommandEntry::new("b", "Beta"),
+            CommandEntry::new("g", "Gamma"),
+        ]);
+
+        palette.set_query("beta");
+        assert_eq!(palette.query(), "beta");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(palette.filtered_entry(0).map(|e| e.id.as_str()), Some("b"));
+
+        // Clear query shows all
+        palette.clear_query();
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.filtered_count(), 3);
+    }
+
+    #[test]
+    fn case_insensitive_matching() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 800, 600));
+        palette.set_entries(vec![
+            CommandEntry::new("openFile", "Open File"),
+            CommandEntry::new("openFolder", "Open Folder"),
+        ]);
+
+        palette.set_query("open");
+        assert_eq!(palette.filtered_count(), 2);
+        assert_eq!(
+            palette.filtered_entry(0).map(|e| e.id.as_str()),
+            Some("openFile")
+        );
+
+        palette.set_query("OPEN");
+        assert_eq!(palette.filtered_count(), 2);
+
+        // No match
+        palette.set_query("CLOSE");
+        assert_eq!(palette.filtered_count(), 0);
+    }
+
+    #[test]
+    fn category_and_keyword_based_matching() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 800, 600));
+        palette.set_entries(vec![
+            CommandEntry::new("file.open", "Open")
+                .with_category("File")
+                .with_keywords(["load", "browse"]),
+            CommandEntry::new("edit.find", "Find")
+                .with_category("Edit")
+                .with_keywords(["search", "locate"]),
+        ]);
+
+        // Match category
+        palette.set_query("file");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(
+            palette.filtered_entry(0).map(|e| e.id.as_str()),
+            Some("file.open")
+        );
+
+        // Match keyword
+        palette.set_query("load");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(
+            palette.filtered_entry(0).map(|e| e.id.as_str()),
+            Some("file.open")
+        );
+
+        // Match keyword on second entry
+        palette.set_query("search");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(
+            palette.filtered_entry(0).map(|e| e.id.as_str()),
+            Some("edit.find")
+        );
+
+        // No match
+        palette.set_query("nonexistent");
+        assert_eq!(palette.filtered_count(), 0);
+    }
 }

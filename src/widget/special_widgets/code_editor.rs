@@ -78,7 +78,8 @@ impl CodeEditor {
         self.cursor_line = self.line_count().saturating_sub(1);
         self.cursor_column = self.current_line_len();
         self.text_changed.emit(self.text.clone());
-        self.cursor_moved.emit((self.cursor_line, self.cursor_column));
+        self.cursor_moved
+            .emit((self.cursor_line, self.cursor_column));
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -123,11 +124,13 @@ impl CodeEditor {
             self.cursor_column = 0;
             return;
         }
-        let next = (self.cursor_line as isize + delta).clamp(0, lines.saturating_sub(1) as isize) as usize;
+        let next =
+            (self.cursor_line as isize + delta).clamp(0, lines.saturating_sub(1) as isize) as usize;
         if next != self.cursor_line {
             self.cursor_line = next;
             self.cursor_column = self.cursor_column.min(self.current_line_len());
-            self.cursor_moved.emit((self.cursor_line, self.cursor_column));
+            self.cursor_moved
+                .emit((self.cursor_line, self.cursor_column));
             self.base.request_redraw();
         }
     }
@@ -137,7 +140,8 @@ impl CodeEditor {
         let next = (self.cursor_column as isize + delta).clamp(0, len as isize) as usize;
         if next != self.cursor_column {
             self.cursor_column = next;
-            self.cursor_moved.emit((self.cursor_line, self.cursor_column));
+            self.cursor_moved
+                .emit((self.cursor_line, self.cursor_column));
             self.base.request_redraw();
         }
     }
@@ -160,15 +164,14 @@ impl EventHandler for CodeEditor {
             return;
         }
 
-        match event {
-            Event::KeyPress { key, modifiers: _ } => match *key {
+        if let Event::KeyPress { key, modifiers: _ } = event {
+            match *key {
                 37 => self.move_cursor_column(-1),
                 39 => self.move_cursor_column(1),
                 38 => self.move_cursor_line(-1),
                 40 => self.move_cursor_line(1),
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }
@@ -222,8 +225,15 @@ impl Draw for CodeEditor {
         }
 
         context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 130, rect.y + rect.height as i32 - 10),
-            &format!("Ln {}, Col {}", self.cursor_line + 1, self.cursor_column + 1),
+            Point::new(
+                rect.x + rect.width as i32 - 130,
+                rect.y + rect.height as i32 - 10,
+            ),
+            &format!(
+                "Ln {}, Col {}",
+                self.cursor_line + 1,
+                self.cursor_column + 1
+            ),
             &Font::default(),
             Color::from_rgb(88, 102, 124),
         );
@@ -278,5 +288,153 @@ mod tests {
             .map(|guard| guard.clone())
             .unwrap_or_default();
         assert_eq!(got, vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn default_state() {
+        let editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(editor.text(), "");
+        assert_eq!(editor.cursor(), (0, 0));
+        assert_eq!(editor.line_count(), 0);
+        assert!(editor.markers().is_empty());
+    }
+
+    #[test]
+    fn set_text_get_text_roundtrip() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        editor.set_text("hello world");
+        assert_eq!(editor.text(), "hello world");
+    }
+
+    #[test]
+    fn append_line_updates_line_count() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        editor.append_line("first");
+        assert_eq!(editor.line_count(), 1);
+        assert_eq!(editor.text(), "first");
+
+        editor.append_line("second");
+        assert_eq!(editor.line_count(), 2);
+        assert_eq!(editor.text(), "first\nsecond");
+
+        editor.append_line("third");
+        assert_eq!(editor.line_count(), 3);
+    }
+
+    #[test]
+    fn empty_text_line_count() {
+        let editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(editor.line_count(), 0);
+    }
+
+    #[test]
+    fn duplicate_set_text_is_noop() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        editor.text_changed.connect(move |text| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(text.as_ref().clone());
+            }
+        });
+
+        editor.set_text("hello");
+        // Second set with same value should be no-op
+        editor.set_text("hello");
+
+        let got = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(got.len(), 1, "duplicate set_text must not emit");
+    }
+
+    #[test]
+    fn marker_severity_edge_cases() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        editor.set_text("line1\nline2\nline3");
+
+        editor.set_markers(vec![
+            DiagnosticMarker {
+                line: 0,
+                message: "info msg".to_string(),
+                severity: MarkerSeverity::Info,
+            },
+            DiagnosticMarker {
+                line: 1,
+                message: "warning msg".to_string(),
+                severity: MarkerSeverity::Warning,
+            },
+            DiagnosticMarker {
+                line: 2,
+                message: "error msg".to_string(),
+                severity: MarkerSeverity::Error,
+            },
+        ]);
+
+        assert_eq!(editor.markers().len(), 3);
+        assert_eq!(editor.markers()[0].severity, MarkerSeverity::Info);
+        assert_eq!(editor.markers()[1].severity, MarkerSeverity::Warning);
+        assert_eq!(editor.markers()[2].severity, MarkerSeverity::Error);
+
+        // Clear markers
+        editor.set_markers(Vec::new());
+        assert!(editor.markers().is_empty());
+    }
+
+    #[test]
+    fn cursor_movement_tracking() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        let emitted = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = emitted.clone();
+        editor.cursor_moved.connect(move |pos| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*pos.as_ref());
+            }
+        });
+
+        editor.set_text("line one\nline two\nline three");
+
+        editor.handle_event(&Event::key_press(40, 0));
+        assert_eq!(editor.cursor().0, 1);
+
+        editor.handle_event(&Event::key_press(40, 0));
+        assert_eq!(editor.cursor().0, 2);
+
+        editor.handle_event(&Event::key_press(38, 0));
+        assert_eq!(editor.cursor().0, 1);
+
+        let positions = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert!(!positions.is_empty(), "cursor_moved must have been emitted");
+    }
+
+    #[test]
+    fn text_change_signal_emission() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        editor.text_changed.connect(move |text| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(text.as_ref().clone());
+            }
+        });
+
+        editor.set_text("initial");
+        editor.append_line("appended");
+        editor.set_text("replaced");
+
+        let got = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0], "initial");
+        assert_eq!(got[2], "replaced");
     }
 }

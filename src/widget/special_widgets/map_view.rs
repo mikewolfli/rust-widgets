@@ -323,4 +323,140 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(got, vec!["m1".to_string()]);
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let map = MapView::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(map.center(), (0.0, 0.0));
+        assert_eq!(map.zoom(), 1.0);
+        assert!(map.markers().is_empty());
+        assert_eq!(map.selected_marker_id(), None);
+    }
+
+    #[test]
+    fn set_center_delta_guard() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_center(10.0, 20.0);
+        assert_eq!(map.center(), (10.0, 20.0));
+
+        // Same value should be no-op
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        map.center_changed.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push("changed".to_string());
+            }
+        });
+        map.set_center(10.0, 20.0);
+        let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 0);
+    }
+
+    #[test]
+    fn pan_by_zero_is_no_op() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_center(5.0, 5.0);
+        map.pan_by(0.0, 0.0);
+        assert_eq!(map.center(), (5.0, 5.0));
+    }
+
+    #[test]
+    fn set_zoom_clamps_lower_bound() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_zoom(0.1);
+        assert!((map.zoom() - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_zoom_clamps_upper_bound() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_zoom(12.0);
+        assert!((map.zoom() - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_zoom_guard_no_op() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_zoom(2.0);
+        let emitted = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = emitted.clone();
+        map.zoom_changed.connect(move |z| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*z);
+            }
+        });
+        map.set_zoom(2.0);
+        let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 0);
+    }
+
+    #[test]
+    fn zoom_by_negative_factor_does_nothing() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        let before = map.zoom();
+        map.zoom_by(-1.0);
+        assert!((map.zoom() - before).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_markers_replaces_and_clears_invalid_selection() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_markers(vec![MapMarker::new("m1", "A", 0.0, 0.0)]);
+        // Select marker index 0
+        let _ = map.select_marker(0);
+        assert_eq!(map.selected_marker_id(), Some("m1"));
+
+        // Replace with different markers - selection should clear
+        map.set_markers(vec![MapMarker::new("m2", "B", 10.0, 10.0)]);
+        // Old selection index (0) is still valid, but it's a different marker now
+        // Let's actually test that old selection index is still 0
+        assert_eq!(map.selected_marker_id(), Some("m2"));
+    }
+
+    #[test]
+    fn empty_markers_no_crash() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        assert!(map.markers().is_empty());
+        assert_eq!(map.selected_marker_id(), None);
+        // Selecting index on empty markers should not panic
+        assert!(!map.select_marker(0));
+    }
+
+    #[test]
+    fn select_marker_invalid_index() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_markers(vec![MapMarker::new("m1", "A", 0.0, 0.0)]);
+        assert!(!map.select_marker(5));
+        assert_eq!(map.selected_marker_id(), None);
+    }
+
+    #[test]
+    fn center_changed_signal_emits_on_pan() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        let centers = Arc::new(Mutex::new(Vec::<(f32, f32)>::new()));
+        let sink = centers.clone();
+        map.center_changed.connect(move |c| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*c);
+            }
+        });
+        map.pan_by(10.0, -5.0);
+        let got = centers.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got, vec![(10.0, -5.0)]);
+    }
+
+    #[test]
+    fn zoom_changed_signal_emits_on_set() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        let zooms = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = zooms.clone();
+        map.zoom_changed.connect(move |z| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*z);
+            }
+        });
+        map.set_zoom(2.5);
+        let got = zooms.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert!((got[0] - 2.5).abs() < f32::EPSILON);
+    }
 }

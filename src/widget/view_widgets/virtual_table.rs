@@ -394,4 +394,164 @@ mod tests {
         assert_eq!(table.overscan_rows(), 3);
         assert_eq!(table.overscan_columns(), 2);
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        assert!(!table.has_data_source());
+        assert_eq!(table.scroll_row(), 0);
+        assert_eq!(table.scroll_column(), 0);
+        assert_eq!(table.row_height(), 20);
+        assert_eq!(table.column_width(), 120);
+        assert_eq!(table.overscan_rows(), 2);
+        assert_eq!(table.overscan_columns(), 1);
+        assert_eq!(table.row_count(), 0);
+        assert_eq!(table.column_count(), 0);
+        let data = table.fetch_visible_window();
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn has_data_source_before_and_after() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        assert!(!table.has_data_source());
+
+        table.set_data_source(Arc::new(StaticSource));
+        assert!(table.has_data_source());
+
+        table.clear_data_source();
+        assert!(!table.has_data_source());
+    }
+
+    #[test]
+    fn row_and_column_counts() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(table.row_count(), 0);
+        assert_eq!(table.column_count(), 0);
+
+        table.set_data_source(Arc::new(StaticSource));
+        assert_eq!(table.row_count(), 100);
+        assert_eq!(table.column_count(), 20);
+
+        table.clear_data_source();
+        assert_eq!(table.row_count(), 0);
+        assert_eq!(table.column_count(), 0);
+    }
+
+    #[test]
+    fn scroll_position_clamping() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        // Without source, scroll still accumulates (normalize not called after source set)
+        table.set_data_source(Arc::new(StaticSource));
+
+        table.set_scroll_row(50);
+        assert_eq!(table.scroll_row(), 50);
+
+        // Clamp to max
+        table.set_scroll_row(999);
+        assert_eq!(table.scroll_row(), 99);
+
+        // Clamped to max column index (19)
+        table.set_scroll_column(30);
+        assert_eq!(table.scroll_column(), 19);
+
+        // Already at max
+        table.set_scroll_column(999);
+        assert_eq!(table.scroll_column(), 19);
+    }
+
+    #[test]
+    fn clear_data_source_resets_state() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_scroll_row(10);
+        table.set_scroll_column(5);
+
+        table.clear_data_source();
+        assert!(!table.has_data_source());
+        assert_eq!(table.scroll_row(), 0);
+        assert_eq!(table.scroll_column(), 0);
+        assert_eq!(table.row_count(), 0);
+        assert_eq!(table.column_count(), 0);
+        assert!(table.fetch_visible_window().is_empty());
+    }
+
+    #[test]
+    fn cached_window_returns_same_data_without_refetch() {
+        struct TrackingSource;
+        impl IncrementalTableDataSource for TrackingSource {
+            fn row_count(&self) -> usize {
+                50
+            }
+            fn column_count(&self) -> usize {
+                5
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("data-{}:{}", row, column))
+            }
+            fn revision(&self) -> u64 {
+                1
+            }
+        }
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+        table.set_data_source(Arc::new(TrackingSource));
+
+        let a = table.fetch_visible_window();
+        let b = table.fetch_visible_window();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn empty_source_handling() {
+        struct EmptySource;
+        impl IncrementalTableDataSource for EmptySource {
+            fn row_count(&self) -> usize {
+                0
+            }
+            fn column_count(&self) -> usize {
+                0
+            }
+            fn data(&self, _: usize, _: usize) -> Option<String> {
+                None
+            }
+        }
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        table.set_data_source(Arc::new(EmptySource));
+
+        assert_eq!(table.row_count(), 0);
+        assert_eq!(table.column_count(), 0);
+        assert_eq!(table.visible_window(), (0, 0, 0, 0));
+        assert!(table.fetch_visible_window().is_empty());
+
+        // Scrolling on empty source
+        table.set_scroll_row(10);
+        assert_eq!(table.scroll_row(), 0);
+    }
+
+    #[test]
+    fn overscan_default_values() {
+        let table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(table.overscan_rows(), 2);
+        assert_eq!(table.overscan_columns(), 1);
+    }
+
+    #[test]
+    fn set_row_height_and_column_width_minimum_clamp() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 800, 600));
+        table.set_data_source(Arc::new(StaticSource));
+
+        table.set_row_height(0);
+        assert_eq!(table.row_height(), 1);
+
+        table.set_row_height(30);
+        assert_eq!(table.row_height(), 30);
+
+        table.set_column_width(0);
+        assert_eq!(table.column_width(), 1);
+
+        table.set_column_width(80);
+        assert_eq!(table.column_width(), 80);
+    }
 }

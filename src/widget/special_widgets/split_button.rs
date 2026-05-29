@@ -347,10 +347,8 @@ impl EventHandler for SplitButton {
                         self.move_highlight(1);
                     }
                 }
-                38 => {
-                    if self.menu_open {
-                        self.move_highlight(-1);
-                    }
+                38 if self.menu_open => {
+                    self.move_highlight(-1);
                 }
                 27 => {
                     self.close_menu();
@@ -522,5 +520,119 @@ mod tests {
 
         assert_eq!(split.primary_action_index(), Some(1));
         assert!(!split.menu_open());
+    }
+
+    #[test]
+    fn default_state() {
+        let split = SplitButton::new("Run", Rect::new(0, 0, 800, 600));
+        assert_eq!(split.text(), "Run");
+        assert!(split.actions().is_empty());
+        assert_eq!(split.primary_action_index(), None);
+        assert!(!split.menu_open());
+    }
+
+    #[test]
+    fn set_text_get_text_roundtrip() {
+        let mut split = SplitButton::new("Initial", Rect::new(0, 0, 800, 600));
+        assert_eq!(split.text(), "Initial");
+
+        split.set_text("Updated");
+        assert_eq!(split.text(), "Updated");
+
+        split.set_text("");
+        assert_eq!(split.text(), "");
+    }
+
+    #[test]
+    fn add_action_adds_to_menu() {
+        let mut split = SplitButton::new("Action", Rect::new(0, 0, 800, 600));
+        assert_eq!(split.actions().len(), 0);
+
+        let idx = split.add_action(SplitAction::new("act1", "Action 1"));
+        assert_eq!(idx, 0);
+        assert_eq!(split.actions().len(), 1);
+        assert_eq!(split.primary_action_index(), Some(0));
+
+        let idx = split.add_action(SplitAction::new("act2", "Action 2"));
+        assert_eq!(idx, 1);
+        assert_eq!(split.actions().len(), 2);
+
+        assert_eq!(split.actions()[0].id, "act1");
+        assert_eq!(split.actions()[1].id, "act2");
+    }
+
+    #[test]
+    fn enable_disable_states() {
+        let mut split = SplitButton::new("Test", Rect::new(0, 0, 800, 600));
+        split.set_actions(vec![SplitAction::new("a", "A")]);
+
+        // Enabled by default
+        assert!(split.trigger_primary());
+
+        // Disable widget
+        split.base_mut().set_enabled(false);
+
+        // After disabling, events should be ignored
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        split.triggered.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        // Direct call still works but event handler ignores
+        split.handle_event(&Event::key_press(40, 0));
+        let _got = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert!(
+            !split.menu_open(),
+            "disabled widget should not open menu via events"
+        );
+    }
+
+    #[test]
+    fn trigger_with_no_actions() {
+        let mut split = SplitButton::new("Empty", Rect::new(0, 0, 800, 600));
+        // No actions added yet
+        assert!(!split.trigger_primary());
+
+        // open_menu with no actions still opens an empty menu (code doesn't guard)
+        split.open_menu();
+        assert!(split.menu_open());
+
+        // Close menu
+        split.close_menu();
+        assert!(!split.menu_open());
+    }
+
+    #[test]
+    fn menu_toggle_signal_emission() {
+        let mut split = SplitButton::new("Test", Rect::new(0, 0, 800, 600));
+        split.set_actions(vec![SplitAction::new("a", "A"), SplitAction::new("b", "B")]);
+
+        let emitted = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = emitted.clone();
+        split.menu_toggled.connect(move |state| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*state.as_ref());
+            }
+        });
+
+        split.open_menu();
+        assert!(split.menu_open());
+
+        split.close_menu();
+        assert!(!split.menu_open());
+
+        let got = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(got, vec![true, false]);
     }
 }

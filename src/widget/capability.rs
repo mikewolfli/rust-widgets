@@ -1,8 +1,77 @@
-//! Widget capability metadata and runtime factory.
+//! Widget capability metadata, runtime factory, and generic property read/write layer.
 //!
-//! This module provides:
-//! - A lightweight schema describing widget properties/events/commands.
-//! - A registry-based widget factory that can construct widgets by kind/name.
+//! # Purpose
+//!
+//! This module implements BLUE9 R2 (Capability Metadata Layer). It serves as the
+//! bridge between the concrete widget struct hierarchy and a uniform, introspectable
+//! API for querying and manipulating widget state without direct type knowledge.
+//! It enables design tools, scripting, serialization, and cross-widget automation
+//! to interact with any registered widget through a single generic interface.
+//!
+//! # Key Concepts
+//!
+//! ## CapabilityValue
+//! An enum over all property value types (Bool, Int, UInt, Float, String, Null)
+//! that the generic read/write layer can transport. All property access through
+//! `WidgetFactory` goes via this type — downcast on write, upcast on read.
+//!
+//! ## PropertySchema
+//! Describes a single widget property: its name, value kind (Bool/Int/Enum/…),
+//! and whether it supports generic read and/or write access. Each widget kind
+//! declares a static `&[PropertySchema]` that the factory uses at runtime to
+//! enumerate, validate, and discover properties.
+//!
+//! ## WidgetCapability
+//! The full capability record for one widget kind, containing:
+//! - `kind` — the `WidgetKind` enum variant.
+//! - `canonical_name` / `aliases` — string keys for factory lookup (case/separator
+//!   insensitive, so `"list_view"`, `"listview"`, `"ListView"` all resolve).
+//! - `properties` — the array of `PropertySchema` entries.
+//! - `events` — string names of signals the widget can emit (e.g. `"clicked"`,
+//!   `"selection_changed"`, `"text_changed"`).
+//! - `commands` — string names of imperative actions the widget supports
+//!   (e.g. `"set_text"`, `"clear_selection"`, `"play"`).
+//!
+//! ## WidgetFactory
+//! The central registry that:
+//! 1. Maps canonical names and aliases → `WidgetCapability` + constructor closure.
+//! 2. Constructs widgets via `create(name, geometry, text)` or `create_by_kind(kind, …)`.
+//! 3. Provides generic property read/write through `read_property` / `write_property`,
+//!    which downcast the trait object to the concrete widget type and call the
+//!    corresponding getter/setter.
+//! 4. Exports `capability(name)` / `capability_by_kind(kind)` for introspection.
+//! 5. Generates `capability_manifest()` for serialization/export of the full schema.
+//!
+//! ## Generic Read/Write Dispatch
+//!
+//! `read_widget_property_value()` and `write_widget_property_value()` are large
+//! match-on-`widget.kind()` functions that downcast the `&dyn Widget` to the
+//! concrete type (via `widget_as!` / `widget_as_mut!`) and call the native getter
+//! or setter. This avoids requiring every widget to implement a separate trait for
+//! generic property access — the dispatch is centralized in this one module.
+//!
+//! # Capability Registration
+//!
+//! Each widget kind that should be constructible through the factory must:
+//! 1. Define a `const XXX_PROPERTIES: &[PropertySchema]` array.
+//! 2. Write a `fn xxx_capability() -> WidgetCapability` function referencing that array.
+//! 3. Write a `fn create_xxx(geometry, text) -> Box<dyn Widget>` constructor.
+//! 4. Register all three in `WidgetFactory::register_core_widgets()`.
+//!
+//! Currently **64 widget kinds** are registered, covering all major control
+//! families: base widgets, inputs, containers, dialogs, displays, menu/toolbar,
+//! advanced widgets, special widgets (productivity + rich media), and web widgets.
+//!
+//! # Relationship to BLUE9 Milestones
+//!
+//! - **R2 (Extensibility)**: This module IS the capability metadata layer.
+//!   A third-party widget can register itself via `factory.register(...)` at runtime.
+//! - **R1 (API Symmetry)**: The property schemas document the "can read / can write"
+//!   contract for each widget, making gaps visible and enforceable by test.
+//! - **R3-R5**: All modern data, productivity, and rich media widgets have
+//!   capability entries alongside their concrete implementations.
+//! - **R6 (Quality Gate)**: The manifest export and factory tests are part of the
+//!   CI quality matrix.
 
 use std::collections::HashMap;
 
@@ -11,7 +80,9 @@ use crate::core::Rect;
 use super::{
     advanced_widgets::calendar::Calendar,
     advanced_widgets::date_edit::{Date, DateEdit},
+    advanced_widgets::date_time_edit::DateTimeEdit,
     advanced_widgets::dial::Dial,
+    advanced_widgets::pie_menu::PieMenu,
     advanced_widgets::ribbon_bar::RibbonBar,
     advanced_widgets::tab_bar::TabBar,
     advanced_widgets::time_edit::{Time, TimeEdit},
@@ -19,9 +90,21 @@ use super::{
     base_widgets::checkbox::{CheckBox, CheckState},
     base_widgets::label::Label,
     base_widgets::radiobutton::RadioButton,
+    container_widgets::collapsible_pane::CollapsiblePane,
+    container_widgets::dockwidget::DockWidget,
     container_widgets::groupbox::GroupBox,
+    container_widgets::mdiarea::MdiArea,
+    container_widgets::scrollarea::ScrollArea,
     container_widgets::splitter::Splitter,
+    container_widgets::stackedwidget::StackedWidget,
+    container_widgets::tabwidget::TabWidget,
     container_widgets::toolbox::ToolBox,
+    dialog::file_dialog::FileDialog,
+    dialog::font_dialog::FontDialog,
+    dialog::input_dialog::InputDialog,
+    dialog::message_box::MessageBox,
+    dialog::popup_window::PopupWindow,
+    dialog::progress_dialog::ProgressDialog,
     display_widgets::lcd_number::{LCDNumber, LCDNumberMode, SegmentStyle},
     display_widgets::progressbar::ProgressBar,
     display_widgets::scrollbar::ScrollBar,
@@ -32,6 +115,7 @@ use super::{
     input_widgets::lineedit::LineEdit,
     input_widgets::listbox::{ListBox, SelectionMode as ListBoxSelectionMode},
     input_widgets::spinbox::SpinBox,
+    input_widgets::textedit::TextEdit,
     menu_toolbar::action::Action,
     menu_toolbar::menu::Menu,
     menu_toolbar::menu_bar::MenuBar,
@@ -56,6 +140,7 @@ use super::{
     view_widgets::tree_view::TreeView,
     view_widgets::virtual_list::VirtualList,
     view_widgets::virtual_table::VirtualTable,
+    web_widgets::web_view::WebView,
     window::Window,
     Widget, WidgetKind,
 };
@@ -424,6 +509,32 @@ impl WidgetFactory {
         self.register(chip_capability(), create_chip);
         self.register(grid_capability(), create_grid);
         self.register(freeform_shape_capability(), create_freeform_shape);
+
+        // ── Dialog widgets ────────────────────────────────────────
+        self.register(message_box_capability(), create_message_box);
+        self.register(file_dialog_capability(), create_file_dialog);
+        self.register(font_dialog_capability(), create_font_dialog);
+        self.register(input_dialog_capability(), create_input_dialog);
+        self.register(progress_dialog_capability(), create_progress_dialog);
+        self.register(popup_window_capability(), create_popup_window);
+
+        // ── Container widgets ─────────────────────────────────────
+        self.register(scroll_area_capability(), create_scroll_area);
+        self.register(tab_widget_capability(), create_tab_widget);
+        self.register(stacked_widget_capability(), create_stacked_widget);
+        self.register(collapsible_pane_capability(), create_collapsible_pane);
+        self.register(dock_widget_capability(), create_dock_widget);
+        self.register(mdi_area_capability(), create_mdi_area);
+
+        // ── Text widget ───────────────────────────────────────────
+        self.register(text_edit_capability(), create_text_edit);
+
+        // ── Web widget ────────────────────────────────────────────
+        self.register(web_view_capability(), create_web_view);
+
+        // ── Advanced widgets ──────────────────────────────────────
+        self.register(pie_menu_capability(), create_pie_menu);
+        self.register(date_time_edit_capability(), create_date_time_edit);
     }
 }
 
@@ -3008,9 +3119,7 @@ fn write_widget_property_value(
                         }
                         other => {
                             let row = expect_usize(other)?;
-                            if tree_table.select_row(row) {
-                                Ok(())
-                            } else if tree_table.row_count() == 0 {
+                            if tree_table.select_row(row) || tree_table.row_count() == 0 {
                                 Ok(())
                             } else {
                                 Err(CapabilityAccessError::UnsupportedOnWidget)
@@ -4284,6 +4393,11 @@ fn default_widget_property_value(kind: WidgetKind, property_name: &str) -> Optio
             _ => return None,
         },
         WidgetKind::TextEdit => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "placeholder_text" => CapabilityValue::String(String::new()),
+            "max_length" => CapabilityValue::Null,
+            "read_only" => CapabilityValue::Bool(false),
+            "line_wrap" => CapabilityValue::Bool(true),
             "output_line_count" => CapabilityValue::UInt(0),
             "input_line" => CapabilityValue::String(String::new()),
             _ => return None,
@@ -4303,6 +4417,11 @@ fn default_widget_property_value(kind: WidgetKind, property_name: &str) -> Optio
             _ => return None,
         },
         WidgetKind::WebView => match property_name {
+            "url" => CapabilityValue::String("about:blank".to_string()),
+            "loading" => CapabilityValue::Bool(false),
+            "title" => CapabilityValue::String(String::new()),
+            "can_go_back" => CapabilityValue::Bool(false),
+            "can_go_forward" => CapabilityValue::Bool(false),
             "source" => CapabilityValue::Null,
             "playing" => CapabilityValue::Bool(false),
             "duration_ms" => CapabilityValue::UInt(0),
@@ -4351,6 +4470,102 @@ fn default_widget_property_value(kind: WidgetKind, property_name: &str) -> Optio
             "fill_rgba" => CapabilityValue::String("#C8DCFFFF".to_string()),
             "stroke_rgba" => CapabilityValue::String("#5078C8FF".to_string()),
             "stroke_width" => CapabilityValue::UInt(2),
+            _ => return None,
+        },
+        // ── Dialog widgets ──────────────────────────────────
+        WidgetKind::MessageBox => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "text" => CapabilityValue::String(String::new()),
+            "modal" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::FileDialog => match property_name {
+            "title" => CapabilityValue::String("Open File".to_string()),
+            "modal" => CapabilityValue::Bool(true),
+            "directory" => CapabilityValue::String(String::new()),
+            "selected_file" => CapabilityValue::Null,
+            "mode" => CapabilityValue::String("open_file".to_string()),
+            _ => return None,
+        },
+        WidgetKind::FontDialog => match property_name {
+            "modal" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::InputDialog => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "label_text" => CapabilityValue::String(String::new()),
+            "mode" => CapabilityValue::String("text".to_string()),
+            "text_value" => CapabilityValue::String(String::new()),
+            "int_value" => CapabilityValue::Int(0),
+            "double_value" => CapabilityValue::Float(0.0),
+            _ => return None,
+        },
+        WidgetKind::ProgressDialog => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "label_text" => CapabilityValue::String(String::new()),
+            "value" => CapabilityValue::Int(0),
+            "minimum" => CapabilityValue::Int(0),
+            "maximum" => CapabilityValue::Int(100),
+            _ => return None,
+        },
+        WidgetKind::PopupWindow => match property_name {
+            "has_content" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        // ── Container widgets ───────────────────────────────
+        WidgetKind::ScrollArea => match property_name {
+            "widget_resizable" => CapabilityValue::Bool(true),
+            "horizontal_scroll_bar_policy" => CapabilityValue::String("as_needed".to_string()),
+            "vertical_scroll_bar_policy" => CapabilityValue::String("as_needed".to_string()),
+            "scroll_position_x" => CapabilityValue::Int(0),
+            "scroll_position_y" => CapabilityValue::Int(0),
+            _ => return None,
+        },
+        WidgetKind::TabWidget => match property_name {
+            "tab_count" => CapabilityValue::UInt(0),
+            "current_index" => CapabilityValue::UInt(0),
+            "closable" => CapabilityValue::Bool(false),
+            "movable" => CapabilityValue::Bool(false),
+            "tab_position" => CapabilityValue::String("north".to_string()),
+            _ => return None,
+        },
+        WidgetKind::StackedWidget => match property_name {
+            "widget_count" => CapabilityValue::UInt(0),
+            "current_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::CollapsiblePane => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "collapsed" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::DockWidget => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "floating" => CapabilityValue::Bool(false),
+            "docked" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::MdiArea => match property_name {
+            "subwindow_count" => CapabilityValue::UInt(0),
+            "active_subwindow" => CapabilityValue::Null,
+            "view_mode" => CapabilityValue::String("sub_window_view".to_string()),
+            _ => return None,
+        },
+
+        // ── Advanced widgets ────────────────────────────────
+        WidgetKind::PieMenu => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "radius" => CapabilityValue::Float(100.0),
+            "inner_radius" => CapabilityValue::Float(35.0),
+            "current_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::DateTimePicker => match property_name {
+            "datetime" => CapabilityValue::Null,
+            "display_format" => CapabilityValue::String("yyyy-MM-dd HH:mm:ss".to_string()),
+            "calendar_popup" => CapabilityValue::Bool(false),
+            "minimum" => CapabilityValue::Null,
+            "maximum" => CapabilityValue::Null,
             _ => return None,
         },
         _ => return None,
@@ -4597,6 +4812,86 @@ fn create_freeform_shape(geometry: Rect, _text: &str) -> Box<dyn Widget> {
         geometry,
         ShapePath::RoundedRect { radius: 8 },
     ))
+}
+
+// ── Dialog widget constructors ────────────────────────────────
+
+fn create_message_box(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(MessageBox::new(geometry))
+}
+
+fn create_file_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(FileDialog::new(geometry))
+}
+
+fn create_font_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(FontDialog::new(geometry))
+}
+
+fn create_input_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(InputDialog::new(geometry))
+}
+
+fn create_progress_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(ProgressDialog::new(geometry))
+}
+
+fn create_popup_window(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(PopupWindow::new(geometry))
+}
+
+// ── Container widget constructors ─────────────────────────────
+
+fn create_scroll_area(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(ScrollArea::new(geometry))
+}
+
+fn create_tab_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(TabWidget::new(geometry))
+}
+
+fn create_stacked_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(StackedWidget::new(geometry))
+}
+
+fn create_collapsible_pane(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(CollapsiblePane::new(geometry, String::new()))
+}
+
+fn create_dock_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(DockWidget::new(geometry))
+}
+
+fn create_mdi_area(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(MdiArea::new(geometry))
+}
+
+// ── Text widget constructors ──────────────────────────────────
+
+fn create_text_edit(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(TextEdit::new(geometry))
+}
+
+// ── Web widget constructors ───────────────────────────────────
+
+fn create_web_view(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(WebView::new(geometry))
+}
+
+// ── Advanced widget constructors ──────────────────────────────
+
+fn create_pie_menu(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(PieMenu::new(
+        crate::core::Point::new(
+            geometry.x + (geometry.width / 2) as i32,
+            geometry.y + (geometry.height / 2) as i32,
+        ),
+        geometry.width.min(geometry.height) as f32 / 2.0,
+    ))
+}
+
+fn create_date_time_edit(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(DateTimeEdit::new(geometry))
 }
 
 const BUTTON_PROPERTIES: &[PropertySchema] = &[
@@ -6207,6 +6502,420 @@ const FREEFORM_SHAPE_PROPERTIES: &[PropertySchema] = &[
     },
 ];
 
+// ── Dialog widgets ──────────────────────────────────────────
+
+const MESSAGE_BOX_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "modal",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+];
+
+const FILE_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "modal",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "directory",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "selected_file",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "mode",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+];
+
+const FONT_DIALOG_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "modal",
+    value_kind: PropertyValueKind::Bool,
+    readable: false,
+    writable: false,
+}];
+
+const INPUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "label_text",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "mode",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "text_value",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "int_value",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "double_value",
+        value_kind: PropertyValueKind::Float,
+        readable: false,
+        writable: false,
+    },
+];
+
+const PROGRESS_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "label_text",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "minimum",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "maximum",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+];
+
+const POPUP_WINDOW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "has_content",
+    value_kind: PropertyValueKind::Bool,
+    readable: false,
+    writable: false,
+}];
+
+// ── Container widgets ───────────────────────────────────────
+
+const SCROLL_AREA_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "widget_resizable",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "horizontal_scroll_bar_policy",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "vertical_scroll_bar_policy",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "scroll_position_x",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "scroll_position_y",
+        value_kind: PropertyValueKind::Int,
+        readable: false,
+        writable: false,
+    },
+];
+
+const TAB_WIDGET_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "tab_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "current_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "closable",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "movable",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "tab_position",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+];
+
+const STACKED_WIDGET_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "widget_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "current_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+];
+
+const COLLAPSIBLE_PANE_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "collapsed",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+];
+
+const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "floating",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "docked",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+];
+
+const MDI_AREA_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "subwindow_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "active_subwindow",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "view_mode",
+        value_kind: PropertyValueKind::Enum,
+        readable: false,
+        writable: false,
+    },
+];
+
+// ── Input / text widgets ────────────────────────────────────
+
+const TEXT_EDIT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "placeholder_text",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "max_length",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "read_only",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "line_wrap",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+];
+
+// ── Web widgets ─────────────────────────────────────────────
+
+const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "url",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "loading",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "can_go_back",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "can_go_forward",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+];
+
+// ── Advanced widgets ────────────────────────────────────────
+
+const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "radius",
+        value_kind: PropertyValueKind::Float,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "inner_radius",
+        value_kind: PropertyValueKind::Float,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "current_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: false,
+        writable: false,
+    },
+];
+
+const DATE_TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "datetime",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "display_format",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "calendar_popup",
+        value_kind: PropertyValueKind::Bool,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "minimum",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+    PropertySchema {
+        name: "maximum",
+        value_kind: PropertyValueKind::String,
+        readable: false,
+        writable: false,
+    },
+];
+
 fn button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Button,
@@ -6689,8 +7398,8 @@ fn code_editor_capability() -> WidgetCapability {
         canonical_name: "code_editor",
         aliases: &["codeeditor"],
         properties: CODE_EDITOR_PROPERTIES,
-        events: &["text_changed", "cursor_moved"],
-        commands: &["append_line", "set_markers"],
+        events: &["text_changed", "cursor_moved", "selection_changed"],
+        commands: &["set_text", "append_line", "set_markers", "set_cursor"],
     }
 }
 
@@ -6700,8 +7409,8 @@ fn gantt_widget_capability() -> WidgetCapability {
         canonical_name: "gantt_widget",
         aliases: &["gantt", "ganttwidget"],
         properties: GANTT_WIDGET_PROPERTIES,
-        events: &["task_selected"],
-        commands: &["set_tasks", "zoom"],
+        events: &["task_selected", "viewport_changed"],
+        commands: &["set_tasks", "zoom", "set_viewport", "select_task"],
     }
 }
 
@@ -6811,8 +7520,15 @@ fn grid_capability() -> WidgetCapability {
         canonical_name: "grid",
         aliases: &["grid_widget", "gridwidget"],
         properties: GRID_PROPERTIES,
-        events: &[],
-        commands: &["set_rows", "set_columns", "set_spacing"],
+        events: &["cell_clicked", "cell_double_clicked", "selection_changed"],
+        commands: &[
+            "set_rows",
+            "set_columns",
+            "set_spacing",
+            "select_cell",
+            "clear_selection",
+            "set_line_color",
+        ],
     }
 }
 
@@ -6824,6 +7540,253 @@ fn freeform_shape_capability() -> WidgetCapability {
         aliases: &["freeformshape"],
         properties: FREEFORM_SHAPE_PROPERTIES,
         events: &["clicked", "hovered_changed", "pressed_changed"],
+    }
+}
+
+// ── Dialog widget capabilities ────────────────────────────────
+
+fn message_box_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MessageBox,
+        canonical_name: "message_box",
+        aliases: &["messagebox", "msgbox"],
+        properties: MESSAGE_BOX_PROPERTIES,
+        events: &["button_clicked", "accepted", "rejected"],
+        commands: &["set_text", "set_title", "set_icon"],
+    }
+}
+
+fn file_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FileDialog,
+        canonical_name: "file_dialog",
+        aliases: &["filedialog"],
+        properties: FILE_DIALOG_PROPERTIES,
+        events: &["file_selected", "files_selected", "accepted", "rejected"],
+        commands: &["set_mode", "set_directory", "open"],
+    }
+}
+
+fn font_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FontDialog,
+        canonical_name: "font_dialog",
+        aliases: &["fontdialog"],
+        properties: FONT_DIALOG_PROPERTIES,
+        events: &["font_selected", "accepted", "rejected"],
+        commands: &["set_current_font", "accept", "reject"],
+    }
+}
+
+fn input_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::InputDialog,
+        canonical_name: "input_dialog",
+        aliases: &["inputdialog"],
+        properties: INPUT_DIALOG_PROPERTIES,
+        events: &[
+            "text_value_changed",
+            "int_value_changed",
+            "double_value_changed",
+            "accepted",
+            "rejected",
+        ],
+        commands: &[
+            "set_mode",
+            "set_text_value",
+            "set_int_value",
+            "set_double_value",
+        ],
+    }
+}
+
+fn progress_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ProgressDialog,
+        canonical_name: "progress_dialog",
+        aliases: &["progressdialog"],
+        properties: PROGRESS_DIALOG_PROPERTIES,
+        events: &["canceled"],
+        commands: &["set_value", "set_range", "set_title", "set_label_text"],
+    }
+}
+
+fn popup_window_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PopupWindow,
+        canonical_name: "popup_window",
+        aliases: &["popupwindow", "popup"],
+        properties: POPUP_WINDOW_PROPERTIES,
+        events: &[],
+        commands: &["set_content_widget"],
+    }
+}
+
+// ── Container widget capabilities ─────────────────────────────
+
+fn scroll_area_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ScrollArea,
+        canonical_name: "scroll_area",
+        aliases: &["scrollarea"],
+        properties: SCROLL_AREA_PROPERTIES,
+        events: &["scroll_position_changed"],
+        commands: &[
+            "set_widget_resizable",
+            "set_horizontal_policy",
+            "set_vertical_policy",
+        ],
+    }
+}
+
+fn tab_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TabWidget,
+        canonical_name: "tab_widget",
+        aliases: &["tabwidget"],
+        properties: TAB_WIDGET_PROPERTIES,
+        events: &["current_changed", "tab_close_requested"],
+        commands: &[
+            "add_tab",
+            "remove_tab",
+            "set_current_index",
+            "set_closable",
+            "set_movable",
+            "set_tab_position",
+        ],
+    }
+}
+
+fn stacked_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::StackedWidget,
+        canonical_name: "stacked_widget",
+        aliases: &["stackedwidget", "stacked"],
+        properties: STACKED_WIDGET_PROPERTIES,
+        events: &["current_changed"],
+        commands: &["add_widget", "remove_widget", "set_current_index"],
+    }
+}
+
+fn collapsible_pane_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CollapsiblePane,
+        canonical_name: "collapsible_pane",
+        aliases: &["collapsiblepane", "collapsible"],
+        properties: COLLAPSIBLE_PANE_PROPERTIES,
+        events: &["toggled"],
+        commands: &["set_title", "set_collapsed", "toggle"],
+    }
+}
+
+fn dock_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DockWidget,
+        canonical_name: "dock_widget",
+        aliases: &["dockwidget", "dock"],
+        properties: DOCK_WIDGET_PROPERTIES,
+        events: &[
+            "dock_location_changed",
+            "features_changed",
+            "top_level_changed",
+        ],
+        commands: &[
+            "set_title",
+            "set_floating",
+            "set_features",
+            "set_allowed_areas",
+        ],
+    }
+}
+
+fn mdi_area_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MdiArea,
+        canonical_name: "mdi_area",
+        aliases: &["mdiarea", "mdi"],
+        properties: MDI_AREA_PROPERTIES,
+        events: &["subwindow_activated"],
+        commands: &[
+            "add_subwindow",
+            "remove_subwindow",
+            "set_view_mode",
+            "activate_subwindow",
+        ],
+    }
+}
+
+// ── Text/input widget capabilities ───────────────────────────
+
+fn text_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TextEdit,
+        canonical_name: "text_edit",
+        aliases: &["textedit"],
+        properties: TEXT_EDIT_PROPERTIES,
+        events: &["text_changed", "cursor_position_changed"],
+        commands: &[
+            "set_text",
+            "set_placeholder_text",
+            "set_max_length",
+            "set_read_only",
+            "set_line_wrap",
+        ],
+    }
+}
+
+// ── Web widget capabilities ──────────────────────────────────
+
+fn web_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::WebView,
+        canonical_name: "web_view",
+        aliases: &["webview"],
+        properties: WEB_VIEW_PROPERTIES,
+        events: &[
+            "loading_started",
+            "loading_finished",
+            "title_changed",
+            "url_changed",
+            "error_occurred",
+            "navigation_state_changed",
+        ],
+        commands: &[
+            "set_url",
+            "load_url",
+            "reload",
+            "go_back",
+            "go_forward",
+            "stop",
+        ],
+    }
+}
+
+// ── Advanced widget capabilities ─────────────────────────────
+
+fn pie_menu_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PieMenu,
+        canonical_name: "pie_menu",
+        aliases: &["piemenu", "radial_menu"],
+        properties: PIE_MENU_PROPERTIES,
+        events: &[
+            "triggered",
+            "triggered_text",
+            "about_to_show",
+            "about_to_hide",
+        ],
+        commands: &["add_item", "remove_item", "set_radius", "set_current_index"],
+    }
+}
+
+fn date_time_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DateTimePicker,
+        canonical_name: "date_time_edit",
+        aliases: &["datetimeedit", "datetimepicker", "date_time_picker"],
+        properties: DATE_TIME_EDIT_PROPERTIES,
+        events: &["datetime_changed"],
+        commands: &["set_datetime", "set_display_format", "set_calendar_popup"],
     }
 }
 
@@ -6882,6 +7845,24 @@ mod tests {
         assert!(factory.capability("datagrid").is_some());
         assert!(factory.capability("treetable").is_some());
         assert!(factory.capability("virtualtable").is_some());
+
+        // ── Newly registered capabilities (R3/R4/R5) ───────
+        assert!(factory.capability("messagebox").is_some());
+        assert!(factory.capability("filedialog").is_some());
+        assert!(factory.capability("fontdialog").is_some());
+        assert!(factory.capability("inputdialog").is_some());
+        assert!(factory.capability("progressdialog").is_some());
+        assert!(factory.capability("popupwindow").is_some());
+        assert!(factory.capability("scrollarea").is_some());
+        assert!(factory.capability("tabwidget").is_some());
+        assert!(factory.capability("stackedwidget").is_some());
+        assert!(factory.capability("collapsiblepane").is_some());
+        assert!(factory.capability("dockwidget").is_some());
+        assert!(factory.capability("mdiarea").is_some());
+        assert!(factory.capability("textedit").is_some());
+        assert!(factory.capability("webview").is_some());
+        assert!(factory.capability("piemenu").is_some());
+        assert!(factory.capability("datetimepicker").is_some());
     }
 
     #[test]

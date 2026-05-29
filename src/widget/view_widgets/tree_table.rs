@@ -461,4 +461,206 @@ mod tests {
         assert_eq!(tree_table.selected_row(), None);
         assert!(!tree_table.has_model());
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let tree = TreeTable::new(Rect::new(0, 0, 800, 600));
+        assert!(!tree.has_model());
+        assert_eq!(tree.row_count(), 0);
+        assert_eq!(tree.column_count(), 0);
+        assert_eq!(tree.selected_row(), None);
+        assert_eq!(tree.row_height(), 20);
+        assert_eq!(tree.column_width(), 140);
+        assert!(tree.row_path(0).is_none());
+        assert!(tree.row_depth(0).is_none());
+        assert!(tree.is_row_expanded(0).is_none());
+    }
+
+    #[test]
+    fn has_model_before_and_after() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 800, 600));
+        assert!(!tree.has_model());
+
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert!(tree.has_model());
+
+        tree.clear_model();
+        assert!(!tree.has_model());
+    }
+
+    #[test]
+    fn set_model_resets_expansion_and_selection() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        tree.expand_row(0);
+        tree.select_row(2);
+        assert_eq!(tree.row_count(), 4);
+
+        // Re-binding should reset
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert_eq!(tree.row_count(), 2);
+        assert_eq!(tree.selected_row(), None);
+    }
+
+    #[test]
+    fn toggle_row_expanded_works() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        // Toggle expands
+        assert!(tree.toggle_row_expanded(0));
+        assert!(tree.is_row_expanded(0) == Some(true));
+        assert_eq!(tree.row_count(), 4);
+
+        // Toggle collapses
+        assert!(tree.toggle_row_expanded(0));
+        assert!(tree.is_row_expanded(0) == Some(false));
+        assert_eq!(tree.row_count(), 2);
+
+        // Toggle on leaf node (no children)
+        tree.expand_row(0);
+        tree.expand_row(1); // path [0,0] has 1 child
+        assert_eq!(tree.row_count(), 5);
+        // Row with path [0,0,0] has no children
+        assert!(!tree.toggle_row_expanded(2));
+    }
+
+    #[test]
+    fn row_depth_returns_correct_values() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        assert_eq!(tree.row_depth(0), Some(0));
+        assert_eq!(tree.row_depth(1), Some(0));
+
+        tree.expand_row(0);
+        assert_eq!(tree.row_depth(0), Some(0));
+        assert_eq!(tree.row_depth(1), Some(1)); // child of root 0
+        assert_eq!(tree.row_depth(2), Some(1)); // child of root 0
+        assert_eq!(tree.row_depth(3), Some(0)); // root 1
+    }
+
+    #[test]
+    fn signal_emission_on_projection_and_selection() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+
+        let proj_emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sel_emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let p_sink = proj_emitted.clone();
+        tree.projection_changed.connect(move |count| {
+            p_sink.lock().unwrap().push(*count);
+        });
+
+        let s_sink = sel_emitted.clone();
+        tree.selection_changed.connect(move |sel| {
+            s_sink.lock().unwrap().push(*sel);
+        });
+
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert!(proj_emitted.lock().unwrap().contains(&2));
+
+        tree.select_row(0);
+        assert!(sel_emitted.lock().unwrap().contains(&Some(0)));
+
+        tree.clear_model();
+        assert!(proj_emitted.lock().unwrap().contains(&0));
+    }
+
+    #[test]
+    fn invalid_row_indices_handled_gracefully() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        // Out-of-bounds row operations
+        assert!(!tree.expand_row(999));
+        assert!(!tree.collapse_row(999));
+        assert!(!tree.select_row(999));
+        assert_eq!(tree.row_path(999), None);
+        assert_eq!(tree.row_depth(999), None);
+        assert_eq!(tree.is_row_expanded(999), None);
+        assert_eq!(tree.item(999, 0), None);
+    }
+
+    #[test]
+    fn empty_model_handled_gracefully() {
+        struct EmptyModel;
+        impl TreeTableModel for EmptyModel {
+            fn root_count(&self) -> usize {
+                0
+            }
+            fn child_count(&self, _: &[usize]) -> usize {
+                0
+            }
+            fn column_count(&self) -> usize {
+                0
+            }
+            fn data(&self, _: &[usize], _: usize) -> Option<String> {
+                None
+            }
+        }
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(EmptyModel));
+
+        assert_eq!(tree.row_count(), 0);
+        assert_eq!(tree.column_count(), 0);
+        assert_eq!(tree.selected_row(), None);
+        assert!(!tree.select_row(0));
+        assert!(!tree.expand_row(0));
+        assert!(!tree.collapse_row(0));
+    }
+
+    #[test]
+    fn item_lookup_on_expanded_rows() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        // Root child full path
+        assert_eq!(tree.item(0, 0), Some("0:0".to_string()));
+        assert_eq!(tree.item(1, 1), Some("1:1".to_string()));
+
+        tree.expand_row(0);
+        // Expanded rows use full path
+        assert_eq!(tree.item(1, 0), Some("0/0:0".to_string()));
+        assert_eq!(tree.item(2, 1), Some("0/1:1".to_string()));
+
+        // Row out of bounds returns None (model handles column)
+        assert_eq!(tree.item(999, 0), None);
+    }
+
+    #[test]
+    fn set_row_and_column_width() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 800, 600));
+
+        tree.set_row_height(30);
+        assert_eq!(tree.row_height(), 30);
+
+        tree.set_row_height(0);
+        assert_eq!(tree.row_height(), 1);
+
+        tree.set_column_width(200);
+        assert_eq!(tree.column_width(), 200);
+
+        tree.set_column_width(0);
+        assert_eq!(tree.column_width(), 1);
+    }
+
+    #[test]
+    fn collapse_descendants_are_removed() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        // Expand root 0 -> shows children
+        tree.expand_row(0);
+        // Expand [0,0] -> shows [0,0,0]
+        tree.expand_row(1);
+        assert_eq!(tree.row_count(), 5);
+
+        // Collapse root 0 -> all descendants removed
+        tree.collapse_row(0);
+        assert_eq!(tree.row_count(), 2);
+        assert_eq!(tree.row_path(0), Some([0].as_slice()));
+        assert_eq!(tree.row_path(1), Some([1].as_slice()));
+    }
 }

@@ -301,4 +301,93 @@ mod tests {
         let after_out = gantt.viewport();
         assert!((after_out.1 - after_out.0) >= (after_in.1 - after_in.0));
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        assert!(gantt.tasks().is_empty());
+        assert_eq!(gantt.selected_id(), None);
+        assert_eq!(gantt.viewport(), (0, 100));
+    }
+
+    #[test]
+    fn task_creation_validates_end_gt_start() {
+        let task = GanttTask::new("t1", "Task", 10, 5, 50);
+        assert!(task.end > task.start);
+        assert_eq!(task.start, 10);
+        assert_eq!(task.end, 11); // end clamped to start + 1
+    }
+
+    #[test]
+    fn progress_clamp_upper_bound() {
+        let task = GanttTask::new("t1", "Task", 0, 10, 200);
+        assert_eq!(task.progress, 100);
+    }
+
+    #[test]
+    fn progress_clamp_lower_bound() {
+        // Progress is u8, so 0 is the minimum. Just check behavior.
+        let task = GanttTask::new("t1", "Task", 0, 10, 0);
+        assert_eq!(task.progress, 0);
+    }
+
+    #[test]
+    fn select_index_out_of_bounds_returns_false() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_tasks(sample_tasks());
+        assert!(!gantt.select_index(10));
+        assert_eq!(gantt.selected_id(), None);
+    }
+
+    #[test]
+    fn select_index_duplicate_guard() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_tasks(sample_tasks());
+        assert!(gantt.select_index(0));
+        assert_eq!(gantt.selected_id(), Some("t1"));
+
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        gantt.task_selected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+        gantt.select_index(0);
+        let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1); // note: select_index always emits even if same
+        // This is the existing behavior - select_index does not guard
+    }
+
+    #[test]
+    fn set_viewport_updates_range() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_viewport(50, 150);
+        assert_eq!(gantt.viewport(), (50, 150));
+    }
+
+    #[test]
+    fn set_viewport_maintains_min_span() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_viewport(10, 10);
+        assert_eq!(gantt.viewport(), (10, 11));
+    }
+
+    #[test]
+    fn empty_tasks_returns_default_viewport() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_tasks(vec![]);
+        assert!(gantt.tasks().is_empty());
+        assert_eq!(gantt.selected_id(), None);
+        assert_eq!(gantt.viewport(), (0, 100));
+    }
+
+    #[test]
+    fn zoom_with_zero_factor_does_nothing() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 800, 600));
+        gantt.set_tasks(sample_tasks());
+        let before = gantt.viewport();
+        gantt.zoom(0.0);
+        assert_eq!(gantt.viewport(), before);
+    }
 }

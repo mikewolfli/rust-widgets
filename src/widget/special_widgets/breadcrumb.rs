@@ -302,4 +302,73 @@ mod tests {
         breadcrumb.handle_event(&Event::mouse_press(90, 10, 1));
         assert_eq!(breadcrumb.selected_index(), Some(1));
     }
+
+    #[test]
+    fn default_state() {
+        let breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
+        assert!(breadcrumb.segments().is_empty());
+        assert_eq!(breadcrumb.selected_index(), None);
+    }
+
+    #[test]
+    fn push_segment_increases_count() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
+        breadcrumb.push_segment(BreadcrumbSegment::new("a", "A"));
+        assert_eq!(breadcrumb.segments().len(), 1);
+        assert_eq!(breadcrumb.selected_index(), Some(0));
+
+        breadcrumb.push_segment(BreadcrumbSegment::new("b", "B"));
+        assert_eq!(breadcrumb.segments().len(), 2);
+        assert_eq!(breadcrumb.selected_index(), Some(1));
+
+        breadcrumb.push_segment(BreadcrumbSegment::new("c", "C"));
+        assert_eq!(breadcrumb.segments().len(), 3);
+        assert_eq!(breadcrumb.selected_index(), Some(2));
+    }
+
+    #[test]
+    fn clear_segments_resets() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
+        breadcrumb.set_segments(vec![
+            BreadcrumbSegment::new("a", "A"),
+            BreadcrumbSegment::new("b", "B"),
+        ]);
+        assert_eq!(breadcrumb.segments().len(), 2);
+
+        breadcrumb.clear_segments();
+        assert!(breadcrumb.segments().is_empty());
+        assert_eq!(breadcrumb.selected_index(), None);
+    }
+
+    #[test]
+    fn empty_breadcrumb_state() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
+        // activate on empty = false
+        assert!(!breadcrumb.activate_selected());
+
+        // move selection on empty should not panic
+        breadcrumb.move_selection(1);
+        assert_eq!(breadcrumb.selected_index(), None);
+
+        breadcrumb.move_selection(-1);
+        assert_eq!(breadcrumb.selected_index(), None);
+
+        // set_selected_index on empty = false
+        assert!(!breadcrumb.set_selected_index(0));
+    }
+
+    #[test]
+    fn invalid_segment_activation_index() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
+        breadcrumb.set_segments(vec![BreadcrumbSegment::new("a", "A")]);
+
+        // Setting index beyond bounds returns false
+        assert!(!breadcrumb.set_selected_index(5));
+
+        // Setting valid index returns true
+        assert!(breadcrumb.set_selected_index(0));
+
+        // Re-setting same index returns true
+        assert!(breadcrumb.set_selected_index(0));
+    }
 }

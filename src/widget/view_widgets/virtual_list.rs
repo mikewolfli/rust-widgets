@@ -276,7 +276,7 @@ impl VirtualList {
             return 0;
         }
         let rh = self.row_height.max(1);
-        ((h + rh - 1) / rh) as usize
+        h.div_ceil(rh) as usize
     }
 
     fn emit_visible_window_changed(&self) {
@@ -518,5 +518,137 @@ mod tests {
 
         assert!(!list.select_row(999));
         assert_eq!(list.selected_row(), Some(2));
+    }
+
+    #[test]
+    fn new_creates_default_state() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        assert!(!list.has_data_source());
+        assert!(list.data_source_ref().is_none());
+        assert_eq!(list.scroll_row(), 0);
+        assert_eq!(list.selected_row(), None);
+        assert_eq!(list.row_height(), 20);
+        assert_eq!(list.overscan(), 2);
+        assert_eq!(list.row_count(), 0);
+        assert_eq!(list.visible_window(), (0, 0));
+        assert!(list.fetch_visible_rows().is_empty());
+    }
+
+    #[test]
+    fn has_data_source_and_data_source_ref_work() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        assert!(!list.has_data_source());
+        assert!(list.data_source_ref().is_none());
+
+        let source = Arc::new(StaticSource { rows: 5 });
+        list.set_data_source(source.clone());
+        assert!(list.has_data_source());
+        assert!(list.data_source_ref().is_some());
+        assert_eq!(list.data_source_ref().unwrap().row_count(), 5);
+
+        list.clear_data_source();
+        assert!(!list.has_data_source());
+        assert!(list.data_source_ref().is_none());
+    }
+
+    #[test]
+    fn clear_data_source_resets_state() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        list.set_data_source(Arc::new(StaticSource { rows: 10 }));
+        list.set_scroll_row(5);
+        list.select_row(3);
+
+        list.clear_data_source();
+        assert!(!list.has_data_source());
+        assert_eq!(list.scroll_row(), 0);
+        assert_eq!(list.selected_row(), None);
+        assert_eq!(list.row_count(), 0);
+        assert_eq!(list.visible_window(), (0, 0));
+        assert!(list.fetch_visible_rows().is_empty());
+    }
+
+    #[test]
+    fn row_count_reflects_source() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(list.row_count(), 0);
+
+        list.set_data_source(Arc::new(StaticSource { rows: 0 }));
+        assert_eq!(list.row_count(), 0);
+
+        list.set_data_source(Arc::new(StaticSource { rows: 7 }));
+        assert_eq!(list.row_count(), 7);
+    }
+
+    #[test]
+    fn scroll_row_clamps_and_invalid_positions_are_safe() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        // No data source - scroll_row stays 0
+        list.set_scroll_row(100);
+        assert_eq!(list.scroll_row(), 0);
+
+        list.set_data_source(Arc::new(StaticSource { rows: 5 }));
+        list.set_scroll_row(3);
+        assert_eq!(list.scroll_row(), 3);
+
+        // Clamp to max index
+        list.set_scroll_row(999);
+        assert_eq!(list.scroll_row(), 4);
+
+        // scroll_by_rows edge cases
+        list.scroll_by_rows(-10);
+        assert_eq!(list.scroll_row(), 0);
+
+        list.scroll_by_rows(100);
+        assert_eq!(list.scroll_row(), 4);
+    }
+
+    #[test]
+    fn overscan_affects_visible_window() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 40));
+        list.set_data_source(Arc::new(StaticSource { rows: 20 }));
+
+        // With overscan=2 (default), visible window extends beyond viewport
+        let (start, len) = list.visible_window();
+        assert_eq!(start, 0);
+        assert!(len > 2);
+
+        // Reduce overscan to 0
+        list.set_overscan(0);
+        let (start2, len2) = list.visible_window();
+        assert_eq!(start2, 0);
+        assert_eq!(len2, 2);
+
+        assert_eq!(list.overscan(), 0);
+    }
+
+    #[test]
+    fn signal_emission_on_selection_and_window_change() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        list.set_data_source(Arc::new(StaticSource { rows: 5 }));
+
+        let last_selection = Arc::new(std::sync::Mutex::new(None::<Option<usize>>));
+        let sink = last_selection.clone();
+        list.selection_changed.connect(move |sel| {
+            *sink.lock().unwrap() = Some(*sel);
+        });
+
+        list.select_row(2);
+        assert_eq!(*last_selection.lock().unwrap(), Some(Some(2)));
+    }
+
+    #[test]
+    fn empty_source_handling() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 800, 600));
+        list.set_data_source(Arc::new(StaticSource { rows: 0 }));
+
+        assert_eq!(list.row_count(), 0);
+        assert_eq!(list.visible_window(), (0, 0));
+        assert!(list.fetch_visible_rows().is_empty());
+        assert!(!list.select_row(0));
+        assert_eq!(list.selected_row(), None);
+
+        // Scrolling does nothing on empty source
+        list.set_scroll_row(10);
+        assert_eq!(list.scroll_row(), 0);
     }
 }

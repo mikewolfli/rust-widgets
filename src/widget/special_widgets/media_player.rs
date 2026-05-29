@@ -243,8 +243,8 @@ impl EventHandler for MediaPlayer {
                     && pos.y < bar_rect.y + bar_rect.height as i32
                 {
                     if self.duration_ms > 0 {
-                        let ratio = ((pos.x - bar_rect.x) as f32 / bar_rect.width as f32)
-                            .clamp(0.0, 1.0);
+                        let ratio =
+                            ((pos.x - bar_rect.x) as f32 / bar_rect.width as f32).clamp(0.0, 1.0);
                         self.seek_to((ratio * self.duration_ms as f32) as u64);
                     }
                 } else {
@@ -265,9 +265,7 @@ impl Draw for MediaPlayer {
         let title = self
             .source
             .as_deref()
-            .map(|src| {
-                src.rsplit('/').next().unwrap_or(src)
-            })
+            .map(|src| src.rsplit('/').next().unwrap_or(src))
             .unwrap_or("No media");
         let state = if self.playing { "Playing" } else { "Paused" };
         let vol = if self.muted {
@@ -275,7 +273,11 @@ impl Draw for MediaPlayer {
         } else {
             format!("Vol {}", self.volume)
         };
-        let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
+        let fs = if self.fullscreen {
+            "Fullscreen"
+        } else {
+            "Window"
+        };
 
         context.draw_text(
             Point::new(rect.x + 10, rect.y + 18),
@@ -379,5 +381,164 @@ mod tests {
             .map(|guard| guard.clone())
             .unwrap_or_default();
         assert_eq!(volume_events, vec![65]);
+    }
+
+    #[test]
+    fn new_creates_default_state() {
+        let player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(player.source(), None);
+        assert!(!player.is_playing());
+        assert_eq!(player.duration_ms(), 0);
+        assert_eq!(player.position_ms(), 0);
+        assert_eq!(player.volume(), 80);
+        assert!(!player.muted());
+        assert!(!player.fullscreen());
+    }
+
+    #[test]
+    fn play_without_source_returns_false() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        assert!(!player.play());
+        assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn toggle_playback_both_directions() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_source("clip.mp4", 30_000);
+
+        // Toggle on
+        assert!(player.toggle_playback());
+        assert!(player.is_playing());
+
+        // Toggle off
+        assert!(player.toggle_playback());
+        assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn clear_source_removes_source_and_resets_state() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_source("video.mp4", 60_000);
+        player.seek_to(15_000);
+        let _ = player.play();
+
+        player.clear_source();
+        assert_eq!(player.source(), None);
+        assert_eq!(player.duration_ms(), 0);
+        assert_eq!(player.position_ms(), 0);
+        assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn volume_clamp_upper_bound() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_volume(200);
+        assert_eq!(player.volume(), 100);
+    }
+
+    #[test]
+    fn volume_guard_no_op() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_volume(80);
+        // Second call with same value should not emit
+        let emitted = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = emitted.clone();
+        player.volume_changed.connect(move |v| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*v);
+            }
+        });
+        player.set_volume(80);
+        let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 0);
+    }
+
+    #[test]
+    fn mute_get_set_and_toggle() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        assert!(!player.muted());
+
+        player.set_muted(true);
+        assert!(player.muted());
+
+        player.toggle_mute();
+        assert!(!player.muted());
+
+        // Guard: same value no-op
+        player.set_muted(false);
+        assert!(!player.muted());
+    }
+
+    #[test]
+    fn seek_to_clamps_to_duration() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_source("track.mp3", 10_000);
+
+        player.seek_to(20_000);
+        assert_eq!(player.position_ms(), 10_000);
+    }
+
+    #[test]
+    fn seek_by_handles_negative_overshoot() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_source("track.mp3", 10_000);
+        player.seek_to(5_000);
+
+        player.seek_by(-10_000);
+        assert_eq!(player.position_ms(), 0);
+    }
+
+    #[test]
+    fn fullscreen_guard_and_toggle() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        assert!(!player.fullscreen());
+
+        player.set_fullscreen(true);
+        assert!(player.fullscreen());
+
+        // Guard: same value no-op
+        player.set_fullscreen(true);
+        assert!(player.fullscreen());
+
+        player.toggle_fullscreen();
+        assert!(!player.fullscreen());
+    }
+
+    #[test]
+    fn clear_source_emits_playback_and_position_signals() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 800, 600));
+        player.set_source("video.mp4", 30_000);
+
+        let playback_events = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let ps = playback_events.clone();
+        player.playback_changed.connect(move |s| {
+            if let Ok(mut guard) = ps.lock() {
+                guard.push(*s);
+            }
+        });
+        let position_events = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let pos_s = position_events.clone();
+        player.position_changed.connect(move |p| {
+            if let Ok(mut guard) = pos_s.lock() {
+                guard.push(*p);
+            }
+        });
+
+        player.clear_source();
+
+        // set_source emits (false, 0); clear_source also emits (false, 0)
+        let pb = playback_events
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        assert!(pb.contains(&false));
+        let pos = position_events
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        assert!(pos.contains(&0));
     }
 }

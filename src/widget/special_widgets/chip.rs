@@ -256,7 +256,10 @@ impl Draw for Chip {
             context.fill_rect(chip_rect, bg);
             context.draw_rect(chip_rect, Color::from_rgb(176, 186, 200));
             context.draw_text(
-                Point::new(chip_rect.x + self.chip_padding, chip_rect.y + chip_rect.height as i32 / 2),
+                Point::new(
+                    chip_rect.x + self.chip_padding,
+                    chip_rect.y + chip_rect.height as i32 / 2,
+                ),
                 &item.label,
                 &Font::default(),
                 Color::from_rgb(32, 44, 61),
@@ -321,5 +324,127 @@ mod tests {
             .map(|guard| guard.clone())
             .unwrap_or_default();
         assert_eq!(got, vec!["urgent".to_string()]);
+    }
+
+    #[test]
+    fn default_state() {
+        let chip = Chip::new(Rect::new(0, 0, 800, 600));
+        assert!(chip.items().is_empty());
+        assert_eq!(chip.focused_index(), None);
+        assert!(!chip.multi_select());
+        assert!(chip.selected_ids().is_empty());
+    }
+
+    #[test]
+    fn set_items_adds_chips() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_items(vec![
+            ChipItem::new("a", "Alpha"),
+            ChipItem::new("b", "Beta"),
+        ]);
+
+        assert_eq!(chip.items().len(), 2);
+        assert_eq!(chip.items()[0].id, "a");
+        assert_eq!(chip.items()[1].label, "Beta");
+        assert_eq!(chip.focused_index(), Some(0));
+    }
+
+    #[test]
+    fn empty_items_state() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_items(Vec::new());
+
+        assert_eq!(chip.focused_index(), None);
+        assert!(chip.selected_ids().is_empty());
+
+        // Toggle out of bounds returns false
+        assert!(!chip.toggle_index(0));
+        assert!(!chip.toggle_index(100));
+
+        // Move focus on empty should not panic
+        chip.move_focus(1);
+        assert_eq!(chip.focused_index(), None);
+
+        chip.move_focus(-1);
+        assert_eq!(chip.focused_index(), None);
+    }
+
+    #[test]
+    fn invalid_toggle_index() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_items(vec![ChipItem::new("c1", "Chip 1")]);
+
+        // Out of bounds returns false
+        assert!(!chip.toggle_index(5));
+
+        // Valid toggle works
+        assert!(chip.toggle_index(0));
+        assert_eq!(chip.selected_ids(), vec!["c1"]);
+    }
+
+    #[test]
+    fn multi_select_toggle() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_items(vec![
+            ChipItem::new("a", "A"),
+            ChipItem::new("b", "B"),
+            ChipItem::new("c", "C"),
+        ]);
+
+        // Enable multi-select after set_items - should preserve no selection
+        chip.set_multi_select(true);
+        assert!(chip.multi_select());
+
+        assert!(chip.toggle_index(0));
+        assert!(chip.toggle_index(2));
+        assert_eq!(chip.selected_ids(), vec!["a", "c"]);
+
+        // Toggle one off
+        assert!(chip.toggle_index(0));
+        assert_eq!(chip.selected_ids(), vec!["c"]);
+    }
+
+    #[test]
+    fn set_multi_select_downgrade_preserves_one() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_multi_select(true);
+        chip.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+
+        assert!(chip.toggle_index(0));
+        assert!(chip.toggle_index(1));
+        assert_eq!(chip.selected_ids().len(), 2);
+
+        // Switch to single-select
+        chip.set_multi_select(false);
+        assert!(!chip.multi_select());
+        // Should keep only the last selected
+        let ids = chip.selected_ids();
+        assert_eq!(ids.len(), 1, "single-select must keep at most one selected");
+    }
+
+    #[test]
+    fn keyboard_focus_and_toggle() {
+        let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
+        chip.set_items(vec![
+            ChipItem::new("a", "A"),
+            ChipItem::new("b", "B"),
+            ChipItem::new("c", "C"),
+        ]);
+
+        // Move right
+        chip.handle_event(&Event::key_press(39, 0));
+        assert_eq!(chip.focused_index(), Some(1));
+
+        // Toggle with Enter
+        chip.handle_event(&Event::key_press(13, 0));
+        assert_eq!(chip.selected_ids(), vec!["b"]);
+
+        // Move left
+        chip.handle_event(&Event::key_press(37, 0));
+        assert_eq!(chip.focused_index(), Some(0));
+
+        // Toggle with Space
+        chip.handle_event(&Event::key_press(32, 0));
+        assert_eq!(chip.selected_ids(), vec!["a"]);
     }
 }

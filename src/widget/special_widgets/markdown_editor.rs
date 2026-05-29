@@ -142,14 +142,13 @@ impl EventHandler for MarkdownEditor {
             return;
         }
 
-        match event {
-            Event::KeyPress { key, modifiers } => match *key {
+        if let Event::KeyPress { key, modifiers } = event {
+            match *key {
                 38 => self.move_cursor(-1),
                 40 => self.move_cursor(1),
                 80 | 112 if *modifiers != 0 => self.toggle_preview_mode(),
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }

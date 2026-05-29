@@ -95,9 +95,7 @@ impl Snackbar {
     }
 
     fn action_rect(&self) -> Option<Rect> {
-        if self.action_label.is_none() {
-            return None;
-        }
+        self.action_label.as_ref()?;
         let rect = self.geometry();
         Some(Rect::new(
             rect.x + rect.width as i32 - 90,

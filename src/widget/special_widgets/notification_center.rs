@@ -380,4 +380,158 @@ mod tests {
         center.handle_event(&Event::key_press(38, 0));
         assert_eq!(center.selected_id(), Some("n2"));
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        assert!(center.items().is_empty());
+        assert_eq!(center.selected_id(), None);
+        assert_eq!(center.unread_count(), 0);
+    }
+
+    #[test]
+    fn items_returns_items() {
+        let center = sample_center();
+        assert_eq!(center.items().len(), 3);
+        assert_eq!(center.items()[0].id, "n1");
+        assert_eq!(center.items()[1].id, "n2");
+        assert_eq!(center.items()[2].id, "n3");
+    }
+
+    #[test]
+    fn push_sets_selection_to_first() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        center.push(NotificationItem::new(
+            "n1",
+            "Title",
+            "Body",
+            NotificationLevel::Info,
+        ));
+        assert_eq!(center.selected_id(), Some("n1"));
+    }
+
+    #[test]
+    fn clear_removes_all_and_resets_state() {
+        let mut center = sample_center();
+        center.clear();
+        assert!(center.items().is_empty());
+        assert_eq!(center.selected_id(), None);
+        assert_eq!(center.unread_count(), 0);
+    }
+
+    #[test]
+    fn select_index_invalid_returns_false() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        assert!(!center.select_index(0));
+
+        center.push(NotificationItem::new(
+            "n1",
+            "Title",
+            "Body",
+            NotificationLevel::Info,
+        ));
+        assert!(!center.select_index(5));
+        assert_eq!(center.selected_id(), Some("n1"));
+    }
+
+    #[test]
+    fn unread_count_changed_signal_on_push() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        let counts = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = counts.clone();
+        center.unread_count_changed.connect(move |count| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*count);
+            }
+        });
+
+        center.push(NotificationItem::new(
+            "n1",
+            "Title",
+            "Body",
+            NotificationLevel::Info,
+        ));
+        let got = counts.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn keyboard_navigation_on_empty_does_nothing() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+
+        // Should not panic
+        center.handle_event(&Event::key_press(40, 0));
+        assert_eq!(center.selected_id(), None);
+
+        center.handle_event(&Event::key_press(38, 0));
+        assert_eq!(center.selected_id(), None);
+    }
+
+    #[test]
+    fn activate_selected_marks_read_and_updates_unread_count() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        center.push(NotificationItem::new(
+            "n1",
+            "Title",
+            "Body",
+            NotificationLevel::Info,
+        ));
+        assert_eq!(center.unread_count(), 1);
+
+        // activate_selected on index 0 (first/only item)
+        assert!(center.activate_selected());
+        assert_eq!(center.unread_count(), 0);
+    }
+
+    #[test]
+    fn set_read_nonexistent_returns_false() {
+        let mut center = sample_center();
+        assert!(!center.set_read("nonexistent", true));
+        assert_eq!(center.unread_count(), 3);
+    }
+
+    #[test]
+    fn select_index_duplicate_guard_returns_true() {
+        let mut center = sample_center();
+        // First select a different index
+        assert!(center.select_index(1));
+
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        center.notification_selected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        // Select index 0 - emits "n1"
+        assert!(center.select_index(0));
+        // Second call with same index returns true but doesn't emit
+        assert!(center.select_index(0));
+        let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn enter_key_activates_selected() {
+        let mut center = sample_center();
+        let activated = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = activated.clone();
+        center.notification_activated.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        // Navigate down to n2, then activate
+        center.handle_event(&Event::key_press(40, 0));
+        center.handle_event(&Event::key_press(13, 0));
+
+        let got = activated
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(got, vec!["n2".to_string()]);
+    }
 }

@@ -341,4 +341,99 @@ mod tests {
         let after_out = timeline.viewport();
         assert!((after_out.1 - after_out.0) >= (after_in.1 - after_in.0));
     }
+
+    #[test]
+    fn new_creates_default_state() {
+        let timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        assert!(timeline.items().is_empty());
+        assert_eq!(timeline.selected_index(), None);
+        assert_eq!(timeline.selected_id(), None);
+        assert_eq!(timeline.viewport(), (0, 100));
+        assert_eq!(timeline.row_height(), 24);
+    }
+
+    #[test]
+    fn items_returns_items() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        let items = sample_items();
+        timeline.set_items(items.clone());
+        assert_eq!(timeline.items(), items.as_slice());
+    }
+
+    #[test]
+    fn select_index_out_of_bounds_returns_false() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_items(sample_items());
+        assert!(!timeline.select_index(10));
+        assert_eq!(timeline.selected_index(), None);
+    }
+
+    #[test]
+    fn select_index_duplicate_guard_returns_true() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_items(sample_items());
+        assert!(timeline.select_index(0));
+        assert_eq!(timeline.selected_index(), Some(0));
+        // Selecting same index again returns true but doesn't emit again
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        timeline.item_selected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+        assert!(timeline.select_index(0));
+        assert_eq!(emitted.lock().ok().map(|g| g.len()).unwrap_or_default(), 0);
+    }
+
+    #[test]
+    fn set_viewport_updates_range() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_viewport(50, 150);
+        assert_eq!(timeline.viewport(), (50, 150));
+    }
+
+    #[test]
+    fn set_viewport_maintains_min_span() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_viewport(10, 10);
+        assert_eq!(timeline.viewport(), (10, 11));
+    }
+
+    #[test]
+    fn empty_items_returns_default_viewport() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_items(vec![]);
+        assert!(timeline.items().is_empty());
+        assert_eq!(timeline.selected_index(), None);
+        assert_eq!(timeline.viewport(), (0, 100));
+    }
+
+    #[test]
+    fn overlapping_items_viewport_spans_union() {
+        let items = vec![
+            TimelineItem::new("a", "Design", 0, 10),
+            TimelineItem::new("b", "Build", 8, 22),
+            TimelineItem::new("c", "Verify", 20, 30),
+        ];
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_items(items);
+        assert_eq!(timeline.viewport(), (0, 30));
+    }
+
+    #[test]
+    fn zoom_with_zero_factor_does_nothing() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_items(sample_items());
+        let before = timeline.viewport();
+        timeline.zoom(0.0);
+        assert_eq!(timeline.viewport(), before);
+    }
+
+    #[test]
+    fn row_height_setter_validates() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
+        timeline.set_row_height(0);
+        assert_eq!(timeline.row_height(), 1);
+    }
 }
