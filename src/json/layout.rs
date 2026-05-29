@@ -240,64 +240,6 @@ impl ChildLayoutAttrs {
     }
 }
 
-/// Information about a stored layout, used by the layout inspector.
-#[allow(dead_code)]
-pub struct LayoutSnapshot {
-    /// Parent widget id.
-    pub parent_id: u64,
-    /// Number of children in the layout.
-    pub item_count: usize,
-    /// Human-readable layout type name.
-    pub layout_type: String,
-}
-
-/// Return the item count for a stored layout by inspecting its concrete type.
-///
-/// Uses the `as_any()` method on the `Layout` trait for safe downcasting.
-#[allow(dead_code)]
-fn inspect_layout_item_count(layout: &dyn Layout) -> (usize, &'static str) {
-    let any = layout.as_any();
-
-    if let Some(box_layout) = any.downcast_ref::<crate::layout::BoxLayout>() {
-        return (box_layout.item_count(), "BoxLayout");
-    }
-    if let Some(grid) = any.downcast_ref::<crate::layout::GridLayout>() {
-        return (grid.cell_count(), "GridLayout");
-    }
-    if let Some(stack) = any.downcast_ref::<crate::layout::StackLayout>() {
-        return (stack.item_count(), "StackLayout");
-    }
-    if let Some(splitter) = any.downcast_ref::<crate::layout::SplitterLayout>() {
-        return (splitter.pane_count(), "SplitterLayout");
-    }
-    if let Some(form) = any.downcast_ref::<crate::layout::FormLayout>() {
-        return (form.row_count(), "FormLayout");
-    }
-
-    (0, "UnknownLayout")
-}
-
-/// Collect snapshots of all layouts stored in `LAYOUT_MAP`.
-///
-/// This is the integration point between the JSON layout system and
-/// the LayoutInspector. Call it after `JsonLoader::load()` when the
-/// inspector is enabled.
-#[allow(dead_code)]
-pub fn collect_layout_snapshots() -> Vec<LayoutSnapshot> {
-    let mut snapshots = Vec::new();
-    LAYOUT_MAP.with(|map| {
-        for (parent_id, layout) in map.borrow().iter() {
-            let (item_count, layout_type) = inspect_layout_item_count(layout.as_ref());
-            snapshots.push(LayoutSnapshot {
-                parent_id: *parent_id,
-                item_count,
-                layout_type: layout_type.to_string(),
-            });
-        }
-    });
-    snapshots
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

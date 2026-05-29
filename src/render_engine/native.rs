@@ -9,7 +9,7 @@ pub struct NativeRenderEngine;
 
 impl NativeRenderEngine {
     /// Create native engine.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

@@ -106,7 +106,9 @@ impl ProgressBar {
         if self.maximum == self.minimum {
             return 0.0;
         }
-        ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
+        // Use saturating_sub to prevent integer overflow.
+        ((self.value.saturating_sub(self.minimum)) as f32)
+            / ((self.maximum.saturating_sub(self.minimum)) as f32)
     }
     /// Returns formatted text for display.
     fn format_text(&self) -> String {

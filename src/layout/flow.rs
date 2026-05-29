@@ -1,6 +1,7 @@
 use super::Layout;
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
+use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
     #[default]
@@ -38,6 +39,17 @@ impl Default for FlowLayoutConfig {
 pub struct FlowLayout {
     config: FlowLayoutConfig,
     children: Vec<Box<dyn Widget>>,
+}
+impl fmt::Debug for FlowLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FlowLayout")
+            .field("config", &self.config)
+            .field(
+                "children",
+                &format_args!("{} children", self.children.len()),
+            )
+            .finish()
+    }
 }
 impl FlowLayout {
     pub fn new() -> Self {

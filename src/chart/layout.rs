@@ -20,6 +20,7 @@ use crate::layout::Layout;
 /// assert!(layout.has_child(42));
 /// assert_eq!(layout.child_ids(), vec![42]);
 /// ```
+#[derive(Debug)]
 pub struct ChartLayout {
     /// The widget id of the chart being managed.
     chart_id: Option<ObjectId>,

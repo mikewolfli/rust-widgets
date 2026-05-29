@@ -61,10 +61,12 @@ impl I18nManager {
                     .insert(language.to_string(), modified);
             }
             if let Some(ref sender) = self.reload_sender {
-                let _ = sender.send(ReloadEvent::TranslationReloaded {
+                if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
                     language: language.to_string(),
                     timestamp: SystemTime::now(),
-                });
+                }) {
+                    log::error!("[i18n] Failed to send reload event: {:?}", e);
+                }
             }
             Ok(())
         } else {

@@ -1017,12 +1017,15 @@ impl Platform for WindowsPlatform {
             if let Ok(mut handles) = self.menu_state.handles.lock() {
                 handles.insert(widget_id, submenu_handle as usize);
             }
-            let owner_window = self
-                .menu_state
-                .menu_owner_window
-                .lock()
-                .ok()
-                .and_then(|owners| owners.get(&parent).copied());
+            let owner_window = match self.menu_state.menu_owner_window.lock() {
+                Ok(owners) => owners.get(&parent).copied(),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] create_menu: menu_owner_window mutex poisoned"
+                    );
+                    None
+                }
+            };
             if let Some(window_id) = owner_window {
                 if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
                     owners.insert(widget_id, window_id);
@@ -1136,12 +1139,15 @@ impl Platform for WindowsPlatform {
             if let Ok(mut map) = self.menu_state.menu_command_to_item.lock() {
                 map.insert(command_id, item_id);
             }
-            let owner_window = self
-                .menu_state
-                .menu_owner_window
-                .lock()
-                .ok()
-                .and_then(|owners| owners.get(&parent_menu).copied());
+            let owner_window = match self.menu_state.menu_owner_window.lock() {
+                Ok(owners) => owners.get(&parent_menu).copied(),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] menu_add_item: menu_owner_window mutex poisoned"
+                    );
+                    None
+                }
+            };
             if let Some(window_id) = owner_window {
                 if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
                     owners.insert(item_id, window_id);
@@ -1163,8 +1169,15 @@ impl Platform for WindowsPlatform {
     fn poll_menu_triggered(&self) -> Option<ObjectId> {
         #[cfg(target_os = "windows")]
         {
-            let mut events = self.menu_state.pending_menu_events.lock().ok()?;
-            events.pop_front().map(|event| event.widget_id)
+            match self.menu_state.pending_menu_events.lock() {
+                Ok(mut events) => events.pop_front().map(|event| event.widget_id),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] poll_menu_triggered: pending_menu_events mutex poisoned"
+                    );
+                    None
+                }
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {

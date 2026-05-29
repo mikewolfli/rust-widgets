@@ -267,12 +267,20 @@ impl Layout for AbsoluteLayout {
         self
     }
 
-    fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         // AbsoluteLayout manages children via add_child()/add_child_with_constraint().
+        log::debug!(
+            "[layout] AbsoluteLayout.add_widget ignored for widget {}: use add_child()",
+            widget_id
+        );
     }
 
-    fn remove_widget(&mut self, _widget_id: ObjectId) {
+    fn remove_widget(&mut self, widget_id: ObjectId) {
         // AbsoluteLayout manages children via remove_child().
+        log::debug!(
+            "[layout] AbsoluteLayout.remove_widget ignored for widget {}: use remove_child()",
+            widget_id
+        );
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {

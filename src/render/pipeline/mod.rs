@@ -14,13 +14,6 @@
 //! - `misc`: Miscellaneous widgets (activity_indicator, toggle_button, check_list_box,
 //!   double_spin_box, dial, wizard)
 //! - `mod.rs` (this file): Routing functions and re-exports
-// NOTE: Some routing functions below are reserved for future pipeline use.
-
-#[cfg(feature = "unstable-pipeline-routing")]
-use crate::render::{PaintBackend, RenderContext};
-#[cfg(feature = "unstable-pipeline-routing")]
-use crate::widget::Widget;
-
 mod containers;
 mod controls;
 mod dialogs;
@@ -74,88 +67,7 @@ pub use pixel_ops::{blend_pixel, fill_pixels};
 #[cfg(feature = "unstable-special-widgets")]
 #[allow(unused_imports)]
 #[allow(deprecated)]
-pub use special::{
-    append_command_link_visual_commands, append_font_combo_box_visual_commands,
-    append_lcd_number_visual_commands,
-};
+pub use special::append_lcd_number_visual_commands;
 
 // Re-export internal helper used by surface.rs
 pub(crate) use pixel_ops::pixel_bytes_len;
-
-// ─── Routing functions (feature-gated) ────────────────────────────────────
-/// These functions are reserved for the future widget rendering pipeline.
-/// Gated behind `unstable-pipeline-routing` to suppress dead-code warnings
-/// without blanket `#[allow(dead_code)]`.
-/// Routing logic for native vs custom widget drawing.
-/// Reserved for future widget rendering pipeline integration.
-/// Currently unused while the pipeline architecture is being stabilized.
-/// Widgets that implement the Draw trait will use custom drawing, others use native.
-#[cfg(feature = "unstable-pipeline-routing")]
-#[allow(dead_code)]
-pub fn route_widget_drawing<W>(
-    widget: &mut W,
-    context: &mut RenderContext,
-    custom_renderer: impl FnOnce(&mut W, &mut RenderContext),
-    _native_renderer: impl FnOnce(&mut W, &mut RenderContext),
-) where
-    W: Widget + ?Sized,
-{
-    custom_renderer(widget, context);
-}
-
-/// Check if a widget uses custom drawing.
-/// Reserved for future pipeline integration — will query the widget's rendering mode.
-#[cfg(feature = "unstable-pipeline-routing")]
-#[allow(dead_code)]
-pub fn widget_uses_custom_drawing<W>(_widget: &W) -> bool
-where
-    W: Widget + ?Sized,
-{
-    false
-}
-
-/// Render a widget with automatic routing between native and custom drawing.
-/// Reserved for future pipeline integration — currently a thin wrapper.
-#[cfg(feature = "unstable-pipeline-routing")]
-#[allow(dead_code)]
-pub fn render_widget<W>(
-    widget: &mut W,
-    backend: &mut dyn PaintBackend,
-    custom_renderer: impl FnOnce(&mut W, &mut RenderContext),
-) where
-    W: Widget + ?Sized,
-{
-    let mut context = RenderContext::new(backend);
-    custom_renderer(widget, &mut context);
-}
-
-/// Helper function to render widgets that implement Draw trait.
-/// Reserved for future pipeline integration — will be used when Draw-based rendering is active.
-#[cfg(feature = "unstable-pipeline-routing")]
-#[allow(dead_code)]
-pub fn render_custom_widget<W>(widget: &mut W, context: &mut RenderContext)
-where
-    W: crate::widget::Draw,
-{
-    widget.draw(context);
-}
-
-/// Helper function to render widgets using native platform rendering.
-/// Reserved for future pipeline integration — handles native fallback path.
-#[cfg(feature = "unstable-pipeline-routing")]
-#[allow(dead_code)]
-pub fn render_native_widget<W>(widget: &W, context: &mut RenderContext)
-where
-    W: Widget,
-{
-    let rect = widget.geometry();
-    let style = widget.style();
-    if let Some(bg_color) = style.background_color {
-        context.fill_rect(rect, bg_color);
-    }
-    if style.border_width > 0 {
-        if let Some(border_color) = style.border_color {
-            context.draw_rect_stroke(rect, border_color, style.border_width);
-        }
-    }
-}

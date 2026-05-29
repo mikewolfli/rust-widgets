@@ -35,7 +35,9 @@ pub(crate) fn ensure_window_class_registered() {
         // If registration fails, the OnceLock prevents retry. The subsequent
         // CreateWindowExW call in create_window will return null, which is
         // already handled by the caller.
-        let _ = RegisterClassW(&wnd_class);
+        if RegisterClassW(&wnd_class) == 0 {
+            log::error!("[windows] RegisterClassW failed — window class not registered");
+        }
     });
 }
 
@@ -58,7 +60,10 @@ pub(crate) fn active_windows_platform() -> Option<&'static WindowsPlatform> {
 /// Called once during `WindowsPlatform::init()`.
 #[cfg(target_os = "windows")]
 pub(crate) fn register_active_platform(platform: &'static WindowsPlatform) {
-    let _ = ACTIVE_WINDOWS_PLATFORM.set(platform as *const WindowsPlatform as usize);
+    if let Err(prev) = ACTIVE_WINDOWS_PLATFORM.set(platform as *const WindowsPlatform as usize) {
+        log::error!("[windows] register_active_platform already set — ignoring duplicate");
+        let _ = prev;
+    }
 }
 
 /// Map a Win32 notification code to a `WidgetTriggerKind` for the given widget kind.

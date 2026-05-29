@@ -76,10 +76,271 @@ impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
         use crate::core::Color;
+        use crate::core::Font;
         // Draw chart background
         context.fill_rect(rect, Color::from_rgb(255, 255, 255));
         // Draw border to make chart area visible
         context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+
+        if self.data.is_empty() {
+            // No data — draw placeholder text
+            let text_origin = crate::core::Point {
+                x: rect.x + 4,
+                y: rect.y + rect.height as i32 / 2,
+            };
+            let font = Font::simple("Sans", 12.0);
+            context.draw_text(
+                text_origin,
+                "No data",
+                &font,
+                Color::from_rgb(180, 180, 180),
+            );
+            return;
+        }
+
+        match self.chart_type {
+            ChartType::Bar => self.draw_bar_chart(context, rect),
+            ChartType::Line => self.draw_line_chart(context, rect),
+            ChartType::Pie => self.draw_pie_chart(context, rect),
+            ChartType::Scatter => self.draw_scatter_chart(context, rect),
+        }
+    }
+}
+
+impl ChartWidget {
+    fn draw_bar_chart(&self, context: &mut RenderContext, rect: Rect) {
+        use crate::core::Color;
+        use crate::core::Font;
+        let max_val = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        if max_val <= 0.0 {
+            return;
+        }
+        let n = self.data.len();
+        if n == 0 {
+            return;
+        }
+        let padding: i32 = 8;
+        let bottom_margin: i32 = 20;
+        let chart_w = (rect.width as i32).saturating_sub(padding * 2);
+        let bar_area_x = rect.x.saturating_add(padding);
+        let baseline_y = rect
+            .y
+            .saturating_add(rect.height as i32)
+            .saturating_sub(bottom_margin);
+        let top_y = rect.y.saturating_add(padding);
+        let bar_width = (chart_w / n as i32).max(4).saturating_sub(2);
+        let gap = 2;
+        let bar_colors = [
+            Color::from_rgb(66, 133, 244),
+            Color::from_rgb(219, 68, 55),
+            Color::from_rgb(244, 180, 0),
+            Color::from_rgb(15, 157, 88),
+            Color::from_rgb(171, 71, 188),
+            Color::from_rgb(0, 172, 193),
+        ];
+        let label_font = Font::simple("Sans", 10.0);
+        for (i, &val) in self.data.iter().enumerate() {
+            let i32_i = i as i32;
+            let x = bar_area_x.saturating_add(i32_i * (bar_width + gap));
+            let bar_h = ((val / max_val) * (baseline_y.saturating_sub(top_y)) as f64) as i32;
+            let bar_y = baseline_y.saturating_sub(bar_h).max(top_y);
+            let color = bar_colors[i % bar_colors.len()];
+            context.fill_rect(
+                crate::core::Rect {
+                    x,
+                    y: bar_y,
+                    width: bar_width.max(1) as u32,
+                    height: (baseline_y - bar_y).max(1) as u32,
+                },
+                color,
+            );
+            if i < self.labels.len() {
+                let label = &self.labels[i];
+                let label_text = if label.len() > 6 {
+                    format!("{}..", &label[..4])
+                } else {
+                    label.clone()
+                };
+                let label_origin = crate::core::Point {
+                    x: x + 1,
+                    y: baseline_y + 12,
+                };
+                context.draw_text(
+                    label_origin,
+                    &label_text,
+                    &label_font,
+                    Color::from_rgb(80, 80, 80),
+                );
+            }
+        }
+    }
+
+    fn draw_line_chart(&self, context: &mut RenderContext, rect: Rect) {
+        use crate::core::Color;
+        use crate::core::Font;
+        let max_val = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        if max_val <= 0.0 || self.data.len() < 2 {
+            return;
+        }
+        let n = self.data.len();
+        let padding: i32 = 8;
+        let bottom_margin: i32 = 20;
+        let chart_w = (rect.width as i32).saturating_sub(padding * 2);
+        let bar_area_x = rect.x.saturating_add(padding);
+        let baseline_y = rect
+            .y
+            .saturating_add(rect.height as i32)
+            .saturating_sub(bottom_margin);
+        let top_y = rect.y.saturating_add(padding);
+        let step_x = chart_w / (n.saturating_sub(1) as i32).max(1);
+        let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
+        let line_color = Color::from_rgb(66, 133, 244);
+        let points: Vec<crate::core::Point> = self
+            .data
+            .iter()
+            .enumerate()
+            .map(|(i, &val)| {
+                let x = bar_area_x.saturating_add(i as i32 * step_x);
+                let y_ratio = val / max_val;
+                let y = baseline_y.saturating_sub((y_ratio * height_range) as i32);
+                crate::core::Point { x, y }
+            })
+            .collect();
+        for i in 1..points.len() {
+            let from = &points[i - 1];
+            let to = &points[i];
+            context.draw_line_stroke(*from, *to, line_color, 2);
+        }
+        let label_font = Font::simple("Sans", 10.0);
+        for (i, pt) in points.iter().enumerate() {
+            context.fill_circle(*pt, 3, line_color);
+            if i < self.labels.len() {
+                let label = &self.labels[i];
+                let label_text = if label.len() > 6 {
+                    format!("{}..", &label[..4])
+                } else {
+                    label.clone()
+                };
+                let label_origin = crate::core::Point {
+                    x: pt.x.saturating_sub(6),
+                    y: baseline_y + 12,
+                };
+                context.draw_text(
+                    label_origin,
+                    &label_text,
+                    &label_font,
+                    Color::from_rgb(80, 80, 80),
+                );
+            }
+        }
+    }
+
+    fn draw_pie_chart(&self, context: &mut RenderContext, rect: Rect) {
+        use crate::core::Color;
+        use crate::core::Font;
+        let total: f64 = self.data.iter().sum();
+        if total <= 0.0 {
+            return;
+        }
+        let cx = rect.x + rect.width as i32 / 2;
+        let cy = rect.y + rect.height as i32 / 2;
+        let radius = (rect.width.min(rect.height) as i32 / 2)
+            .saturating_sub(10)
+            .max(10);
+        let pie_colors = [
+            Color::from_rgb(66, 133, 244),
+            Color::from_rgb(219, 68, 55),
+            Color::from_rgb(244, 180, 0),
+            Color::from_rgb(15, 157, 88),
+            Color::from_rgb(171, 71, 188),
+            Color::from_rgb(0, 172, 193),
+        ];
+        let mut start_angle = -std::f64::consts::FRAC_PI_2;
+        for (i, &val) in self.data.iter().enumerate() {
+            let slice_angle = 2.0 * std::f64::consts::PI * (val / total);
+            let mid_angle = start_angle + slice_angle / 2.0;
+            let end_angle = start_angle + slice_angle;
+            let color = pie_colors[i % pie_colors.len()];
+            let num_lines = (radius as f64 * slice_angle * 0.4).ceil() as i32;
+            let segments = num_lines.max(1).min(120);
+            for s in 0..segments {
+                let t = start_angle + slice_angle * (s as f64 + 0.5) / segments as f64;
+                let ex = cx + (radius as f64 * t.cos()) as i32;
+                let ey = cy + (radius as f64 * t.sin()) as i32;
+                context.draw_line(
+                    crate::core::Point { x: cx, y: cy },
+                    crate::core::Point { x: ex, y: ey },
+                    color,
+                );
+            }
+            let label_radius = radius.saturating_add(14) as f64;
+            let lx = cx + (label_radius * mid_angle.cos()) as i32;
+            let ly = cy + (label_radius * mid_angle.sin()) as i32;
+            let label_font = Font::simple("Sans", 9.0);
+            if i < self.labels.len() {
+                let pct = val / total * 100.0;
+                let label_text = if pct >= 1.0 {
+                    format!("{}:{:.0}%", self.labels[i], pct)
+                } else {
+                    format!("{}:{:.1}%", self.labels[i], pct)
+                };
+                let label_origin = crate::core::Point { x: lx, y: ly };
+                context.draw_text(
+                    label_origin,
+                    &label_text,
+                    &label_font,
+                    Color::from_rgb(60, 60, 60),
+                );
+            }
+            start_angle = end_angle;
+        }
+    }
+
+    fn draw_scatter_chart(&self, context: &mut RenderContext, rect: Rect) {
+        use crate::core::Color;
+        use crate::core::Font;
+        let max_val = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        if max_val <= 0.0 || self.data.is_empty() {
+            return;
+        }
+        let n = self.data.len();
+        let padding: i32 = 8;
+        let bottom_margin: i32 = 20;
+        let chart_w = (rect.width as i32).saturating_sub(padding * 2);
+        let bar_area_x = rect.x.saturating_add(padding);
+        let baseline_y = rect
+            .y
+            .saturating_add(rect.height as i32)
+            .saturating_sub(bottom_margin);
+        let top_y = rect.y.saturating_add(padding);
+        let step_x = chart_w / (n as i32).max(1);
+        let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
+        let dot_color = Color::from_rgb(66, 133, 244);
+        let label_font = Font::simple("Sans", 10.0);
+        for (i, &val) in self.data.iter().enumerate() {
+            let x = bar_area_x.saturating_add(i as i32 * step_x);
+            let y_ratio = val / max_val;
+            let y = baseline_y.saturating_sub((y_ratio * height_range) as i32);
+            context.fill_circle(crate::core::Point { x, y }, 3, dot_color);
+            if i < self.labels.len() {
+                let label = &self.labels[i];
+                let label_text = if label.len() > 6 {
+                    format!("{}..", &label[..4])
+                } else {
+                    label.clone()
+                };
+                let label_origin = crate::core::Point {
+                    x: x.saturating_sub(6),
+                    y: baseline_y + 12,
+                };
+                context.draw_text(
+                    label_origin,
+                    &label_text,
+                    &label_font,
+                    Color::from_rgb(80, 80, 80),
+                );
+            }
+        }
     }
 }
 impl crate::event::EventHandler for ChartWidget {

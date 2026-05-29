@@ -2,6 +2,13 @@
 //!
 //! Both types delegate to [`WebViewCore`] to avoid ~95% code duplication.
 //! Each wrapper adds only its own unique signals and behavior on top of this core.
+//!
+//! # Simulated Navigation
+//!
+//! All navigation methods are **simulated** — no real web engine is used.
+//! Progress callbacks are emitted as 0% → 50% → 100% to allow UI bindings
+//! to observe load lifecycle events. For real web content, wire a real
+//! WebEngine/WebView backend.
 
 use super::history::{BrowserHistory, SessionHistory};
 use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
@@ -10,6 +17,13 @@ use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
 use crate::core::Rect;
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, WidgetKind};
+
+/// A pluggable simulation engine that can be set externally (e.g. in tests)
+/// to inject mock content or simulate different network conditions.
+pub trait SimulationEngine: Send {
+    /// Simulate navigation to the given URL and return simulated content.
+    fn simulate_navigation(&mut self, url: &str) -> Result<String, String>;
+}
 
 /// Shared fields used by both WebEngineViewEnhanced and WebViewEnhanced.
 pub struct WebViewCore {
@@ -36,6 +50,10 @@ pub struct WebViewCore {
     pub navigation_state_changed: Signal1<(bool, bool)>,
     pub console_message: Signal1<(String, u32, String)>,
     pub content: String,
+    /// Optional simulation engine for injecting mock data in tests.
+    /// When set, navigation methods will delegate to this engine
+    /// instead of the default simulated 0→50→100 progress.
+    pub simulation_engine: Option<Box<dyn SimulationEngine>>,
 }
 
 impl WebViewCore {
@@ -69,6 +87,7 @@ impl WebViewCore {
             navigation_state_changed: Signal1::new(),
             console_message: Signal1::new(),
             content: String::new(),
+            simulation_engine: None,
         }
     }
 
@@ -131,20 +150,60 @@ impl WebViewCore {
         self.set_url(url.to_string());
     }
 
+    /// SIMULATED: No real web engine — this simulates URL navigation with
+    /// 0% → 50% → 100% progress callbacks.
+    ///
+    /// Validates that the URL starts with a supported scheme (`http://`,
+    /// `https://`, or `file://`) before accepting it. If the URL is invalid
+    /// or the simulation engine returns an error, the navigation is refused
+    /// and the error is logged.
     pub fn set_url(&mut self, url: String) {
-        if self.url == url {
+        // Validate URL scheme.
+        if !url.starts_with("http://")
+            && !url.starts_with("https://")
+            && !url.starts_with("file://")
+        {
+            log::error!(
+                "[web] Invalid URL scheme: '{}' — must start with http://, https://, or file://",
+                url
+            );
             return;
         }
+
+        if self.url == url {
+            // URL already set — mark as fully loaded.
+            self.load_progress = 100;
+            return;
+        }
+
+        // Delegate to simulation engine if one is set.
+        if let Some(ref mut engine) = self.simulation_engine {
+            match engine.simulate_navigation(&url) {
+                Ok(content) => {
+                    self.content = content;
+                }
+                Err(e) => {
+                    log::error!("[web] simulation engine error for '{}': {}", url, e);
+                    return;
+                }
+            }
+        }
+
         self.url = url.clone();
         self.loading = true;
         self.load_progress = 0;
         self.url_changed.emit(url.clone());
         self.loading_started.emit(url.clone());
         self.history.navigate(url.clone());
+
+        // Emit progress at 50%.
         self.load_progress = 50;
         self.loading_progress.emit(self.load_progress);
+
+        // Emit progress at 100% and finish.
         self.load_progress = 100;
         self.loading = false;
+        self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
         self.update_navigation_state();
         self.browser_history
@@ -152,6 +211,8 @@ impl WebViewCore {
         self.base.request_redraw();
     }
 
+    /// SIMULATED: No real web engine — loads HTML content with simulated
+    /// 0% → 100% progress callbacks.
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
         self.url = base_url.unwrap_or("data:text/html").to_string();
         self.title = "HTML Content".to_string();
@@ -159,8 +220,15 @@ impl WebViewCore {
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
         self.content = html.to_string();
+
+        // Emit progress at 50%.
+        self.load_progress = 50;
+        self.loading_progress.emit(self.load_progress);
+
+        // Emit progress at 100% and finish.
         self.load_progress = 100;
         self.loading = false;
+        self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
@@ -168,6 +236,8 @@ impl WebViewCore {
         self.base.request_redraw();
     }
 
+    /// SIMULATED: No real web engine — loads binary data as a string with simulated
+    /// 0% → 50% → 100% progress callbacks.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
         self.url = base_url.to_string();
         self.title = format!("Data: {}", mime_type);
@@ -175,45 +245,83 @@ impl WebViewCore {
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
         self.content = String::from_utf8_lossy(data).to_string();
+
+        // Emit progress at 50%.
+        self.load_progress = 50;
+        self.loading_progress.emit(self.load_progress);
+
+        // Emit progress at 100% and finish.
         self.load_progress = 100;
         self.loading = false;
+        self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
         self.title_changed.emit(self.title.clone());
         self.update_navigation_state();
         self.base.request_redraw();
     }
 
+    /// SIMULATED: No real web engine — navigates back in history with simulated
+    /// loading callbacks.
     pub fn go_back(&mut self) {
         if let Some(url) = self.history.go_back() {
             self.url = url;
             self.loading = true;
+            self.load_progress = 0;
             self.loading_started.emit(self.url.clone());
+
+            // Emit progress at 50%.
+            self.load_progress = 50;
+            self.loading_progress.emit(self.load_progress);
+
+            // Emit progress at 100% and finish.
+            self.load_progress = 100;
             self.loading = false;
+            self.loading_progress.emit(self.load_progress);
             self.loading_finished.emit(self.url.clone());
             self.update_navigation_state();
             self.base.request_redraw();
         }
     }
 
+    /// SIMULATED: No real web engine — navigates forward in history with simulated
+    /// loading callbacks.
     pub fn go_forward(&mut self) {
         if let Some(url) = self.history.go_forward() {
             self.url = url;
             self.loading = true;
+            self.load_progress = 0;
             self.loading_started.emit(self.url.clone());
+
+            // Emit progress at 50%.
+            self.load_progress = 50;
+            self.loading_progress.emit(self.load_progress);
+
+            // Emit progress at 100% and finish.
+            self.load_progress = 100;
             self.loading = false;
+            self.loading_progress.emit(self.load_progress);
             self.loading_finished.emit(self.url.clone());
             self.update_navigation_state();
             self.base.request_redraw();
         }
     }
 
+    /// SIMULATED: No real web engine — simulates a page reload with
+    /// 0% → 50% → 100% progress callbacks.
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
             self.loading = true;
             self.load_progress = 0;
             self.loading_started.emit(self.url.clone());
+
+            // Emit progress at 50%.
+            self.load_progress = 50;
+            self.loading_progress.emit(self.load_progress);
+
+            // Emit progress at 100% and finish.
             self.load_progress = 100;
             self.loading = false;
+            self.loading_progress.emit(self.load_progress);
             self.loading_finished.emit(self.url.clone());
             self.base.request_redraw();
         }
@@ -448,12 +556,14 @@ mod tests {
             WidgetKind::WebView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
-            "about:blank",
+            "https://example.com",
         );
-        core.set_url("about:blank".to_string());
-        // URL unchanged, so load should be short-circuited
+        // First call sets the URL.
+        assert_eq!(core.url(), "https://example.com");
+        // Second call with same URL — load should be short-circuited.
+        core.set_url("https://example.com".to_string());
         assert!(!core.is_loading());
-        assert_eq!(core.load_progress(), 0);
+        assert_eq!(core.load_progress(), 100);
     }
 
     #[test]

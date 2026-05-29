@@ -2,9 +2,10 @@
 use super::super::WidgetTriggerEvent;
 use crate::platform::state::BackendState;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HarmonyHandleKind {
     Window,
     Button,
@@ -30,7 +31,7 @@ pub(crate) enum HarmonyHandleKind {
     ListView,
     ScrollArea,
 }
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct HarmonyMenuState {
     /// Tracks menu bar attachment by window id.
     pub(crate) attached_menu_bar: HashMap<u64, u64>,
@@ -42,7 +43,7 @@ pub(crate) struct HarmonyMenuState {
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 /// Shared storage for ComboBox and ListBox widget data.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ListData {
     /// Ordered item text entries.
     pub(crate) items: Vec<String>,
@@ -68,6 +69,14 @@ pub struct HarmonyPlatform {
     pub(crate) runtime: HarmonyRuntimeState,
     /// Shared list storage for ComboBox and ListBox widgets.
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
+}
+impl fmt::Debug for HarmonyPlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HarmonyPlatform")
+            .field("menus", &self.menus)
+            .field("list_data", &self.list_data)
+            .finish_non_exhaustive()
+    }
 }
 impl HarmonyPlatform {
     /// Creates a new Harmony platform adapter.

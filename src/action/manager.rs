@@ -2,11 +2,21 @@ use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
 use crate::core::ObjectId;
 use crate::shortcut::Shortcut;
 use std::collections::HashMap;
+use std::fmt;
 /// Registry for actions, shortcuts, and menu/toolbar bindings.
 pub struct ActionManager {
     actions: HashMap<String, Action>,
     shortcut_to_action: HashMap<String, String>,
     bindings: Vec<ActionBinding>,
+}
+impl fmt::Debug for ActionManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActionManager")
+            .field("actions", &self.actions.keys())
+            .field("shortcut_to_action", &self.shortcut_to_action)
+            .field("bindings", &self.bindings)
+            .finish()
+    }
 }
 impl ActionManager {
     /// Creates an empty action manager.

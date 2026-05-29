@@ -27,6 +27,7 @@ use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, create_layout_from_kind, parse_layout_kind,
     store_layout, BoundJsonLayout, ChildLayoutAttrs,
 };
+use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
     Button, CheckBox, ColorDialog, ComboBox, FileDialog, FontDialog, GridWidget, GroupBox, Label,
     LineEdit, ListBox, ListView, MessageBox, ProgressBar, RadioButton, ScrollArea, ScrollBar,
@@ -85,6 +86,9 @@ impl JsonLoader {
             &mut binding,
             0,
         )?;
+
+        // Run layout diagnostics after all widgets are created.
+        LayoutInspector::run_once_logged(&registry);
 
         Ok(binding)
     }

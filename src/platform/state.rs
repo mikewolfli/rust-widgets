@@ -111,8 +111,6 @@ where
             .map(|widget| widget.kind)
     }
     /// Return `true` when widget exists and kind matches.
-    /// Reserved for runtime type-checking in platform backends (not yet wired).
-    #[allow(dead_code)]
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
         self.kind_of(widget_id).map(|k| k == kind).unwrap_or(false)
     }
@@ -240,8 +238,6 @@ where
     // ─── Backend event methods ─────────────────────────────────────────────────
     // These methods provide event system integration for menu and widget trigger
     // dispatch. They are called by the macos, mobile, and stub platform backends.
-    // NOTE: is_kind() is reserved for future runtime type-checking — it compiles
-    // but is not yet called anywhere.
 
     /// Push menu trigger event.
     /// Reserved for menu system integration (not yet wired to platform backends).
@@ -359,5 +355,39 @@ where
         }
         self.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_kind_returns_true_for_matching_kind() {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        enum TestKind {
+            Button,
+            Label,
+        }
+
+        let state = BackendState::<TestKind>::new();
+        let id1 = state.create_widget(TestKind::Button, "Click", 0, 0, 100, 30);
+        let id2 = state.create_widget(TestKind::Label, "Name:", 0, 0, 50, 20);
+
+        assert!(state.is_kind(id1, TestKind::Button));
+        assert!(!state.is_kind(id1, TestKind::Label));
+        assert!(state.is_kind(id2, TestKind::Label));
+        assert!(!state.is_kind(id2, TestKind::Button));
+    }
+
+    #[test]
+    fn is_kind_returns_false_for_nonexistent_widget() {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        enum TestKind {
+            Widget,
+        }
+
+        let state = BackendState::<TestKind>::new();
+        assert!(!state.is_kind(999, TestKind::Widget));
     }
 }

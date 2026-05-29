@@ -230,6 +230,7 @@ fn rects_overlap_excluding_touch(a: &Rect, b: &Rect) -> bool {
 
 // ── LayoutInspector public API ───────────────────────────────
 
+#[derive(Debug)]
 pub struct LayoutInspector;
 
 impl LayoutInspector {
@@ -307,6 +308,23 @@ impl LayoutInspector {
                 });
             }
         });
+    }
+
+    /// Run diagnostics once and log any issues found.
+    ///
+    /// This is a convenience wrapper around [`run_once`] that logs each
+    /// detected issue via `log::warn!()`. If the inspector is disabled,
+    /// this is a no-op.
+    pub fn run_once_logged(registry: &WidgetRegistry) {
+        if !Self::is_enabled() {
+            return;
+        }
+        let report = Self::run_once(registry);
+        if report.has_issues() {
+            for issue in &report.issues {
+                log::warn!("[layout] {}", issue.description);
+            }
+        }
     }
 
     /// Run diagnostics once and return a report.

@@ -2,6 +2,7 @@
 use super::Layout;
 use crate::core::{ObjectId, Rect};
 /// Stack layout that shows one child page at a time.
+#[derive(Debug)]
 pub struct StackLayout {
     items: Vec<ObjectId>,
     current: usize,

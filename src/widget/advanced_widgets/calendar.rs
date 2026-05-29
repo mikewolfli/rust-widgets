@@ -26,8 +26,12 @@ impl Calendar {
         Self {
             base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
             selected_date: today,
-            minimum_date: chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap(),
-            maximum_date: chrono::NaiveDate::from_ymd_opt(3000, 12, 31).unwrap(),
+            // SAFETY: 1900-01-01 is a valid Gregorian date.
+            minimum_date: chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
+                .expect("1900-01-01 is a valid date"),
+            // SAFETY: 3000-12-31 is a valid Gregorian date.
+            maximum_date: chrono::NaiveDate::from_ymd_opt(3000, 12, 31)
+                .expect("3000-12-31 is a valid date"),
             first_day_of_week: chrono::Weekday::Mon,
             grid_visible: true,
             navigation_bar_visible: true,
@@ -124,7 +128,10 @@ impl Calendar {
             self.set_selected_date(next_month);
         } else if let Some(next_year) = self.selected_date.with_year(self.selected_date.year() + 1)
         {
-            self.set_selected_date(next_year.with_month(1).unwrap());
+            // SAFETY: January (month 1) exists in every year.
+            if let Some(jan) = next_year.with_month(1) {
+                self.set_selected_date(jan);
+            }
         }
     }
     /// Shows previous month.
@@ -136,7 +143,10 @@ impl Calendar {
             self.set_selected_date(prev_month);
         } else if let Some(prev_year) = self.selected_date.with_year(self.selected_date.year() - 1)
         {
-            self.set_selected_date(prev_year.with_month(12).unwrap());
+            // SAFETY: December (month 12) exists in every year.
+            if let Some(dec) = prev_year.with_month(12) {
+                self.set_selected_date(dec);
+            }
         }
     }
     /// Shows next year.
@@ -172,7 +182,11 @@ impl Calendar {
             return None;
         }
         // Calculate date based on row and column
-        let first_day = self.selected_date.with_day(1).unwrap();
+        // SAFETY: Day 1 exists in every month.
+        let first_day = self
+            .selected_date
+            .with_day(1)
+            .expect("day 1 exists in every month");
         let first_weekday = first_day.weekday();
         let days_from_start =
             (row - 1) * 7 + col - (first_weekday.num_days_from_monday() as i32) + 1;

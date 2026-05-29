@@ -90,7 +90,6 @@ pub struct VirtualKeyboard {
     /// The widget that requested the keyboard (if any).
     focused_widget: Option<ObjectId>,
     /// Original layout offset before keyboard appeared.
-    #[allow(dead_code)]
     original_offset_y: i32,
     /// Current vertical shift applied to compensate for the keyboard.
     shift_y: i32,
@@ -165,10 +164,13 @@ impl VirtualKeyboard {
         let available_height = screen_height.saturating_sub(self.notch.height) as i32;
 
         if widget_bottom > available_height {
+            // Store the original offset before shifting.
+            self.original_offset_y = self.shift_y;
             // Widget would be covered — shift up.
             self.shift_y = available_height - widget_bottom;
         } else {
             // Widget is already visible above keyboard area.
+            self.original_offset_y = 0;
             self.shift_y = 0;
         }
     }
@@ -188,7 +190,9 @@ impl VirtualKeyboard {
     pub fn on_hidden(&mut self) {
         self.state = KeyboardState::Hidden;
         self.notch = KeyboardNotch::default();
-        self.shift_y = 0;
+        // Restore original layout offset.
+        self.shift_y = self.original_offset_y;
+        self.original_offset_y = 0;
     }
 
     /// Apply the computed layout shift to a widget rectangle.

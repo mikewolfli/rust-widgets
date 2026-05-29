@@ -657,11 +657,17 @@ impl Chart for PieChart {
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
-    fn set_x_axis_label(&mut self, _label: String) {
-        // Not used in pie chart
+    fn set_x_axis_label(&mut self, label: String) {
+        log::debug!(
+            "[chart] PieChart.set_x_axis_label ignored: pie charts have no x-axis (label='{}')",
+            label
+        );
     }
-    fn set_y_axis_label(&mut self, _label: String) {
-        // Not used in pie chart
+    fn set_y_axis_label(&mut self, label: String) {
+        log::debug!(
+            "[chart] PieChart.set_y_axis_label ignored: pie charts have no y-axis (label='{}')",
+            label
+        );
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         // Draw title at the top

@@ -114,13 +114,13 @@ impl Platform for AndroidMobilePlatform {
         PlatformFamily::Mobile
     }
     fn init(&self) {
-        // android-mobile preview backend: no-op init
+        log::info!("[mobile] AndroidMobilePlatform init (state-only preview backend)");
     }
     fn run(&self) {
-        // android-mobile preview backend: no-op run
+        log::info!("[mobile] AndroidMobilePlatform run (state-only preview backend)");
     }
     fn quit(&self) {
-        // android-mobile preview backend: no-op quit
+        log::info!("[mobile] AndroidMobilePlatform quit");
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)

@@ -108,19 +108,6 @@ fn parse_comment_password(text: &str, key: &str) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
-fn parse_pdf_bool_by_key(text: &str, key: &str) -> Option<bool> {
-    let start = text.find(key)? + key.len();
-    let rest = text.get(start..)?.trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 fn parse_pdf_literal_by_key(text: &str, key: &str) -> Option<String> {
     let start = text.find(key)? + key.len();
     let rest = text.get(start..)?.trim_start();

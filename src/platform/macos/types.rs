@@ -328,17 +328,22 @@ impl MacOSPlatform {
         if !matches!(handle.kind, HandleKind::ListBox) {
             return;
         }
-        let items = self
-            .list_box_items
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&list_box).cloned())
-            .unwrap_or_default();
-        let selected = self
-            .list_box_selection
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&list_box).copied().flatten());
+        let items = match self.list_box_items.lock() {
+            Ok(m) => m.get(&list_box).cloned().unwrap_or_default(),
+            Err(_) => {
+                log::error!("[rust_widgets] sync_list_box_native: list_box_items mutex poisoned");
+                Vec::new()
+            }
+        };
+        let selected = match self.list_box_selection.lock() {
+            Ok(m) => m.get(&list_box).copied().flatten(),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets] sync_list_box_native: list_box_selection mutex poisoned"
+                );
+                None
+            }
+        };
         let text = if items.is_empty() {
             String::new()
         } else {

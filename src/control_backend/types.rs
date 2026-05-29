@@ -47,9 +47,8 @@ pub(crate) struct CustomControlState {
     pub(crate) widget_properties: HashMap<ObjectId, CustomWidgetProperties>,
 }
 /// Properties for custom-painted controls.
-/// Reserved for future custom control rendering — stores geometry and kind metadata
-/// that will be used when the custom-paint path is wired to the rendering pipeline.
-#[allow(dead_code)]
+/// Stores geometry and kind metadata used by the custom-paint control backend
+/// for layout and rendering dispatch.
 pub(crate) struct CustomWidgetProperties {
     pub(crate) parent: Option<ObjectId>,
     pub(crate) x: i32,
@@ -57,6 +56,13 @@ pub(crate) struct CustomWidgetProperties {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) widget_kind: WidgetKind,
+}
+
+impl CustomControlState {
+    /// Look up properties for a widget by its id.
+    pub(crate) fn widget_property(&self, widget_id: ObjectId) -> Option<&CustomWidgetProperties> {
+        self.widget_properties.get(&widget_id)
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +119,38 @@ mod tests {
             next_widget_id: 42,
             ..CustomControlState::default()
         };
+    }
+
+    #[test]
+    fn widget_property_returns_stored_properties() {
+        let mut state = CustomControlState::default();
+        let id = state.next_widget_id;
+        state.next_widget_id += 1;
+
+        state.widget_properties.insert(
+            id,
+            CustomWidgetProperties {
+                parent: Some(0),
+                x: 10,
+                y: 20,
+                width: 200,
+                height: 100,
+                widget_kind: WidgetKind::Button,
+            },
+        );
+
+        let props = state.widget_property(id).expect("properties should exist");
+        assert_eq!(props.parent, Some(0));
+        assert_eq!(props.x, 10);
+        assert_eq!(props.y, 20);
+        assert_eq!(props.width, 200);
+        assert_eq!(props.height, 100);
+        assert_eq!(props.widget_kind, WidgetKind::Button);
+    }
+
+    #[test]
+    fn widget_property_returns_none_for_missing_id() {
+        let state = CustomControlState::default();
+        assert!(state.widget_property(999).is_none());
     }
 }

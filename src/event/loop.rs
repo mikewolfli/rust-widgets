@@ -104,7 +104,9 @@ impl EventLoop {
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(recover_lock) = false;
         if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                log::error!("[event-loop] Thread join failed: {:?}", e);
+            }
         }
     }
 

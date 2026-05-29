@@ -941,6 +941,7 @@ impl SoftwareSurface {
         Self {
             buffer: BackBuffer::new(size, dpi_scale),
             aa_samples_per_axis: config.aa_samples_per_axis,
+            clip_stack: Vec::new(),
         }
     }
     /// Get current software render configuration.
@@ -1531,13 +1532,27 @@ impl SoftwareSurface {
         }
     }
     /// Pushes a clip rectangle onto the clip stack.
-    /// Currently a no-op — clip stack integration is not yet wired into the raster pipeline.
-    pub fn push_clip(&mut self, _x: i32, _y: i32, _width: u32, _height: u32) {
-        // Clip stack is reserved for future scissor-rect / stencil integration.
+    /// The clip rectangle is intersected with any existing clip region.
+    pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        if let Some(&(cx, cy, cw, ch)) = self.clip_stack.last() {
+            // Intersect with current clip region.
+            let nx = x.max(cx);
+            let ny = y.max(cy);
+            let nx2 = (x.saturating_add(width as i32)).min(cx.saturating_add(cw as i32));
+            let ny2 = (y.saturating_add(height as i32)).min(cy.saturating_add(ch as i32));
+            let nw = (nx2 - nx).max(0) as u32;
+            let nh = (ny2 - ny).max(0) as u32;
+            self.clip_stack.push((nx, ny, nw, nh));
+        } else {
+            self.clip_stack.push((x, y, width, height));
+        }
     }
     /// Pops the top clip rectangle from the clip stack.
-    /// Currently a no-op — clip stack integration is not yet wired into the raster pipeline.
     pub fn pop_clip(&mut self) {
-        // Clip stack is reserved for future scissor-rect / stencil integration.
+        self.clip_stack.pop();
+    }
+    /// Returns the current effective clip rect, or `None` if the clip stack is empty.
+    pub fn current_clip(&self) -> Option<(i32, i32, u32, u32)> {
+        self.clip_stack.last().copied()
     }
 }

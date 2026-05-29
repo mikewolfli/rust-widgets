@@ -28,7 +28,9 @@ impl Platform for LinuxPlatform {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             // Initialize GTK runtime when native path is enabled.
-            let _ = gtk::init();
+            if let Err(e) = gtk::init() {
+                log::error!("[linux] gtk::init() failed: {:?}", e);
+            }
         }
         #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
         {

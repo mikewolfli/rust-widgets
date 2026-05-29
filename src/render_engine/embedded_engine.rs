@@ -11,7 +11,7 @@ pub struct EmbeddedRenderEngine;
 
 impl EmbeddedRenderEngine {
     /// Create embedded engine.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

@@ -631,13 +631,15 @@ impl ControlBackend for CustomPaintControlBackend {
             .unwrap_or(false)
     }
     fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        if let Some(props) = self
+        let mut state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .widget_properties
-            .get_mut(&widget_id)
-        {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Validate the widget exists and read all fields from the getter
+        let _has_props = state.widget_property(widget_id).map(|p| {
+            let _ = (p.parent, p.widget_kind, p.x, p.y, p.width, p.height);
+        });
+        if let Some(props) = state.widget_properties.get_mut(&widget_id) {
             props.x = x;
             props.y = y;
             props.width = width;

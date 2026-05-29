@@ -190,27 +190,143 @@ impl AdaptivePerformanceMonitor {
         self.record_sample(sample);
         sample
     }
-    /// Measures GPU time (placeholder - requires actual GPU queries)
+    /// Measures GPU time.
+    ///
+    /// Checks the `RUST_WIDGETS_GPU_TIME_MS` env var first (value in
+    /// milliseconds, parsed as `f64`).  Without a wgpu context no real GPU
+    /// timestamp query is possible, so `None` is returned when the env var
+    /// is absent.
     fn measure_gpu_time(&self) -> Option<Duration> {
-        match self.strategy {
-            PerformanceMonitorStrategy::GpuTimestamp => {
-                // In real implementation, read GPU timestamp queries
-                None
+        // Env-var override: RUST_WIDGETS_GPU_TIME_MS (milliseconds, f64)
+        if let Ok(val) = std::env::var("RUST_WIDGETS_GPU_TIME_MS") {
+            if let Ok(ms) = val.trim().parse::<f64>() {
+                return Some(Duration::from_secs_f64(ms / 1000.0));
             }
-            _ => None,
+            log::warn!(
+                "[performance] RUST_WIDGETS_GPU_TIME_MS value '{}' is not a valid f64",
+                val
+            );
         }
+        log::debug!(
+            "[performance] measure_gpu_time: no GPU query backend available (strategy={:?})",
+            self.strategy
+        );
+        None
     }
-    /// Measures memory utilization
+    /// Measures memory utilization as a fraction `[0.0, 1.0]`.
+    ///
+    /// Priority:
+    /// 1. `RUST_WIDGETS_MEM_UTIL` env var override
+    /// 2. Linux: `/proc/self/status` → `VmRSS / VmSize`
+    /// 3. macOS: `ps` RSS vs estimated total memory
+    /// 4. Fallback: `0.0` with diagnostic log
     fn measure_memory_utilization(&self) -> f32 {
-        // In real implementation, query actual memory usage
-        // For now, return a placeholder
-        0.5
+        // 1. Env-var override
+        if let Ok(val) = std::env::var("RUST_WIDGETS_MEM_UTIL") {
+            if let Ok(v) = val.trim().parse::<f32>() {
+                return v.clamp(0.0, 1.0);
+            }
+            log::warn!(
+                "[performance] RUST_WIDGETS_MEM_UTIL value '{}' is not a valid f32",
+                val
+            );
+        }
+        // 2. Linux: /proc/self/status
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                let mut vmrss_kb: u64 = 0;
+                let mut vmsize_kb: u64 = 0;
+                for line in status.lines() {
+                    if let Some(rest) = line.strip_prefix("VmRSS:") {
+                        vmrss_kb = rest
+                            .trim()
+                            .trim_end_matches("kB")
+                            .trim()
+                            .parse()
+                            .unwrap_or(0);
+                    } else if let Some(rest) = line.strip_prefix("VmSize:") {
+                        vmsize_kb = rest
+                            .trim()
+                            .trim_end_matches("kB")
+                            .trim()
+                            .parse()
+                            .unwrap_or(0);
+                    }
+                }
+                if vmsize_kb > 0 {
+                    let ratio = vmrss_kb as f32 / vmsize_kb as f32;
+                    log::debug!(
+                        "[performance] memory utilization from /proc/self/status: {ratio:.3}"
+                    );
+                    return ratio.clamp(0.0, 1.0);
+                }
+            }
+        }
+        // 3. macOS: ps RSS vs. estimated total
+        #[cfg(target_os = "macos")]
+        {
+            let pid = std::process::id().to_string();
+            if let Ok(output) = std::process::Command::new("ps")
+                .args(["-o", "rss=", "-p", &pid])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(rss_kb) = stdout.trim().parse::<f64>() {
+                        // Estimate 8 GB as reasonable total for a typical macOS system
+                        let ratio = (rss_kb / (8.0 * 1024.0 * 1024.0)) as f32;
+                        log::debug!("[performance] memory utilization from ps: {ratio:.3}");
+                        return ratio.clamp(0.0, 1.0);
+                    }
+                }
+            }
+        }
+        log::debug!("[performance] measure_memory_utilization: no backend available");
+        0.0
     }
-    /// Measures CPU utilization
+    /// Measures CPU utilization as a fraction `[0.0, 1.0]`.
+    ///
+    /// Priority:
+    /// 1. `RUST_WIDGETS_CPU_UTIL` env var override
+    /// 2. Linux: `/proc/self/status` → thread count / number of cores
+    /// 3. Fallback: `0.0` with diagnostic log
     fn measure_cpu_utilization(&self) -> f32 {
-        // In real implementation, query actual CPU usage
-        // For now, return a placeholder
-        0.5
+        // 1. Env-var override
+        if let Ok(val) = std::env::var("RUST_WIDGETS_CPU_UTIL") {
+            if let Ok(v) = val.trim().parse::<f32>() {
+                return v.clamp(0.0, 1.0);
+            }
+            log::warn!(
+                "[performance] RUST_WIDGETS_CPU_UTIL value '{}' is not a valid f32",
+                val
+            );
+        }
+        // 2. Linux: /proc/self/status → Threads:
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if let Some(rest) = line.strip_prefix("Threads:") {
+                        if let Ok(threads) = rest.trim().parse::<f32>() {
+                            // Rough heuristic: threads / (available_cores * 2)
+                            // A well-utilized 4-core system might have ~8 active threads.
+                            let cores = std::thread::available_parallelism()
+                                .map(|n| n.get() as f32)
+                                .unwrap_or(4.0);
+                            let ratio = (threads / (cores * 2.0)).clamp(0.0, 1.0);
+                            log::debug!(
+                                "[performance] CPU utilization from /proc/self/status: {} threads / {} cores = {ratio:.3}",
+                                threads, cores
+                            );
+                            return ratio;
+                        }
+                    }
+                }
+            }
+        }
+        log::debug!("[performance] measure_cpu_utilization: no backend available");
+        0.0
     }
     /// Records a performance sample
     fn record_sample(&mut self, sample: PerformanceSample) {

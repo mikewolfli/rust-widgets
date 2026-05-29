@@ -93,15 +93,15 @@ impl Platform for StubPlatform {
     }
 
     fn init(&self) {
-        // no-op platform stub
+        log::info!("[stub] StubPlatform init (testing backend)");
     }
 
     fn run(&self) {
-        // no-op platform stub
+        log::info!("[stub] StubPlatform run (testing backend)");
     }
 
     fn quit(&self) {
-        // no-op platform stub
+        log::info!("[stub] StubPlatform quit");
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {

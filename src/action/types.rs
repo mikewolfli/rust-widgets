@@ -1,5 +1,6 @@
 use crate::core::ObjectId;
 use crate::signal::{ConnectionHandle, GenericSignal};
+use std::fmt;
 use std::sync::Arc;
 /// Represents a user-invokable command with enabled state and trigger signal.
 #[derive(Clone)]
@@ -14,6 +15,20 @@ pub struct Action {
     triggered: GenericSignal,
     toggled: crate::signal::Signal1<bool>,
     enabled_changed: crate::signal::Signal1<bool>,
+}
+impl fmt::Debug for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Action")
+            .field("id", &self.id)
+            .field("text", &self.text)
+            .field("enabled", &self.enabled)
+            .field("checkable", &self.checkable)
+            .field("checked", &self.checked)
+            .field("triggered", &self.triggered.slot_count())
+            .field("toggled", &self.toggled.slot_count())
+            .field("enabled_changed", &self.enabled_changed.slot_count())
+            .finish()
+    }
 }
 impl Action {
     /// Creates a new enabled action with the provided id and label.
@@ -112,7 +127,7 @@ pub enum ActionHostKind {
     ToolBar,
 }
 /// Associates an action with a concrete UI host object.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionBinding {
     /// Identifier of the bound action.
     pub action_id: String,

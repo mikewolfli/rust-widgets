@@ -10,10 +10,12 @@ use cocoa::appkit::{
     NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
     NSView, NSWindow,
 };
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSString};
+use cocoa::base::{id, nil, BOOL, NO, YES};
+use cocoa::foundation::{NSArray, NSAutoreleasePool, NSData, NSPoint, NSString};
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
+use std::ffi::CStr;
+use std::os::raw::c_char;
 
 impl Platform for MacOSPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -720,23 +722,33 @@ impl Platform for MacOSPlatform {
         true
     }
     fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
-        self.list_box_selection
-            .lock()
-            .ok()
-            .and_then(|selection| selection.get(&list_box).copied().flatten())
+        match self.list_box_selection.lock() {
+            Ok(selection) => selection.get(&list_box).copied().flatten(),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets] list_box_current_index: list_box_selection mutex poisoned"
+                );
+                None
+            }
+        }
     }
     fn list_box_item_count(&self, list_box: u64) -> usize {
-        self.list_box_items
-            .lock()
-            .ok()
-            .and_then(|items| items.get(&list_box).map(|v| v.len()))
-            .unwrap_or(0)
+        match self.list_box_items.lock() {
+            Ok(items) => items.get(&list_box).map(|v| v.len()).unwrap_or(0),
+            Err(_) => {
+                log::error!("[rust_widgets] list_box_item_count: list_box_items mutex poisoned");
+                0
+            }
+        }
     }
     fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
-        self.list_box_items
-            .lock()
-            .ok()
-            .and_then(|items| items.get(&list_box).and_then(|v| v.get(index).cloned()))
+        match self.list_box_items.lock() {
+            Ok(items) => items.get(&list_box).and_then(|v| v.get(index).cloned()),
+            Err(_) => {
+                log::error!("[rust_widgets] list_box_item_text: list_box_items mutex poisoned");
+                None
+            }
+        }
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         // SAFETY: NSView alloc/init/frame messages use valid selectors.
@@ -828,23 +840,33 @@ impl Platform for MacOSPlatform {
         }
     }
     fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
-        self.combo_box_selection
-            .lock()
-            .ok()
-            .and_then(|selection| selection.get(&combo_box).copied().flatten())
+        match self.combo_box_selection.lock() {
+            Ok(selection) => selection.get(&combo_box).copied().flatten(),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets] combo_box_current_index: combo_box_selection mutex poisoned"
+                );
+                None
+            }
+        }
     }
     fn combo_box_item_count(&self, combo_box: u64) -> usize {
-        self.combo_box_items
-            .lock()
-            .ok()
-            .and_then(|items| items.get(&combo_box).map(|v| v.len()))
-            .unwrap_or(0)
+        match self.combo_box_items.lock() {
+            Ok(items) => items.get(&combo_box).map(|v| v.len()).unwrap_or(0),
+            Err(_) => {
+                log::error!("[rust_widgets] combo_box_item_count: combo_box_items mutex poisoned");
+                0
+            }
+        }
     }
     fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
-        self.combo_box_items
-            .lock()
-            .ok()
-            .and_then(|items| items.get(&combo_box).and_then(|v| v.get(index).cloned()))
+        match self.combo_box_items.lock() {
+            Ok(items) => items.get(&combo_box).and_then(|v| v.get(index).cloned()),
+            Err(_) => {
+                log::error!("[rust_widgets] combo_box_item_text: combo_box_items mutex poisoned");
+                None
+            }
+        }
     }
     fn attach_menu_bar_to_window(&self, _window: u64, menu_bar: u64) -> bool {
         // SAFETY: handle validated by kind match. NSApp() is initialized.
@@ -1103,19 +1125,120 @@ impl Platform for MacOSPlatform {
         self.state.ime_enabled(widget_id)
     }
     fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
-        self.state.set_accessibility_name(widget_id, name)
+        // If no native handle, fall back to state immediately.
+        if self.get_handle(widget_id).is_none() {
+            return self.state.set_accessibility_name(widget_id, name);
+        }
+        // Try native ObjC setAccessibilityLabel: on the NSView/NSControl
+        let result = std::panic::catch_unwind(|| unsafe {
+            let handle = self.get_handle(widget_id).unwrap();
+            let ns_str = NSString::alloc(nil).init_str(name);
+            let _: () = msg_send![Self::as_id(handle), setAccessibilityLabel: ns_str];
+            true
+        });
+        // Fall back to state on ObjC failure
+        result.unwrap_or_else(|_| self.state.set_accessibility_name(widget_id, name))
     }
     fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
-        self.state.accessibility_name(widget_id)
+        // If no native handle, fall back to state immediately.
+        if self.get_handle(widget_id).is_none() {
+            return self.state.accessibility_name(widget_id);
+        }
+        // Try native ObjC accessibilityLabel on the NSView/NSControl
+        let result = std::panic::catch_unwind(|| unsafe {
+            let handle = self.get_handle(widget_id).unwrap();
+            let label: id = msg_send![Self::as_id(handle), accessibilityLabel];
+            if label != nil {
+                let c_str: *const c_char = msg_send![label, UTF8String];
+                if !c_str.is_null() {
+                    return Some(CStr::from_ptr(c_str).to_string_lossy().into_owned());
+                }
+            }
+            None
+        });
+        // Fall back to state on ObjC failure
+        result
+            .unwrap_or(None)
+            .unwrap_or_else(|| self.state.accessibility_name(widget_id))
     }
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        // Try real NSPasteboard integration first
+        let result = std::panic::catch_unwind(|| unsafe {
+            let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+            if pb == nil {
+                return false;
+            }
+            let _: () = msg_send![pb, clearContents];
+            let ns_str = NSString::alloc(nil).init_str(text);
+            let type_str = NSString::alloc(nil).init_str("public.utf8-plain-text");
+            let success: BOOL = msg_send![pb, setString:ns_str forType:type_str];
+            success != NO
+        });
+        // Fall back to state on ObjC failure (including panics)
+        result.unwrap_or_else(|_| self.state.set_clipboard_text(text))
     }
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        // Try real NSPasteboard integration first
+        let result = std::panic::catch_unwind(|| unsafe {
+            let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+            if pb == nil {
+                return None;
+            }
+            let type_str = NSString::alloc(nil).init_str("public.utf8-plain-text");
+            let text_obj: id = msg_send![pb, stringForType:type_str];
+            if text_obj == nil {
+                return None;
+            }
+            let c_str: *const c_char = msg_send![text_obj, UTF8String];
+            if c_str.is_null() {
+                return None;
+            }
+            Some(CStr::from_ptr(c_str).to_string_lossy().into_owned())
+        });
+        // Fall back to state on ObjC failure
+        result
+            .unwrap_or(None)
+            .unwrap_or_else(|| self.state.clipboard_text())
     }
     fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
+        // If no native handle exists, fall back to state immediately.
+        if self.get_handle(source_widget_id).is_none() {
+            return self.state.begin_drag(source_widget_id, mime, payload);
+        }
+        // Try real NSPasteboardItem drag session first
+        let result = std::panic::catch_unwind(|| unsafe {
+            let handle = self.get_handle(source_widget_id).unwrap();
+            let view = Self::as_id(handle);
+            let item: id = msg_send![class!(NSPasteboardItem), alloc];
+            let item: id = msg_send![item, init];
+            if item == nil {
+                return false;
+            }
+            let uti = NSString::alloc(nil).init_str(mime);
+            let ns_data = NSData::dataWithBytes_length_(
+                nil,
+                payload.as_ptr() as *const std::ffi::c_void,
+                payload.len() as u64,
+            );
+            let set_ok: BOOL = msg_send![item, setData:ns_data forType:uti];
+            if set_ok == NO {
+                return false;
+            }
+            // Create NSDraggingItem with NSPasteboardItem as pasteboard writer
+            let drag_item: id = msg_send![class!(NSDraggingItem), alloc];
+            let drag_item: id = msg_send![drag_item, initWithPasteboardWriter:item];
+            if drag_item == nil {
+                return false;
+            }
+            // Build NSArray of dragging items
+            let items_array = NSArray::arrayWithObjects(nil, &[drag_item]);
+            let current_event: id = msg_send![class!(NSEvent), currentEvent];
+            // Start drag session
+            let _: id = msg_send![view, beginDraggingSessionWithItems:items_array event:current_event source:view];
+            true
+        });
+        // Fall back to state on ObjC failure
+        result.unwrap_or_else(|_| self.state.begin_drag(source_widget_id, mime, payload))
     }
     fn poll_drop_event(&self) -> Option<DropEvent> {
         self.state.pop_drop_event()

@@ -30,10 +30,12 @@ impl I18nFileWatcher {
                     if let Some(path) = event.paths.first() {
                         if path.extension().is_some_and(|ext| ext == "json") {
                             if let Some(lang) = path.file_stem().and_then(|s| s.to_str()) {
-                                let _ = sender.send(ReloadEvent::TranslationReloaded {
+                                if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
                                     language: lang.to_string(),
                                     timestamp: SystemTime::now(),
-                                });
+                                }) {
+                                    log::error!("[i18n] Watcher send failed: {:?}", e);
+                                }
                             }
                         }
                     }

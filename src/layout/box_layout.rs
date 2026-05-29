@@ -1,6 +1,7 @@
 //! Box layout manager — arranges items in a single row or column.
 use super::{Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
 use crate::core::{ObjectId, Rect};
+#[derive(Debug)]
 struct BoxLayoutItem {
     widget_id: Option<ObjectId>,
     stretch: u32,
@@ -8,6 +9,7 @@ struct BoxLayoutItem {
     policy: SizePolicy,
 }
 /// Linear layout that arranges items in one direction.
+#[derive(Debug)]
 pub struct BoxLayout {
     orientation: Orientation,
     spacing: u32,
@@ -258,6 +260,7 @@ impl Layout for BoxLayout {
     }
 }
 /// Horizontal box layout with explicit naming parity.
+#[derive(Debug)]
 pub struct HBoxLayout {
     inner: BoxLayout,
 }
@@ -325,6 +328,7 @@ impl Layout for HBoxLayout {
     }
 }
 /// Vertical box layout with explicit naming parity.
+#[derive(Debug)]
 pub struct VBoxLayout {
     inner: BoxLayout,
 }

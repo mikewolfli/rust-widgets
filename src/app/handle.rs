@@ -1286,6 +1286,25 @@ struct WindowState {
     close_callback: Option<ClickCallback>,
 }
 
+impl std::fmt::Debug for WindowState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowState")
+            .field("icon", &self.icon)
+            .field("min_w", &self.min_w)
+            .field("min_h", &self.min_h)
+            .field("maximized", &self.maximized)
+            .field("minimized", &self.minimized)
+            .field("fullscreen", &self.fullscreen)
+            .field("resizable", &self.resizable)
+            .field("decorated", &self.decorated)
+            .field(
+                "close_callback",
+                &self.close_callback.as_ref().map(|_| "<fn>"),
+            )
+            .finish()
+    }
+}
+
 impl Default for WindowState {
     fn default() -> Self {
         Self {

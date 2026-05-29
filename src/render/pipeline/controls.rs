@@ -68,18 +68,12 @@ pub(crate) fn centered_text_origin(rect: Rect) -> Point {
         y: rect.y + (rect.height as i32 / 2) - 4,
     }
 }
-#[allow(dead_code)]
-pub(crate) fn normalized_progress_u32(value: u32, min: u32, max: u32) -> f32 {
-    if max <= min {
-        return 0.0;
-    }
-    ((value.saturating_sub(min)) as f32 / (max - min) as f32).clamp(0.0, 1.0)
-}
 pub(crate) fn normalized_progress_i32(value: i32, min: i32, max: i32) -> f32 {
     if max <= min {
         return 0.0;
     }
-    ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
+    // Use saturating_sub to prevent integer overflow when value < min.
+    ((value.saturating_sub(min)) as f32 / (max.saturating_sub(min)) as f32).clamp(0.0, 1.0)
 }
 /// Append visual commands for a `Window` baseline representation.
 #[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]

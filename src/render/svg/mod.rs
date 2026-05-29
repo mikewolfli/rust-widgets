@@ -85,6 +85,75 @@ impl SvgPaintBackend {
     }
 }
 
+// ─── Helper: RGBA→BMP conversion ──────────────────────────────────────────
+
+/// Convert raw RGBA pixel data into an in-memory BMP file (32-bit BGRA).
+fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    let row_size = width * 4; // 4 bytes/pixel, already 4-byte aligned
+    let pixel_data_size = row_size * height;
+    let file_size: usize = 14 + 40 + pixel_data_size as usize;
+    let mut bmp = Vec::with_capacity(file_size);
+
+    // BITMAPFILEHEADER (14 bytes)
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 4]); // reserved
+    bmp.extend_from_slice(&54u32.to_le_bytes()); // offset to pixel array
+
+    // BITMAPINFOHEADER (40 bytes)
+    bmp.extend_from_slice(&40u32.to_le_bytes()); // header size
+    bmp.extend_from_slice(&width.to_le_bytes());
+    bmp.extend_from_slice(&height.to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes()); // color planes
+    bmp.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // compression (BI_RGB)
+    bmp.extend_from_slice(&pixel_data_size.to_le_bytes()); // image size
+    bmp.extend_from_slice(&0i32.to_le_bytes()); // x pixels-per-meter
+    bmp.extend_from_slice(&0i32.to_le_bytes()); // y pixels-per-meter
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // colors used
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // important colors
+
+    // Pixel data: RGBA → BGRA, stored bottom-up
+    for y in (0..height).rev() {
+        let row_off = (y * row_size) as usize;
+        for x in 0..width {
+            let idx = row_off + (x * 4) as usize;
+            bmp.push(rgba[idx + 2]); // B
+            bmp.push(rgba[idx + 1]); // G
+            bmp.push(rgba[idx + 0]); // R
+            bmp.push(rgba[idx + 3]); // A
+        }
+    }
+
+    bmp
+}
+
+/// Minimal base64 encoder (RFC 4648) — no dependencies needed.
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let cap = ((data.len() + 2) / 3) * 4;
+    let mut out = String::with_capacity(cap);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 // ─── PaintBackend implementation ─────────────────────────────────────────────
 
 impl PaintBackend for SvgPaintBackend {
@@ -288,26 +357,35 @@ impl PaintBackend for SvgPaintBackend {
                 ));
             }
 
-            // ── Image (placeholder in SVG) ─────────────────────────────
+            // ── Image ──────────────────────────────────────────────────
             RenderCommand::DrawImage {
                 x,
                 y,
                 width,
                 height,
-                data: _,
+                data,
             } => {
-                // Images show as a dashed-outline placeholder rectangle
-                // with an "Image" label; actual pixel data is not embedded.
-                self.push_element(format!(
-                    r##"<rect x="{}" y="{}" width="{}" height="{}" fill="#eee" stroke="#999" stroke-width="1" stroke-dasharray="4" />"##,
-                    x, y, width, height
-                ));
-                let cx = x + (*width as i32) / 2;
-                let cy = y + (*height as i32) / 2;
-                self.push_element(format!(
-                    r##"<text x="{}" y="{}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#666">Image</text>"##,
-                    cx, cy
-                ));
+                if !data.is_empty() && *width > 0 && *height > 0 {
+                    // Convert RGBA pixel data to BMP and base64-encode for embedding.
+                    let bmp = rgba_to_bmp(*width, *height, data);
+                    let b64 = base64_encode(&bmp);
+                    self.push_element(format!(
+                        r##"<image x="{}" y="{}" width="{}" height="{}" href="data:image/bmp;base64,{}" />"##,
+                        x, y, width, height, b64
+                    ));
+                } else {
+                    // No pixel data: render an error placeholder rectangle.
+                    self.push_element(format!(
+                        r##"<rect x="{}" y="{}" width="{}" height="{}" fill="#fee" stroke="#c00" stroke-width="2" />"##,
+                        x, y, width, height
+                    ));
+                    let cx = x + (*width as i32) / 2;
+                    let cy = y + (*height as i32) / 2;
+                    self.push_element(format!(
+                        r##"<text x="{}" y="{}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#c00">Image (no data)</text>"##,
+                        cx, cy
+                    ));
+                }
             }
 
             // ── Clipping ───────────────────────────────────────────────
@@ -497,7 +575,9 @@ mod tests {
         assert!(result.contains("</svg>"));
         assert!(result.contains("stroke"));
         assert!(result.contains("fill"));
-        assert!(result.contains("Image"));
+        assert!(result.contains("Image (no data)"));
+        assert!(result.contains("#fee"));
+        assert!(result.contains("#c00"));
     }
 
     #[test]

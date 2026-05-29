@@ -126,8 +126,15 @@ impl WindowsPlatform {
     pub fn get_native_handle(&self, id: u64) -> Option<HWND> {
         #[cfg(target_os = "windows")]
         {
-            let handles = self.menu_state.handles.lock().ok()?;
-            handles.get(&id).map(|&h| h as HWND)
+            match self.menu_state.handles.lock() {
+                Ok(handles) => handles.get(&id).map(|&h| h as HWND),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] get_native_handle: handles mutex poisoned"
+                    );
+                    None
+                }
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -167,10 +174,17 @@ impl WindowsPlatform {
     }
     #[cfg(target_os = "windows")]
     pub fn widget_id_by_native_handle(&self, hwnd: HWND) -> Option<u64> {
-        let handles = self.menu_state.handles.lock().ok()?;
-        handles
-            .iter()
-            .find_map(|(widget_id, native)| ((*native as HWND) == hwnd).then_some(*widget_id))
+        match self.menu_state.handles.lock() {
+            Ok(handles) => handles
+                .iter()
+                .find_map(|(widget_id, native)| ((*native as HWND) == hwnd).then_some(*widget_id)),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets][windows] widget_id_by_native_handle: handles mutex poisoned"
+                );
+                None
+            }
+        }
     }
 }
 /// Extension trait for downcasting `dyn Platform` to concrete platform types.

@@ -31,6 +31,7 @@ impl ConfigPersistence {
         self.config_dir.join("menu_config.json")
     }
     /// Saves menu configuration to disk.
+    #[must_use]
     pub fn save(&self, config: &MenuConfig) -> io::Result<()> {
         self.ensure_dir()?;
         let mut data = HashMap::new();
@@ -68,6 +69,7 @@ impl ConfigPersistence {
         Ok(())
     }
     /// Loads menu configuration from disk.
+    #[must_use]
     pub fn load(&self) -> io::Result<UserOverrides> {
         let path = self.config_file_path();
         if !path.exists() {
@@ -100,6 +102,7 @@ impl ConfigPersistence {
         Ok(overrides)
     }
     /// Deletes the saved configuration file.
+    #[must_use]
     pub fn clear(&self) -> io::Result<()> {
         let path = self.config_file_path();
         if path.exists() {

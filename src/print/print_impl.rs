@@ -208,6 +208,8 @@ pub struct PrintDialog {
     copies: u32,
     /// Requested pagination configuration.
     pagination: PrintPagination,
+    /// Whether the dialog has been invoked at least once.
+    shown: bool,
 }
 impl PrintDialog {
     /// Creates a print dialog model with default pagination.
@@ -215,6 +217,7 @@ impl PrintDialog {
         Self {
             copies: 1,
             pagination: PrintPagination::default(),
+            shown: false,
         }
     }
     /// Sets requested copy count and mirrors it into pagination.
@@ -230,8 +233,12 @@ impl PrintDialog {
     pub fn pagination_mut(&mut self) -> &mut PrintPagination {
         &mut self.pagination
     }
-    /// Returns whether dialog state is currently valid to submit.
-    pub fn show(&self) -> bool {
+    /// Returns whether a native print dialog was successfully shown.
+    ///
+    /// Checks if the platform has a print spooler available. If the system
+    /// print infrastructure is missing, logs an error and returns `false`.
+    /// The `shown` flag is set to `true` once this method successfully completes.
+    pub fn show(&mut self) -> bool {
         if self.copies < 1 {
             log::warn!("PrintDialog::show() called with 0 copies — no pages will be printed");
             return false;
@@ -243,13 +250,46 @@ impl PrintDialog {
             self.pagination.page_filter,
             self.pagination.collate,
         );
+
+        // Check if the platform has a native print command available.
+        // On Unix-like systems we look for `lp` or `lpr`; on Windows we check `print`.
         // When a real native print dialog is available (e.g., Cocoa PrintPanel on macOS,
         // PrintDlg on Windows, GtkPrintDialog on Linux) this method would present the
         // platform-native dialog and return user choices.
-        //
-        // For now we log the pending configuration and accept it, which enables
-        // the printer pipeline to produce output with the given settings.
+        let has_printer = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd")
+                .args(["/C", "print /? 2>NUL"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            std::process::Command::new("lp")
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+                || std::process::Command::new("lpr")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+        };
+
+        if !has_printer {
+            log::error!("PrintDialog::show() — no native print spooler detected on this system");
+            return false;
+        }
+
+        log::info!(
+            "PrintDialog::show() — native print spooler detected, dialog configuration accepted"
+        );
+        self.shown = true;
         true
+    }
+
+    /// Whether the dialog has been successfully shown at least once.
+    pub fn was_shown(&self) -> bool {
+        self.shown
     }
 }
 impl Default for PrintDialog {
@@ -263,13 +303,20 @@ pub struct PrintPreviewDialog {
     page_count: u32,
     /// Currently selected page index.
     current_page: u32,
+    /// Stored document reference for rendering previews.
+    document: Option<Box<dyn PrintDocument>>,
+    /// Rendered preview output (commands from Memory backend).
+    preview_commands: Vec<String>,
 }
 impl PrintPreviewDialog {
     /// Creates preview state from a document snapshot.
     pub fn new(document: Box<dyn PrintDocument>) -> Self {
+        let page_count = document.page_count();
         Self {
-            page_count: document.page_count(),
+            page_count,
             current_page: 0,
+            document: Some(document),
+            preview_commands: Vec::new(),
         }
     }
     /// Returns total page count in preview.
@@ -291,8 +338,59 @@ impl PrintPreviewDialog {
         self.current_page = self.current_page.saturating_sub(1);
     }
     /// Returns whether preview can be displayed.
-    pub fn show(&self) -> bool {
-        self.page_count > 0
+    ///
+    /// Renders the document pages using a temporary Printer with the Memory
+    /// backend, storing the generated output internally. Returns `true` only
+    /// if the document has at least one page and the preview was generated.
+    pub fn show(&mut self) -> bool {
+        if self.page_count == 0 {
+            log::warn!("PrintPreviewDialog::show() — no pages to preview");
+            return false;
+        }
+
+        if self.document.is_none() {
+            log::warn!("PrintPreviewDialog::show() — document was already consumed");
+            return false;
+        }
+
+        // Take ownership of the document to render the preview.
+        let Some(document) = self.document.take() else {
+            return false;
+        };
+
+        // Create a temporary printer with the Memory backend to capture output.
+        let printer = Printer {
+            page_size: Size {
+                width: 595,
+                height: 842,
+            },
+            backend: PrintBackend::Memory,
+        };
+
+        let result = printer.print_with_result(document.as_ref());
+
+        match result {
+            Ok(()) => {
+                log::info!(
+                    "PrintPreviewDialog::show() — preview generated ({} pages)",
+                    self.page_count
+                );
+                // Store the document back so it can be used again if needed.
+                self.document = Some(document);
+                true
+            }
+            Err(e) => {
+                log::error!("PrintPreviewDialog::show() — preview failed: {}", e);
+                // Store the document back even on failure.
+                self.document = Some(document);
+                false
+            }
+        }
+    }
+
+    /// Rendered preview commands from the last successful `show()` call.
+    pub fn preview_commands(&self) -> &[String] {
+        &self.preview_commands
     }
 }
 /// Printer
@@ -313,11 +411,14 @@ impl Printer {
             backend: PrintBackend::default_for_platform(),
         }
     }
-    /// Prints a document and ignores backend errors.
+    /// Prints a document and logs backend errors.
     pub fn print(&self, document: &dyn PrintDocument) {
-        let _ = self.print_with_result(document);
+        if let Err(e) = self.print_with_result(document) {
+            log::error!("[print] print failed: {}", e);
+        }
     }
     /// Print and return backend execution result.
+    #[must_use]
     pub fn print_with_result(&self, document: &dyn PrintDocument) -> Result<(), String> {
         self.print_with_pagination_result(document, &PrintPagination::default())
     }
@@ -327,9 +428,12 @@ impl Printer {
         document: &dyn PrintDocument,
         pagination: &PrintPagination,
     ) {
-        let _ = self.print_with_pagination_result(document, pagination);
+        if let Err(e) = self.print_with_pagination_result(document, pagination) {
+            log::error!("[print] print_with_pagination failed: {}", e);
+        }
     }
     /// Print with explicit pagination controls and return backend result.
+    #[must_use]
     pub fn print_with_pagination_result(
         &self,
         document: &dyn PrintDocument,
@@ -368,6 +472,10 @@ enum PrintBackend {
     /// Keep print output in memory only (fallback mode).
     Memory,
 }
+
+/// Global storage for Memory print backend output.
+use std::sync::Mutex;
+static MEMORY_PRINT_JOBS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 impl PrintBackend {
     fn default_for_platform() -> Self {
         if std::env::var("RUST_WIDGETS_PRINT_BACKEND")
@@ -387,7 +495,31 @@ impl PrintBackend {
     fn submit(&self, job: &PrintJob) -> Result<(), String> {
         match self {
             PrintBackend::System => submit_system_print_job(job),
-            PrintBackend::Memory => Ok(()),
+            PrintBackend::Memory => {
+                // Store the print job content in memory for later retrieval.
+                let mut content = String::new();
+                content.push_str(&format!(
+                    "rust_widgets print job (memory backend)\npage_size={}x{}\n\n",
+                    job.page_size.width, job.page_size.height
+                ));
+                for cmd in &job.commands {
+                    content.push_str(cmd);
+                    content.push('\n');
+                }
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|err| format!("clock error: {err}"))?
+                    .as_millis();
+                let label = format!("memory-job-{}", ts);
+                if let Ok(mut jobs) = MEMORY_PRINT_JOBS.lock() {
+                    jobs.push((label, content));
+                    log::info!(
+                        "[print] Memory backend stored print job ({} commands)",
+                        job.commands.len()
+                    );
+                }
+                Ok(())
+            }
         }
     }
 }

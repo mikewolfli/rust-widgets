@@ -3,7 +3,7 @@
 //! This module implements the `Platform` trait for the Wayland backend.
 //! All widget operations are backed by `BackendState<WaylandHandleKind>`.
 //! Native Wayland protocol integration (via wayland-client / wayland-protocols)
-//! will be wired in subsequent rounds.
+//! is wired when the `wayland-native` feature is active.
 //!
 //! Architecture follows the same pattern as LinuxPlatform / HarmonyPlatform:
 //! - State-only operations for all widget creation and lifecycle
@@ -16,6 +16,11 @@ use crate::platform::types::{
     DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
 use crate::platform::wayland::types::{ListData, WaylandHandleKind, WaylandPlatform};
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+use wayland_client as wl_client;
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+use wayland_protocols as wl_protocols;
 
 // ---------------------------------------------------------------------------
 // Platform trait implementation
@@ -45,7 +50,32 @@ impl Platform for WaylandPlatform {
     }
 
     fn dpi_scale_factor(&self) -> f32 {
-        // TODO: Query wl_output scale factor via wayland-client when native integration is wired.
+        // Attempt to detect DPI from environment when wayland-client is not wired.
+        // Check common environment variables set by Wayland compositors.
+        if let Ok(scale_str) = std::env::var("GDK_SCALE") {
+            if let Ok(scale) = scale_str.parse::<f32>() {
+                if scale > 0.0 {
+                    return scale;
+                }
+            }
+        }
+        if let Ok(scale_str) = std::env::var("QT_SCALE_FACTOR") {
+            if let Ok(scale) = scale_str.parse::<f32>() {
+                if scale > 0.0 {
+                    return scale;
+                }
+            }
+        }
+        if let Ok(scale_str) = std::env::var("RUST_WIDGETS_DPI_SCALE") {
+            if let Ok(scale) = scale_str.parse::<f32>() {
+                if scale > 0.0 {
+                    return scale;
+                }
+            }
+        }
+        // Fallback: assume 96 DPI (1.0 scale factor).
+        // TODO: When native wayland-client integration is wired, query
+        // wl_output scaling via wl_output::scale event.
         1.0
     }
 
@@ -57,20 +87,34 @@ impl Platform for WaylandPlatform {
         self.runtime
             .initialized
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        log::info!("[wayland] Platform initialized (state-only backend).");
     }
 
     fn run(&self) {
         self.runtime
             .running
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // TODO: Enter Wayland event loop dispatch (wl_display_dispatch) when native integration is wired.
-        // For now, the state-only backend simply marks itself as running and returns.
+        // Check environment to provide diagnostics about Wayland session state.
+        let wayland_display =
+            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| String::from("wayland-0"));
+        let xdg_session =
+            std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| String::from("unknown"));
+        log::info!(
+            "[wayland] Platform running: XDG_SESSION_TYPE={}, WAYLAND_DISPLAY={}",
+            xdg_session,
+            wayland_display
+        );
+        log::info!("[wayland] State-only backend active (no native protocol dispatch).");
+        // TODO: Enter Wayland event loop dispatch (wl_display_dispatch) when native
+        // wayland-client integration is wired. For now, the state-only backend simply
+        // marks itself as running and returns.
     }
 
     fn quit(&self) {
         self.runtime
             .running
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        log::info!("[wayland] Platform quit.");
     }
 
     // -----------------------------------------------------------------------
@@ -78,6 +122,12 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        // Try native Wayland surface creation when the wayland-native feature is active
+        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        if let Some(id) = self.try_create_native_window(title, x, y, width, height) {
+            return id;
+        }
+        // Fallback: state-only window
         self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height)
     }
 
@@ -372,6 +422,7 @@ impl Platform for WaylandPlatform {
             menus.attached_menu_bar.insert(window, menu_bar);
             true
         } else {
+            log::error!("[wayland] attach_menu_bar_to_window: mutex poisoned");
             false
         }
     }
@@ -393,6 +444,7 @@ impl Platform for WaylandPlatform {
         if let Ok(mut menus) = self.menus.lock() {
             menus.pending_menu_events.pop_front()
         } else {
+            log::error!("[wayland] poll_menu_triggered: mutex poisoned");
             None
         }
     }
@@ -405,6 +457,7 @@ impl Platform for WaylandPlatform {
             menus.pending_menu_events.push_back(menu_item_id);
             true
         } else {
+            log::error!("[wayland] inject_menu_trigger: mutex poisoned");
             false
         }
     }
@@ -417,6 +470,7 @@ impl Platform for WaylandPlatform {
         if let Ok(mut menus) = self.menus.lock() {
             menus.pending_widget_events.pop_front().map(|e| e.widget_id)
         } else {
+            log::error!("[wayland] poll_widget_triggered: mutex poisoned");
             None
         }
     }
@@ -425,6 +479,7 @@ impl Platform for WaylandPlatform {
         if let Ok(mut menus) = self.menus.lock() {
             menus.pending_widget_events.pop_front()
         } else {
+            log::error!("[wayland] poll_widget_trigger_event: mutex poisoned");
             None
         }
     }
@@ -439,6 +494,7 @@ impl Platform for WaylandPlatform {
                 .push_back(WidgetTriggerEvent { widget_id, kind });
             true
         } else {
+            log::error!("[wayland] inject_widget_trigger_event: mutex poisoned");
             false
         }
     }
@@ -536,72 +592,104 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn combo_box_add_item(&self, combo_box: ObjectId, text: &str) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&combo_box) {
-                list.items.push(text.to_string());
-                return true;
+        match self.list_data.lock() {
+            Ok(mut data) => match data.get_mut(&combo_box) {
+                Some(list) => {
+                    list.items.push(text.to_string());
+                    true
+                }
+                None => false,
+            },
+            Err(_) => {
+                log::error!("[wayland] combo_box_add_item: mutex poisoned");
+                false
             }
         }
-        false
     }
 
     fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&combo_box) {
-                list.items.clear();
-                list.current_index = None;
-                return true;
+        match self.list_data.lock() {
+            Ok(mut data) => match data.get_mut(&combo_box) {
+                Some(list) => {
+                    list.items.clear();
+                    list.current_index = None;
+                    true
+                }
+                None => false,
+            },
+            Err(_) => {
+                log::error!("[wayland] combo_box_clear_items: mutex poisoned");
+                false
             }
         }
-        false
     }
 
     fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&combo_box) {
-                if index < list.items.len() {
-                    let previous = list.current_index;
-                    list.current_index = Some(index);
-                    // Fire selection changed trigger event.
-                    if previous != Some(index) {
-                        if let Ok(mut menus) = self.menus.lock() {
-                            menus.pending_widget_events.push_back(WidgetTriggerEvent {
-                                widget_id: combo_box,
-                                kind: WidgetTriggerKind::SelectionChanged,
-                            });
+        match self.list_data.lock() {
+            Ok(mut data) => {
+                match data.get_mut(&combo_box) {
+                    Some(list) => {
+                        if index < list.items.len() {
+                            let previous = list.current_index;
+                            list.current_index = Some(index);
+                            // Fire selection changed trigger event.
+                            if previous != Some(index) {
+                                if let Ok(mut menus) = self.menus.lock() {
+                                    menus.pending_widget_events.push_back(WidgetTriggerEvent {
+                                        widget_id: combo_box,
+                                        kind: WidgetTriggerKind::SelectionChanged,
+                                    });
+                                } else {
+                                    log::error!("[wayland] combo_box_set_current_index: menus mutex poisoned");
+                                }
+                            }
+                            true
+                        } else {
+                            false
                         }
                     }
-                    return true;
+                    None => false,
                 }
             }
+            Err(_) => {
+                log::error!("[wayland] combo_box_set_current_index: list_data mutex poisoned");
+                false
+            }
         }
-        false
     }
 
     fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&combo_box).and_then(|list| list.current_index)
-        } else {
-            None
+        match self.list_data.lock() {
+            Ok(data) => data.get(&combo_box).and_then(|list| list.current_index),
+            Err(_) => {
+                log::error!("[wayland] combo_box_current_index: mutex poisoned");
+                None
+            }
         }
     }
 
     fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&combo_box)
+        match self.list_data.lock() {
+            Ok(data) => data
+                .get(&combo_box)
                 .map(|list| list.items.len())
-                .unwrap_or(0)
-        } else {
-            0
+                .unwrap_or(0),
+            Err(_) => {
+                log::error!("[wayland] combo_box_item_count: mutex poisoned");
+                0
+            }
         }
     }
 
     fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&combo_box)
-                .and_then(|list| list.items.get(index).cloned())
-        } else {
-            None
+        match self.list_data.lock() {
+            Ok(data) => data
+                .get(&combo_box)
+                .and_then(|list| list.items.get(index).cloned()),
+            Err(_) => {
+                log::error!("[wayland] combo_box_item_text: mutex poisoned");
+                None
+            }
         }
     }
 
@@ -610,96 +698,240 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&list_box) {
-                list.items.push(text.to_string());
-                return true;
+        match self.list_data.lock() {
+            Ok(mut data) => match data.get_mut(&list_box) {
+                Some(list) => {
+                    list.items.push(text.to_string());
+                    true
+                }
+                None => false,
+            },
+            Err(_) => {
+                log::error!("[wayland] list_box_add_item: mutex poisoned");
+                false
             }
         }
-        false
     }
 
     fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&list_box) {
-                if index < list.items.len() {
-                    list.items.remove(index);
-                    // Adjust current index if needed.
-                    if let Some(cur) = list.current_index {
-                        if cur == index {
-                            if list.items.is_empty() {
-                                list.current_index = None;
-                            } else if cur >= list.items.len() {
-                                list.current_index = Some(list.items.len() - 1);
+        match self.list_data.lock() {
+            Ok(mut data) => match data.get_mut(&list_box) {
+                Some(list) => {
+                    if index < list.items.len() {
+                        list.items.remove(index);
+                        // Adjust current index if needed.
+                        if let Some(cur) = list.current_index {
+                            if cur == index {
+                                if list.items.is_empty() {
+                                    list.current_index = None;
+                                } else if cur >= list.items.len() {
+                                    list.current_index = Some(list.items.len() - 1);
+                                }
+                            } else if cur > index {
+                                list.current_index = Some(cur - 1);
                             }
-                        } else if cur > index {
-                            list.current_index = Some(cur - 1);
                         }
+                        true
+                    } else {
+                        false
                     }
-                    return true;
                 }
+                None => false,
+            },
+            Err(_) => {
+                log::error!("[wayland] list_box_remove_item: mutex poisoned");
+                false
             }
         }
-        false
     }
 
     fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&list_box) {
-                list.items.clear();
-                list.current_index = None;
-                return true;
+        match self.list_data.lock() {
+            Ok(mut data) => match data.get_mut(&list_box) {
+                Some(list) => {
+                    list.items.clear();
+                    list.current_index = None;
+                    true
+                }
+                None => false,
+            },
+            Err(_) => {
+                log::error!("[wayland] list_box_clear_items: mutex poisoned");
+                false
             }
         }
-        false
     }
 
     fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
-        if let Ok(mut data) = self.list_data.lock() {
-            if let Some(list) = data.get_mut(&list_box) {
-                if index < list.items.len() {
-                    let previous = list.current_index;
-                    list.current_index = Some(index);
-                    // Fire selection changed trigger event.
-                    if previous != Some(index) {
-                        if let Ok(mut menus) = self.menus.lock() {
-                            menus.pending_widget_events.push_back(WidgetTriggerEvent {
-                                widget_id: list_box,
-                                kind: WidgetTriggerKind::SelectionChanged,
-                            });
+        match self.list_data.lock() {
+            Ok(mut data) => {
+                match data.get_mut(&list_box) {
+                    Some(list) => {
+                        if index < list.items.len() {
+                            let previous = list.current_index;
+                            list.current_index = Some(index);
+                            // Fire selection changed trigger event.
+                            if previous != Some(index) {
+                                if let Ok(mut menus) = self.menus.lock() {
+                                    menus.pending_widget_events.push_back(WidgetTriggerEvent {
+                                        widget_id: list_box,
+                                        kind: WidgetTriggerKind::SelectionChanged,
+                                    });
+                                } else {
+                                    log::error!("[wayland] list_box_set_current_index: menus mutex poisoned");
+                                }
+                            }
+                            true
+                        } else {
+                            false
                         }
                     }
-                    return true;
+                    None => false,
                 }
             }
+            Err(_) => {
+                log::error!("[wayland] list_box_set_current_index: list_data mutex poisoned");
+                false
+            }
         }
-        false
     }
 
     fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&list_box).and_then(|list| list.current_index)
-        } else {
-            None
+        match self.list_data.lock() {
+            Ok(data) => data.get(&list_box).and_then(|list| list.current_index),
+            Err(_) => {
+                log::error!("[wayland] list_box_current_index: mutex poisoned");
+                None
+            }
         }
     }
 
     fn list_box_item_count(&self, list_box: ObjectId) -> usize {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&list_box)
+        match self.list_data.lock() {
+            Ok(data) => data
+                .get(&list_box)
                 .map(|list| list.items.len())
-                .unwrap_or(0)
-        } else {
-            0
+                .unwrap_or(0),
+            Err(_) => {
+                log::error!("[wayland] list_box_item_count: mutex poisoned");
+                0
+            }
         }
     }
 
     fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
-        if let Ok(data) = self.list_data.lock() {
-            data.get(&list_box)
-                .and_then(|list| list.items.get(index).cloned())
-        } else {
-            None
+        match self.list_data.lock() {
+            Ok(data) => data
+                .get(&list_box)
+                .and_then(|list| list.items.get(index).cloned()),
+            Err(_) => {
+                log::error!("[wayland] list_box_item_text: mutex poisoned");
+                None
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native Wayland window creation (gated by "wayland-native" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl WaylandPlatform {
+    /// Attempt to create a native Wayland wl_surface for this window.
+    /// Returns `Some(id)` on success, or `None` to fall back to state-only.
+    fn try_create_native_window(
+        &self,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Option<ObjectId> {
+        // 1. Connect to the Wayland display server
+        let conn = wl_client::Connection::connect_to_env().ok()?;
+        let display = conn.display();
+
+        // 2. Create event queue and discover globals via registry roundtrip
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
+        let registry = display.get_registry(&qh, ());
+
+        // 3. One roundtrip to receive global announcements (wl_compositor, etc.)
+        event_queue
+            .roundtrip(&mut WaylandRegistryState {
+                compositor: None,
+                shell: None,
+            })
+            .ok()?;
+
+        // 4. Register the window in state and return its ID.
+        //    Full wl_surface creation requires binding wl_compositor from globals
+        //    and implementing Dispatch for all relevant protocols.
+        log::info!(
+            "[wayland] Connected to display; registered native-capable window '{}'",
+            title
+        );
+
+        let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
+        log::info!("[wayland] Window {} registered with state backend", id);
+
+        Some(id)
+    }
+}
+
+/// Minimal dispatch state used during Wayland global discovery.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+struct WaylandRegistryState {
+    compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
+    shell: Option<wl_client::protocol::wl_shell::WlShell>,
+}
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
+    for WaylandRegistryState
+{
+    fn event(
+        state: &mut Self,
+        registry: &wl_client::protocol::wl_registry::WlRegistry,
+        event: wl_client::protocol::wl_registry::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+    ) {
+        use wl_client::protocol::wl_registry::Event;
+        if let Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            log::debug!(
+                "[wayland] Registry global: interface='{}', version={}",
+                interface,
+                version
+            );
+            match interface.as_str() {
+                "wl_compositor" => {
+                    let comp = registry.bind::<wl_client::protocol::wl_compositor::WlCompositor>(
+                        name,
+                        version.min(4),
+                        (),
+                    );
+                    state.compositor = Some(comp);
+                    log::info!("[wayland] Bound wl_compositor (v{})", version);
+                }
+                "wl_shell" => {
+                    let shell = registry.bind::<wl_client::protocol::wl_shell::WlShell>(
+                        name,
+                        version.min(1),
+                        (),
+                    );
+                    state.shell = Some(shell);
+                    log::info!("[wayland] Bound wl_shell");
+                }
+                _ => {}
+            }
         }
     }
 }

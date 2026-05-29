@@ -69,11 +69,31 @@ fn capability_contract_mask(contract: crate::platform::CapabilityContract) -> c_
     }
 }
 /// Convert nullable C string pointer to owned Rust `String`.
+/// Logs a warning when a null pointer is received.
 fn c_str_or_default(ptr: *const c_char) -> String {
     if ptr.is_null() {
+        log::warn!("[bindings] c_str_or_default: received null C string pointer");
         return String::new();
     }
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
+}
+
+/// Convert a Rust string to a C string pointer, returning an empty C string on failure.
+/// Never panics — all interior-NUL errors are caught.
+fn to_c_string_or_empty(s: impl Into<String>) -> *const c_char {
+    let owned: String = s.into();
+    match CString::new(owned) {
+        Ok(cs) => cs.into_raw(),
+        Err(nul_err) => {
+            let pos = nul_err.nul_position();
+            log::warn!(
+                "[bindings] CString::new failed (interior NUL at position {}), truncating",
+                pos
+            );
+            // Truncate — return an empty C string.
+            CString::new("").unwrap().into_raw()
+        }
+    }
 }
 #[no_mangle]
 pub extern "C" fn rust_widgets_init() {
@@ -485,10 +505,7 @@ pub extern "C" fn rust_widgets_set_widget_text(widget_id: u64, text: *const c_ch
 pub extern "C" fn rust_widgets_get_widget_text(widget_id: u64) -> *const c_char {
     c_try!({
         let text = get_control_backend().get_widget_text(widget_id);
-        match CString::new(text) {
-            Ok(s) => s.into_raw(),
-            Err(_) => CString::new("").expect("static string is valid").into_raw(),
-        }
+        to_c_string_or_empty(text)
     })
 }
 #[no_mangle]
@@ -533,19 +550,12 @@ pub extern "C" fn rust_widgets_set_widget_accessibility_name(
 pub extern "C" fn rust_widgets_get_widget_accessibility_name(widget_id: u64) -> *const c_char {
     c_try!({
         let name = crate::platform::get_platform().get_widget_accessibility_name(widget_id);
-        match CString::new(name) {
-            Ok(s) => s.into_raw(),
-            Err(_) => CString::new("").expect("static string is valid").into_raw(),
-        }
+        to_c_string_or_empty(name)
     })
 }
 #[no_mangle]
 pub extern "C" fn rust_widgets_backend_name() -> *const c_char {
-    c_try!({
-        CString::new(get_control_backend().backend_name())
-            .expect("backend string is valid")
-            .into_raw()
-    })
+    c_try!({ to_c_string_or_empty(get_control_backend().backend_name()) })
 }
 #[no_mangle]
 pub extern "C" fn rust_widgets_platform_capabilities() -> c_uint {
@@ -642,13 +652,12 @@ pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
     c_try!({
         #[cfg(feature = "mobile-api")]
         {
-            CString::new(crate::platform::mobile_backend_name())
-                .expect("backend string is valid")
-                .into_raw()
+            to_c_string_or_empty(crate::platform::mobile_backend_name())
         }
         #[cfg(not(feature = "mobile-api"))]
         {
-            CString::new("").expect("static string is valid").into_raw()
+            // Empty string never contains interior NUL bytes.
+            CString::new("").unwrap().into_raw()
         }
     })
 }
@@ -717,15 +726,23 @@ pub extern "C" fn rust_widgets_java_reserved() -> c_uint {
     c_try!({ rust_widgets_java_binding_status() })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_free_string(ptr: *const c_char) {
+pub extern "C" fn rust_widgets_free_string(s: *mut c_char) {
     c_try_void!({
-        if ptr.is_null() {
+        if s.is_null() {
             return;
         }
         unsafe {
-            let _ = CString::from_raw(ptr as *mut c_char);
+            let _ = CString::from_raw(s);
         }
     })
+}
+
+/// Alias for [`rust_widgets_free_string`] — explicitly named for callers
+/// who hold a `*mut c_char` from Rust-allocated strings and want clarity
+/// in their own code.
+#[no_mangle]
+pub extern "C" fn rust_widgets_free_rust_string(s: *mut c_char) {
+    rust_widgets_free_string(s);
 }
 #[cfg(test)]
 mod tests {

@@ -59,6 +59,8 @@ impl BackBuffer {
 pub struct SoftwareSurface {
     pub(crate) buffer: BackBuffer,
     pub(crate) aa_samples_per_axis: u8,
+    /// Active clip rectangle stack. An empty stack means no clipping.
+    pub(crate) clip_stack: Vec<(i32, i32, u32, u32)>,
 }
 /// Public software render configuration for quality-related knobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

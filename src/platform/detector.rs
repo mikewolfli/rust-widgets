@@ -95,8 +95,7 @@ impl DeviceEnvironment {
     }
 
     /// Resolve device class from profile features and screen dimensions.
-    #[allow(unused_variables)]
-    fn resolve_device_class(screen_size: Size, _dpi_scale: f32) -> DeviceClass {
+    fn resolve_device_class(screen_size: Size, dpi_scale: f32) -> DeviceClass {
         // Compile-time feature profile takes precedence.
         #[cfg(feature = "tablet")]
         {
@@ -111,7 +110,8 @@ impl DeviceEnvironment {
             DeviceClass::Embedded
         }
 
-        // Fallback: heuristic based on screen width (logical points).
+        // Fallback: heuristic based on screen width (logical points) and DPI scale.
+        // High DPI (>= 2.0) is more common on mobile/tablet displays.
         // Only reached when no feature flag above is active.
         #[cfg(all(
             not(feature = "tablet"),
@@ -123,6 +123,9 @@ impl DeviceEnvironment {
             if width < 480 {
                 DeviceClass::Mobile
             } else if width < 1024 {
+                DeviceClass::Tablet
+            } else if dpi_scale >= 2.0 && width < 1440 {
+                // High-DPI display at moderate resolution is likely a tablet.
                 DeviceClass::Tablet
             } else {
                 DeviceClass::Desktop
