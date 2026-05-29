@@ -259,3 +259,39 @@ impl crate::event::EventHandler for TreeView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct StaticTreeModel;
+
+    impl TreeModel for StaticTreeModel {
+        fn node_count(&self) -> usize {
+            2
+        }
+
+        fn node_path(&self, index: usize) -> Option<String> {
+            match index {
+                0 => Some("root".to_string()),
+                1 => Some("root/child".to_string()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn tree_view_model_binding_roundtrip() {
+        let mut view = TreeView::new(Rect::new(0, 0, 120, 100));
+        assert!(!view.has_model());
+        assert!(view.model_ref().is_none());
+
+        view.set_model(Arc::new(StaticTreeModel));
+
+        assert!(view.has_model());
+        assert!(view.model_ref().is_some());
+        assert_eq!(view.node_count(), 2);
+        assert_eq!(view.node_path(99), None);
+    }
+}

@@ -392,3 +392,39 @@ impl crate::event::EventHandler for ListView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct StaticListModel;
+
+    impl ListModel for StaticListModel {
+        fn row_count(&self) -> usize {
+            2
+        }
+
+        fn data(&self, row: usize) -> Option<String> {
+            match row {
+                0 => Some("A".to_string()),
+                1 => Some("B".to_string()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn list_view_model_binding_roundtrip() {
+        let mut view = ListView::new(Rect::new(0, 0, 100, 80));
+        assert!(!view.has_model());
+        assert!(view.model_ref().is_none());
+
+        view.set_model(Arc::new(StaticListModel));
+
+        assert!(view.has_model());
+        assert!(view.model_ref().is_some());
+        assert_eq!(view.row_count(), 2);
+        assert_eq!(view.item(99), None);
+    }
+}

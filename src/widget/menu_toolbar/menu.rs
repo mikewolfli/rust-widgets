@@ -414,3 +414,25 @@ impl Draw for Menu {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_item_state_accessors_handle_valid_and_oob_indices() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        let idx = menu.add_action("Open");
+
+        assert_eq!(menu.item_enabled(idx), Some(true));
+        menu.set_item_enabled(idx, false);
+        assert_eq!(menu.item_enabled(idx), Some(false));
+        assert_eq!(menu.item_enabled(99), None);
+
+        menu.items[idx].set_checkable(true);
+        assert_eq!(menu.item_checked(idx), Some(false));
+        menu.set_item_checked(idx, true);
+        assert_eq!(menu.item_checked(idx), Some(true));
+        assert_eq!(menu.item_checked(99), None);
+    }
+}

@@ -987,3 +987,29 @@ impl Draw for RibbonBar {
         self.draw_panel(context);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ribbon_item_state_accessors_handle_valid_and_oob_indices() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Clipboard");
+        let item = ribbon.add_item(tab, group, "Paste");
+
+        assert_eq!(ribbon.item_enabled(tab, group, item), Some(true));
+        ribbon.set_item_enabled(tab, group, item, false);
+        assert_eq!(ribbon.item_enabled(tab, group, item), Some(false));
+        assert_eq!(ribbon.item_enabled(99, 99, 99), None);
+
+        if let Some(entry) = ribbon.item_mut(tab, group, item) {
+            entry.set_checkable(true);
+        }
+        assert_eq!(ribbon.item_checked(tab, group, item), Some(false));
+        ribbon.set_item_checked(tab, group, item, true);
+        assert_eq!(ribbon.item_checked(tab, group, item), Some(true));
+        assert_eq!(ribbon.item_checked(99, 99, 99), None);
+    }
+}

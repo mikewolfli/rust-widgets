@@ -308,3 +308,81 @@ impl crate::event::EventHandler for TableWidget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct StaticTableModel;
+
+    impl TableModel for StaticTableModel {
+        fn row_count(&self) -> usize {
+            2
+        }
+
+        fn column_count(&self) -> usize {
+            2
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            match (row, column) {
+                (0, 0) => Some("r0c0".to_string()),
+                (0, 1) => Some("r0c1".to_string()),
+                (1, 0) => Some("r1c0".to_string()),
+                (1, 1) => Some("r1c1".to_string()),
+                _ => None,
+            }
+        }
+    }
+
+    struct NoopDelegate;
+
+    impl ItemDelegate for NoopDelegate {
+        fn create_editor(
+            &self,
+            _parent: &mut BaseWidget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<Box<dyn Widget>> {
+            None
+        }
+
+        fn set_editor_data(&self, _editor: &mut dyn Widget, _row: usize, _column: usize) {}
+
+        fn get_editor_data(
+            &self,
+            _editor: &dyn Widget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn table_widget_model_delegate_and_size_accessors() {
+        let mut table = TableWidget::new(Rect::new(0, 0, 200, 120));
+
+        assert!(!table.has_model());
+        assert!(table.model_ref().is_none());
+        assert!(!table.has_delegate());
+        assert!(table.delegate_ref().is_none());
+
+        table.set_model(Arc::new(StaticTableModel));
+        assert!(table.has_model());
+        assert!(table.model_ref().is_some());
+        assert_eq!(table.item(99, 0), None);
+
+        table.set_column_width(2, 140);
+        table.set_row_height(1, 28);
+        assert_eq!(table.column_width(2), Some(140));
+        assert_eq!(table.row_height(1), Some(28));
+        assert_eq!(table.column_width(999), None);
+        assert_eq!(table.row_height(999), None);
+
+        table.set_delegate(Arc::new(NoopDelegate));
+        assert!(table.has_delegate());
+        assert!(table.delegate_ref().is_some());
+    }
+}

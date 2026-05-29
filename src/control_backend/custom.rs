@@ -1702,7 +1702,7 @@ impl ControlBackend for CustomPaintControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        log::warn!("shallow implementation: DataView is an alias for TableWidget");
+        log::warn!("shallow implementation: DataView maps to virtualized data-view host");
         let widget_id = self.alloc_widget_id();
         let mut state = self
             .state

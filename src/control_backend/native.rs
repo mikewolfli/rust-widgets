@@ -521,7 +521,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        log::warn!("shallow implementation: DataView is an alias for TableWidget");
+        log::warn!("shallow implementation: DataView maps to virtualized data-view host");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_property_grid(

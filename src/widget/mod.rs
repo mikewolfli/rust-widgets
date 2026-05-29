@@ -99,20 +99,31 @@ pub type ContextMenu = Menu;
 pub use view_widgets::table_widget::TableModel;
 pub use view_widgets::tree_view::TreeModel;
 pub use view_widgets::{
+    data_grid::{ColumnFilter, DataGrid, SortSpec},
     list_view::{ListModel, ListView, VecListModel},
     table_view::TableView,
     table_widget::TableWidget,
+    tree_table::{TreeTable, TreeTableModel},
     tree_view::TreeView,
+    virtual_list::VirtualList,
+    virtual_table::VirtualTable,
 };
 // Re-export special widgets
-pub use special_widgets::{Canvas, ChartWidget, FreeformShapeWidget, GridWidget};
+pub use special_widgets::{
+    Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
+    CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
+    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, MapMarker, MapView, MarkdownEditor,
+    MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem, NotificationLevel,
+    SegmentItem, SegmentedControl, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
+    TimelineWidget, ToastItem, ToastLevel, ToastStack,
+};
 pub type ActivityIndicator = ProgressBar;
 pub type CheckListBox = ListBox;
 pub type Toolbox = ToolBox;
 pub type DoubleSpinBox = SpinBox;
 pub type Wizard = Panel;
 // ── P3-6: WidgetKind variant type aliases ──
-pub type DataView = TableWidget;
+pub type DataView = VirtualList;
 pub type PropertyGrid = TreeView;
 pub type ColumnView = TreeView;
 pub type UndoView = ListView;

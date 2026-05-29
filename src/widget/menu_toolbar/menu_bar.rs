@@ -216,3 +216,19 @@ impl Draw for MenuBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menubar_menu_enabled_accessor_handles_valid_and_oob_indices() {
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        let idx = menu_bar.add_menu("File");
+
+        assert_eq!(menu_bar.menu_enabled(idx), Some(true));
+        menu_bar.set_menu_enabled(idx, false);
+        assert_eq!(menu_bar.menu_enabled(idx), Some(false));
+        assert_eq!(menu_bar.menu_enabled(99), None);
+    }
+}

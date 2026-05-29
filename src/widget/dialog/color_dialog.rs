@@ -43,6 +43,7 @@ impl ColorDialog {
     pub fn set_current_color(&mut self, color: Color) {
         self.current_color = color;
         self.color_selected.emit(color);
+        self.base.request_redraw();
     }
     pub fn set_options_alpha(&mut self, enabled: bool) {
         self.options_alpha = enabled;
@@ -57,6 +58,53 @@ impl ColorDialog {
     }
     pub fn get_color(&self) -> Color {
         self.current_color
+    }
+
+    fn picker_rect(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(
+            rect.x + 10,
+            rect.y + 38,
+            rect.width - 20,
+            rect.height.saturating_sub(120),
+        )
+    }
+
+    fn point_in_rect(pos: Point, rect: Rect) -> bool {
+        pos.x >= rect.x
+            && pos.x < rect.x + rect.width as i32
+            && pos.y >= rect.y
+            && pos.y < rect.y + rect.height as i32
+    }
+
+    fn pick_color_from_point(&self, pos: Point) -> Option<Color> {
+        let picker = self.picker_rect();
+        if !Self::point_in_rect(pos, picker) {
+            return None;
+        }
+        let w = picker.width.max(1) as f32;
+        let h = picker.height.max(1) as f32;
+        let rx = ((pos.x - picker.x) as f32 / w).clamp(0.0, 1.0);
+        let ry = ((pos.y - picker.y) as f32 / h).clamp(0.0, 1.0);
+        let r = (rx * 255.0).round() as u8;
+        let g = ((1.0 - ry) * 255.0).round() as u8;
+        let b = ((1.0 - rx) * 255.0).round() as u8;
+        let a = if self.options_alpha {
+            self.current_color.a
+        } else {
+            255
+        };
+        Some(Color::from_rgba(r, g, b, a))
+    }
+
+    fn nudge_rgb(&mut self, dr: i16, dg: i16, db: i16) {
+        let next = Color::from_rgba(
+            (self.current_color.r as i16 + dr).clamp(0, 255) as u8,
+            (self.current_color.g as i16 + dg).clamp(0, 255) as u8,
+            (self.current_color.b as i16 + db).clamp(0, 255) as u8,
+            self.current_color.a,
+        );
+        self.set_current_color(next);
     }
 }
 impl Widget for ColorDialog {
@@ -74,12 +122,29 @@ impl EventHandler for ColorDialog {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
-            if *key == 13 {
-                self.accept();
-            } else if *key == 27 {
-                self.reject();
+
+        match event {
+            Event::MousePress { pos, button: 1 } => {
+                if let Some(color) = self.pick_color_from_point(*pos) {
+                    self.set_current_color(color);
+                }
             }
+            Event::KeyPress { key, .. } => {
+                if *key == 13 {
+                    self.accept();
+                } else if *key == 27 {
+                    self.reject();
+                } else if *key == 37 {
+                    self.nudge_rgb(-5, 0, 0);
+                } else if *key == 39 {
+                    self.nudge_rgb(5, 0, 0);
+                } else if *key == 38 {
+                    self.nudge_rgb(0, 5, 0);
+                } else if *key == 40 {
+                    self.nudge_rgb(0, -5, 0);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -105,18 +170,9 @@ impl Draw for ColorDialog {
             Color::from_rgb(255, 255, 255),
         );
         // Color picker area (simplified)
-        let picker_rect_x = rect.x + 10;
-        let picker_rect_y = rect.y + 38;
-        let picker_w = rect.width - 20;
-        let picker_h = rect.height.saturating_sub(120);
-        context.fill_rect(
-            Rect::new(picker_rect_x, picker_rect_y, picker_w, picker_h),
-            Color::from_rgb(200, 200, 200),
-        );
-        context.draw_rect(
-            Rect::new(picker_rect_x, picker_rect_y, picker_w, picker_h),
-            Color::from_rgb(100, 100, 100),
-        );
+        let picker_rect = self.picker_rect();
+        context.fill_rect(picker_rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(picker_rect, Color::from_rgb(100, 100, 100));
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
         context.fill_rect(
@@ -129,7 +185,11 @@ impl Draw for ColorDialog {
         );
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
-            &tr!("color_dialog.current_color"),
+            &format!(
+                "{} {}",
+                tr!("color_dialog.current_color"),
+                self.current_color.to_hex_rgba()
+            ),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );
@@ -160,5 +220,49 @@ impl Draw for ColorDialog {
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn mouse_pick_updates_color() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.handle_event(&Event::mouse_press(60, 80, 1));
+        assert_ne!(dialog.current_color(), Color::from_rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn arrow_keys_nudge_channels() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_current_color(Color::from_rgb(100, 100, 100));
+        dialog.handle_event(&Event::key_press(39, 0));
+        assert_eq!(dialog.current_color().r, 105);
+        dialog.handle_event(&Event::key_press(38, 0));
+        assert_eq!(dialog.current_color().g, 105);
+    }
+
+    #[test]
+    fn set_current_color_emits_signal() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        let emitted = Arc::new(Mutex::new(Vec::<Color>::new()));
+        let sink = emitted.clone();
+        dialog.color_selected.connect(move |color| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*color);
+            }
+        });
+
+        dialog.set_current_color(Color::from_rgb(1, 2, 3));
+
+        let got = emitted
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(got, vec![Color::from_rgb(1, 2, 3)]);
     }
 }

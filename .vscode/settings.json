@@ -3,5 +3,6 @@
         "cargo add": true
     },
     "trae.agent.docker.keep": true,
-    "trae.agent.docker.keepDelay": 3000
+    "trae.agent.docker.keepDelay": 3000,
+    "python-envs.defaultEnvManager": "ms-python.python:pyenv"
 }

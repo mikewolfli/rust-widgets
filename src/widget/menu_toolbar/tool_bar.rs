@@ -349,3 +349,25 @@ impl Draw for ToolBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolbar_item_state_accessors_handle_valid_and_oob_indices() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        let idx = tool_bar.add_action("save", "Save");
+
+        assert_eq!(tool_bar.item_enabled(idx), Some(true));
+        tool_bar.set_item_enabled(idx, false);
+        assert_eq!(tool_bar.item_enabled(idx), Some(false));
+        assert_eq!(tool_bar.item_enabled(99), None);
+
+        tool_bar.items[idx].set_checkable(true);
+        assert_eq!(tool_bar.item_checked(idx), Some(false));
+        tool_bar.set_item_checked(idx, true);
+        assert_eq!(tool_bar.item_checked(idx), Some(true));
+        assert_eq!(tool_bar.item_checked(99), None);
+    }
+}
