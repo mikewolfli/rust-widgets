@@ -19,8 +19,6 @@ use crate::platform::wayland::types::{ListData, WaylandHandleKind, WaylandPlatfo
 
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 use wayland_client as wl_client;
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
-use wayland_protocols as wl_protocols;
 
 // ---------------------------------------------------------------------------
 // Platform trait implementation
@@ -626,31 +624,27 @@ impl Platform for WaylandPlatform {
 
     fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
         match self.list_data.lock() {
-            Ok(mut data) => {
-                match data.get_mut(&combo_box) {
-                    Some(list) => {
-                        if index < list.items.len() {
-                            let previous = list.current_index;
-                            list.current_index = Some(index);
-                            // Fire selection changed trigger event.
-                            if previous != Some(index) {
-                                if let Ok(mut menus) = self.menus.lock() {
-                                    menus.pending_widget_events.push_back(WidgetTriggerEvent {
-                                        widget_id: combo_box,
-                                        kind: WidgetTriggerKind::SelectionChanged,
-                                    });
-                                } else {
-                                    log::error!("[wayland] combo_box_set_current_index: menus mutex poisoned");
-                                }
-                            }
-                            true
+            Ok(mut data) => match data.get_mut(&combo_box) {
+                Some(list) if index < list.items.len() => {
+                    let previous = list.current_index;
+                    list.current_index = Some(index);
+                    // Fire selection changed trigger event.
+                    if previous != Some(index) {
+                        if let Ok(mut menus) = self.menus.lock() {
+                            menus.pending_widget_events.push_back(WidgetTriggerEvent {
+                                widget_id: combo_box,
+                                kind: WidgetTriggerKind::SelectionChanged,
+                            });
                         } else {
-                            false
+                            log::error!(
+                                "[wayland] combo_box_set_current_index: menus mutex poisoned"
+                            );
                         }
                     }
-                    None => false,
+                    true
                 }
-            }
+                _ => false,
+            },
             Err(_) => {
                 log::error!("[wayland] combo_box_set_current_index: list_data mutex poisoned");
                 false
@@ -716,27 +710,23 @@ impl Platform for WaylandPlatform {
     fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
         match self.list_data.lock() {
             Ok(mut data) => match data.get_mut(&list_box) {
-                Some(list) => {
-                    if index < list.items.len() {
-                        list.items.remove(index);
-                        // Adjust current index if needed.
-                        if let Some(cur) = list.current_index {
-                            if cur == index {
-                                if list.items.is_empty() {
-                                    list.current_index = None;
-                                } else if cur >= list.items.len() {
-                                    list.current_index = Some(list.items.len() - 1);
-                                }
-                            } else if cur > index {
-                                list.current_index = Some(cur - 1);
+                Some(list) if index < list.items.len() => {
+                    list.items.remove(index);
+                    // Adjust current index if needed.
+                    if let Some(cur) = list.current_index {
+                        if cur == index {
+                            if list.items.is_empty() {
+                                list.current_index = None;
+                            } else if cur >= list.items.len() {
+                                list.current_index = Some(list.items.len() - 1);
                             }
+                        } else if cur > index {
+                            list.current_index = Some(cur - 1);
                         }
-                        true
-                    } else {
-                        false
                     }
+                    true
                 }
-                None => false,
+                _ => false,
             },
             Err(_) => {
                 log::error!("[wayland] list_box_remove_item: mutex poisoned");
@@ -764,31 +754,27 @@ impl Platform for WaylandPlatform {
 
     fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
         match self.list_data.lock() {
-            Ok(mut data) => {
-                match data.get_mut(&list_box) {
-                    Some(list) => {
-                        if index < list.items.len() {
-                            let previous = list.current_index;
-                            list.current_index = Some(index);
-                            // Fire selection changed trigger event.
-                            if previous != Some(index) {
-                                if let Ok(mut menus) = self.menus.lock() {
-                                    menus.pending_widget_events.push_back(WidgetTriggerEvent {
-                                        widget_id: list_box,
-                                        kind: WidgetTriggerKind::SelectionChanged,
-                                    });
-                                } else {
-                                    log::error!("[wayland] list_box_set_current_index: menus mutex poisoned");
-                                }
-                            }
-                            true
+            Ok(mut data) => match data.get_mut(&list_box) {
+                Some(list) if index < list.items.len() => {
+                    let previous = list.current_index;
+                    list.current_index = Some(index);
+                    // Fire selection changed trigger event.
+                    if previous != Some(index) {
+                        if let Ok(mut menus) = self.menus.lock() {
+                            menus.pending_widget_events.push_back(WidgetTriggerEvent {
+                                widget_id: list_box,
+                                kind: WidgetTriggerKind::SelectionChanged,
+                            });
                         } else {
-                            false
+                            log::error!(
+                                "[wayland] list_box_set_current_index: menus mutex poisoned"
+                            );
                         }
                     }
-                    None => false,
+                    true
                 }
-            }
+                _ => false,
+            },
             Err(_) => {
                 log::error!("[wayland] list_box_set_current_index: list_data mutex poisoned");
                 false
@@ -855,7 +841,7 @@ impl WaylandPlatform {
         // 2. Create event queue and discover globals via registry roundtrip
         let mut event_queue = conn.new_event_queue();
         let qh = event_queue.handle();
-        let registry = display.get_registry(&qh, ());
+        let _registry = display.get_registry(&qh, ());
 
         // 3. One roundtrip to receive global announcements (wl_compositor, etc.)
         event_queue
@@ -913,18 +899,21 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
             );
             match interface.as_str() {
                 "wl_compositor" => {
-                    let comp = registry.bind::<wl_client::protocol::wl_compositor::WlCompositor>(
-                        name,
-                        version.min(4),
-                        (),
-                    );
+                    let comp = registry
+                        .bind::<wl_client::protocol::wl_compositor::WlCompositor, _, _>(
+                            name,
+                            version.min(4),
+                            _qh,
+                            (),
+                        );
                     state.compositor = Some(comp);
                     log::info!("[wayland] Bound wl_compositor (v{})", version);
                 }
                 "wl_shell" => {
-                    let shell = registry.bind::<wl_client::protocol::wl_shell::WlShell>(
+                    let shell = registry.bind::<wl_client::protocol::wl_shell::WlShell, _, _>(
                         name,
                         version.min(1),
+                        _qh,
                         (),
                     );
                     state.shell = Some(shell);
@@ -933,5 +922,35 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
+    for WaylandRegistryState
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_compositor::WlCompositor,
+        _event: wl_client::protocol::wl_compositor::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+    ) {
+        // No compositor events are consumed in the current native-probe path.
+    }
+}
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_client::protocol::wl_shell::WlShell, ()> for WaylandRegistryState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_shell::WlShell,
+        _event: wl_client::protocol::wl_shell::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+    ) {
+        // No shell events are consumed in the current native-probe path.
     }
 }

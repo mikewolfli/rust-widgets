@@ -168,3 +168,59 @@ impl Draw for FontDialog {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn set_current_font_emits_font_selected() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        let seen = Arc::new(Mutex::new(Font::default()));
+        let seen_clone = Arc::clone(&seen);
+
+        dialog.font_selected.connect(move |font| {
+            if let Ok(mut f) = seen_clone.lock() {
+                *f = (*font).clone();
+            }
+        });
+
+        let target = Font::simple("Sans", 18.0);
+        dialog.set_current_font(target.clone());
+        assert_eq!(dialog.current_font(), &target);
+        assert_eq!(*seen.lock().expect("seen lock"), target);
+    }
+
+    #[test]
+    fn enter_accepts_and_escape_rejects() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        dialog.handle_event(&Event::key_press(13, 0));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 1);
+        assert!(!dialog.is_visible());
+
+        dialog.show();
+        dialog.handle_event(&Event::key_press(27, 0));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1);
+        assert!(!dialog.is_visible());
+    }
+}

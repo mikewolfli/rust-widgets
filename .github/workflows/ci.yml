@@ -79,3 +79,27 @@ jobs:
         with:
           name: feature-completeness-matrix
           path: target/qa/feature_completeness_matrix.md
+
+  quality-gates:
+    name: Quality gates (test + clippy + fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with clippy and rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo test (all features)
+        run: cargo test --all-features -q
+
+      - name: Cargo clippy (deny warnings)
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: Cargo fmt check
+        run: cargo fmt --all -- --check

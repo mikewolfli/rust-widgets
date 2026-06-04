@@ -117,7 +117,6 @@ impl WidgetRegistry {
     ///
     /// Returns `Ok(())` on success, or an error message if serialization
     /// or file writing fails.
-    #[must_use]
     pub fn save(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("serialization error: {}", e))?;
@@ -129,7 +128,6 @@ impl WidgetRegistry {
     /// Replaces all current entries with the data from the file.
     /// Returns `Ok(())` on success, or an error message if reading
     /// or parsing fails.
-    #[must_use]
     pub fn load(&mut self, path: &str) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {}", e))?;
         let loaded: WidgetRegistry =

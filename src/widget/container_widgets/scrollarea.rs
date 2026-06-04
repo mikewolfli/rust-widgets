@@ -2,6 +2,7 @@
 use crate::core::{Alignment, Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -23,6 +24,8 @@ pub struct ScrollArea {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Current scroll position (x, y) in content coordinates.
     scroll_position: (i32, i32),
+    /// Emitted whenever scroll position changes.
+    pub scroll_position_changed: Signal1<(i32, i32)>,
 }
 /// Scroll bar policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +54,7 @@ impl ScrollArea {
             content_size: Size::new(0, 0),
             registry: None,
             scroll_position: (0, 0),
+            scroll_position_changed: Signal1::new(),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -125,7 +129,12 @@ impl ScrollArea {
         let content_h = self.content_size.height as i32;
         let max_x = (content_w - view_w).max(0);
         let max_y = (content_h - view_h).max(0);
-        self.scroll_position = (x.clamp(0, max_x), y.clamp(0, max_y));
+        let clamped = (x.clamp(0, max_x), y.clamp(0, max_y));
+        if self.scroll_position == clamped {
+            return;
+        }
+        self.scroll_position = clamped;
+        self.scroll_position_changed.emit(self.scroll_position);
         self.base.request_redraw();
     }
 
@@ -174,29 +183,35 @@ impl ScrollArea {
 
     /// Scrolls to the top of the content.
     pub fn scroll_to_top(&mut self) {
-        self.viewport.y = 0;
+        self.set_scroll_position(self.scroll_position.0, 0);
     }
 
     /// Scrolls to the bottom of the content.
     pub fn scroll_to_bottom(&mut self) {
         if self.content_size.height > self.viewport.height {
-            self.viewport.y = (self.content_size.height - self.viewport.height) as i32;
+            self.set_scroll_position(
+                self.scroll_position.0,
+                (self.content_size.height - self.viewport.height) as i32,
+            );
         } else {
-            self.viewport.y = 0;
+            self.set_scroll_position(self.scroll_position.0, 0);
         }
     }
 
     /// Scrolls to the left edge of the content.
     pub fn scroll_to_left(&mut self) {
-        self.viewport.x = 0;
+        self.set_scroll_position(0, self.scroll_position.1);
     }
 
     /// Scrolls to the right edge of the content.
     pub fn scroll_to_right(&mut self) {
         if self.content_size.width > self.viewport.width {
-            self.viewport.x = (self.content_size.width - self.viewport.width) as i32;
+            self.set_scroll_position(
+                (self.content_size.width - self.viewport.width) as i32,
+                self.scroll_position.1,
+            );
         } else {
-            self.viewport.x = 0;
+            self.set_scroll_position(0, self.scroll_position.1);
         }
     }
     /// Returns whether horizontal scroll bar is visible.
@@ -254,9 +269,11 @@ impl EventHandler for ScrollArea {
                 delta,
                 modifiers: _,
             } => {
-                // Scroll the viewport
-                self.viewport.x += delta.x * 20;
-                self.viewport.y += delta.y * 20;
+                // Scroll the content using clamped content coordinates.
+                self.set_scroll_position(
+                    self.scroll_position.0 + delta.x * 20,
+                    self.scroll_position.1 + delta.y * 20,
+                );
             }
             #[cfg(feature = "touch")]
             Event::Swipe {
@@ -267,14 +284,15 @@ impl EventHandler for ScrollArea {
                 // Map swipe to scroll
                 let dx = end.x - start.x;
                 let dy = end.y - start.y;
-                self.viewport.x += dx;
-                self.viewport.y += dy;
+                self.set_scroll_position(self.scroll_position.0 + dx, self.scroll_position.1 + dy);
             }
             #[cfg(feature = "touch")]
             Event::Drag { delta, .. } => {
                 // Map finger drag to scroll
-                self.viewport.x += delta.x;
-                self.viewport.y += delta.y;
+                self.set_scroll_position(
+                    self.scroll_position.0 + delta.x,
+                    self.scroll_position.1 + delta.y,
+                );
             }
             _ => {}
         }
@@ -410,5 +428,18 @@ mod tests {
         assert_eq!(sa.scroll_position(), (0, 0));
         assert_eq!(sa.horizontal_scroll_bar_policy(), ScrollBarPolicy::AsNeeded);
         assert_eq!(sa.vertical_scroll_bar_policy(), ScrollBarPolicy::AsNeeded);
+    }
+
+    #[test]
+    fn scrollarea_set_scroll_position_clamps_content_space() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 100, 100));
+        sa.set_content_size(Size::new(300, 260));
+        sa.set_viewport(Rect::new(0, 0, 100, 100));
+
+        sa.set_scroll_position(500, 400);
+        assert_eq!(sa.scroll_position(), (200, 160));
+
+        sa.set_scroll_position(-10, -8);
+        assert_eq!(sa.scroll_position(), (0, 0));
     }
 }

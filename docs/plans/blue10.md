@@ -14,6 +14,9 @@
 2. 修一个点必须扫同类模式，避免重复返工。
 3. 优先修功能阻断项，再做体验增强。
 4. 平台策略不变：原生优先，自绘兜底。
+5. 不允许占位、空函数、逻辑错误, log/debug占位 — 所有功能必须完整实现。
+6. 注释英文 — 所有新增模块的代码注释必须使用英文。
+7. 回写完成率 — 每轮完成后回写完成率
 
 ---
 
@@ -626,3 +629,214 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 - R9（代码质量债务）完成率：**70%**（主要问题：8,957 行 monster 文件）
 
 - BLUE10 总体完成率（按 R1-R9 等权）：**50.9%**
+
+---
+
+## 第一轮执行回写（2026-06-04）
+
+### 本轮目标（严格按步骤，小步闭环）
+
+1. 先做基线验证（全量构建/全特性测试）。
+2. 针对 R1 的可直接落地缺口做最小可验证修复。
+3. 修复验证阶段暴露的 all-features 编译阻断。
+4. 再次全量验证，确认无 errors、无 warnings。
+
+### 本轮实际完成项
+
+1. R1.7 — 修复 CommandLink 启用状态委托问题：
+   - 文件: `src/widget/input_widgets/command_link.rs`
+   - 变更:
+     - 移除重复 `enabled` 字段，统一以 `base.is_enabled()` 为真值来源。
+     - `set_enabled()` 改为委托 `base.set_enabled()`。
+     - `click()` 与鼠标点击分支改为基于基类启用状态判断。
+     - 补充回归测试：`commandlink_set_enabled_updates_base_state`。
+
+2. R1.6 — 补齐 ScrollArea 滚动位置信号：
+   - 文件: `src/widget/container_widgets/scrollarea.rs`
+   - 变更:
+     - 新增 `scroll_position_changed: Signal1<(i32, i32)>`。
+     - `set_scroll_position()` 增加 clamp 后变更检测与信号发射。
+     - `scroll_to_top/bottom/left/right` 改为统一走 `set_scroll_position()`。
+     - `Wheel/Swipe/Drag` 事件改为更新内容滚动坐标，不再直接改 viewport 坐标。
+     - 补充回归测试：`scrollarea_set_scroll_position_clamps_content_space`。
+
+3. R2 关联修复 — 解决 all-features 下 Wayland 编译阻断（验证阶段发现并闭环）：
+   - 文件: `src/platform/wayland/platform_impl.rs`
+   - 变更:
+     - 适配 wayland-client 0.31 的 `registry.bind` 新签名（补充 queue handle 与泛型）。
+     - 补充最小 `Dispatch<WlCompositor, ()>` 与 `Dispatch<WlShell, ()>` 实现，满足 trait bound。
+     - 清理未使用导入与变量导致的 warning。
+
+4. 警告清理（all-features）：
+   - 文件: `src/platform/detector.rs`
+   - 变更:
+     - 调整 `resolve_device_class` 参数命名，消除 all-features 场景下未使用参数 warning。
+
+### 证据（不虚标）
+
+1. `cargo check --all`：通过。
+2. `cargo test --all-features -q`：通过（`1685 passed; 0 failed; 3 ignored`）。
+3. `cargo check --all-features`：通过，日志中无 warning、无 error。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**95%**（本轮完成 R1.6、R1.7 两项）
+- R2（平台能力对齐）完成率：**62%**（修复 Wayland all-features 构建断裂，属稳定性增量）
+- R3（测试与门禁基建）完成率：**35%**（本轮无新增 CI 门禁）
+- R4（配置与文档圆满化）完成率：**50%**（本轮无变更）
+- R5（渲染管线增强）完成率：**55%**（本轮无变更）
+- R6（动画与样式集成）完成率：**30%**（本轮无变更）
+- R7（无障碍）完成率：**5%**（本轮无变更）
+- R8（事件与运行时）完成率：**60%**（本轮无核心子项落地）
+- R9（代码质量债务）完成率：**70%**（本轮仅局部修复）
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**51.3%**
+
+---
+
+## 第二轮执行回写（2026-06-04）
+
+### 本轮目标（延续第一轮，继续小步闭环）
+
+- 执行 R3.3：移除假测试，替换为真实可验证的集成测试。
+
+### 本轮实际完成项
+
+1. R3.3 — 替换假测试 `tests/test_widget_structure.rs`：
+   - 删除 `fn main()` 打印式假测试。
+   - 新增 2 个真实 `#[test]` 用例：
+     - `widget_structure_button_exposes_expected_kind_and_geometry`
+     - `widget_structure_button_has_distinct_object_ids`
+   - 验证了 `WidgetKind`、`geometry`、`ObjectId` 的基础结构行为。
+
+### 证据（不夸大）
+
+1. `cargo test --all-features -q`：通过（主集合 `1685 passed; 0 failed; 3 ignored`，新增测试集合 `2 passed; 0 failed`）。
+2. `cargo check --all-features`：通过，日志无 warning、无 error。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**95%**
+- R2（平台能力对齐）完成率：**62%**
+- R3（测试与门禁基建）完成率：**38%**（完成 R3.3，CI 门禁仍未落地）
+- R4（配置与文档圆满化）完成率：**50%**
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**5%**
+- R8（事件与运行时）完成率：**60%**
+- R9（代码质量债务）完成率：**70%**
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**51.7%**
+
+---
+
+## 第三轮执行回写（2026-06-04）
+
+### 本轮目标（继续按门禁优先）
+
+- 先清空已识别的 `fmt/clippy` 阻断项，再落地 R3.1 / R3.2 的 CI 门禁。
+
+### 本轮实际完成项
+
+1. R3.2 前置清障 — 修复严格 clippy 报错（`-D warnings`）：
+   - `src/bindings/binding_impl.rs`
+     - 将 `rust_widgets_free_string` 与 `rust_widgets_free_rust_string` 标记为 `unsafe extern "C"`，并补齐 `# Safety` 文档段。
+   - `src/menu_config/persistence.rs`
+   - `src/index/registry.rs`
+   - `src/print/print_impl.rs`
+     - 移除 `Result` 返回函数上的冗余 `#[must_use]`（消除 `clippy::double_must_use`）。
+   - `src/platform/wayland/platform_impl.rs`
+     - 合并可折叠匹配分支，消除 `clippy::collapsible_match`。
+   - `src/render/svg/mod.rs`
+     - 修复 `idx + 0`（`clippy::identity_op`）并改为 `div_ceil`（`clippy::manual_div_ceil`）。
+   - `src/widget/special_widgets/chart.rs`
+     - `max().min()` 改为 `clamp()`（`clippy::manual_clamp`）。
+
+2. R3.2 前置清障 — 修复格式检查差异：
+   - `src/platform/wayland/platform_impl.rs`
+   - `src/widget/special_widgets/color_picker.rs`
+   - `src/widget/special_widgets/gantt_widget.rs`
+   - `tests/blue9_r1_api_symmetry_test.rs`
+
+3. R3.1 + R3.2 — CI 门禁落地：
+   - 文件：`.github/workflows/ci.yml`
+   - 新增 `quality-gates` 作业（ubuntu）：
+     - `cargo test --all-features -q`
+     - `cargo clippy --all-features --all-targets -- -D warnings`
+     - `cargo fmt --all -- --check`
+   - 并在工具链安装步骤显式启用 `clippy,rustfmt` 组件。
+
+### 证据（不虚标）
+
+1. `cargo fmt --all -- --check`：通过（无 diff 输出）。
+2. `cargo clippy --all-features --all-targets -- -D warnings`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+3. `cargo check --all-features`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+4. `cargo test --all-features -q`：通过（主集合 `1685 passed; 0 failed; 3 ignored`，其他测试集均通过）。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**95%**
+- R2（平台能力对齐）完成率：**62%**
+- R3（测试与门禁基建）完成率：**44%**（本轮完成 R3.1、R3.2；R3.4+ 仍待推进）
+- R4（配置与文档圆满化）完成率：**50%**
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**5%**
+- R8（事件与运行时）完成率：**60%**
+- R9（代码质量债务）完成率：**72%**（本轮完成一批 lint 债务清理）
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**52.6%**
+
+---
+
+## 第四轮执行回写（2026-06-04）
+
+### 本轮目标（继续小步闭环）
+
+- 推进 R3.4：为零测试高优先级控件补充真实行为测试（优先 Dialog/Input 族）。
+
+### 本轮实际完成项
+
+1. R3.4 — `InputDialog` 新增测试（2）：
+   - 文件：`src/widget/dialog/input_dialog.rs`
+   - 覆盖点：
+     - `get_int` 的区间夹取与模式设置。
+     - 回车/ESC 键路径的 `accepted/rejected` 信号与隐藏行为。
+
+2. R3.4 — `FileDialog` 新增测试（2）：
+   - 文件：`src/widget/dialog/file_dialog.rs`
+   - 覆盖点：
+     - `select_file` 的状态更新与 `file_selected` 信号。
+     - 回车接受与 ESC 取消路径（含 `selected_files` 清理验证）。
+
+3. R3.4 — `FontDialog` 新增测试（2）：
+   - 文件：`src/widget/dialog/font_dialog.rs`
+   - 覆盖点：
+     - `set_current_font` 的状态更新与 `font_selected` 信号。
+     - 回车接受与 ESC 取消路径。
+
+4. R3.4 — `ProgressDialog` 新增测试（2）：
+   - 文件：`src/widget/dialog/progress_dialog.rs`
+   - 覆盖点：
+     - `set_value` 的区间夹取与到达上限自动关闭。
+     - ESC 取消路径的 `was_canceled` 状态与 `canceled` 信号。
+
+### 证据（不虚标）
+
+1. `cargo fmt --all -- --check`：通过（无 diff 输出）。
+2. `cargo test --all-features -q`：通过（`1693 passed; 0 failed; 3 ignored`）。
+3. `cargo clippy --all-features --all-targets -- -D warnings`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**95%**
+- R2（平台能力对齐）完成率：**62%**
+- R3（测试与门禁基建）完成率：**47%**（本轮完成一批 R3.4 控件行为测试）
+- R4（配置与文档圆满化）完成率：**50%**
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**5%**
+- R8（事件与运行时）完成率：**60%**
+- R9（代码质量债务）完成率：**72%**
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**52.9%**

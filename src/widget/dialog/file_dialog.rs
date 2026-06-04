@@ -265,3 +265,61 @@ impl Draw for FileDialog {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn select_file_updates_selection_and_emits_signal() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let selected = Arc::new(Mutex::new(String::new()));
+        let selected_clone = Arc::clone(&selected);
+
+        dialog.file_selected.connect(move |path| {
+            if let Ok(mut v) = selected_clone.lock() {
+                *v = (*path).clone();
+            }
+        });
+
+        dialog.select_file("/tmp/demo.txt");
+        assert_eq!(dialog.selected_file(), Some("/tmp/demo.txt"));
+        assert_eq!(*selected.lock().expect("selected lock"), "/tmp/demo.txt");
+    }
+
+    #[test]
+    fn enter_accepts_and_escape_rejects() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.select_file("/tmp/a.txt");
+        dialog.show();
+        dialog.handle_event(&Event::key_press(13, 0));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 1);
+        assert!(!dialog.is_visible());
+
+        dialog.show();
+        dialog.select_file("/tmp/b.txt");
+        dialog.handle_event(&Event::key_press(27, 0));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1);
+        assert!(dialog.selected_files().is_empty());
+        assert!(!dialog.is_visible());
+    }
+}

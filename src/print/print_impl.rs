@@ -418,7 +418,6 @@ impl Printer {
         }
     }
     /// Print and return backend execution result.
-    #[must_use]
     pub fn print_with_result(&self, document: &dyn PrintDocument) -> Result<(), String> {
         self.print_with_pagination_result(document, &PrintPagination::default())
     }
@@ -433,7 +432,6 @@ impl Printer {
         }
     }
     /// Print with explicit pagination controls and return backend result.
-    #[must_use]
     pub fn print_with_pagination_result(
         &self,
         document: &dyn PrintDocument,

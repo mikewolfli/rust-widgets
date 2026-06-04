@@ -97,7 +97,10 @@ impl GanttWidget {
         let span = (self.viewport_end - self.viewport_start).max(1) as f32;
         let center = (self.viewport_start + self.viewport_end) as f32 / 2.0;
         let half = (span / factor / 2.0).max(1.0);
-        self.set_viewport((center - half).floor() as i64, (center + half).ceil() as i64);
+        self.set_viewport(
+            (center - half).floor() as i64,
+            (center + half).ceil() as i64,
+        );
     }
 
     /// Select task by index.
@@ -224,7 +227,8 @@ impl Draw for GanttWidget {
             let bar_rect = Rect::new(x0, y + 5, (x1 - x0) as u32, bar_h);
             context.fill_rect(bar_rect, Color::from_rgb(104, 163, 232));
 
-            let progress_w = ((bar_rect.width as f32) * (task.progress as f32 / 100.0)).round() as u32;
+            let progress_w =
+                ((bar_rect.width as f32) * (task.progress as f32 / 100.0)).round() as u32;
             if progress_w > 0 {
                 context.fill_rect(
                     Rect::new(bar_rect.x, bar_rect.y, progress_w, bar_rect.height),
@@ -356,7 +360,7 @@ mod tests {
         gantt.select_index(0);
         let got = emitted.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert_eq!(got.len(), 1); // note: select_index always emits even if same
-        // This is the existing behavior - select_index does not guard
+                                  // This is the existing behavior - select_index does not guard
     }
 
     #[test]

@@ -120,7 +120,7 @@ fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
             let idx = row_off + (x * 4) as usize;
             bmp.push(rgba[idx + 2]); // B
             bmp.push(rgba[idx + 1]); // G
-            bmp.push(rgba[idx + 0]); // R
+            bmp.push(rgba[idx]); // R
             bmp.push(rgba[idx + 3]); // A
         }
     }
@@ -131,7 +131,7 @@ fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 /// Minimal base64 encoder (RFC 4648) — no dependencies needed.
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    let cap = ((data.len() + 2) / 3) * 4;
+    let cap = data.len().div_ceil(3) * 4;
     let mut out = String::with_capacity(cap);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;

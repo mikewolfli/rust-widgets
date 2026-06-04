@@ -8,7 +8,6 @@ pub struct CommandLink {
     base: BaseWidget,
     text: String,
     description: String,
-    enabled: bool,
     /// Emitted when command link is clicked.
     pub clicked: GenericSignal,
     /// Emitted when command link is hovered.
@@ -20,7 +19,6 @@ impl CommandLink {
             base: BaseWidget::new(WidgetKind::CommandLink, geometry, "CommandLink"),
             text: "Command".to_string(),
             description: "".to_string(),
-            enabled: true,
             clicked: GenericSignal::new(),
             hovered: Signal1::new(),
         }
@@ -32,7 +30,7 @@ impl CommandLink {
         &self.description
     }
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.base.is_enabled()
     }
     pub fn set_text(&mut self, text: String) {
         self.text = text;
@@ -43,11 +41,11 @@ impl CommandLink {
         self.base.request_redraw();
     }
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.base.set_enabled(enabled);
         self.base.request_redraw();
     }
     pub fn click(&self) {
-        if self.enabled {
+        if self.base.is_enabled() {
             self.clicked.emit();
         }
     }
@@ -60,14 +58,14 @@ impl Widget for CommandLink {
         &mut self.base
     }
     fn is_enabled(&self) -> bool {
-        self.enabled && self.base.is_enabled()
+        self.base.is_enabled()
     }
 }
 impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MousePress { button: 1, .. } if self.enabled => {
+            Event::MousePress { button: 1, .. } if self.base.is_enabled() => {
                 self.clicked.emit();
             }
             Event::MouseEnter { .. } => {
@@ -89,7 +87,7 @@ impl Draw for CommandLink {
         let hover_color = Color::rgb(0, 0, 255);
         let disabled_color = Color::GRAY;
         let is_hovered = self.hovered.slot_count() > 0;
-        let is_enabled = self.enabled && self.base.is_enabled();
+        let is_enabled = self.base.is_enabled();
         // Draw background (transparent by default)
         if bg_color != Color::TRANSPARENT {
             context.fill_rect(rect, bg_color);
@@ -181,6 +179,16 @@ mod tests {
         assert!(!cl.is_enabled());
         cl.set_enabled(true);
         assert!(cl.is_enabled());
+    }
+
+    #[test]
+    fn commandlink_set_enabled_updates_base_state() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert!(cl.base().is_enabled());
+        cl.set_enabled(false);
+        assert!(!cl.base().is_enabled());
+        cl.set_enabled(true);
+        assert!(cl.base().is_enabled());
     }
 
     #[test]

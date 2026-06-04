@@ -1,7 +1,7 @@
 use rust_widgets::core::Rect;
+use rust_widgets::widget::menu_toolbar::menu::MenuItem;
 use rust_widgets::{BaseWidget, ListModel, ListView, Menu, MenuBar, RibbonBar, TableModel};
 use rust_widgets::{TableWidget, ToolBar, TreeModel, TreeView, Widget};
-use rust_widgets::widget::menu_toolbar::menu::MenuItem;
 use std::sync::Arc;
 
 struct TestListModel {

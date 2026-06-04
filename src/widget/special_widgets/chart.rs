@@ -262,7 +262,7 @@ impl ChartWidget {
             let end_angle = start_angle + slice_angle;
             let color = pie_colors[i % pie_colors.len()];
             let num_lines = (radius as f64 * slice_angle * 0.4).ceil() as i32;
-            let segments = num_lines.max(1).min(120);
+            let segments = num_lines.clamp(1, 120);
             for s in 0..segments {
                 let t = start_angle + slice_angle * (s as f64 + 0.5) / segments as f64;
                 let ex = cx + (radius as f64 * t.cos()) as i32;

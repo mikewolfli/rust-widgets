@@ -225,3 +225,43 @@ impl Draw for ProgressDialog {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn set_value_clamps_and_auto_closes_on_max() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.set_range(10, 20);
+
+        dialog.set_value(5);
+        assert_eq!(dialog.value(), 10);
+
+        dialog.show();
+        dialog.set_value(99);
+        assert_eq!(dialog.value(), 20);
+        assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn escape_key_cancels_and_emits_signal() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        let canceled = Arc::new(Mutex::new(0usize));
+        let canceled_clone = Arc::clone(&canceled);
+
+        dialog.canceled.connect(move || {
+            if let Ok(mut n) = canceled_clone.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        dialog.handle_event(&Event::key_press(27, 0));
+        assert!(dialog.was_canceled());
+        assert_eq!(*canceled.lock().expect("canceled lock"), 1);
+        assert!(!dialog.is_visible());
+    }
+}

@@ -726,7 +726,12 @@ pub extern "C" fn rust_widgets_java_reserved() -> c_uint {
     c_try!({ rust_widgets_java_binding_status() })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_free_string(s: *mut c_char) {
+/// # Safety
+///
+/// `s` must be either null or a pointer returned by this crate through
+/// `CString::into_raw` and not already freed. Passing any other pointer or
+/// double-freeing is undefined behavior.
+pub unsafe extern "C" fn rust_widgets_free_string(s: *mut c_char) {
     c_try_void!({
         if s.is_null() {
             return;
@@ -741,7 +746,11 @@ pub extern "C" fn rust_widgets_free_string(s: *mut c_char) {
 /// who hold a `*mut c_char` from Rust-allocated strings and want clarity
 /// in their own code.
 #[no_mangle]
-pub extern "C" fn rust_widgets_free_rust_string(s: *mut c_char) {
+/// # Safety
+///
+/// Same requirements as [`rust_widgets_free_string`]: `s` must be null or a
+/// valid pointer previously allocated by this crate for C ownership transfer.
+pub unsafe extern "C" fn rust_widgets_free_rust_string(s: *mut c_char) {
     rust_widgets_free_string(s);
 }
 #[cfg(test)]

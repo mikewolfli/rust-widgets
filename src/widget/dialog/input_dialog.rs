@@ -268,3 +268,48 @@ impl Draw for InputDialog {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn get_int_clamps_and_sets_integer_mode() {
+        let dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 500, 0, 100, 5);
+        assert_eq!(dialog.mode(), InputMode::Integer);
+        assert_eq!(dialog.int_value(), 100);
+    }
+
+    #[test]
+    fn enter_and_escape_emit_accept_reject() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 180));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        dialog.handle_event(&Event::key_press(13, 0));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 1);
+        assert!(!dialog.is_visible());
+
+        dialog.show();
+        dialog.handle_event(&Event::key_press(27, 0));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1);
+        assert!(!dialog.is_visible());
+    }
+}
