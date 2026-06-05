@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate C header declarations from src/bindings/mod.rs extern "C" functions."""
+"""Generate C header declarations from src/bindings/binding_impl.rs extern "C" functions."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def map_type(rust_type: str) -> str:
 
 def parse_bindings(source: str) -> list[FunctionDecl]:
     pattern = re.compile(
-        r"pub extern \"C\" fn\s+(?P<name>[a-zA-Z0-9_]+)\s*\((?P<params>.*?)\)\s*(?:->\s*(?P<ret>[^\{]+))?\{",
+        r"pub\s+(?:unsafe\s+)?extern \"C\" fn\s+(?P<name>[a-zA-Z0-9_]+)\s*\((?P<params>.*?)\)\s*(?:->\s*(?P<ret>[^\{]+))?\{",
         re.DOTALL,
     )
 
@@ -87,10 +87,12 @@ def render_header(functions: list[FunctionDecl]) -> str:
     lines.append('extern "C" {')
     lines.append("#endif")
     lines.append("")
-    lines.append("/* Auto-generated from src/bindings/mod.rs */")
+    lines.append("/* Auto-generated from src/bindings/binding_impl.rs */")
     for function in sorted(functions, key=lambda item: item.name):
         if function.params:
-            params = ", ".join(f"{param_type} {param_name}" for param_name, param_type in function.params)
+            params = ", ".join(
+                f"{param_type} {param_name}" for param_name, param_type in function.params
+            )
         else:
             params = "void"
         lines.append(f"{function.return_type} {function.name}({params});")
@@ -108,8 +110,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate C header from Rust C ABI bindings")
     parser.add_argument(
         "--bindings",
-        default="src/bindings/mod.rs",
-        help="Path to Rust bindings module",
+        default="src/bindings/binding_impl.rs",
+        help="Path to Rust bindings implementation module",
     )
     parser.add_argument(
         "--output",

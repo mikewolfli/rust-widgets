@@ -280,6 +280,6 @@ MIT 许可证 — 详见 [LICENSE](LICENSE)。
 
 ## 支持
 
-- Issues: [GitHub Issues](https://github.com/your-repo/rust-widgets/issues)
-- Discussions: [GitHub Discussions](https://github.com/your-repo/rust-widgets/discussions)
+- Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
+- Discussions: [GitHub Discussions](https://github.com/mikewolfli/rust-widgets/discussions)
 - 文档: [docs/](docs/) 目录

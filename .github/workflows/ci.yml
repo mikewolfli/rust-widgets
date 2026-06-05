@@ -103,3 +103,6 @@ jobs:
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
+
+      - name: Cargo bench compile check
+        run: cargo bench --no-run

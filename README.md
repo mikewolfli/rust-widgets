@@ -280,6 +280,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Support
 
-- Issues: [GitHub Issues](https://github.com/your-repo/rust-widgets/issues)
-- Discussions: [GitHub Discussions](https://github.com/your-repo/rust-widgets/discussions)
+- Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
+- Discussions: [GitHub Discussions](https://github.com/mikewolfli/rust-widgets/discussions)
 - Documentation: [docs/](docs/) directory

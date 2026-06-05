@@ -22,12 +22,20 @@ echo "[3/4] Check ABI version constant alignment"
 RUST_ABI_VERSION="$({
   awk '
     /rust_widgets_bindings_api_version\(\)/ { in_fn=1; next }
-    in_fn && /^[[:space:]]*[0-9]+[[:space:]]*$/ {
-      gsub(/[^0-9]/, "", $0);
-      print $0;
-      exit;
+    in_fn {
+      if ($0 ~ /[0-9]+/) {
+        value = $0;
+        gsub(/[^0-9]/, "", value);
+        if (value != "") {
+          print value;
+          exit;
+        }
+      }
+      if ($0 ~ /^}/) {
+        exit;
+      }
     }
-  ' src/bindings/mod.rs
+  ' src/bindings/binding_impl.rs
 } || true)"
 if [[ -z "$RUST_ABI_VERSION" ]]; then
   echo "Unable to read ABI version from rust_widgets_bindings_api_version()." >&2

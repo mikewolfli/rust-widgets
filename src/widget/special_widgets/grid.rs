@@ -19,7 +19,9 @@
 
 use crate::core::Color;
 use crate::core::{Point, Rect, Size};
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
@@ -42,6 +44,11 @@ pub struct GridWidget {
     /// Cached cell dimensions computed during the last draw pass.
     cell_width: u32,
     cell_height: u32,
+    hovered_cell: Option<(u32, u32)>,
+    /// Emitted when a cell is clicked.
+    pub cell_clicked: Signal1<(u32, u32)>,
+    /// Emitted when pointer hover changes to another cell.
+    pub cell_hovered: Signal1<(u32, u32)>,
 }
 
 impl GridWidget {
@@ -55,6 +62,9 @@ impl GridWidget {
             line_color: Some(Color::from_rgb(220, 220, 220)),
             cell_width: geometry.width,
             cell_height: geometry.height,
+            hovered_cell: None,
+            cell_clicked: Signal1::new(),
+            cell_hovered: Signal1::new(),
         }
     }
 
@@ -66,8 +76,11 @@ impl GridWidget {
             columns: columns.max(1),
             spacing: 0,
             line_color: Some(Color::from_rgb(220, 220, 220)),
-            cell_width: geometry.width / rows.max(1),
-            cell_height: geometry.height / columns.max(1),
+            cell_width: geometry.width / columns.max(1),
+            cell_height: geometry.height / rows.max(1),
+            hovered_cell: None,
+            cell_clicked: Signal1::new(),
+            cell_hovered: Signal1::new(),
         }
     }
 
@@ -80,6 +93,7 @@ impl GridWidget {
     /// Sets the number of rows (minimum 1). Triggers a redraw request.
     pub fn set_rows(&mut self, rows: u32) {
         self.rows = rows.max(1);
+        self.update_cell_dimensions();
         self.base.request_redraw();
     }
     /// Returns the number of columns.
@@ -89,6 +103,7 @@ impl GridWidget {
     /// Sets the number of columns (minimum 1). Triggers a redraw request.
     pub fn set_columns(&mut self, columns: u32) {
         self.columns = columns.max(1);
+        self.update_cell_dimensions();
         self.base.request_redraw();
     }
 
@@ -101,6 +116,7 @@ impl GridWidget {
     /// Sets spacing between cells in pixels. Triggers a redraw request.
     pub fn set_spacing(&mut self, spacing: u32) {
         self.spacing = spacing;
+        self.update_cell_dimensions();
         self.base.request_redraw();
     }
 
@@ -264,19 +280,78 @@ impl Draw for GridWidget {
 
 // ── EventHandler ──────────────────────────────────────────
 
-impl crate::event::EventHandler for GridWidget {
+impl EventHandler for GridWidget {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match *event {
-            crate::event::Event::MousePress { pos: _, button: 1 } => {
-                self.base.set_mouse_pressed(true);
+            Event::MouseMove { pos } => {
+                if let Some(cell) = self.cell_at(pos) {
+                    if self.hovered_cell != Some(cell) {
+                        self.hovered_cell = Some(cell);
+                        self.cell_hovered.emit(cell);
+                    }
+                } else {
+                    self.hovered_cell = None;
+                }
             }
-            crate::event::Event::MouseRelease { pos: _, button: 1 } => {
+            Event::MousePress { pos, button: 1 } => {
+                self.base.set_mouse_pressed(true);
+                if let Some(cell) = self.cell_at(pos) {
+                    self.base.clicked.emit();
+                    self.cell_clicked.emit(cell);
+                }
+            }
+            Event::MouseRelease { pos: _, button: 1 } => {
                 self.base.set_mouse_pressed(false);
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn with_dimensions_uses_columns_for_width_and_rows_for_height() {
+        let grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 80), 2, 4);
+        assert_eq!(grid.cell_width(), 30);
+        assert_eq!(grid.cell_height(), 40);
+    }
+
+    #[test]
+    fn grid_mouse_interaction_emits_cell_signals() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
+
+        let clicked = Arc::new(Mutex::new(Vec::<(u32, u32)>::new()));
+        let hovered = Arc::new(Mutex::new(Vec::<(u32, u32)>::new()));
+
+        let clicked_sink = clicked.clone();
+        grid.cell_clicked.connect(move |cell| {
+            if let Ok(mut guard) = clicked_sink.lock() {
+                guard.push(*cell);
+            }
+        });
+
+        let hovered_sink = hovered.clone();
+        grid.cell_hovered.connect(move |cell| {
+            if let Ok(mut guard) = hovered_sink.lock() {
+                guard.push(*cell);
+            }
+        });
+
+        grid.handle_event(&Event::mouse_move(75, 25));
+        grid.handle_event(&Event::mouse_press(75, 25, 1));
+
+        let hovered_values = hovered.lock().expect("hovered lock poisoned").clone();
+        let clicked_values = clicked.lock().expect("clicked lock poisoned").clone();
+
+        assert_eq!(hovered_values, vec![(0, 1)]);
+        assert_eq!(clicked_values, vec![(0, 1)]);
     }
 }

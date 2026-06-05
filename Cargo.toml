@@ -7,8 +7,8 @@ license = "MIT"
 keywords = ["gui", "ui", "widget", "cross-platform", "native"]
 categories = ["gui", "rendering", "graphics"]
 readme = "README.md"
-homepage = "https://github.com/your-repo/rust-widgets"
-repository = "https://github.com/your-repo/rust-widgets"
+homepage = "https://github.com/mikewolfli/rust-widgets"
+repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.75"
 
 [lints.rust]
@@ -117,3 +117,23 @@ rustc-args = ["--cfg", "docsrs"]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+[[bench]]
+name = "render_bench"
+harness = false
+
+[[bench]]
+name = "signal_bench"
+harness = false
+
+[[bench]]
+name = "layout_bench"
+harness = false
+
+[[bench]]
+name = "json_bench"
+harness = false
+
+[[bench]]
+name = "event_bench"
+harness = false

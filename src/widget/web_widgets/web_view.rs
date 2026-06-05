@@ -7,6 +7,7 @@ pub struct WebView {
     base: BaseWidget,
     url: String,
     loading: bool,
+    pending_load: bool,
     title: String,
     can_go_back: bool,
     can_go_forward: bool,
@@ -24,11 +25,14 @@ pub struct WebView {
     pub navigation_state_changed: Signal1<(bool, bool)>,
 }
 impl WebView {
+    const LOAD_TIMER_ID: u32 = 1;
+
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::WebView, geometry, "WebView"),
             url: "about:blank".to_string(),
             loading: false,
+            pending_load: false,
             title: "".to_string(),
             can_go_back: false,
             can_go_forward: false,
@@ -55,16 +59,32 @@ impl WebView {
     pub fn can_go_forward(&self) -> bool {
         self.can_go_forward
     }
+
+    pub fn load_timer_id() -> u32 {
+        Self::LOAD_TIMER_ID
+    }
+
+    fn begin_loading(&mut self) {
+        self.loading = true;
+        self.pending_load = true;
+        self.loading_started.emit(self.url.clone());
+        self.base.request_redraw();
+    }
+
+    fn finish_loading(&mut self) {
+        if self.loading {
+            self.loading = false;
+            self.pending_load = false;
+            self.loading_finished.emit(self.url.clone());
+            self.base.request_redraw();
+        }
+    }
+
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url;
             self.url_changed.emit(self.url.clone());
-            self.loading = true;
-            self.loading_started.emit(self.url.clone());
-            // In a real implementation, this would start loading the URL
-            // For now, we'll just simulate it
-            self.loading = false;
-            self.loading_finished.emit(self.url.clone());
+            self.begin_loading();
         }
     }
     pub fn load_url(&mut self, url: &str) {
@@ -75,10 +95,8 @@ impl WebView {
         // For now, we'll just simulate it
         self.url = "data:text/html".to_string();
         self.title = "HTML Content".to_string();
-        self.loading = true;
-        self.loading_started.emit(self.url.clone());
-        self.loading = false;
-        self.loading_finished.emit(self.url.clone());
+        self.begin_loading();
+        self.finish_loading();
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
     }
@@ -104,17 +122,11 @@ impl WebView {
     }
     pub fn reload(&mut self) {
         // In a real implementation, this would reload the current page
-        // For now, we'll just simulate it
-        self.loading = true;
-        self.loading_started.emit(self.url.clone());
-        self.loading = false;
-        self.loading_finished.emit(self.url.clone());
+        self.begin_loading();
     }
     pub fn stop(&mut self) {
         // In a real implementation, this would stop loading
-        // For now, we'll just simulate it
-        self.loading = false;
-        self.loading_finished.emit(self.url.clone());
+        self.finish_loading();
     }
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
@@ -143,6 +155,12 @@ use crate::widget::Draw;
 impl EventHandler for WebView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        match event {
+            Event::Timer { id } if *id == Self::LOAD_TIMER_ID && self.pending_load => {
+                self.finish_loading();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -175,6 +193,7 @@ impl Draw for WebView {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn web_view_draw_produces_svg() {
@@ -189,5 +208,45 @@ mod tests {
         assert_eq!(wv.url(), "about:blank");
         assert!(!wv.is_loading());
         assert!(wv.title().is_empty());
+    }
+
+    #[test]
+    fn web_view_set_url_starts_then_finishes_on_timer() {
+        let mut wv = WebView::new(Rect::new(0, 0, 300, 200));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let started_sink = started.clone();
+        wv.loading_started.connect(move |url| {
+            if let Ok(mut guard) = started_sink.lock() {
+                guard.push(url.as_ref().clone());
+            }
+        });
+
+        let finished_sink = finished.clone();
+        wv.loading_finished.connect(move |url| {
+            if let Ok(mut guard) = finished_sink.lock() {
+                guard.push(url.as_ref().clone());
+            }
+        });
+
+        wv.set_url("https://example.com".to_string());
+        assert!(wv.is_loading());
+        assert_eq!(started.lock().expect("started lock poisoned").len(), 1);
+        assert_eq!(finished.lock().expect("finished lock poisoned").len(), 0);
+
+        wv.handle_event(&Event::timer(WebView::load_timer_id()));
+        assert!(!wv.is_loading());
+        assert_eq!(finished.lock().expect("finished lock poisoned").len(), 1);
+    }
+
+    #[test]
+    fn web_view_stop_finishes_pending_load() {
+        let mut wv = WebView::new(Rect::new(0, 0, 300, 200));
+        wv.set_url("https://rust-lang.org".to_string());
+        assert!(wv.is_loading());
+
+        wv.stop();
+        assert!(!wv.is_loading());
     }
 }

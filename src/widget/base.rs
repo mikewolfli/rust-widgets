@@ -146,7 +146,14 @@ impl BaseWidget {
         self.dpi_scale = scale.max(0.1);
     }
     pub fn set_translated_tooltip(&mut self, key: &str) {
-        self.tooltip = crate::i18n::translate(key);
+        #[cfg(feature = "desktop")]
+        {
+            self.tooltip = crate::i18n::translate(key);
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            self.tooltip = key.to_string();
+        }
     }
     pub fn style(&self) -> &WidgetStyle {
         &self.style

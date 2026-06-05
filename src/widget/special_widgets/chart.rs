@@ -1,6 +1,8 @@
 //! Chart widget.
-use crate::core::Rect;
+use crate::core::{Point, Rect};
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Chart type enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,6 +20,11 @@ pub struct ChartWidget {
     chart_type: ChartType,
     data: Vec<f64>,
     labels: Vec<String>,
+    hovered_index: Option<usize>,
+    /// Emitted when a data point is clicked.
+    pub data_point_clicked: Signal1<usize>,
+    /// Emitted when pointer hover enters a data point bucket.
+    pub data_point_hovered: Signal1<usize>,
 }
 impl ChartWidget {
     /// Creates a new chart widget.
@@ -27,6 +34,9 @@ impl ChartWidget {
             chart_type: ChartType::default(),
             data: Vec::new(),
             labels: Vec::new(),
+            hovered_index: None,
+            data_point_clicked: Signal1::new(),
+            data_point_hovered: Signal1::new(),
         }
     }
 
@@ -61,6 +71,23 @@ impl ChartWidget {
     pub fn set_labels(&mut self, labels: Vec<String>) {
         self.labels = labels;
         self.base.request_redraw();
+    }
+
+    fn data_index_at(&self, pos: Point) -> Option<usize> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let rect = self.base.geometry();
+        if !rect.contains_point(pos) || rect.width == 0 {
+            return None;
+        }
+        let local_x = (pos.x - rect.x).max(0) as u32;
+        let width = rect.width.max(1);
+        let mut idx = ((local_x as u64) * (self.data.len() as u64) / (width as u64)) as usize;
+        if idx >= self.data.len() {
+            idx = self.data.len() - 1;
+        }
+        Some(idx)
     }
 }
 impl Widget for ChartWidget {
@@ -343,19 +370,70 @@ impl ChartWidget {
         }
     }
 }
-impl crate::event::EventHandler for ChartWidget {
-    fn handle_event(&mut self, event: &crate::event::Event) {
+impl EventHandler for ChartWidget {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
-                self.base.set_mouse_pressed(true);
+            Event::MouseMove { pos } => {
+                if let Some(index) = self.data_index_at(*pos) {
+                    if self.hovered_index != Some(index) {
+                        self.hovered_index = Some(index);
+                        self.data_point_hovered.emit(index);
+                    }
+                }
             }
-            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MousePress { pos, button } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
+                if let Some(index) = self.data_index_at(*pos) {
+                    self.base.clicked.emit();
+                    self.data_point_clicked.emit(index);
+                }
+            }
+            Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn chart_mouse_interaction_emits_data_index_signals() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+
+        let clicked = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let hovered = Arc::new(Mutex::new(Vec::<usize>::new()));
+
+        let clicked_sink = clicked.clone();
+        chart.data_point_clicked.connect(move |index| {
+            if let Ok(mut guard) = clicked_sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        let hovered_sink = hovered.clone();
+        chart.data_point_hovered.connect(move |index| {
+            if let Ok(mut guard) = hovered_sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        chart.handle_event(&Event::mouse_move(120, 50));
+        chart.handle_event(&Event::mouse_press(120, 50, 1));
+
+        let clicked_values = clicked.lock().expect("clicked lock poisoned").clone();
+        let hovered_values = hovered.lock().expect("hovered lock poisoned").clone();
+
+        assert_eq!(hovered_values, vec![2]);
+        assert_eq!(clicked_values, vec![2]);
     }
 }

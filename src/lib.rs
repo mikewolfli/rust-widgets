@@ -66,6 +66,19 @@ pub mod wgpu_backend;
 pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
+#[cfg(not(feature = "desktop"))]
+#[macro_export]
+macro_rules! tr {
+    ($key:expr) => {
+        $key.to_string()
+    };
+    ($key:expr, $count:expr) => {
+        $key.to_string()
+    };
+    ($key:expr, $context:expr, $count:expr) => {
+        $key.to_string()
+    };
+}
 /// Application lifecycle wrapper and type-safe widget handles.
 pub mod app;
 #[cfg(feature = "chart")]

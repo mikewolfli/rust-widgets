@@ -205,6 +205,7 @@ pub enum GpuRenderError {
     RendererUnavailable,
     UploadFailed(String),
 }
+#[cfg(feature = "gpu-wgpu")]
 impl std::fmt::Display for GpuRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -216,6 +217,7 @@ impl std::fmt::Display for GpuRenderError {
         }
     }
 }
+#[cfg(feature = "gpu-wgpu")]
 impl std::error::Error for GpuRenderError {}
 #[cfg(feature = "gpu-wgpu")]
 fn compose_scene_to_surface_wgpu(

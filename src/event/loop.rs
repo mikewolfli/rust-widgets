@@ -1,5 +1,6 @@
 //! Event loop implementation.
 use super::event_queue::EventQueue;
+use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
 use crate::core::ObjectId;
 #[cfg(feature = "touch")]
@@ -40,16 +41,21 @@ pub struct EventLoop {
     thread_handle: Option<thread::JoinHandle<()>>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
+    /// Runtime timer manager emitting `Event::Timer` into this loop queue.
+    timer_manager: TimerManager,
 }
 
 impl EventLoop {
     /// Creates a new event loop.
     pub fn new() -> Self {
+        let queue = EventQueue::new();
+        let timer_manager = TimerManager::new(queue.sender());
         Self {
-            queue: Arc::new(Mutex::new(EventQueue::new())),
+            queue: Arc::new(Mutex::new(queue)),
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
             dispatch_fn: None,
+            timer_manager,
         }
     }
 
@@ -103,6 +109,7 @@ impl EventLoop {
     /// Stops the event loop.
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(recover_lock) = false;
+        self.timer_manager.clear();
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[event-loop] Thread join failed: {:?}", e);
@@ -133,6 +140,28 @@ impl EventLoop {
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
         *self.running.lock().unwrap_or_else(recover_lock)
+    }
+
+    /// Start or replace a timer bound to `target` and `timer_id`.
+    pub fn start_timer(
+        &self,
+        target: ObjectId,
+        timer_id: u32,
+        interval: Duration,
+        repeating: bool,
+    ) -> Result<(), String> {
+        self.timer_manager
+            .start_timer(target, timer_id, interval, repeating)
+    }
+
+    /// Stop one timer by target and id.
+    pub fn stop_timer(&self, target: ObjectId, timer_id: u32) -> bool {
+        self.timer_manager.stop_timer(target, timer_id)
+    }
+
+    /// Stop all timers associated with a target widget.
+    pub fn stop_timers_for_target(&self, target: ObjectId) -> usize {
+        self.timer_manager.stop_timers_for_target(target)
     }
 }
 

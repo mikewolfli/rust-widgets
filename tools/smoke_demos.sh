@@ -33,10 +33,22 @@ run_smoke() {
   shift
   echo ""
   echo "═══ SMOKE: $name ═══"
-  if cargo check -q "$@" 2>&1; then
+  if "$@"; then
     pass "$name"
   else
     fail "$name"
+  fi
+}
+
+run_example_smoke() {
+  local name="$1"
+  shift
+  if [[ -f "examples/${name}.rs" ]]; then
+    run_smoke "${name}" cargo check -q --example "${name}" "$@"
+  else
+    echo ""
+    echo "═══ SMOKE: ${name} ═══"
+    fail "${name} (missing examples/${name}.rs)"
   fi
 }
 
@@ -48,14 +60,14 @@ echo "=============================================="
 echo " Default Profile Widget Creation Smoke Tests "
 echo "=============================================="
 
-run_smoke "demo_main (full profile)"      --example demo_main
-run_smoke "demo_button (full profile)"     --example demo_button
-run_smoke "demo_window (full profile)"     --example demo_window
-run_smoke "demo_list_view (full profile)"  --example demo_list_view
-run_smoke "demo_code_editor (full)"        --example demo_code_editor
-run_smoke "demo_terminal (full)"           --example demo_terminal
-run_smoke "demo_media_player (full)"       --example demo_media_player
-run_smoke "demo_map_view (full)"           --example demo_map_view
+run_example_smoke "demo_main"
+run_example_smoke "demo_button"
+run_example_smoke "demo_window"
+run_example_smoke "demo_list_view"
+run_example_smoke "demo_code_editor"
+run_example_smoke "demo_terminal"
+run_example_smoke "demo_media_player"
+run_example_smoke "demo_map_view"
 
 # ---------------------------------------------------------------------------
 # [2] Embedded profile demos
@@ -67,9 +79,9 @@ echo "=============================================="
 
 FEAT="--no-default-features --features embedded"
 
-run_smoke "demo_button (embedded)"     cargo check --example demo_button $FEAT
-run_smoke "demo_window (embedded)"     cargo check --example demo_window $FEAT
-run_smoke "demo_list_view (embedded)"  cargo check --example demo_list_view $FEAT
+run_example_smoke "demo_button" --no-default-features --features embedded
+run_example_smoke "demo_window" --no-default-features --features embedded
+run_example_smoke "demo_list_view" --no-default-features --features embedded
 
 # ---------------------------------------------------------------------------
 # [3] Runtime & integration test suite
@@ -79,9 +91,9 @@ echo "=============================================="
 echo " Runtime & Integration Smoke Tests"
 echo "=============================================="
 
-run_smoke "platform integration tests"              cargo test -q --lib platform::tests
-run_smoke "widget kind smoke test"                  cargo test -q --test blue9_r6_platform_capability_test
-run_smoke "widget structure tests"                  cargo test -q --test test_widget_structure
+run_smoke "platform integration tests" cargo test -q --lib platform::tests
+run_smoke "widget kind smoke test" cargo test -q --test blue9_r6_platform_capability_test
+run_smoke "widget structure tests" cargo test -q --test test_widget_structure
 
 # ---------------------------------------------------------------------------
 # Summary

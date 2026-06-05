@@ -2,12 +2,16 @@
 use crate::control_backend::custom::CustomPaintControlBackend;
 #[cfg(feature = "controls-native")]
 use crate::control_backend::native::NativeControlBackend;
+#[cfg(all(feature = "controls-native", feature = "controls-custom"))]
 use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::control_backend::trait_def::ControlBackend;
+#[cfg(all(feature = "controls-native", feature = "controls-custom"))]
 use crate::control_backend::types::ControlRoutePreference;
 use crate::widget::WidgetKind;
 #[cfg(feature = "controls-custom")]
 use std::sync::OnceLock;
+
+#[cfg(feature = "controls-native")]
 fn native_control_backend() -> &'static NativeControlBackend {
     static BACKEND: NativeControlBackend = NativeControlBackend::new();
     &BACKEND
@@ -35,7 +39,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
 /// Return active control backend selected by compile-time features.
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
-    native_control_backend()
+    panic!("no control backend enabled; enable controls-native or controls-custom")
 }
 /// Returns control backend resolved by compile-time policy for one widget kind.
 #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
@@ -58,7 +62,7 @@ pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn Control
 /// Returns control backend resolved by compile-time policy for one widget kind.
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    native_control_backend()
+    panic!("no control backend enabled; enable controls-native or controls-custom")
 }
 /// Return compile-time control policy label used by diagnostics and docs.
 #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
@@ -155,7 +159,9 @@ mod tests {
 
     #[test]
     fn control_backend_is_send_sync() {
+        #[cfg(any(feature = "controls-native", feature = "controls-custom"))]
         fn assert_send_sync<T: Send + Sync>() {}
+        #[cfg(feature = "controls-native")]
         assert_send_sync::<NativeControlBackend>();
         #[cfg(feature = "controls-custom")]
         assert_send_sync::<CustomPaintControlBackend>();

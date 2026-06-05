@@ -7,14 +7,13 @@ pub(crate) mod surface;
 pub use batch::{BatchCommand, BatchId, BatchRenderer};
 pub use paint::{PaintBackend, SoftwarePaintBackend};
 
-pub use scene::{
-    average_frame_time, current_fps, current_quality_level, last_auto_render_backend,
-    set_quality_level, AutoRenderBackend, RenderScene, SceneLayer,
-};
+#[cfg(feature = "quality-management")]
+pub use scene::{average_frame_time, current_fps, current_quality_level, set_quality_level};
+pub use scene::{last_auto_render_backend, AutoRenderBackend, RenderScene, SceneLayer};
 pub use surface::{
     default_software_render_config, set_default_software_render_config, BackBuffer, RenderContext,
     SoftwareRenderConfig, SoftwareSurface,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use surface::software_render_config_test_lock;

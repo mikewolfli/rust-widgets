@@ -7,6 +7,7 @@ pub struct WebEngineView {
     base: BaseWidget,
     url: String,
     loading: bool,
+    pending_load: bool,
     title: String,
     can_go_back: bool,
     can_go_forward: bool,
@@ -157,12 +158,61 @@ impl WebEngineContextMenuRequest {
         &mut self.0
     }
 }
+
+macro_rules! impl_web_engine_wrapper_traits {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Widget for $ty {
+                fn base(&self) -> &BaseWidget {
+                    self.0.base()
+                }
+
+                fn base_mut(&mut self) -> &mut BaseWidget {
+                    self.0.base_mut()
+                }
+            }
+
+            impl EventHandler for $ty {
+                fn handle_event(&mut self, event: &Event) {
+                    self.0.handle_event(event);
+                }
+            }
+
+            impl Draw for $ty {
+                fn draw(&mut self, ctx: &mut RenderContext) {
+                    self.0.draw(ctx);
+                }
+
+                fn uses_custom_drawing(&self) -> bool {
+                    self.0.uses_custom_drawing()
+                }
+            }
+        )+
+    };
+}
+
+impl_web_engine_wrapper_traits!(
+    WebEnginePage,
+    WebEngine,
+    WebEngineSettings,
+    WebEngineDownloadItem,
+    WebEngineCookieStore,
+    WebEngineWebChannel,
+    WebEngineFindTextResult,
+    WebEngineNotification,
+    WebEngineScriptDialog,
+    WebEngineContextMenuRequest,
+);
+
 impl WebEngineView {
+    const LOAD_TIMER_ID: u32 = 1;
+
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "WebEngineView"),
             url: "".to_string(),
             loading: false,
+            pending_load: false,
             title: "".to_string(),
             can_go_back: false,
             can_go_forward: false,
@@ -213,16 +263,32 @@ impl WebEngineView {
     pub fn is_private_browsing(&self) -> bool {
         self.private_browsing
     }
+
+    pub fn load_timer_id() -> u32 {
+        Self::LOAD_TIMER_ID
+    }
+
+    fn begin_loading(&mut self) {
+        self.loading = true;
+        self.pending_load = true;
+        self.loading_started.emit(self.url.clone());
+        self.base.request_redraw();
+    }
+
+    fn finish_loading(&mut self) {
+        if self.loading {
+            self.loading = false;
+            self.pending_load = false;
+            self.loading_finished.emit(self.url.clone());
+            self.base.request_redraw();
+        }
+    }
+
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url.clone();
             self.url_changed.emit(url.clone());
-            self.loading = true;
-            self.loading_started.emit(url.clone());
-            // In a real implementation, this would start loading the URL
-            // For now, we'll just simulate it
-            self.loading = false;
-            self.loading_finished.emit(url.clone());
+            self.begin_loading();
             self.update_navigation_state();
             self.base.request_redraw();
         }
@@ -232,10 +298,8 @@ impl WebEngineView {
         // For now, we'll just simulate it
         self.url = "data:text/html".to_string();
         self.title = "HTML Content".to_string();
-        self.loading = true;
-        self.loading_started.emit(self.url.clone());
-        self.loading = false;
-        self.loading_finished.emit(self.url.clone());
+        self.begin_loading();
+        self.finish_loading();
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
@@ -246,10 +310,8 @@ impl WebEngineView {
         // For now, we'll just simulate it
         self.url = base_url.to_string();
         self.title = "Data Content".to_string();
-        self.loading = true;
-        self.loading_started.emit(self.url.clone());
-        self.loading = false;
-        self.loading_finished.emit(self.url.clone());
+        self.begin_loading();
+        self.finish_loading();
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
@@ -278,22 +340,11 @@ impl WebEngineView {
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
             // In a real implementation, this would reload the page
-            // For now, we'll just simulate it
-            self.loading = true;
-            self.loading_started.emit(self.url.clone());
-            self.loading = false;
-            self.loading_finished.emit(self.url.clone());
-            self.base.request_redraw();
+            self.begin_loading();
         }
     }
     pub fn stop(&mut self) {
-        if self.loading {
-            // In a real implementation, this would stop loading
-            // For now, we'll just simulate it
-            self.loading = false;
-            self.loading_finished.emit(self.url.clone());
-            self.base.request_redraw();
-        }
+        self.finish_loading();
     }
     pub fn evaluate_javascript(&mut self, _script: &str) -> Result<String, String> {
         // In a real implementation, this would evaluate the JavaScript
@@ -329,6 +380,11 @@ use crate::widget::Draw;
 impl EventHandler for WebEngineView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::Timer { id } = event {
+            if *id == Self::LOAD_TIMER_ID && self.pending_load {
+                self.finish_loading();
+            }
+        }
         if !self.base.is_enabled() {
             return;
         }
@@ -399,6 +455,8 @@ impl Draw for WebEngineView {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::widget::WidgetKind;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn web_engine_view_draw_produces_svg() {
@@ -414,5 +472,79 @@ mod tests {
         assert!(wv.title().is_empty());
         wv.set_url("https://example.com".to_string());
         assert_eq!(wv.url(), "https://example.com");
+    }
+
+    #[test]
+    fn web_engine_set_url_starts_then_finishes_on_timer() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        let started = Arc::new(Mutex::new(0usize));
+        let finished = Arc::new(Mutex::new(0usize));
+
+        let started_sink = started.clone();
+        wv.loading_started.connect(move |_| {
+            if let Ok(mut count) = started_sink.lock() {
+                *count += 1;
+            }
+        });
+
+        let finished_sink = finished.clone();
+        wv.loading_finished.connect(move |_| {
+            if let Ok(mut count) = finished_sink.lock() {
+                *count += 1;
+            }
+        });
+
+        wv.set_url("https://example.com".to_string());
+        assert!(wv.is_loading());
+        assert_eq!(*started.lock().expect("started lock poisoned"), 1);
+        assert_eq!(*finished.lock().expect("finished lock poisoned"), 0);
+
+        wv.handle_event(&Event::timer(WebEngineView::load_timer_id()));
+        assert!(!wv.is_loading());
+        assert_eq!(*finished.lock().expect("finished lock poisoned"), 1);
+    }
+
+    #[test]
+    fn web_engine_stop_finishes_pending_load() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        wv.set_url("https://rust-lang.org".to_string());
+        assert!(wv.is_loading());
+
+        wv.stop();
+        assert!(!wv.is_loading());
+    }
+
+    #[test]
+    fn web_engine_wrappers_delegate_widget_draw_and_event_handler() {
+        fn assert_wrapper_behaves(mut wrapper: impl Widget + Draw) {
+            assert_eq!(wrapper.base().kind(), WidgetKind::WebEngineView);
+            let svg = crate::widget::svg::render_to_svg(&mut wrapper);
+            assert!(svg.starts_with("<svg"));
+            wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));
+        }
+
+        let geometry = Rect::new(0, 0, 240, 140);
+        assert_wrapper_behaves(WebEnginePage::new(geometry));
+        assert_wrapper_behaves(WebEngine::new(geometry));
+        assert_wrapper_behaves(WebEngineSettings::new(geometry));
+        assert_wrapper_behaves(WebEngineDownloadItem::new(geometry));
+        assert_wrapper_behaves(WebEngineCookieStore::new(geometry));
+        assert_wrapper_behaves(WebEngineWebChannel::new(geometry));
+        assert_wrapper_behaves(WebEngineFindTextResult::new(geometry));
+        assert_wrapper_behaves(WebEngineNotification::new(geometry));
+        assert_wrapper_behaves(WebEngineScriptDialog::new(geometry));
+        assert_wrapper_behaves(WebEngineContextMenuRequest::new(geometry));
+    }
+
+    #[test]
+    fn web_engine_wrappers_forward_timer_completion() {
+        let mut wrapper = WebEnginePage::new(Rect::new(0, 0, 320, 200));
+        wrapper
+            .inner_mut()
+            .set_url("https://example.com/path".to_string());
+        assert!(wrapper.inner().is_loading());
+
+        wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));
+        assert!(!wrapper.inner().is_loading());
     }
 }

@@ -73,15 +73,16 @@ pub use core::{RenderCommand, ShapedText, TextCluster, TextMetrics};
 pub use svg::SvgPaintBackend;
 
 // Backend
+#[cfg(feature = "quality-management")]
+pub use backend::{average_frame_time, current_fps, current_quality_level, set_quality_level};
 pub use backend::{
-    average_frame_time, current_fps, current_quality_level, default_software_render_config,
-    last_auto_render_backend, set_default_software_render_config, set_quality_level,
+    default_software_render_config, last_auto_render_backend, set_default_software_render_config,
     AutoRenderBackend, BackBuffer, BatchCommand, BatchId, BatchRenderer, PaintBackend,
     RenderContext, RenderScene, SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig,
     SoftwareSurface,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use backend::software_render_config_test_lock;
 
 // Pipeline — all append_* functions

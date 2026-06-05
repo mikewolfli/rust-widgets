@@ -141,10 +141,18 @@ impl GpuManager {
         strategy: AdapterSelectionStrategy,
     ) -> Result<Self, GpuManagerError> {
         let selector = AdapterSelector::with_strategy(strategy);
+        #[cfg(feature = "gpu-wgpu")]
         let adapter_info = selector
             .select_adapter_with_fallback(None)
             .await
             .map_err(|e| GpuManagerError::AdapterSelectionFailed(e.to_string()))?;
+
+        #[cfg(not(feature = "gpu-wgpu"))]
+        let adapter_info = {
+            let _ = selector;
+            AdapterInfo::cpu_fallback()
+        };
+
         Self::from_adapter_info(adapter_info).await
     }
 
