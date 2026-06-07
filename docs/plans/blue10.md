@@ -1502,4 +1502,55 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 - R8（事件与运行时）完成率：**64%**
 - R9（代码质量债务）完成率：**76%**
 
-- BLUE10 总体完成率（按 R1-R9 等权）：**61.6%**
+- BLUE10 总体完成率（按 R1-R9 等权）：**62.4%**
+
+## 第十六轮执行回写（2026-06-08）
+
+### 本轮目标（深扫后的高收益闭环）
+
+- 清理 `.github/` 冗余 PUA 文件，精简项目基础设施。
+- 将 1,319 行的 `gesture/mod.rs` 单文件拆分为子模块，提升可维护性。
+
+### 本轮实际完成项
+
+1. **R4.11 — 清理 `.github/` 冗余 PUA 文件**
+   - 删除 10 个冗余 PUA 文件（激活/清单/总结/快速参考/启动脚本等）。
+   - 保留必要的 6 个项目文件：`ci.yml`、`CODEOWNERS`、`copilot-instructions.md`、`dependabot.yml`、`pull_request_template.md`、`ISSUE_TEMPLATE/`。
+   - 项目规则文件 `copilot-instructions.md` 作为质量门禁核心文档保留不动。
+
+2. **R9.6 — 拆分 `src/gesture/mod.rs` 为子模块**
+   - 原文件：1,319 行单文件 → 拆分为 6 个子文件：
+     - `src/gesture/mod.rs` — 模块根：文档、6 个常量、`GestureRecognizer` trait、`GestureEngine`、`distance()` 辅助函数、re-exports、所有测试
+     - `src/gesture/tap.rs` — `TapGesture`、`DoubleTapGesture`、`TwoFingerTapGesture`
+     - `src/gesture/press.rs` — `LongPressGesture`、`PanGesture`、`LongPressDragGesture`
+     - `src/gesture/swipe.rs` — `SwipeGesture`、`TwoFingerSwipeGesture`、`FlingGesture`
+     - `src/gesture/pinch.rs` — `PinchGesture`、`PinchTouch`
+     - `src/gesture/rotate.rs` — `RotateGesture`
+   - 拆分后 `mod.rs` 保留关键基础设施约 280 行，各子模块按逻辑分组（tap/press/swipe/pinch/rotate）。
+   - 所有公共类型通过 `pub use` 重新导出，外部导入不变。
+   - 所有 20 个测试保持通过，无行为变更。
+
+### 证据（不虚标）
+
+1. `cargo check --all`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+2. `cargo test --all-features --lib -q`：通过（**1713 passed; 0 failed; 3 ignored**，与第15轮完全一致，无回归）。
+3. `cargo clippy --all-features --all-targets -- -D warnings`：通过（无新增 warning）。
+4. `cargo fmt --all -- --check`：通过（无 diff 输出）。
+5. `./tools/check_profiles.sh`：通过（All profile checks passed）。
+6. `./tools/check_abi.sh`：通过（ABI version=7，header declarations=76）。
+7. `./tools/smoke_demos.sh`：通过（14 passed, 0 failed）。
+8. `./tools/check_event_model_signal_first.sh`：通过（signal-first guard passed）。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**99%**
+- R2（平台能力对齐）完成率：**71%**
+- R3（测试与门禁基建）完成率：**71%**
+- R4（配置与文档圆满化）完成率：**82%**（本轮完成 R4.11：PUA 冗余文件清理）
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**10%**
+- R8（事件与运行时）完成率：**64%**
+- R9（代码质量债务）完成率：**80%**（本轮完成 R9.6：gesture 模块拆分）
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**62.4%**
