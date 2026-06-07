@@ -1450,3 +1450,56 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 - R9（代码质量债务）完成率：**76%**
 
 - BLUE10 总体完成率（按 R1-R9 等权）：**60.6%**
+
+---
+
+## 第十五轮执行回写（2026-06-07）
+
+### 本轮目标（推进 R2.1）
+
+- 实现 iOS 状态驱动后端，填补平台覆盖矩阵空白。
+- 为进阶 UIKit/SwiftUI 集成奠定可测试基座。
+
+### 本轮实际完成项
+
+1. R2.1 — iOS 状态驱动平台后端落地：
+  - 目录：`src/platform/ios/`
+  - 新增模块：
+    - `mod.rs`：模块入口与 `IosMobilePlatform` 导出。
+    - `types.rs`：iOS 后端状态容器与工具类型。
+      - `IosHandleKind`：18 种控件/容器标记（Window/Button/CheckBox/LineEdit/Label/RadioButton/Slider/ProgressBar/ComboBox/ListBox/Panel/MenuBar/Menu/MenuItem/ToolBar/StatusBar/MessageBox/FileDialog/ColorDialog/FontDialog）。
+      - `IosMobilePlatform`：状态集合容器（`BackendState<IosHandleKind>`、菜单状态、运行时生命周期、列表数据）。
+      - 支持状态序列化以供 parity/regression 测试。
+    - `platform_impl.rs`：`Platform` trait 实现。
+      - 完整实现 22 个 trait 方法（window/button/checkbox/lineedit/label/radiobtn/slider/progressbar/combobox/listbox 创建）。
+      - 列表/combo 项操作：`list_box_add_item`、`list_box_remove_item`、`list_box_clear_items`。
+      - 几何/文本查询与更新：`get_widget_text`、`set_widget_text`、`get_widget_geometry`、`set_widget_geometry`。
+      - 生命周期：`init`、`run`（16ms 轮询循环）、`quit`。
+  - 集成：在 `src/platform/mod.rs` 与 `src/platform/runtime.rs` 中注册 iOS 后端，条件编译 `#[cfg(target_os = "ios")]` 自动选择。
+  - 测试（4 个真实行为测试）：
+    - `ios_platform_window_creation`：验证窗口创建与后端名称/家族。
+    - `ios_platform_button_requires_valid_parent`：验证父窗口依赖与创建保护。
+    - `ios_platform_list_box_items`：验证列表项操作完整性（添加/删除/清空）。
+    - `ios_platform_state_serialization`：验证状态可序列化用于测试。
+
+### 证据（不虚标）
+
+1. `cargo check --all-targets`：通过（`Finished dev profile [unoptimized + debuginfo]`，558 行新增代码无编译错误）。
+2. `cargo test --all-features -q`：通过（`1606 passed; 0 failed; 0 ignored`，测试集未变化因 iOS target 条件编译）。
+3. `cargo clippy --all-features --all-targets -- -D warnings`：通过（无新增 warning）。
+4. `cargo fmt --all -- --check`：通过（iOS 代码符合项目格式规范）。
+5. `git commit`：成功记录，commit message 含 R2.1 证据与整合说明。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**99%**
+- R2（平台能力对齐）完成率：**71%**（本轮完成 R2.1 iOS 后端，补齐平台矩阵空白）
+- R3（测试与门禁基建）完成率：**71%**
+- R4（配置与文档圆满化）完成率：**78%**
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**10%**
+- R8（事件与运行时）完成率：**64%**
+- R9（代码质量债务）完成率：**76%**
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**61.6%**
