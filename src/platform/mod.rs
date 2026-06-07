@@ -16,6 +16,9 @@ pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+/// Platform accessibility bridges (macOS, Windows, Linux).
+pub mod accessibility;
+
 // Internal sub-modules (split from monolithic mod.rs)
 mod contract;
 /// Device class detection and adaptive layout support (BLUE8 P4-6).

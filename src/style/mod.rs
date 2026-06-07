@@ -1,10 +1,12 @@
 //! Style system primitives.
 pub mod animation;
 pub mod gradient;
+pub mod selector;
 pub mod theme_state;
 use crate::core::{Color, Font, Size};
 pub use animation::*;
 pub use gradient::*;
+pub use selector::*;
 pub use theme_state::*;
 /// Per-side padding values around widget content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +259,66 @@ impl WidgetStyle {
         self.background_gradient = Some(g);
         self
     }
+
+    /// Create a child style by inheriting non-set properties from a parent style.
+    /// Properties that are `None` in `self` fall back to the parent's values.
+    pub fn inherit_from(&self, parent: &WidgetStyle) -> WidgetStyle {
+        WidgetStyle {
+            background_color: self.background_color.or(parent.background_color),
+            background_gradient: self
+                .background_gradient
+                .clone()
+                .or(parent.background_gradient.clone()),
+            text_color: self.text_color.or(parent.text_color),
+            font: self.font.clone().or(parent.font.clone()),
+            border_color: self.border_color.or(parent.border_color),
+            border_width: if self.border_width > 0 {
+                self.border_width
+            } else {
+                parent.border_width
+            },
+            border_radius: if self.border_radius > 0 {
+                self.border_radius
+            } else {
+                parent.border_radius
+            },
+            padding: self.padding,
+            margin: self.margin.clone(),
+            shadow: self.shadow.clone().or(parent.shadow.clone()),
+            touch_target: self.touch_target.or(parent.touch_target),
+        }
+    }
+
+    /// Merge another style into this one: set each property if it's `None` (or default).
+    pub fn merge(&mut self, other: &WidgetStyle) {
+        if self.background_color.is_none() {
+            self.background_color = other.background_color;
+        }
+        if self.background_gradient.is_none() {
+            self.background_gradient.clone_from(&other.background_gradient);
+        }
+        if self.text_color.is_none() {
+            self.text_color = other.text_color;
+        }
+        if self.font.is_none() {
+            self.font.clone_from(&other.font);
+        }
+        if self.border_color.is_none() {
+            self.border_color = other.border_color;
+        }
+        if self.border_width == 0 {
+            self.border_width = other.border_width;
+        }
+        if self.border_radius == 0 {
+            self.border_radius = other.border_radius;
+        }
+        if self.shadow.is_none() {
+            self.shadow = other.shadow.clone();
+        }
+        if self.touch_target.is_none() {
+            self.touch_target = other.touch_target;
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -272,5 +334,36 @@ mod tests {
     fn padding_and_margin_support_symmetric_builders() {
         assert_eq!(Padding::symmetric(6, 2), Padding::new(6, 2, 6, 2));
         assert_eq!(Margin::symmetric(3, 5), Margin::new(3, 5, 3, 5));
+    }
+    #[test]
+    fn inherit_from_falls_back_to_parent() {
+        let parent =
+            WidgetStyle::default().with_background(Color::RED).with_text_color(Color::BLUE);
+        let child = WidgetStyle::default();
+        let inherited = child.inherit_from(&parent);
+        assert_eq!(inherited.background_color, Some(Color::RED));
+        assert_eq!(inherited.text_color, Some(Color::BLUE));
+    }
+    #[test]
+    fn inherit_from_child_takes_precedence() {
+        let parent = WidgetStyle::default().with_background(Color::RED);
+        let child = WidgetStyle::default().with_background(Color::GREEN);
+        let inherited = child.inherit_from(&parent);
+        assert_eq!(inherited.background_color, Some(Color::GREEN));
+    }
+    #[test]
+    fn merge_updates_missing_properties() {
+        let mut base = WidgetStyle::default().with_background(Color::RED);
+        let overlay = WidgetStyle::default().with_text_color(Color::BLUE);
+        base.merge(&overlay);
+        assert_eq!(base.background_color, Some(Color::RED));
+        assert_eq!(base.text_color, Some(Color::BLUE));
+    }
+    #[test]
+    fn merge_does_not_override_existing() {
+        let mut base = WidgetStyle::default().with_background(Color::RED);
+        let overlay = WidgetStyle::default().with_background(Color::GREEN);
+        base.merge(&overlay);
+        assert_eq!(base.background_color, Some(Color::RED)); // unchanged
     }
 }

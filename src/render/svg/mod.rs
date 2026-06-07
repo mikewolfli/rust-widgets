@@ -21,6 +21,7 @@ use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
 use crate::render::core::types::{ShapedText, TextMetrics};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
+use crate::style::gradient::GradientType;
 use convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
 
 mod convert;
@@ -35,12 +36,20 @@ pub struct SvgPaintBackend {
     elements: Vec<String>,
     clip_depth: u32,
     svg_output: Option<String>,
+    gradient_counter: u32,
 }
 
 impl SvgPaintBackend {
     /// Create a new SVG backend with the given canvas size.
     pub fn new(size: Size) -> Self {
-        Self { size, dpi_scale: 1.0, elements: Vec::new(), clip_depth: 0, svg_output: None }
+        Self {
+            size,
+            dpi_scale: 1.0,
+            elements: Vec::new(),
+            clip_depth: 0,
+            svg_output: None,
+            gradient_counter: 0,
+        }
     }
 
     /// Finalize and retrieve the full SVG document string.
@@ -277,7 +286,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Text ───────────────────────────────────────────────────
-            RenderCommand::DrawText { origin, text, font, color } => {
+            RenderCommand::DrawText { origin, text, font, color, .. } => {
                 self.push_element(format!(
                     r#"<text x="{}" y="{}" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
                     origin.x,
@@ -336,6 +345,101 @@ impl PaintBackend for SvgPaintBackend {
                     self.clip_depth -= 1;
                 }
             }
+
+            // ── Gradient ────────────────────────────────────────────────
+            RenderCommand::DrawGradient { rect, gradient } => {
+                self.gradient_counter += 1;
+                let gid = format!("g{}", self.gradient_counter);
+                let mut def = String::new();
+                match gradient.gradient_type {
+                    GradientType::Linear => {
+                        def.push_str(&format!(
+                            r##"<linearGradient id="{}" x1="{}" y1="{}" x2="{}" y2="{}">"##,
+                            gid,
+                            gradient.start_point.x,
+                            gradient.start_point.y,
+                            gradient.end_point.x,
+                            gradient.end_point.y
+                        ));
+                    }
+                    GradientType::Radial => {
+                        def.push_str(&format!(
+                            r##"<radialGradient id="{}" cx="{}" cy="{}" r="{}">"##,
+                            gid, gradient.center.x, gradient.center.y, gradient.radius
+                        ));
+                    }
+                    GradientType::Conic => {
+                        // SVG does not natively support conic gradients; approximate with linear.
+                        def.push_str(&format!(
+                            r##"<linearGradient id="{}" x1="{}" y1="{}" x2="{}" y2="{}">"##,
+                            gid,
+                            rect.x as f32,
+                            rect.y as f32,
+                            (rect.x + rect.width as i32) as f32,
+                            (rect.y + rect.height as i32) as f32
+                        ));
+                    }
+                }
+                for stop in &gradient.stops {
+                    let hex =
+                        format!("#{:02x}{:02x}{:02x}", stop.color.r, stop.color.g, stop.color.b);
+                    let alpha = stop.color.a as f32 / 255.0;
+                    def.push_str(&format!(
+                        r##"<stop offset="{:.3}" stop-color="{}" stop-opacity="{:.3}"/>"##,
+                        stop.position, hex, alpha
+                    ));
+                }
+                match gradient.gradient_type {
+                    GradientType::Linear | GradientType::Conic => {
+                        def.push_str("</linearGradient>");
+                    }
+                    GradientType::Radial => {
+                        def.push_str("</radialGradient>");
+                    }
+                }
+                self.push_element(format!("<defs>{}</defs>", def));
+                self.push_element(format!(
+                    r##"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#{})" />"##,
+                    rect.x, rect.y, rect.width, rect.height, gid
+                ));
+            }
+
+            // ── Arc ─────────────────────────────────────────────────────
+            RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
+                // Convert arc to SVG path element.
+                let large_arc =
+                    if (end_angle - start_angle).abs() > std::f32::consts::PI { 1 } else { 0 };
+                let start_x = center.x + (*radius as f32 * start_angle.cos()) as i32;
+                let start_y = center.y + (*radius as f32 * start_angle.sin()) as i32;
+                let end_x = center.x + (*radius as f32 * end_angle.cos()) as i32;
+                let end_y = center.y + (*radius as f32 * end_angle.sin()) as i32;
+                let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
+                let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
+                self.push_element(format!(
+                    r##"<path d="M {} {} A {} {} 0 {} 1 {} {}" fill="{}" stroke="{}" />"##,
+                    start_x, start_y, radius, radius, large_arc, end_x, end_y, fill, stroke
+                ));
+            }
+
+            // ── Path ────────────────────────────────────────────────────
+            RenderCommand::DrawPath { points, closed, color, filled, width } => {
+                if points.is_empty() {
+                    return;
+                }
+                let mut d = format!("M {} {}", points[0].x, points[0].y);
+                for pt in &points[1..] {
+                    d.push_str(&format!(" L {} {}", pt.x, pt.y));
+                }
+                if *closed {
+                    d.push_str(" Z");
+                }
+                let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
+                let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
+                self.push_element(format!(
+                    r##"<path d="{}" fill="{}" stroke="{}" stroke-width="{}" />"##,
+                    d, fill, stroke, width
+                ));
+            }
         }
     }
 
@@ -380,7 +484,7 @@ impl PaintBackend for SvgPaintBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Color, Font, Point, Rect};
+    use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 
     #[test]
     fn svg_backend_creates_valid_document() {
@@ -406,6 +510,7 @@ mod tests {
             text: "<hello> & world".to_string(),
             font: Font::default_ui(),
             color: Color::BLACK,
+            alignment: HorizontalAlignment::Left,
         });
         svg.end_frame();
         let result = svg.finish();
@@ -468,6 +573,7 @@ mod tests {
             text: "Test".to_string(),
             font: Font::default_ui(),
             color: Color::BLACK,
+            alignment: HorizontalAlignment::Left,
         });
         svg.execute_command(&RenderCommand::PushClip { x: 0, y: 0, width: 100, height: 100 });
         svg.execute_command(&RenderCommand::PopClip);

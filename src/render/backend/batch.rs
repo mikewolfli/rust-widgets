@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::render::RenderCommand;
 
 use super::paint::{PaintBackend, SoftwarePaintBackend};
@@ -248,6 +248,7 @@ impl BatchState {
                     text: text.clone(),
                     font,
                     color: *color,
+                    alignment: HorizontalAlignment::Left,
                 }
             }
 

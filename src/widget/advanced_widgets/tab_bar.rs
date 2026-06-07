@@ -571,3 +571,189 @@ impl Draw for TabBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn tabbar_creation_defaults() {
+        let tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert!(tb.is_empty());
+        assert_eq!(tb.count(), 0);
+        assert_eq!(tb.current_index(), None);
+        assert!(!tb.closable());
+        assert!(!tb.movable());
+        assert_eq!(tb.tab_min_width(), 40);
+        assert_eq!(tb.tab_max_width(), 200);
+    }
+
+    #[test]
+    fn tabbar_add_tab() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        let idx = tb.add_tab("Tab 1".to_string());
+        assert_eq!(idx, 0);
+        assert_eq!(tb.count(), 1);
+        assert_eq!(tb.current_index(), Some(0));
+        assert_eq!(tb.tab_text(0), Some("Tab 1"));
+    }
+
+    #[test]
+    fn tabbar_multiple_tabs() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("First".to_string());
+        tb.add_tab("Second".to_string());
+        tb.add_tab("Third".to_string());
+        assert_eq!(tb.count(), 3);
+        assert_eq!(tb.tab_text(0), Some("First"));
+        assert_eq!(tb.tab_text(1), Some("Second"));
+        assert_eq!(tb.tab_text(2), Some("Third"));
+    }
+
+    #[test]
+    fn tabbar_insert_tab() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("C".to_string());
+        tb.insert_tab(1, "B".to_string());
+        assert_eq!(tb.count(), 3);
+        assert_eq!(tb.tab_text(1), Some("B"));
+    }
+
+    #[test]
+    fn tabbar_remove_tab() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("B".to_string());
+        tb.add_tab("C".to_string());
+        tb.remove_tab(1);
+        assert_eq!(tb.count(), 2);
+        assert_eq!(tb.tab_text(1), Some("C"));
+    }
+
+    #[test]
+    fn tabbar_clear() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("B".to_string());
+        tb.clear();
+        assert!(tb.is_empty());
+        assert_eq!(tb.current_index(), None);
+    }
+
+    #[test]
+    fn tabbar_set_current_index() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("B".to_string());
+        tb.set_current_index(1);
+        assert_eq!(tb.current_index(), Some(1));
+        tb.set_current_index(0);
+        assert_eq!(tb.current_index(), Some(0));
+    }
+
+    #[test]
+    fn tabbar_set_tab_text() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("Old".to_string());
+        tb.set_tab_text(0, "New".to_string());
+        assert_eq!(tb.tab_text(0), Some("New"));
+    }
+
+    #[test]
+    fn tabbar_tab_enabled() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("Tab".to_string());
+        assert_eq!(tb.tab_enabled(0), Some(true));
+        tb.set_tab_enabled(0, false);
+        assert_eq!(tb.tab_enabled(0), Some(false));
+    }
+
+    #[test]
+    fn tabbar_closable_movable() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert!(!tb.closable());
+        tb.set_closable(true);
+        assert!(tb.closable());
+        assert!(!tb.movable());
+        tb.set_movable(true);
+        assert!(tb.movable());
+    }
+
+    #[test]
+    fn tabbar_tab_position_shape() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert_eq!(tb.tab_position(), TabPosition::North);
+        tb.set_tab_position(TabPosition::South);
+        assert_eq!(tb.tab_position(), TabPosition::South);
+        assert_eq!(tb.tab_shape(), TabShape::Rounded);
+        tb.set_tab_shape(TabShape::Rectangular);
+        assert_eq!(tb.tab_shape(), TabShape::Rectangular);
+    }
+
+    #[test]
+    fn tabbar_min_max_width() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.set_tab_min_width(50);
+        assert_eq!(tb.tab_min_width(), 50);
+        tb.set_tab_max_width(100);
+        assert_eq!(tb.tab_max_width(), 100);
+    }
+
+    #[test]
+    fn tabbar_signal_accessors() {
+        let tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        let _ = &tb.current_changed;
+        let _ = &tb.tab_close_requested;
+        let _ = &tb.tab_moved;
+    }
+
+    #[test]
+    fn tabbar_geometry_delegation() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.set_geometry(Rect::new(10, 10, 500, 30));
+        assert_eq!(tb.geometry(), Rect::new(10, 10, 500, 30));
+    }
+
+    #[test]
+    fn tabbar_visibility() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert!(tb.is_visible());
+        tb.hide();
+        assert!(!tb.is_visible());
+        tb.show();
+        assert!(tb.is_visible());
+    }
+
+    #[test]
+    fn tabbar_id_kind() {
+        let a = TabBar::new(Rect::new(0, 0, 400, 24));
+        let b = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert_ne!(a.id(), b.id());
+        assert_eq!(a.kind(), WidgetKind::TabBar);
+    }
+
+    #[test]
+    fn tabbar_draw_produces_svg() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("One".to_string());
+        tb.add_tab("Two".to_string());
+        tb.set_current_index(0);
+        let svg = crate::widget::svg::render_to_svg(&mut tb);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.len() > 100);
+    }
+
+    #[test]
+    fn tabbar_mouse_click_selects_tab() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("First".to_string());
+        tb.add_tab("Second".to_string());
+        // Click on the first tab area
+        tb.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        assert_eq!(tb.current_index(), Some(0));
+        // Hover sets hovered_index
+        tb.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
+    }
+}

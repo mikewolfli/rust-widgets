@@ -80,6 +80,120 @@ pub fn rasterize_draw_commands_rgba8(
                     clip_rect,
                 );
             }
+            WgpuDrawCommand::FillRoundedRect { rect, radius, color, clip } => {
+                if *radius == 0 || rect.width == 0 || rect.height == 0 {
+                    continue;
+                }
+                let clip_rect = effective_clip(framebuffer, *rect, *clip);
+                fill_rounded_rect_cpu_rgba8(&mut pixels, width, *rect, *radius, *color, clip_rect);
+            }
+            WgpuDrawCommand::StrokeRoundedRect { rect, radius, color, thickness, clip } => {
+                if *radius == 0 || *thickness == 0 || rect.width == 0 || rect.height == 0 {
+                    continue;
+                }
+                let clip_rect = effective_clip(framebuffer, *rect, *clip);
+                stroke_rounded_rect_cpu_rgba8(
+                    &mut pixels,
+                    width,
+                    *rect,
+                    *radius,
+                    *color,
+                    *thickness,
+                    clip_rect,
+                );
+            }
+            WgpuDrawCommand::DrawLine { from, to, color, width: line_width, clip } => {
+                if *line_width == 0 {
+                    continue;
+                }
+                let clip_rect = effective_clip(framebuffer, rect_for_line(*from, *to), *clip);
+                draw_line_cpu_rgba8(&mut pixels, width, *from, *to, *color, *line_width, clip_rect);
+            }
+            WgpuDrawCommand::FillCircle { center, radius: r, color, clip } => {
+                if *r == 0 {
+                    continue;
+                }
+                let circle_bounds = bbox_for_circle(*center, *r);
+                let clip_rect = effective_clip(framebuffer, circle_bounds, *clip);
+                fill_circle_cpu_rgba8(&mut pixels, width, *center, *r, *color, clip_rect);
+            }
+            WgpuDrawCommand::DrawCircle { center, radius: r, color, width: circle_width, clip } => {
+                if *r == 0 || *circle_width == 0 {
+                    continue;
+                }
+                let circle_bounds = bbox_for_circle(*center, *r);
+                let clip_rect = effective_clip(framebuffer, circle_bounds, *clip);
+                draw_circle_cpu_rgba8(
+                    &mut pixels,
+                    width,
+                    *center,
+                    *r,
+                    *color,
+                    *circle_width,
+                    clip_rect,
+                );
+            }
+            WgpuDrawCommand::DrawArc {
+                center,
+                radius: r,
+                start_angle,
+                end_angle,
+                color,
+                filled,
+                clip,
+            } => {
+                if *r == 0 {
+                    continue;
+                }
+                let arc_bounds = bbox_for_circle(*center, *r);
+                let clip_rect = effective_clip(framebuffer, arc_bounds, *clip);
+                draw_arc_cpu_rgba8(
+                    &mut pixels,
+                    width,
+                    *center,
+                    *r,
+                    *start_angle,
+                    *end_angle,
+                    *color,
+                    *filled,
+                    clip_rect,
+                );
+            }
+            WgpuDrawCommand::DrawPath {
+                points,
+                closed,
+                color,
+                filled,
+                width: path_width,
+                clip,
+            } => {
+                if points.len() < 2 {
+                    continue;
+                }
+                let path_bounds = bbox_for_path(points);
+                let clip_rect = effective_clip(framebuffer, path_bounds, *clip);
+                draw_path_cpu_rgba8(
+                    &mut pixels,
+                    width,
+                    points,
+                    *closed,
+                    *color,
+                    *filled,
+                    *path_width,
+                    clip_rect,
+                );
+            }
+            WgpuDrawCommand::DrawGradient { rect, gradient_data, clip } => {
+                if rect.width == 0 || rect.height == 0 || gradient_data.is_empty() {
+                    continue;
+                }
+                let clip_rect = effective_clip(framebuffer, *rect, *clip);
+                draw_gradient_cpu_rgba8(&mut pixels, width, *rect, gradient_data, clip_rect);
+            }
+            WgpuDrawCommand::PushClip { .. } | WgpuDrawCommand::PopClip => {
+                // Clip stack management is not yet supported in the CPU rasterizer.
+                // These are accepted as no-ops.
+            }
         }
     }
     Ok(pixels)
@@ -207,6 +321,400 @@ fn draw_image_scaled_cpu_rgba8(
                 a: source_rgba8[src_offset + 3],
             };
             set_pixel_cpu_rgba8(pixels, width, x as u32, y as u32, color);
+        }
+    }
+}
+fn rect_for_line(from: (i32, i32), to: (i32, i32)) -> PixelRect {
+    let x = from.0.min(to.0);
+    let y = from.1.min(to.1);
+    let w = (from.0.max(to.0) - x).unsigned_abs();
+    let h = (from.1.max(to.1) - y).unsigned_abs();
+    PixelRect { x, y, width: w.max(1), height: h.max(1) }
+}
+fn bbox_for_circle(center: (i32, i32), radius: u32) -> PixelRect {
+    let r = radius as i32;
+    PixelRect { x: center.0 - r, y: center.1 - r, width: (r * 2) as u32, height: (r * 2) as u32 }
+}
+fn bbox_for_path(points: &[(i32, i32)]) -> PixelRect {
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for &(px, py) in points {
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+    }
+    if min_x > max_x || min_y > max_y {
+        return PixelRect { x: 0, y: 0, width: 0, height: 0 };
+    }
+    PixelRect { x: min_x, y: min_y, width: (max_x - min_x) as u32, height: (max_y - min_y) as u32 }
+}
+fn fill_rounded_rect_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    rect: PixelRect,
+    radius: u32,
+    color: Rgba8,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
+    let r2 = r * r;
+    let x_start = clip_rect.x.max(rect.x);
+    let y_start = clip_rect.y.max(rect.y);
+    let x_end = clip_rect.right().min(rect.right());
+    let y_end = clip_rect.bottom().min(rect.bottom());
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            // Check if pixel is inside the rounded rect:
+            // top-left corner
+            let inside = if x < rect.x + r && y < rect.y + r {
+                let dx = rect.x + r - x;
+                let dy = rect.y + r - y;
+                dx * dx + dy * dy <= r2
+            } else if x >= rect.right() - r && y < rect.y + r {
+                let dx = x - (rect.right() - r - 1);
+                let dy = rect.y + r - y;
+                dx * dx + dy * dy <= r2
+            } else if x < rect.x + r && y >= rect.bottom() - r {
+                let dx = rect.x + r - x;
+                let dy = y - (rect.bottom() - r - 1);
+                dx * dx + dy * dy <= r2
+            } else if x >= rect.right() - r && y >= rect.bottom() - r {
+                let dx = x - (rect.right() - r - 1);
+                let dy = y - (rect.bottom() - r - 1);
+                dx * dx + dy * dy <= r2
+            } else {
+                true
+            };
+            if inside {
+                set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            }
+        }
+    }
+}
+#[allow(clippy::nonminimal_bool)]
+fn stroke_rounded_rect_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    rect: PixelRect,
+    radius: u32,
+    color: Rgba8,
+    thickness: u32,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
+    let t = thickness as i32;
+    let outer_r2 = (r + t) * (r + t);
+    let inner_r2 = (r - t).max(0) * (r - t).max(0);
+    let x_start = clip_rect.x.max(rect.x);
+    let y_start = clip_rect.y.max(rect.y);
+    let x_end = clip_rect.right().min(rect.right());
+    let y_end = clip_rect.bottom().min(rect.bottom());
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let in_corner_zone = (x < rect.x + r + t && y < rect.y + r + t)
+                || (x >= rect.right() - r - t && y < rect.y + r + t)
+                || (x < rect.x + r + t && y >= rect.bottom() - r - t)
+                || (x >= rect.right() - r - t && y >= rect.bottom() - r - t);
+            let visible = if in_corner_zone {
+                // Four corner quadrants
+                let (cx, cy) = if x < rect.x + r + t && y < rect.y + r + t {
+                    (rect.x + r, rect.y + r)
+                } else if x >= rect.right() - r - t && y < rect.y + r + t {
+                    (rect.right() - r - 1, rect.y + r)
+                } else if x < rect.x + r + t && y >= rect.bottom() - r - t {
+                    (rect.x + r, rect.bottom() - r - 1)
+                } else {
+                    (rect.right() - r - 1, rect.bottom() - r - 1)
+                };
+                let dx = x - cx;
+                let dy = y - cy;
+                let d2 = dx * dx + dy * dy;
+                d2 <= outer_r2 && d2 >= inner_r2
+            } else {
+                // Straight edge sections
+                let on_top = y < rect.y + r + t && y >= rect.y + r;
+                let on_bottom = y >= rect.bottom() - r - t && y < rect.bottom() - r;
+                let on_left = x < rect.x + r + t && x >= rect.x + r;
+                let on_right = x >= rect.right() - r - t && x < rect.right() - r;
+                (on_top || on_bottom) && x >= rect.x + r && x < rect.right() - r
+                    || (on_left || on_right) && y >= rect.y + r && y < rect.bottom() - r
+            };
+            if visible {
+                set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            }
+        }
+    }
+}
+fn draw_line_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    from: (i32, i32),
+    to: (i32, i32),
+    color: Rgba8,
+    line_width: u32,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let (mut x0, mut y0) = from;
+    let (x1, y1) = to;
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let half_w = (line_width as i32 / 2).max(1);
+    loop {
+        // Draw a small square around each point for thickness
+        for thick_y in (y0 - half_w + 1)..=(y0 + half_w) {
+            for thick_x in (x0 - half_w + 1)..=(x0 + half_w) {
+                if thick_x >= clip_rect.x
+                    && thick_x < clip_rect.right()
+                    && thick_y >= clip_rect.y
+                    && thick_y < clip_rect.bottom()
+                {
+                    set_pixel_cpu_rgba8(pixels, fb_width, thick_x as u32, thick_y as u32, color);
+                }
+            }
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+fn fill_circle_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    center: (i32, i32),
+    radius: u32,
+    color: Rgba8,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let r = radius as i32;
+    let r2 = r * r;
+    let x_start = clip_rect.x.max(center.0 - r);
+    let y_start = clip_rect.y.max(center.1 - r);
+    let x_end = clip_rect.right().min(center.0 + r + 1);
+    let y_end = clip_rect.bottom().min(center.1 + r + 1);
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let dx = x - center.0;
+            let dy = y - center.1;
+            if dx * dx + dy * dy <= r2 {
+                set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            }
+        }
+    }
+}
+fn draw_circle_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    center: (i32, i32),
+    radius: u32,
+    color: Rgba8,
+    width: u32,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let r = radius as i32;
+    let outer_r2 = (r + width as i32) * (r + width as i32);
+    let inner_r2 = (r - width as i32).max(0) * (r - width as i32).max(0);
+    let x_start = clip_rect.x.max(center.0 - r - width as i32);
+    let y_start = clip_rect.y.max(center.1 - r - width as i32);
+    let x_end = clip_rect.right().min(center.0 + r + width as i32 + 1);
+    let y_end = clip_rect.bottom().min(center.1 + r + width as i32 + 1);
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let dx = x - center.0;
+            let dy = y - center.1;
+            let d2 = dx * dx + dy * dy;
+            if d2 <= outer_r2 && d2 >= inner_r2 {
+                set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            }
+        }
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn draw_arc_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    center: (i32, i32),
+    radius: u32,
+    start_angle: f32,
+    end_angle: f32,
+    color: Rgba8,
+    filled: bool,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let r = radius as i32;
+    let r2 = r * r;
+    let x_start = clip_rect.x.max(center.0 - r);
+    let y_start = clip_rect.y.max(center.1 - r);
+    let x_end = clip_rect.right().min(center.0 + r + 1);
+    let y_end = clip_rect.bottom().min(center.1 + r + 1);
+    let (sa, ea) = if (start_angle - end_angle).abs() < 0.001 {
+        // Full circle
+        (0.0, std::f32::consts::TAU)
+    } else {
+        let sa = start_angle.rem_euclid(std::f32::consts::TAU);
+        let mut ea = end_angle.rem_euclid(std::f32::consts::TAU);
+        // Normalise to a [sa, sa+TAU) range so ea > sa
+        if ea <= sa {
+            ea += std::f32::consts::TAU;
+        }
+        (sa, ea)
+    };
+    let is_full_circle = (ea - sa) >= std::f32::consts::TAU - 0.001;
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let dx = x - center.0;
+            let dy = y - center.1;
+            let d2 = dx * dx + dy * dy;
+            let inside_circle = if filled {
+                d2 <= r2
+            } else {
+                let outer_r2 = (r + 1) * (r + 1);
+                let inner_r2 = (r - 1).max(0) * (r - 1).max(0);
+                d2 <= outer_r2 && d2 >= inner_r2
+            };
+            if !inside_circle {
+                continue;
+            }
+            if !is_full_circle {
+                let angle = (dy as f64).atan2(dx as f64) as f32;
+                let angle = angle.rem_euclid(std::f32::consts::TAU);
+                let angle = if angle < sa { angle + std::f32::consts::TAU } else { angle };
+                if angle < sa || angle > ea {
+                    continue;
+                }
+            }
+            set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+        }
+    }
+}
+fn draw_path_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    points: &[(i32, i32)],
+    closed: bool,
+    color: Rgba8,
+    filled: bool,
+    path_width: u32,
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    if filled && points.len() >= 3 {
+        // Simple scanline fill for convex polygons
+        let min_y = clip_rect.y.max(points.iter().map(|&(_, y)| y).min().unwrap_or(0));
+        let max_y = clip_rect.bottom().min(points.iter().map(|&(_, y)| y).max().unwrap_or(0) + 1);
+        let n = points.len();
+        for y in min_y..max_y {
+            let mut intersections = Vec::new();
+            for i in 0..n {
+                let (x1, y1) = points[i];
+                let (x2, y2) = points[(i + 1) % n];
+                if (y1 <= y && y2 > y) || (y2 <= y && y1 > y) {
+                    let t = (y - y1) as f64 / (y2 - y1) as f64;
+                    let ix = x1 as f64 + t * (x2 - x1) as f64;
+                    intersections.push(ix as i32);
+                }
+            }
+            intersections.sort_unstable();
+            for pair in intersections.chunks(2) {
+                if pair.len() == 2 {
+                    let x_start = pair[0].max(clip_rect.x);
+                    let x_end = pair[1].min(clip_rect.right());
+                    for x in x_start..x_end {
+                        set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+                    }
+                }
+            }
+        }
+    } else {
+        // Draw line segments
+        let iter_len = if closed { points.len() } else { points.len() - 1 };
+        for i in 0..iter_len {
+            let from = points[i];
+            let to = points[(i + 1) % points.len()];
+            let line_clip = if path_width > 0 {
+                let r = rect_for_line(from, to);
+                r.intersect(clip_rect)
+            } else {
+                None
+            };
+            draw_line_cpu_rgba8(pixels, fb_width, from, to, color, path_width, line_clip);
+        }
+    }
+}
+fn draw_gradient_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    rect: PixelRect,
+    gradient_data: &[u8],
+    clip_rect: Option<PixelRect>,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    // gradient_data is treated as a colour-stop table: [r,g,b,a, r,g,b,a, ...]
+    // linearly interpolated from top to bottom of the rect
+    let stops = gradient_data.len() / 4;
+    if stops == 0 {
+        return;
+    }
+    let x_start = clip_rect.x.max(rect.x);
+    let y_start = clip_rect.y.max(rect.y);
+    let x_end = clip_rect.right().min(rect.right());
+    let y_end = clip_rect.bottom().min(rect.bottom());
+    for y in y_start..y_end {
+        let t =
+            if rect.height <= 1 { 0.0 } else { ((y - rect.y) as f64) / ((rect.height - 1) as f64) };
+        let idx = ((stops as f64 - 1.0) * t).clamp(0.0, (stops - 1) as f64) as usize;
+        let color = Rgba8 {
+            r: gradient_data[idx * 4],
+            g: gradient_data[idx * 4 + 1],
+            b: gradient_data[idx * 4 + 2],
+            a: gradient_data[idx * 4 + 3],
+        };
+        for x in x_start..x_end {
+            set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
         }
     }
 }

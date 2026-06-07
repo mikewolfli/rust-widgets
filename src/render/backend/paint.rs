@@ -101,8 +101,8 @@ impl PaintBackend for SoftwarePaintBackend {
             RenderCommand::DrawCircleStroke { center, radius, color, width } => {
                 self.surface.draw_circle_with_width(*center, *radius, *color, *width)
             }
-            RenderCommand::DrawText { origin, text, font, color } => {
-                self.surface.draw_text(*origin, text, font, *color)
+            RenderCommand::DrawText { origin, text, font, color, alignment } => {
+                self.surface.draw_text(*origin, text, font, *color, *alignment)
             }
             RenderCommand::DrawImage { x, y, width, height, data } => {
                 self.surface.draw_image(*x, *y, *width, *height, data)
@@ -111,6 +111,15 @@ impl PaintBackend for SoftwarePaintBackend {
                 self.surface.push_clip(*x, *y, *width, *height)
             }
             RenderCommand::PopClip => self.surface.pop_clip(),
+            RenderCommand::DrawGradient { rect, gradient } => {
+                self.surface.fill_rect_gradient(*rect, gradient);
+            }
+            RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
+                self.surface.draw_arc(*center, *radius, *start_angle, *end_angle, *color, *filled);
+            }
+            RenderCommand::DrawPath { points, closed, color, filled, width } => {
+                self.surface.draw_path(points, *closed, *color, *filled, *width);
+            }
         }
     }
     fn size(&self) -> Size {
@@ -145,7 +154,7 @@ impl PaintBackend for SoftwarePaintBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Color, Point, Rect, Size};
+    use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 
     // ── SoftwarePaintBackend construction ───────────────────────────────
 
@@ -379,6 +388,7 @@ mod tests {
             text: "Hello".to_string(),
             font,
             color: Color::BLACK,
+            alignment: HorizontalAlignment::Left,
         });
         backend.end_frame();
 

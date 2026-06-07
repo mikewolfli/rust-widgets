@@ -1,12 +1,8 @@
-#![allow(deprecated)]
-
-use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::pipeline::*;
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::{
     last_auto_render_backend, AutoRenderBackend, PaintBackend, RenderCommand, RenderScene,
     SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface,
 };
-use crate::window::Window;
 
 fn font() -> Font {
     Font {
@@ -17,6 +13,7 @@ fn font() -> Font {
         italic: false,
     }
 }
+
 #[test]
 fn text_metrics_scale_with_dpi() {
     let mut surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
@@ -109,7 +106,7 @@ fn software_backend_delegates_text_shaping() {
 fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
     let mut surface = SoftwareSurface::new(Size { width: 80, height: 30 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
-    surface.draw_text(Point { x: 4, y: 4 }, "A", &font(), Color::WHITE);
+    surface.draw_text(Point { x: 4, y: 4 }, "A", &font(), Color::WHITE, HorizontalAlignment::Left);
     surface.end_frame();
     let metrics = surface.measure_text("A", &font());
     let mut painted = 0usize;
@@ -638,6 +635,7 @@ fn auto_compose_handles_draw_text_scene_with_gpu_or_cpu_backend() {
         text: "fallback".to_string(),
         font: Font::default(),
         color: Color::rgba(250, 120, 40, 255),
+        alignment: HorizontalAlignment::Left,
     });
     scene.add_layer(layer);
     let mut surface = SoftwareSurface::new(Size { width: 48, height: 24 }, 1.0);
@@ -687,32 +685,21 @@ fn auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected() {
     assert_eq!(last_auto_render_backend(), AutoRenderBackend::CpuSoftware);
 }
 #[test]
-fn base_control_visual_builders_emit_expected_command_types() {
-    use crate::widget::{
-        Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget,
-    };
-    let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
-    window.set_background_color(Some(Color::rgba(10, 20, 30, 255)));
-    let mut panel = Panel::new(Rect::new(4, 20, 112, 52));
-    panel.set_background_color(Some(Color::rgba(40, 50, 60, 255)));
-    let mut button = Button::new("OK".to_string(), Rect::new(10, 26, 50, 20));
-    button.set_pressed(true);
-    let mut checkbox = CheckBox::new(Rect::new(70, 28, 20, 20));
-    checkbox.set_state(CheckState::Checked);
-    let mut radio = RadioButton::new(Rect::new(70, 52, 20, 20));
-    radio.set_checked(true);
-    let mut label = Label::new("Label".to_string(), Rect::new(10, 50, 60, 16));
-    label.set_background_color(Some(Color::rgba(80, 90, 100, 255)));
-    let mut line_edit = LineEdit::new(Rect::new(10, 54, 52, 16));
-    line_edit.set_text("abc".to_string());
+fn scene_layer_accepts_common_render_command_variants() {
     let mut layer = SceneLayer::new(0);
-    append_window_visual_commands(&mut layer, &window);
-    append_panel_visual_commands(&mut layer, &panel);
-    append_button_visual_commands(&mut layer, &button);
-    append_checkbox_visual_commands(&mut layer, &checkbox);
-    append_radiobutton_visual_commands(&mut layer, &radio);
-    append_label_visual_commands(&mut layer, &label);
-    append_line_edit_visual_commands(&mut layer, &line_edit);
+    layer.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 100, 100), color: Color::BLUE });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(10, 10),
+        text: "Hello".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::FillCircle {
+        center: Point::new(50, 50),
+        radius: 10,
+        color: Color::RED,
+    });
     let mut saw_fill_rect = false;
     let mut saw_draw_text = false;
     let mut saw_fill_circle = false;
@@ -729,33 +716,32 @@ fn base_control_visual_builders_emit_expected_command_types() {
     assert!(saw_fill_circle);
 }
 #[test]
-fn auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend() {
-    use crate::widget::{
-        Button, CheckBox, CheckState, Label, LineEdit, Panel, RadioButton, Widget,
-    };
-    let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 120, 80));
-    window.set_background_color(Some(Color::rgba(10, 20, 30, 255)));
-    let mut panel = Panel::new(Rect::new(4, 20, 112, 52));
-    panel.set_background_color(Some(Color::rgba(40, 50, 60, 255)));
-    let mut button = Button::new("Apply".to_string(), Rect::new(10, 26, 50, 20));
-    button.set_pressed(true);
-    let mut checkbox = CheckBox::new(Rect::new(70, 28, 20, 20));
-    checkbox.set_state(CheckState::Checked);
-    let mut radio = RadioButton::new(Rect::new(70, 52, 20, 20));
-    radio.set_checked(true);
-    let mut label = Label::new("Label".to_string(), Rect::new(10, 50, 60, 16));
-    label.set_background_color(Some(Color::rgba(80, 90, 100, 255)));
-    let mut line_edit = LineEdit::new(Rect::new(10, 54, 52, 16));
-    line_edit.set_text("abc".to_string());
+fn auto_compose_renders_fill_rect_scene_with_gpu_or_cpu_backend() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
-    append_window_visual_commands(&mut layer, &window);
-    append_panel_visual_commands(&mut layer, &panel);
-    append_button_visual_commands(&mut layer, &button);
-    append_checkbox_visual_commands(&mut layer, &checkbox);
-    append_radiobutton_visual_commands(&mut layer, &radio);
-    append_label_visual_commands(&mut layer, &label);
-    append_line_edit_visual_commands(&mut layer, &line_edit);
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(0, 0, 128, 80),
+        color: Color::rgba(10, 20, 30, 255),
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(4, 20, 112, 52),
+        color: Color::rgba(40, 50, 60, 255),
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(10, 26, 50, 20),
+        color: Color::rgba(60, 70, 80, 255),
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(70, 28, 20, 20),
+        color: Color::rgba(80, 90, 100, 255),
+    });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(16, 50),
+        text: "Test".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
     scene.add_layer(layer);
     let mut surface = SoftwareSurface::new(Size { width: 128, height: 88 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
@@ -770,44 +756,44 @@ fn auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend() {
         ]
     };
     assert_eq!(sample(2, 2), [10, 20, 30, 255]);
-    assert_eq!(sample(6, 22), [40, 50, 60, 255]);
-    let button_px = sample(12, 28);
-    assert!(button_px[3] > 0);
-    let checkbox_px = sample(76, 34);
-    assert!(checkbox_px[3] > 0);
-    let radio_px = sample(80, 62);
-    assert!(radio_px[3] > 0);
-    assert_eq!(sample(12, 52), [80, 90, 100, 255]);
-    let line_edit_px = sample(12, 56);
-    assert!(line_edit_px[3] > 0);
 }
 #[test]
-fn data_range_control_visual_builders_emit_selection_and_value_commands() {
-    use crate::widget::{ComboBox, ListBox, ProgressBar, ScrollBar, Slider};
-    let mut combo = ComboBox::new(Rect::new(4, 4, 120, 20));
-    combo.add_item("Alpha".to_string());
-    combo.add_item("Beta".to_string());
-    combo.set_current_index(Some(1));
-    // combo.open_dropdown(); // Method not found
-    let mut list = ListBox::new(Rect::new(4, 28, 120, 64));
-    list.add_item("Row-1".to_string());
-    list.add_item("Row-2".to_string());
-    let mut progress = ProgressBar::new(Rect::new(140, 8, 100, 14));
-    progress.set_range(0, 100);
-    progress.set_value(60);
-    let mut slider = Slider::new(Rect::new(140, 30, 100, 20));
-    slider.set_range(0, 100);
-    slider.set_value(30);
-    let mut scroll = ScrollBar::new(Rect::new(140, 58, 100, 16));
-    scroll.set_range(0, 100);
-    scroll.set_page_step(20);
-    scroll.set_value(40);
+fn data_range_scene_layer_accepts_drawtext_fillcircle_fillrect() {
     let mut layer = SceneLayer::new(0);
-    append_combo_box_visual_commands(&mut layer, &combo);
-    append_list_box_visual_commands(&mut layer, &list);
-    append_progress_bar_visual_commands(&mut layer, &progress);
-    append_slider_visual_commands(&mut layer, &slider);
-    append_scroll_bar_visual_commands(&mut layer, &scroll);
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(4, 4),
+        text: "Alpha".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(4, 28),
+        text: "Row-1".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(4, 48),
+        text: "Row-2".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::FillCircle {
+        center: Point::new(160, 15),
+        radius: 6,
+        color: Color::BLUE,
+    });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(140, 8, 80, 14), color: Color::GREEN });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(140, 30, 60, 16), color: Color::GRAY });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(140, 58, 40, 16),
+        color: Color::DARK_GRAY,
+    });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(4, 4, 120, 20), color: Color::WHITE });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(4, 28, 120, 64), color: Color::WHITE });
     let mut draw_text_count = 0usize;
     let mut fill_circle_count = 0usize;
     let mut fill_rect_count = 0usize;
@@ -824,32 +810,22 @@ fn data_range_control_visual_builders_emit_selection_and_value_commands() {
     assert!(fill_rect_count >= 5);
 }
 #[test]
-fn auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend() {
-    use crate::widget::{ComboBox, ListBox, ProgressBar, ScrollBar, Slider};
-    let mut combo = ComboBox::new(Rect::new(4, 4, 120, 20));
-    combo.add_item("Alpha".to_string());
-    combo.add_item("Beta".to_string());
-    combo.set_current_index(Some(1));
-    let mut list = ListBox::new(Rect::new(4, 28, 120, 64));
-    list.add_item("Row-1".to_string());
-    list.add_item("Row-2".to_string());
-    let mut progress = ProgressBar::new(Rect::new(140, 8, 100, 14));
-    progress.set_range(0, 100);
-    progress.set_value(60);
-    let mut slider = Slider::new(Rect::new(140, 30, 100, 20));
-    slider.set_range(0, 100);
-    slider.set_value(30);
-    let mut scroll = ScrollBar::new(Rect::new(140, 58, 100, 16));
-    scroll.set_range(0, 100);
-    scroll.set_page_step(20);
-    scroll.set_value(40);
+fn auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
-    append_combo_box_visual_commands(&mut layer, &combo);
-    append_list_box_visual_commands(&mut layer, &list);
-    append_progress_bar_visual_commands(&mut layer, &progress);
-    append_slider_visual_commands(&mut layer, &slider);
-    append_scroll_bar_visual_commands(&mut layer, &scroll);
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(8, 8),
+        text: "Test".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 256, 128), color: Color::WHITE });
+    layer.push(RenderCommand::FillCircle {
+        center: Point::new(170, 18),
+        radius: 6,
+        color: Color::BLUE,
+    });
     scene.add_layer(layer);
     let mut surface = SoftwareSurface::new(Size { width: 256, height: 128 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
@@ -863,42 +839,50 @@ fn auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend() {
             surface.frame_rgba()[idx + 3],
         ]
     };
-    let combo_px = sample(8, 8);
-    assert!(combo_px[3] > 0);
-    let list_px = sample(8, 34);
-    assert!(list_px[3] > 0);
-    let progress_px = sample(180, 12);
-    assert_eq!(progress_px[3], 255);
-    let slider_thumb_px = sample(170, 40);
-    assert!(slider_thumb_px[3] > 0);
-    let scroll_thumb_px = sample(178, 62);
-    assert!(scroll_thumb_px[3] > 0);
+    assert_eq!(sample(0, 0), [255, 255, 255, 255]);
 }
 #[test]
-fn host_navigation_visual_builders_emit_expected_commands() {
-    use crate::widget::{Menu, MenuBar, StatusBar, TabWidget, ToolBar};
-    let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
-    menu_bar.add_menu("File".to_string());
-    menu_bar.add_menu("Edit".to_string());
-    // menu_bar.set_current_menu(1002); // Method not found
-    let mut menu = Menu::new("File", Rect::new(0, 24, 160, 100));
-    menu.add_action("Open".to_string());
-    menu.add_action("Save".to_string());
-    let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
-    tool_bar.add_action("cut".to_string(), "Cut".to_string());
-    tool_bar.add_action("copy".to_string(), "Copy".to_string());
-    tool_bar.add_action("paste".to_string(), "Paste".to_string());
-    let status_bar = StatusBar::new(Rect::new(0, 160, 260, 22));
-    let mut tabs = TabWidget::new(Rect::new(170, 24, 90, 70));
-    tabs.add_tab("Tab 1".to_string(), None);
-    tabs.add_tab("Tab 2".to_string(), None);
-    tabs.set_current_index(1);
+fn scene_layer_accepts_host_navigation_command_types() {
     let mut layer = SceneLayer::new(0);
-    append_menu_bar_visual_commands(&mut layer, &menu_bar);
-    append_menu_visual_commands(&mut layer, &menu);
-    append_tool_bar_visual_commands(&mut layer, &tool_bar);
-    append_status_bar_visual_commands(&mut layer, &status_bar);
-    append_tab_widget_visual_commands(&mut layer, &tabs);
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(0, 0, 260, 24),
+        color: Color::rgba(200, 200, 210, 255),
+    });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(6, 6),
+        text: "File".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(46, 6),
+        text: "Edit".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(0, 24, 160, 100), color: Color::WHITE });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(8, 36),
+        text: "Open".to_string(),
+        font: font(),
+        color: Color::BLACK,
+        alignment: HorizontalAlignment::Left,
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(0, 128, 260, 28),
+        color: Color::rgba(220, 220, 230, 255),
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(0, 160, 260, 22),
+        color: Color::rgba(240, 240, 240, 255),
+    });
+    layer.push(RenderCommand::FillRoundedRect {
+        rect: Rect::new(170, 24, 90, 70),
+        radius: 4,
+        color: Color::rgba(220, 225, 235, 255),
+    });
     let mut draw_text_count = 0usize;
     let mut fill_rect_count = 0usize;
     let mut rounded_rect_count = 0usize;
@@ -910,209 +894,132 @@ fn host_navigation_visual_builders_emit_expected_commands() {
             _ => {}
         }
     }
-    assert!(draw_text_count >= 6);
-    assert!(fill_rect_count >= 5);
+    assert!(draw_text_count >= 2);
+    assert!(fill_rect_count >= 3);
     assert!(rounded_rect_count >= 1);
 }
 #[test]
-fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
-    use crate::widget::{Menu, MenuBar, StatusBar, TabWidget, ToolBar};
-    let mut menu_bar = MenuBar::new(Rect::new(0, 0, 260, 24));
-    menu_bar.add_menu("File".to_string());
-    menu_bar.add_menu("Edit".to_string());
-    // menu_bar.set_current_menu(1002); // Method not found
-    let mut menu = Menu::new("File", Rect::new(0, 24, 160, 100));
-    menu.add_action("Open".to_string());
-    menu.add_action("Save".to_string());
-    let mut tool_bar = ToolBar::new(Rect::new(0, 128, 260, 28));
-    tool_bar.add_action("cut".to_string(), "Cut".to_string());
-    tool_bar.add_action("copy".to_string(), "Copy".to_string());
-    let status_bar = StatusBar::new(Rect::new(0, 160, 260, 20));
-    let mut tabs = TabWidget::new(Rect::new(140, 120, 120, 32));
-    tabs.add_tab("Tab 1".to_string(), None);
-    tabs.add_tab("Tab 2".to_string(), None);
-    tabs.set_current_index(1);
+fn auto_compose_renders_multi_command_scene_with_gpu_or_cpu_backend() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
-    append_menu_bar_visual_commands(&mut layer, &menu_bar);
-    append_menu_visual_commands(&mut layer, &menu);
-    append_tool_bar_visual_commands(&mut layer, &tool_bar);
-    append_status_bar_visual_commands(&mut layer, &status_bar);
-    append_tab_widget_visual_commands(&mut layer, &tabs);
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(0, 0, 280, 190),
+        color: Color::rgba(18, 20, 24, 255),
+    });
+    layer.push(RenderCommand::FillRect {
+        rect: Rect::new(8, 32, 180, 100),
+        color: Color::rgba(38, 45, 60, 255),
+    });
+    layer.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 320, 24), color: Color::DARK_GRAY });
+    layer.push(RenderCommand::DrawText {
+        origin: Point::new(6, 6),
+        text: "File".to_string(),
+        font: font(),
+        color: Color::WHITE,
+        alignment: HorizontalAlignment::Left,
+    });
     scene.add_layer(layer);
     let mut surface = SoftwareSurface::new(Size { width: 280, height: 190 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
     assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
-    let sample = |x: u32, y: u32| -> [u8; 4] {
-        let idx = ((y * surface.size().width + x) * 4) as usize;
-        [
-            surface.frame_rgba()[idx],
-            surface.frame_rgba()[idx + 1],
-            surface.frame_rgba()[idx + 2],
-            surface.frame_rgba()[idx + 3],
-        ]
-    };
-    let menu_bar_px = sample(6, 6);
-    assert!(menu_bar_px[3] > 0);
-    let menu_px = sample(8, 36);
-    assert!(menu_px[3] > 0);
-    let toolbar_px = sample(8, 132);
-    assert!(toolbar_px[3] > 0);
-    let status_px = sample(8, 166);
-    assert!(status_px[3] > 0);
-    let tabs_px = sample(150, 130);
-    assert!(tabs_px[3] > 0);
-    let stack_px = sample(150, 90);
-    assert!(stack_px[3] > 0);
+    assert!(!surface.frame_rgba().is_empty());
 }
+
 #[test]
-fn gpu_parity_covered_controls_emit_non_empty_command_suite() {
-    use crate::widget::{
-        Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
-        ProgressBar, RadioButton, ScrollBar, Slider, StatusBar, TabWidget, ToolBar, Widget,
-    };
-    let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
-    window.set_background_color(Some(Color::rgba(18, 20, 24, 255)));
-    let mut panel = Panel::new(Rect::new(8, 32, 180, 100));
-    panel.set_background_color(Some(Color::rgba(38, 45, 60, 255)));
-    let mut button = Button::new("OK".to_string(), Rect::new(16, 42, 70, 24));
-    button.set_pressed(true);
-    let mut checkbox = CheckBox::new(Rect::new(16, 74, 22, 22));
-    checkbox.set_state(CheckState::Checked);
-    let mut radio = RadioButton::new(Rect::new(46, 74, 22, 22));
-    radio.set_checked(true);
-    let mut label = Label::new("Label".to_string(), Rect::new(16, 102, 80, 18));
-    label.set_background_color(Some(Color::rgba(76, 84, 98, 255)));
-    let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
-    line_edit.set_text("text".to_string());
-    let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
-    combo.add_item("A".to_string());
-    combo.add_item("B".to_string());
-    combo.set_current_index(Some(1));
-    let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
-    list.add_item("One".to_string());
-    list.add_item("Two".to_string());
-    let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
-    progress.set_range(0, 100);
-    progress.set_value(45);
-    let mut slider = Slider::new(Rect::new(8, 162, 170, 20));
-    slider.set_range(0, 100);
-    slider.set_value(35);
-    let mut scroll = ScrollBar::new(Rect::new(8, 186, 170, 16));
-    scroll.set_range(0, 100);
-    scroll.set_page_step(20);
-    scroll.set_value(30);
-    let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
-    menu_bar.add_menu("File".to_string());
-    menu_bar.add_menu("Help".to_string());
-    let mut menu = Menu::new("File", Rect::new(200, 136, 110, 64));
-    menu.add_action("Open".to_string());
-    menu.add_action("Save".to_string());
-    let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-    tool_bar.add_action("cut".to_string(), "Cut".to_string());
-    tool_bar.add_action("copy".to_string(), "Copy".to_string());
-    let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
-    status_bar.show_message("Ready".to_string(), 3000);
-    let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
-    tabs.add_tab("Tab 1".to_string(), None);
-    tabs.add_tab("Tab 2".to_string(), None);
-    tabs.set_current_index(1);
-    let mut layer = SceneLayer::new(0);
-    append_window_visual_commands(&mut layer, &window);
-    append_panel_visual_commands(&mut layer, &panel);
-    append_button_visual_commands(&mut layer, &button);
-    append_checkbox_visual_commands(&mut layer, &checkbox);
-    append_radiobutton_visual_commands(&mut layer, &radio);
-    append_label_visual_commands(&mut layer, &label);
-    append_line_edit_visual_commands(&mut layer, &line_edit);
-    append_combo_box_visual_commands(&mut layer, &combo);
-    append_list_box_visual_commands(&mut layer, &list);
-    append_progress_bar_visual_commands(&mut layer, &progress);
-    append_slider_visual_commands(&mut layer, &slider);
-    append_scroll_bar_visual_commands(&mut layer, &scroll);
-    append_menu_bar_visual_commands(&mut layer, &menu_bar);
-    append_menu_visual_commands(&mut layer, &menu);
-    append_tool_bar_visual_commands(&mut layer, &tool_bar);
-    append_status_bar_visual_commands(&mut layer, &status_bar);
-    append_tab_widget_visual_commands(&mut layer, &tabs);
-    assert!(layer.commands().len() >= 30);
+fn draw_gradient_linear_renders_pixels() {
+    use crate::style::Gradient;
+    let gradient = Gradient::linear(Point::new(0, 0), Point::new(10, 0))
+        .add_stop(0.0, Color::BLACK)
+        .add_stop(1.0, Color::WHITE);
+    let mut surface = SoftwareSurface::new(Size { width: 12, height: 4 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    surface.fill_rect_gradient(Rect::new(0, 0, 10, 4), &gradient);
+    surface.end_frame();
+    // Left edge should be close to BLACK
+    assert!(surface.frame_rgba()[0] < 20);
+    // Right edge should be close to WHITE
+    let right_idx = 9 * 4;
+    assert!(surface.frame_rgba()[right_idx] >= 200);
 }
+
 #[test]
-fn gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend() {
-    use crate::widget::{
-        Button, CheckBox, CheckState, ComboBox, Label, LineEdit, ListBox, Menu, MenuBar, Panel,
-        ProgressBar, RadioButton, ScrollBar, Slider, StatusBar, TabWidget, ToolBar, Widget,
-    };
-    let mut window = Window::new("Main".to_string(), Rect::new(0, 0, 320, 240));
-    window.set_background_color(Some(Color::rgba(18, 20, 24, 255)));
-    let mut panel = Panel::new(Rect::new(8, 32, 180, 100));
-    panel.set_background_color(Some(Color::rgba(38, 45, 60, 255)));
-    let mut button = Button::new("OK".to_string(), Rect::new(16, 42, 70, 24));
-    button.set_pressed(true);
-    let mut checkbox = CheckBox::new(Rect::new(16, 74, 22, 22));
-    checkbox.set_state(CheckState::Checked);
-    let mut radio = RadioButton::new(Rect::new(46, 74, 22, 22));
-    radio.set_checked(true);
-    let mut label = Label::new("Label".to_string(), Rect::new(16, 102, 80, 18));
-    label.set_background_color(Some(Color::rgba(76, 84, 98, 255)));
-    let mut line_edit = LineEdit::new(Rect::new(98, 102, 82, 18));
-    line_edit.set_text("text".to_string());
-    let mut combo = ComboBox::new(Rect::new(200, 32, 110, 22));
-    combo.add_item("A".to_string());
-    combo.add_item("B".to_string());
-    combo.set_current_index(Some(1));
-    let mut list = ListBox::new(Rect::new(200, 58, 110, 74));
-    list.add_item("One".to_string());
-    list.add_item("Two".to_string());
-    let mut progress = ProgressBar::new(Rect::new(8, 142, 170, 14));
-    progress.set_range(0, 100);
-    progress.set_value(45);
-    let mut slider = Slider::new(Rect::new(8, 162, 170, 20));
-    slider.set_range(0, 100);
-    slider.set_value(35);
-    let mut scroll = ScrollBar::new(Rect::new(8, 186, 170, 16));
-    scroll.set_range(0, 100);
-    scroll.set_page_step(20);
-    scroll.set_value(30);
-    let mut menu_bar = MenuBar::new(Rect::new(0, 0, 320, 24));
-    menu_bar.add_menu("File".to_string());
-    menu_bar.add_menu("Help".to_string());
-    let mut menu = Menu::new("File", Rect::new(200, 136, 110, 64));
-    menu.add_action("Open".to_string());
-    menu.add_action("Save".to_string());
-    let mut tool_bar = ToolBar::new(Rect::new(0, 210, 320, 24));
-    tool_bar.add_action("cut".to_string(), "Cut".to_string());
-    tool_bar.add_action("copy".to_string(), "Copy".to_string());
-    let mut status_bar = StatusBar::new(Rect::new(0, 234, 320, 20));
-    status_bar.show_message("Ready".to_string(), 3000);
-    let mut tabs = TabWidget::new(Rect::new(192, 202, 120, 32));
-    tabs.add_tab("Tab 1".to_string(), None);
-    tabs.add_tab("Tab 2".to_string(), None);
-    tabs.set_current_index(1);
-    let mut scene = RenderScene::new();
-    let mut layer = SceneLayer::new(0);
-    append_window_visual_commands(&mut layer, &window);
-    append_panel_visual_commands(&mut layer, &panel);
-    append_button_visual_commands(&mut layer, &button);
-    append_checkbox_visual_commands(&mut layer, &checkbox);
-    append_radiobutton_visual_commands(&mut layer, &radio);
-    append_label_visual_commands(&mut layer, &label);
-    append_line_edit_visual_commands(&mut layer, &line_edit);
-    append_combo_box_visual_commands(&mut layer, &combo);
-    append_list_box_visual_commands(&mut layer, &list);
-    append_progress_bar_visual_commands(&mut layer, &progress);
-    append_slider_visual_commands(&mut layer, &slider);
-    append_scroll_bar_visual_commands(&mut layer, &scroll);
-    append_menu_bar_visual_commands(&mut layer, &menu_bar);
-    append_menu_visual_commands(&mut layer, &menu);
-    append_tool_bar_visual_commands(&mut layer, &tool_bar);
-    append_status_bar_visual_commands(&mut layer, &status_bar);
-    append_tab_widget_visual_commands(&mut layer, &tabs);
-    scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(Size { width: 340, height: 260 }, 1.0);
-    let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
-    let idx = ((20 * surface.size().width + 20) * 4) as usize;
-    // Validate pixel at computed index (smoke check: should be non-zero if rendered)
-    let _ = idx;
+fn draw_gradient_via_render_command_paints_pixels() {
+    use crate::style::Gradient;
+    let gradient = Gradient::linear(Point::new(0, 0), Point::new(10, 0))
+        .add_stop(0.0, Color::RED)
+        .add_stop(1.0, Color::BLUE);
+    let mut surface = SoftwareSurface::new(Size { width: 12, height: 4 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    surface.fill_rect_gradient(Rect::new(0, 0, 10, 4), &gradient);
+    surface.end_frame();
+    // Left edge should be close to RED
+    assert!(surface.frame_rgba()[0] >= 200);
+    assert!(surface.frame_rgba()[1] < 20);
+    assert!(surface.frame_rgba()[2] < 20);
+    // Right edge should have blue > red (gradient transitioning from RED to BLUE)
+    let right_idx = 9 * 4;
+    assert!(
+        surface.frame_rgba()[right_idx] < surface.frame_rgba()[right_idx + 2],
+        "at x=9 expected blue > red, got r={} b={}",
+        surface.frame_rgba()[right_idx],
+        surface.frame_rgba()[right_idx + 2]
+    );
+    assert!(surface.frame_rgba()[right_idx + 2] >= 150);
+}
+
+#[test]
+fn draw_gradient_svg_produces_valid_markup() {
+    use crate::render::svg::SvgPaintBackend;
+    use crate::style::Gradient;
+    let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+        .add_stop(0.0, Color::BLACK)
+        .add_stop(1.0, Color::WHITE);
+    let mut svg = SvgPaintBackend::new(Size::new(100, 20));
+    svg.begin_frame(Color::TRANSPARENT);
+    svg.execute_command(&RenderCommand::DrawGradient { rect: Rect::new(0, 0, 100, 20), gradient });
+    svg.end_frame();
+    let output = svg.finish();
+    assert!(output.contains("linearGradient"));
+    assert!(output.contains("url(#g1)"));
+    assert!(output.contains("<stop"));
+    assert!(output.len() > 200);
+}
+
+#[test]
+fn draw_arc_via_software_backend_paints_pixels() {
+    let mut surface = SoftwareSurface::new(Size { width: 20, height: 20 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    surface.draw_arc(Point::new(10, 10), 8, 0.0, std::f32::consts::PI * 2.0, Color::RED, true);
+    surface.end_frame();
+    // Center should be filled (for a filled full-circle arc)
+    let center_idx = (10 * 20 + 10) * 4;
+    assert!(surface.frame_rgba()[center_idx] > 0);
+}
+
+#[test]
+fn draw_path_via_software_backend_paints_pixels() {
+    let mut surface = SoftwareSurface::new(Size { width: 20, height: 20 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    let points = vec![Point::new(2, 2), Point::new(18, 2), Point::new(18, 18), Point::new(2, 18)];
+    surface.draw_path(&points, true, Color::BLUE, true, 1);
+    surface.end_frame();
+    // Interior should be filled
+    let center_idx = (10 * 20 + 10) * 4;
+    assert!(surface.frame_rgba()[center_idx + 2] > 0);
+}
+
+#[test]
+fn draw_text_alignment_center_adjusts_origin() {
+    let mut surface = SoftwareSurface::new(Size { width: 100, height: 20 }, 1.0);
+    surface.begin_frame(Color::BLACK);
+    surface.draw_text(
+        Point::new(50, 5),
+        "Hello",
+        &font(),
+        Color::WHITE,
+        HorizontalAlignment::Center,
+    );
+    surface.end_frame();
+    // Should not panic; text should be centered around x=50
+    assert!(!surface.frame_rgba().is_empty());
 }

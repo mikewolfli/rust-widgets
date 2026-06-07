@@ -858,13 +858,66 @@ impl Platform for LinuxPlatform {
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(LinuxHandleKind::FontDialog, "FontDialog", _x, _y, width, height)
     }
-    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(LinuxHandleKind::SpinBox, "SpinBox", _x, _y, width, height)
+    fn create_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::SpinBox, "SpinBox", x, y, width, height);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let adjustment = gtk::Adjustment::new(0.0, 0.0, 100.0, 1.0, 10.0, 0.0);
+            let spin = gtk::SpinButton::new(&adjustment, 1.0, 0);
+            spin.set_size_request(width as i32, height as i32);
+            let widget = spin.clone().upcast::<gtk::Widget>();
+            let mut native = self.native.lock_guard();
+            if let Some(container) = native.content_fixed.get(&parent) {
+                container.put(&spin, x, y);
+            }
+            native.widgets.insert(id, widget);
+        }
+        id
     }
-    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(LinuxHandleKind::ListView, "ListView", _x, _y, width, height)
+    fn create_list_view(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::ListView, "ListView", x, y, width, height);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let scrolled = gtk::ScrolledWindow::new();
+            scrolled.set_size_request(width as i32, height as i32);
+            let store = gtk::ListStore::new(&[gtk::Type::String]);
+            let tree = gtk::TreeView::new_with_model(&store);
+            tree.append_column(&gtk::TreeViewColumn::new());
+            scrolled.add(&tree);
+            let widget = scrolled.clone().upcast::<gtk::Widget>();
+            let mut native = self.native.lock_guard();
+            if let Some(container) = native.content_fixed.get(&parent) {
+                container.put(&scrolled, x, y);
+            }
+            native.widgets.insert(id, widget);
+        }
+        id
     }
-    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(LinuxHandleKind::ScrollArea, "ScrollArea", _x, _y, width, height)
+    fn create_scroll_area(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(LinuxHandleKind::ScrollArea, "ScrollArea", x, y, width, height);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let scrolled = gtk::ScrolledWindow::new();
+            scrolled.set_size_request(width as i32, height as i32);
+            let widget = scrolled.clone().upcast::<gtk::Widget>();
+            let mut native = self.native.lock_guard();
+            if let Some(container) = native.content_fixed.get(&parent) {
+                container.put(&scrolled, x, y);
+            }
+            native.widgets.insert(id, widget);
+        }
+        id
     }
 }

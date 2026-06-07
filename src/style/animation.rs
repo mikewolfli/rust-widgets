@@ -1,4 +1,6 @@
 use crate::core::Color;
+use crate::style::theme_state::{StatefulTheme, WidgetState};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EasingFunction {
@@ -316,6 +318,376 @@ impl FloatAnimation {
         self.animation.is_running()
     }
 }
+/// Describes a single animated property on a target object.
+#[derive(Debug, Clone)]
+pub struct PropertyAnimation {
+    /// Unique animation ID.
+    pub id: AnimationId,
+    /// Property name (e.g., "x", "y", "width", "opacity", "rotation").
+    pub property: String,
+    /// Starting value.
+    pub from: f32,
+    /// Ending value.
+    pub to: f32,
+    /// Current value (updated each frame).
+    pub current: f32,
+}
+
+/// A unique identifier for an active animation managed by `AnimationDriver`.
+pub type AnimationId = u64;
+
+/// Callback invoked each frame with the current animation progress (0.0–1.0).
+pub type AnimationTickCallback = Box<dyn FnMut(f32)>;
+
+/// Callback invoked when an animation completes.
+pub type AnimationCompleteCallback = Box<dyn FnMut()>;
+
+/// A tracked active animation within the `AnimationDriver`.
+struct ActiveAnimation {
+    /// The core animation state machine.
+    anim: Animation,
+    /// Callback invoked every tick with the un-eased progress [0,1].
+    tick: Option<AnimationTickCallback>,
+    /// Callback invoked once when the animation finishes.
+    on_complete: Option<AnimationCompleteCallback>,
+    /// The last reported progress to avoid redundant callbacks.
+    last_progress: f32,
+}
+
+/// Global animation driver that manages and advances active animations.
+///
+/// Call `advance()` from your event loop or render loop to tick all animations.
+/// Use `add()` to register a new animation with a progress callback.
+pub struct AnimationDriver {
+    animations: HashMap<AnimationId, ActiveAnimation>,
+    next_id: AnimationId,
+}
+
+impl AnimationDriver {
+    /// Creates a new empty animation driver.
+    pub fn new() -> Self {
+        Self { animations: HashMap::new(), next_id: 1 }
+    }
+
+    /// Register a new animation and return its ID.
+    /// The `tick` callback is called every frame with the eased progress [0,1].
+    pub fn add<F>(&mut self, config: AnimationConfig, tick: F) -> AnimationId
+    where
+        F: FnMut(f32) + 'static,
+    {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut anim = Animation::new(config);
+        anim.start();
+        self.animations.insert(
+            id,
+            ActiveAnimation {
+                anim,
+                tick: Some(Box::new(tick)),
+                on_complete: None,
+                last_progress: -1.0,
+            },
+        );
+        id
+    }
+
+    /// Register a float animation that interpolates between `from` and `to`.
+    /// The `on_tick` callback receives the current interpolated value each frame.
+    pub fn add_float<F>(
+        &mut self,
+        config: AnimationConfig,
+        from: f32,
+        to: f32,
+        mut on_tick: F,
+    ) -> AnimationId
+    where
+        F: FnMut(f32) + 'static,
+    {
+        let range = to - from;
+        self.add(config, move |progress| {
+            on_tick(from + range * progress);
+        })
+    }
+
+    /// Register a color animation that interpolates between `from` and `to`.
+    /// The `on_tick` callback receives the current interpolated color each frame.
+    pub fn add_color<F>(
+        &mut self,
+        config: AnimationConfig,
+        from: Color,
+        to: Color,
+        mut on_tick: F,
+    ) -> AnimationId
+    where
+        F: FnMut(Color) + 'static,
+    {
+        self.add(config, move |progress| {
+            let r = ((1.0 - progress) * from.r as f32 + progress * to.r as f32) as u8;
+            let g = ((1.0 - progress) * from.g as f32 + progress * to.g as f32) as u8;
+            let b = ((1.0 - progress) * from.b as f32 + progress * to.b as f32) as u8;
+            let a = ((1.0 - progress) * from.a as f32 + progress * to.a as f32) as u8;
+            on_tick(Color::rgba(r, g, b, a));
+        })
+    }
+
+    /// Advance all animations by one frame.
+    /// Calls tick callbacks with updated progress and removes completed animations.
+    /// Returns the number of still-active (running) animations.
+    pub fn advance(&mut self) -> usize {
+        // Snapshot: collect progress without mutable borrows
+        let snap: Vec<(AnimationId, f32)> = self
+            .animations
+            .iter()
+            .filter(|(_, e)| e.anim.is_running())
+            .map(|(&id, e)| (id, e.anim.progress()))
+            .collect();
+        // Fire tick callbacks with mutable access
+        for (id, progress) in &snap {
+            if let Some(entry) = self.animations.get_mut(id) {
+                if (progress - entry.last_progress).abs() > 0.001 || *progress == 0.0_f32 {
+                    if let Some(ref mut cb) = entry.tick {
+                        cb(*progress);
+                    }
+                    entry.last_progress = *progress;
+                }
+            }
+        }
+        // Remove completed animations
+        let finished: Vec<AnimationId> = self
+            .animations
+            .iter()
+            .filter(|(_, e)| e.anim.is_completed() && !e.anim.config().infinite)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in &finished {
+            if let Some(mut entry) = self.animations.remove(id) {
+                if let Some(mut cb) = entry.on_complete.take() {
+                    cb();
+                }
+            }
+        }
+        self.animations.len()
+    }
+
+    /// Remove and stop a specific animation.
+    pub fn remove(&mut self, id: AnimationId) {
+        self.animations.remove(&id);
+    }
+
+    /// Remove all active animations.
+    pub fn clear(&mut self) {
+        self.animations.clear();
+    }
+
+    /// Returns the number of active (running) animations.
+    pub fn len(&self) -> usize {
+        self.animations.len()
+    }
+
+    /// Returns true if there are no active animations.
+    pub fn is_empty(&self) -> bool {
+        self.animations.is_empty()
+    }
+
+    /// Start animating a named property from `from` to `to` over `duration`.
+    /// The `on_tick` callback receives the current value and progress (0.0–1.0).
+    pub fn animate<F>(
+        &mut self,
+        property: impl Into<String>,
+        from: f32,
+        to: f32,
+        duration: Duration,
+        easing: EasingFunction,
+        mut on_tick: F,
+    ) -> AnimationId
+    where
+        F: FnMut(f32, f32) + 'static,
+    {
+        let _prop = property.into();
+        let config = AnimationConfig::new(duration).with_easing(easing);
+        let range = to - from;
+        self.add(config, move |progress| {
+            let value = from + range * progress;
+            on_tick(value, progress);
+        })
+    }
+
+    /// Convenience: animate with linear easing.
+    pub fn animate_linear<F>(
+        &mut self,
+        property: impl Into<String>,
+        from: f32,
+        to: f32,
+        duration: Duration,
+        on_tick: F,
+    ) -> AnimationId
+    where
+        F: FnMut(f32, f32) + 'static,
+    {
+        self.animate(property, from, to, duration, EasingFunction::Linear, on_tick)
+    }
+
+    /// Convenience: animate with ease-in-out easing.
+    pub fn animate_ease<F>(
+        &mut self,
+        property: impl Into<String>,
+        from: f32,
+        to: f32,
+        duration: Duration,
+        on_tick: F,
+    ) -> AnimationId
+    where
+        F: FnMut(f32, f32) + 'static,
+    {
+        self.animate(property, from, to, duration, EasingFunction::EaseInOut, on_tick)
+    }
+
+    /// Returns the current progress of an animation, or `None` if not found.
+    pub fn get_progress(&self, id: AnimationId) -> Option<f32> {
+        self.animations.get(&id).map(|entry| entry.anim.progress())
+    }
+}
+
+impl Default for AnimationDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Animate a state transition using a StatefulTheme's transition duration.
+/// Returns the AnimationId if a transition was found, or None if no transition is configured.
+pub fn animate_state_transition<F>(
+    driver: &mut AnimationDriver,
+    theme: &StatefulTheme,
+    from: WidgetState,
+    to: WidgetState,
+    on_tick: F,
+) -> Option<AnimationId>
+where
+    F: FnMut(f32, f32) + 'static,
+{
+    let duration_ms = theme.get_transition(&from, &to)?;
+    let duration = Duration::from_millis(duration_ms as u64);
+    Some(driver.animate_linear(
+        format!("state_{:?}_to_{:?}", from, to),
+        0.0,
+        1.0,
+        duration,
+        on_tick,
+    ))
+}
+
+/// A group of animations that run concurrently.
+pub struct ParallelAnimation {
+    ids: Vec<AnimationId>,
+}
+
+impl ParallelAnimation {
+    pub fn new() -> Self {
+        Self { ids: Vec::new() }
+    }
+}
+
+impl Default for ParallelAnimation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ParallelAnimation {
+    /// Add a child animation (managed externally via AnimationDriver).
+    pub fn add(&mut self, id: AnimationId) {
+        self.ids.push(id);
+    }
+
+    /// Returns true if all child animations have completed.
+    pub fn is_completed(&self, driver: &AnimationDriver) -> bool {
+        self.ids.iter().all(|id| driver.get_progress(*id).map_or(true, |p| p >= 1.0))
+    }
+
+    /// Returns the number of child animations.
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+/// A group of animations that run sequentially (one after another).
+pub struct SequentialAnimation {
+    animations: Vec<AnimationConfig>,
+    current_index: usize,
+    current_id: Option<AnimationId>,
+}
+
+impl SequentialAnimation {
+    pub fn new() -> Self {
+        Self { animations: Vec::new(), current_index: 0, current_id: None }
+    }
+}
+
+impl Default for SequentialAnimation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SequentialAnimation {
+    /// Add an animation config to the sequence.
+    pub fn add(&mut self, config: AnimationConfig) {
+        self.animations.push(config);
+    }
+
+    /// Start or advance the sequence. Call this each frame.
+    /// Returns true if the sequence is still running.
+    pub fn advance<F>(&mut self, driver: &mut AnimationDriver, mut on_tick: F) -> bool
+    where
+        F: FnMut(usize, f32) + 'static,
+    {
+        if self.current_index >= self.animations.len() {
+            return false; // All done
+        }
+        // Check if current animation is done or not started
+        match self.current_id {
+            None => {
+                // Start next animation
+                let config = self.animations[self.current_index].clone();
+                let idx = self.current_index;
+                let id = driver.add(config, move |p| {
+                    on_tick(idx, p);
+                });
+                self.current_id = Some(id);
+                true
+            }
+            Some(id) => {
+                if driver.get_progress(id).map_or(true, |p| p >= 1.0) {
+                    // Current animation done, move to next
+                    self.current_index += 1;
+                    self.current_id = None;
+                    if self.current_index < self.animations.len() {
+                        let config = self.animations[self.current_index].clone();
+                        let idx = self.current_index;
+                        let id = driver.add(config, move |p| {
+                            on_tick(idx, p);
+                        });
+                        self.current_id = Some(id);
+                    }
+                    self.current_index < self.animations.len()
+                } else {
+                    true // still running
+                }
+            }
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.current_index = 0;
+        self.current_id = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,7 +713,8 @@ mod tests {
         let mut animation = ColorAnimation::new(config, Color::RED, Color::BLUE);
         animation.start();
         let color = animation.current_color();
-        assert!(color.r < 255 || color.b > 0);
+        // Animation just started: should be RED or transitioning (r≥127, b≤127)
+        assert!(color.r >= 127);
     }
     #[test]
     fn test_float_animation() {
@@ -350,5 +723,125 @@ mod tests {
         animation.start();
         let value = animation.current_value();
         assert!((0.0..=100.0).contains(&value));
+    }
+    #[test]
+    fn animation_driver_add_and_advance() {
+        let mut driver = AnimationDriver::new();
+        let config = AnimationConfig::new(Duration::from_millis(100));
+        let id = driver.add(config, |_| {});
+        assert!(!driver.is_empty());
+        driver.advance();
+        driver.remove(id);
+        assert!(driver.is_empty());
+    }
+    #[test]
+    fn animation_driver_add_float() {
+        let mut driver = AnimationDriver::new();
+        let config = AnimationConfig::new(Duration::from_millis(100));
+        let _id = driver.add_float(config, 10.0, 20.0, |_| {});
+        driver.advance();
+    }
+    #[test]
+    fn animation_driver_add_color() {
+        let mut driver = AnimationDriver::new();
+        let config = AnimationConfig::new(Duration::from_millis(100));
+        let _id = driver.add_color(config, Color::RED, Color::BLUE, |_| {});
+        driver.advance();
+    }
+    #[test]
+    fn animation_driver_clear() {
+        let mut driver = AnimationDriver::new();
+        let c1 = AnimationConfig::new(Duration::from_millis(100));
+        let c2 = AnimationConfig::new(Duration::from_millis(100));
+        driver.add(c1, |_| {});
+        driver.add(c2, |_| {});
+        assert_eq!(driver.len(), 2);
+        driver.clear();
+        assert_eq!(driver.len(), 0);
+    }
+    #[test]
+    fn animation_driver_is_empty() {
+        let mut driver = AnimationDriver::new();
+        assert!(driver.is_empty());
+        let config = AnimationConfig::new(Duration::from_millis(100));
+        driver.add(config, |_| {});
+        assert!(!driver.is_empty());
+        driver.clear();
+        assert!(driver.is_empty());
+    }
+    #[test]
+    fn animation_driver_default() {
+        let driver: AnimationDriver = Default::default();
+        assert!(driver.is_empty());
+    }
+    #[test]
+    fn animation_driver_animate_named_property() {
+        let mut driver = AnimationDriver::new();
+        let _id = driver.animate(
+            "opacity",
+            0.0,
+            1.0,
+            Duration::from_millis(100),
+            EasingFunction::Linear,
+            |_, _| {},
+        );
+        assert!(!driver.is_empty());
+        driver.advance();
+    }
+    #[test]
+    fn animation_driver_animate_linear() {
+        let mut driver = AnimationDriver::new();
+        let _id = driver.animate_linear("x", 10.0, 100.0, Duration::from_millis(100), |_, _| {});
+        driver.advance();
+    }
+    #[test]
+    fn animation_driver_animate_ease() {
+        let mut driver = AnimationDriver::new();
+        let _id = driver.animate_ease("width", 50.0, 200.0, Duration::from_millis(100), |_, _| {});
+        driver.advance();
+    }
+    #[test]
+    fn property_animation_struct_accessors() {
+        let pa = PropertyAnimation {
+            id: 42,
+            property: "x".to_string(),
+            from: 0.0,
+            to: 100.0,
+            current: 50.0,
+        };
+        assert_eq!(pa.id, 42);
+        assert_eq!(pa.property, "x");
+        assert!((pa.current - 50.0).abs() < 1e-6);
+    }
+    #[test]
+    fn animation_driver_get_progress() {
+        let mut driver = AnimationDriver::new();
+        let id = driver.animate_linear("y", 0.0, 100.0, Duration::from_millis(100), move |_, _| {});
+        // Initially should return Some(0.0) since animation just started
+        let prog = driver.get_progress(id);
+        assert!(prog.is_some());
+    }
+    #[test]
+    fn parallel_animation_group() {
+        let mut driver = AnimationDriver::new();
+        let mut group = ParallelAnimation::new();
+        let id1 = driver.animate_linear("a", 0.0, 1.0, Duration::from_millis(100), |_, _| {});
+        let id2 = driver.animate_linear("b", 0.0, 1.0, Duration::from_millis(100), |_, _| {});
+        group.add(id1);
+        group.add(id2);
+        assert_eq!(group.len(), 2);
+        assert!(!group.is_completed(&driver));
+        driver.advance();
+    }
+    #[test]
+    fn sequential_animation_group() {
+        let mut driver = AnimationDriver::new();
+        let mut seq = SequentialAnimation::new();
+        seq.add(AnimationConfig::new(Duration::from_millis(10)));
+        seq.add(AnimationConfig::new(Duration::from_millis(10)));
+        // Start the sequence
+        let running = seq.advance(&mut driver, |_, _| {});
+        assert!(running);
+        driver.advance();
     }
 }

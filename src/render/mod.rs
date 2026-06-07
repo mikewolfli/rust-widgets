@@ -85,59 +85,8 @@ pub use backend::{
 #[cfg(all(test, feature = "desktop"))]
 pub(crate) use backend::software_render_config_test_lock;
 
-// Pipeline — all append_* functions
-#[allow(deprecated)]
-pub use pipeline::{
-    append_activity_indicator_visual_commands,
-    append_button_visual_commands,
-    append_canvas_visual_commands,
-    append_chart_widget_visual_commands,
-    append_check_list_box_visual_commands,
-    append_checkbox_visual_commands,
-    append_color_dialog_visual_commands,
-    append_combo_box_visual_commands,
-    append_context_menu_visual_commands,
-    append_dial_visual_commands,
-    append_dialog_visual_commands,
-    append_directory_dialog_visual_commands,
-    append_dock_panel_visual_commands,
-    append_double_spin_box_visual_commands,
-    append_file_dialog_visual_commands,
-    append_font_dialog_visual_commands,
-    append_grid_widget_visual_commands,
-    append_group_box_visual_commands,
-    append_label_visual_commands,
-    append_line_edit_visual_commands,
-    append_list_box_visual_commands,
-    append_list_view_visual_commands,
-    append_mdi_area_visual_commands,
-    append_menu_bar_visual_commands,
-    append_menu_visual_commands,
-    append_message_box_visual_commands,
-    append_panel_visual_commands,
-    append_popup_window_visual_commands,
-    append_progress_bar_visual_commands,
-    append_radiobutton_visual_commands,
-    append_rich_edit_visual_commands,
-    append_scroll_area_visual_commands,
-    append_scroll_bar_visual_commands,
-    append_slider_visual_commands,
-    append_spin_box_visual_commands,
-    append_splitter_visual_commands,
-    append_status_bar_visual_commands,
-    append_tab_widget_visual_commands,
-    append_table_widget_visual_commands,
-    append_text_edit_visual_commands,
-    append_toggle_button_visual_commands,
-    append_tool_bar_visual_commands,
-    append_tree_view_visual_commands,
-    // Widget drawing commands
-    append_window_visual_commands,
-    append_wizard_visual_commands,
-    blend_pixel,
-    // Pixel ops
-    fill_pixels,
-};
+// Pixel ops
+pub use pipeline::{blend_pixel, fill_pixels};
 
 // GPU — re-export only when feature is active
 #[cfg(feature = "gpu-wgpu")]
@@ -152,13 +101,6 @@ pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionR
 pub use web::engine::WebEngine;
 #[cfg(feature = "desktop")]
 pub use web::view::WebView;
-
-// ─── Internal helpers ────────────────────────────────────────────────────────
-
-/// Check if a rect has zero area.
-fn is_empty_rect(rect: &crate::core::Rect) -> bool {
-    rect.width == 0 || rect.height == 0
-}
 
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;

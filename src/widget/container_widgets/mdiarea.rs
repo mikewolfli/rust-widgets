@@ -514,3 +514,584 @@ impl Draw for MdiArea {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Point, Rect};
+    use crate::event::Event;
+    use crate::widget::svg::render_to_svg;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // ── Helper constants ──────────────────────────────────────────────────
+
+    fn widget_id_1() -> ObjectId {
+        9201
+    }
+    fn widget_id_2() -> ObjectId {
+        9202
+    }
+    fn widget_id_3() -> ObjectId {
+        9203
+    }
+
+    // ── 1. Creation defaults ──────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_creation_defaults() {
+        let area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.sub_window_count(), 0, "should have no sub-windows");
+        assert_eq!(area.active_sub_window(), None, "no active sub-window");
+        assert_eq!(area.view_mode(), ViewMode::SubWindowView, "default view mode");
+        assert_eq!(area.background(), Background::Plain, "default background");
+        assert_eq!(
+            area.activation_order(),
+            ActivationOrder::StackingOrder,
+            "default activation order"
+        );
+        assert!(area.is_visible(), "should be visible");
+        assert!(area.is_enabled(), "should be enabled");
+        assert_eq!(area.geometry(), Rect::new(0, 0, 600, 400));
+        assert_eq!(area.kind(), WidgetKind::MdiArea);
+        assert!(area.registry().is_none(), "registry should be None by default");
+    }
+
+    // ── 2. Adding sub-windows ─────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_add_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        let idx = area.add_sub_window(widget_id_1(), Rect::new(10, 10, 200, 150));
+        assert_eq!(idx, 0, "first sub-window index should be 0");
+        assert_eq!(area.sub_window_count(), 1);
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_1()),
+            "first sub-window becomes active"
+        );
+
+        let idx2 = area.add_sub_window(widget_id_2(), Rect::new(50, 50, 300, 200));
+        assert_eq!(idx2, 1);
+        assert_eq!(area.sub_window_count(), 2);
+
+        // Children should include both widget IDs
+        let children = area.children();
+        assert!(children.contains(&widget_id_1()));
+        assert!(children.contains(&widget_id_2()));
+    }
+
+    #[test]
+    fn mdiarea_add_sub_window_sets_z_order() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.z_order(), 0);
+        }
+        if let Some(sw) = area.sub_window(1) {
+            assert_eq!(sw.z_order(), 1);
+        }
+    }
+
+    // ── 3. Cascading / tiling ─────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_cascade_sub_windows() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 200, 150));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 200, 150));
+
+        area.cascade_sub_windows();
+
+        // Each sub-window is offset by 30px
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.geometry().x, 0);
+            assert_eq!(sw.geometry().y, 0);
+        }
+        if let Some(sw) = area.sub_window(1) {
+            assert_eq!(sw.geometry().x, 30);
+            assert_eq!(sw.geometry().y, 30);
+        }
+        if let Some(sw) = area.sub_window(2) {
+            assert_eq!(sw.geometry().x, 60);
+            assert_eq!(sw.geometry().y, 60);
+        }
+    }
+
+    #[test]
+    fn mdiarea_cascade_empty_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.cascade_sub_windows(); // should not panic
+        assert_eq!(area.sub_window_count(), 0);
+    }
+
+    #[test]
+    fn mdiarea_tile_sub_windows() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100)); // 4th
+
+        area.tile_sub_windows();
+
+        // 4 items -> 2 cols, 2 rows; cell width = 400/2 = 200, cell height = 300/2 = 150
+        if let Some(sw) = area.sub_window(1) {
+            assert_eq!(sw.geometry().x, 200, "item 1 should be in column 1");
+            assert_eq!(sw.geometry().y, 0);
+        }
+        if let Some(sw) = area.sub_window(2) {
+            assert_eq!(sw.geometry().x, 0, "item 2 should be in column 0");
+            assert_eq!(sw.geometry().y, 150, "item 2 should be in row 1");
+        }
+        if let Some(sw) = area.sub_window(3) {
+            assert_eq!(sw.geometry().x, 200);
+            assert_eq!(sw.geometry().y, 150);
+        }
+    }
+
+    #[test]
+    fn mdiarea_tile_empty_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.tile_sub_windows(); // should not panic
+        assert_eq!(area.sub_window_count(), 0);
+    }
+
+    // ── 4. Removing sub-windows ───────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_remove_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(50, 50, 300, 200));
+
+        area.remove_sub_window(widget_id_1());
+        assert_eq!(area.sub_window_count(), 1);
+        assert!(!area.children().contains(&widget_id_1()));
+        // The remaining one becomes active
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+    }
+
+    #[test]
+    fn mdiarea_remove_sub_window_nonexistent_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.remove_sub_window(9999); // not present
+        assert_eq!(area.sub_window_count(), 1);
+    }
+
+    #[test]
+    fn mdiarea_remove_last_sub_window_clears_active() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.remove_sub_window(widget_id_1());
+        assert_eq!(area.sub_window_count(), 0);
+        assert_eq!(area.active_sub_window(), None);
+    }
+
+    #[test]
+    fn mdiarea_remove_sub_window_adjusts_active_index() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 100, 100));
+        area.set_active_sub_window(widget_id_3()); // active index = 2
+
+        // Remove first sub-window (index 0 < active index 2) -> active shifts to 1
+        area.remove_sub_window(widget_id_1());
+        assert_eq!(area.active_sub_window(), Some(widget_id_3()), "active widget should stay same");
+
+        // Now remove the widget at the new active index (widget_id_3 is now at index 1)
+        area.remove_sub_window(widget_id_3());
+        // active becomes 0 (widget_id_2)
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+    }
+
+    // ── 5. Active sub-window management ───────────────────────────────────
+
+    #[test]
+    fn mdiarea_set_active_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()), "first added is active");
+
+        area.set_active_sub_window(widget_id_2());
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+
+        // Activating non-existent widget is no-op
+        area.set_active_sub_window(9999);
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()), "should not change");
+    }
+
+    #[test]
+    fn mdiarea_activate_next_previous_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 100, 100));
+
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()));
+
+        area.activate_next_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+
+        area.activate_next_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_3()));
+
+        // Wrap around
+        area.activate_next_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()));
+
+        // Previous
+        area.activate_previous_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_3()));
+
+        area.activate_previous_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+    }
+
+    #[test]
+    fn mdiarea_activate_next_previous_empty_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.activate_next_sub_window();
+        area.activate_previous_sub_window();
+        assert_eq!(area.active_sub_window(), None);
+    }
+
+    // ── 6. Geometry delegation ────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_geometry_delegation() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.geometry(), Rect::new(0, 0, 600, 400));
+
+        area.set_geometry(Rect::new(10, 20, 800, 600));
+        assert_eq!(area.geometry(), Rect::new(10, 20, 800, 600));
+        assert_eq!(area.base().geometry(), area.geometry());
+    }
+
+    #[test]
+    fn mdiarea_position_and_size() {
+        let mut area = MdiArea::new(Rect::new(5, 10, 600, 400));
+        assert_eq!(area.position(), Point::new(5, 10));
+        assert_eq!(area.size(), crate::core::Size::new(600, 400));
+
+        area.set_position(Point::new(20, 30));
+        assert_eq!(area.geometry(), Rect::new(20, 30, 600, 400));
+
+        area.set_size(crate::core::Size::new(800, 600));
+        assert_eq!(area.geometry(), Rect::new(20, 30, 800, 600));
+    }
+
+    // ── 7. Visibility ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_visibility() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert!(area.is_visible());
+
+        area.hide();
+        assert!(!area.is_visible());
+
+        area.show();
+        assert!(area.is_visible());
+
+        area.set_visible(false);
+        assert!(!area.is_visible());
+
+        area.set_visible(true);
+        assert!(area.is_visible());
+    }
+
+    #[test]
+    fn mdiarea_enabled_state() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert!(area.is_enabled());
+
+        area.set_enabled(false);
+        assert!(!area.is_enabled());
+
+        area.set_enabled(true);
+        assert!(area.is_enabled());
+    }
+
+    // ── 8. ID / Kind ──────────────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_kind() {
+        let area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.kind(), WidgetKind::MdiArea);
+    }
+
+    #[test]
+    fn mdiarea_id_is_unique() {
+        let a1 = MdiArea::new(Rect::new(0, 0, 100, 100));
+        let a2 = MdiArea::new(Rect::new(0, 0, 100, 100));
+        assert_ne!(a1.id(), a2.id(), "each MdiArea must have a unique id");
+    }
+
+    // ── 9. SVG draw output ────────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_draw_produces_svg_output() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        let svg = render_to_svg(&mut area);
+        assert!(svg.starts_with("<svg"), "SVG must start with <svg");
+        assert!(svg.ends_with("</svg>"), "SVG must end with </svg>");
+        assert!(svg.contains("width=\"400\""), "SVG must contain correct width");
+        assert!(svg.contains("height=\"300\""), "SVG must contain correct height");
+        assert!(svg.contains("fill="), "SVG should contain fill attributes");
+        assert!(svg.len() > 100, "SVG output should be substantial");
+    }
+
+    #[test]
+    fn mdiarea_draw_with_subwindow_produces_svg() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 30, 200, 150));
+        area.set_background(Background::Gradient);
+        let svg = render_to_svg(&mut area);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("fill="));
+        assert!(svg.len() > 200);
+    }
+
+    #[test]
+    fn mdiarea_draw_with_pattern_background_produces_svg() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 60, 60));
+        area.set_background(Background::Pattern);
+        let svg = render_to_svg(&mut area);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("fill="));
+    }
+
+    #[test]
+    fn mdiarea_draw_no_background_produces_svg() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 100, 80));
+        area.set_background(Background::NoBackground);
+        let svg = render_to_svg(&mut area);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.len() > 50);
+    }
+
+    // ── 10. Signal accessors ─────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_subwindow_activated_signal_emits_on_set() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let last_id = Arc::new(AtomicU64::new(0));
+        {
+            let e = emitted.clone();
+            let lid = last_id.clone();
+            area.subwindow_activated.connect(move |id: Arc<ObjectId>| {
+                e.fetch_add(1, Ordering::SeqCst);
+                lid.store(*id, Ordering::SeqCst);
+            });
+        }
+
+        // Emitted once on add (first sub-window becomes active)
+        assert_eq!(emitted.load(Ordering::SeqCst), 0, "signal not connected during add");
+
+        // Connect first, then set active
+        let emitted2 = Arc::new(AtomicUsize::new(0));
+        let e2 = emitted2.clone();
+        area.subwindow_activated.connect(move |_: Arc<ObjectId>| {
+            e2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        area.set_active_sub_window(widget_id_2());
+        assert_eq!(emitted2.load(Ordering::SeqCst), 1, "signal should emit on set_active");
+
+        // Setting same value does not emit
+        area.set_active_sub_window(widget_id_2());
+        assert_eq!(emitted2.load(Ordering::SeqCst), 1, "same value should not emit");
+    }
+
+    #[test]
+    fn mdiarea_subwindow_activated_on_remove_and_next() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        area.subwindow_activated.connect(move |_: Arc<ObjectId>| {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Removing the active sub-window triggers activation of another
+        let before = hits.load(Ordering::SeqCst);
+        area.remove_sub_window(widget_id_1());
+        assert!(
+            hits.load(Ordering::SeqCst) > before,
+            "removing active sub-window should emit activation signal"
+        );
+    }
+
+    // ── View mode / Background / Activation order setters ─────────────────
+
+    #[test]
+    fn mdiarea_view_mode_enum() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.view_mode(), ViewMode::SubWindowView);
+
+        area.set_view_mode(ViewMode::TabbedView);
+        assert_eq!(area.view_mode(), ViewMode::TabbedView);
+
+        area.set_view_mode(ViewMode::SubWindowView);
+        assert_eq!(area.view_mode(), ViewMode::SubWindowView);
+    }
+
+    #[test]
+    fn mdiarea_background_enum() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.background(), Background::Plain);
+
+        area.set_background(Background::NoBackground);
+        assert_eq!(area.background(), Background::NoBackground);
+
+        area.set_background(Background::Gradient);
+        assert_eq!(area.background(), Background::Gradient);
+
+        area.set_background(Background::Pattern);
+        assert_eq!(area.background(), Background::Pattern);
+    }
+
+    #[test]
+    fn mdiarea_activation_order_enum() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.activation_order(), ActivationOrder::StackingOrder);
+
+        area.set_activation_order(ActivationOrder::CreationOrder);
+        assert_eq!(area.activation_order(), ActivationOrder::CreationOrder);
+
+        area.set_activation_order(ActivationOrder::HistoryOrder);
+        assert_eq!(area.activation_order(), ActivationOrder::HistoryOrder);
+    }
+
+    // ── Sub-window property access ────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_sub_window_accessors() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 20, 200, 150));
+
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.widget(), widget_id_1());
+            assert_eq!(sw.geometry(), Rect::new(10, 20, 200, 150));
+            assert_eq!(sw.title(), "");
+            assert!(sw.is_closable());
+            assert!(sw.is_movable());
+            assert!(sw.is_resizable());
+            assert!(!sw.is_minimized());
+            assert!(!sw.is_maximized());
+            assert_eq!(sw.z_order(), 0);
+        }
+
+        // Mutable access
+        if let Some(sw) = area.sub_window_mut(0) {
+            sw.set_title("Doc".to_string());
+            sw.set_minimized(true);
+            sw.set_closable(false);
+            sw.set_z_order(42);
+        }
+
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.title(), "Doc");
+            assert!(sw.is_minimized());
+            assert!(!sw.is_closable());
+            assert_eq!(sw.z_order(), 42);
+        }
+
+        // Out of bounds
+        assert!(area.sub_window(5).is_none());
+        assert!(area.sub_window_mut(5).is_none());
+    }
+
+    #[test]
+    fn mdiarea_sub_window_set_geometry() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+
+        if let Some(sw) = area.sub_window_mut(0) {
+            sw.set_geometry(Rect::new(50, 60, 300, 200));
+        }
+
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.geometry(), Rect::new(50, 60, 300, 200));
+        }
+    }
+
+    // ── Mouse event activates sub-window ─────────────────────────────────
+
+    #[test]
+    fn mdiarea_mouse_click_activates_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(100, 100, 200, 150));
+
+        // First sub-window is active by default
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()));
+
+        // Click on second sub-window area
+        area.handle_event(&Event::MousePress { pos: Point::new(150, 150), button: 1 });
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()));
+
+        // Click back on first sub-window
+        area.handle_event(&Event::MousePress { pos: Point::new(20, 20), button: 1 });
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()));
+    }
+
+    #[test]
+    fn mdiarea_mouse_click_outside_sub_window_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 200, 150));
+
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()));
+
+        // Click outside all sub-windows
+        area.handle_event(&Event::MousePress { pos: Point::new(500, 300), button: 1 });
+        assert_eq!(area.active_sub_window(), Some(widget_id_1()), "should not change");
+    }
+
+    // ── Arrange icons ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mdiarea_arrange_icons() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 200, 150));
+
+        // Mark both as minimized
+        if let Some(sw) = area.sub_window_mut(0) {
+            sw.set_minimized(true);
+        }
+        if let Some(sw) = area.sub_window_mut(1) {
+            sw.set_minimized(true);
+        }
+
+        area.arrange_icons();
+        // Both should now be placed at the bottom of the area
+        if let Some(sw) = area.sub_window(0) {
+            assert_eq!(sw.geometry().width, 100);
+            assert_eq!(sw.geometry().height, 80);
+            // Positioned at bottom
+            assert_eq!(sw.geometry().y, 300 - 80 - 10);
+        }
+    }
+
+    #[test]
+    fn mdiarea_arrange_icons_empty_is_noop() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.arrange_icons(); // should not panic
+        assert_eq!(area.sub_window_count(), 0);
+    }
+}

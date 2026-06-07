@@ -276,3 +276,188 @@ impl Draw for Calendar {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn calendar_creation_defaults() {
+        let cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(cal.selected_date(), today);
+        assert!(cal.is_grid_visible());
+        assert!(cal.is_navigation_bar_visible());
+        assert!(cal.is_horizontal_header_visible());
+        assert!(!cal.is_vertical_header_visible());
+    }
+
+    #[test]
+    fn calendar_set_selected_date() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        cal.set_selected_date(date);
+        assert_eq!(cal.selected_date(), date);
+    }
+
+    #[test]
+    fn calendar_set_selected_date_clamps_to_range() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let before_min = NaiveDate::from_ymd_opt(1800, 1, 1).unwrap();
+        cal.set_selected_date(before_min);
+        // Should remain as today because before min
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(cal.selected_date(), today);
+    }
+
+    #[test]
+    fn calendar_minimum_date_clamps_selected() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let future = NaiveDate::from_ymd_opt(2050, 6, 15).unwrap();
+        cal.set_selected_date(future);
+        assert_eq!(cal.selected_date(), future);
+        // Move minimum past selected - should reclamp
+        let later = NaiveDate::from_ymd_opt(2060, 1, 1).unwrap();
+        cal.set_minimum_date(later);
+        assert_eq!(cal.selected_date(), later);
+    }
+
+    #[test]
+    fn calendar_maximum_date_clamps_selected() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let past = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        cal.set_selected_date(past);
+        assert_eq!(cal.selected_date(), past);
+        // Move maximum before selected - should reclamp
+        let earlier = NaiveDate::from_ymd_opt(1999, 12, 31).unwrap();
+        cal.set_maximum_date(earlier);
+        assert_eq!(cal.selected_date(), earlier);
+    }
+
+    #[test]
+    fn calendar_first_day_of_week() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert_eq!(cal.first_day_of_week(), chrono::Weekday::Mon);
+        cal.set_first_day_of_week(chrono::Weekday::Sun);
+        assert_eq!(cal.first_day_of_week(), chrono::Weekday::Sun);
+    }
+
+    #[test]
+    fn calendar_show_today() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let past = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        cal.set_selected_date(past);
+        cal.show_today();
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(cal.selected_date(), today);
+    }
+
+    #[test]
+    fn calendar_navigation() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let base = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        cal.set_selected_date(base);
+
+        cal.show_next_month();
+        assert_eq!(cal.selected_date().month(), 7);
+
+        cal.show_previous_month();
+        assert_eq!(cal.selected_date().month(), 6);
+
+        cal.show_next_year();
+        assert_eq!(cal.selected_date().year(), 2027);
+
+        cal.show_previous_year();
+        assert_eq!(cal.selected_date().year(), 2026);
+    }
+
+    #[test]
+    fn calendar_keyboard_navigation() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let base = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        cal.set_selected_date(base);
+
+        // Right arrow (key 39) advances one day
+        cal.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(cal.selected_date(), NaiveDate::from_ymd_opt(2026, 6, 16).unwrap());
+
+        // Left arrow (key 37) goes back one day
+        cal.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        assert_eq!(cal.selected_date(), NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+
+        // Down arrow (key 40) advances by week
+        cal.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(cal.selected_date(), NaiveDate::from_ymd_opt(2026, 6, 22).unwrap());
+
+        // Up arrow (key 38) goes back by week
+        cal.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(cal.selected_date(), NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+
+        // Page down (key 34) advances by month
+        cal.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(cal.selected_date().month(), 7);
+
+        // Page up (key 33) goes back by month
+        cal.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(cal.selected_date().month(), 6);
+    }
+
+    #[test]
+    fn calendar_grid_visibility() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert!(cal.is_grid_visible());
+        cal.set_grid_visible(false);
+        assert!(!cal.is_grid_visible());
+        cal.set_grid_visible(true);
+        assert!(cal.is_grid_visible());
+    }
+
+    #[test]
+    fn calendar_navigation_bar_visibility() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert!(cal.is_navigation_bar_visible());
+        cal.set_navigation_bar_visible(false);
+        assert!(!cal.is_navigation_bar_visible());
+    }
+
+    #[test]
+    fn calendar_headers_visibility() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert!(cal.is_horizontal_header_visible());
+        cal.set_horizontal_header_visible(false);
+        assert!(!cal.is_horizontal_header_visible());
+        assert!(!cal.is_vertical_header_visible());
+        cal.set_vertical_header_visible(true);
+        assert!(cal.is_vertical_header_visible());
+    }
+
+    #[test]
+    fn calendar_date_format() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert_eq!(cal.date_format(), "%Y-%m-%d");
+        cal.set_date_format("%d/%m/%Y".to_string());
+        assert_eq!(cal.date_format(), "%d/%m/%Y");
+    }
+
+    #[test]
+    fn calendar_signal_accessors() {
+        let cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let _ = &cal.selection_changed;
+    }
+
+    #[test]
+    fn calendar_geometry_delegation() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_geometry(Rect::new(10, 10, 400, 350));
+        assert_eq!(cal.geometry(), Rect::new(10, 10, 400, 350));
+    }
+
+    #[test]
+    fn calendar_draw_produces_svg_output() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let svg = crate::widget::svg::render_to_svg(&mut cal);
+        assert!(svg.starts_with("<svg"));
+    }
+}

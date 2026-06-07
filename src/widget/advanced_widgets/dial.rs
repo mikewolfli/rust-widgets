@@ -182,3 +182,146 @@ impl Draw for Dial {
         context.fill_circle(center, 3, Color::from_rgb(80, 80, 80));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn dial_creation_defaults() {
+        let d = Dial::new(Rect::new(0, 0, 64, 64));
+        assert_eq!(d.minimum(), 0);
+        assert_eq!(d.maximum(), 99);
+        assert_eq!(d.value(), 0);
+        assert_eq!(d.single_step(), 1);
+        assert_eq!(d.page_step(), 10);
+        assert!(!d.notches_visible());
+        assert!(!d.wrapping());
+    }
+
+    #[test]
+    fn dial_set_value_clamps() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_value(50);
+        assert_eq!(d.value(), 50);
+        d.set_value(200);
+        assert_eq!(d.value(), 99);
+        d.set_value(-10);
+        assert_eq!(d.value(), 0);
+    }
+
+    #[test]
+    fn dial_set_range_reclamps_value() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_value(50);
+        d.set_range(60, 80);
+        assert_eq!(d.value(), 60);
+        assert_eq!(d.minimum(), 60);
+        assert_eq!(d.maximum(), 80);
+    }
+
+    #[test]
+    fn dial_wrapping() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_range(0, 9);
+        d.set_wrapping(true);
+        assert!(d.wrapping());
+        d.set_value(9);
+        assert_eq!(d.value(), 9);
+        d.set_value(10);
+        // wrapping: 10 % 10 = 0
+        assert_eq!(d.value(), 0);
+    }
+
+    #[test]
+    fn dial_steps() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_single_step(5);
+        assert_eq!(d.single_step(), 5);
+        d.set_single_step(0);
+        assert_eq!(d.single_step(), 1); // floors at 1
+        d.set_page_step(25);
+        assert_eq!(d.page_step(), 25);
+        d.set_page_step(0);
+        assert_eq!(d.page_step(), 1); // floors at 1
+    }
+
+    #[test]
+    fn dial_notches_visible() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        assert!(!d.notches_visible());
+        d.set_notches_visible(true);
+        assert!(d.notches_visible());
+        d.set_notches_visible(false);
+        assert!(!d.notches_visible());
+    }
+
+    #[test]
+    fn dial_notch_target() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        assert!((d.notch_target() - 3.7).abs() < 1e-9);
+        d.set_notch_target(5.0);
+        assert!((d.notch_target() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dial_keyboard_navigation() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_value(50);
+        // Left arrow (key 37) decreases by single step
+        d.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        assert_eq!(d.value(), 49);
+        // Right arrow (key 39) increases by single step
+        d.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(d.value(), 50);
+        // PageUp (key 33) decreases by page step
+        d.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(d.value(), 40);
+        // PageDown (key 34) increases by page step
+        d.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(d.value(), 50);
+        // Home (key 36) goes to min
+        d.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(d.value(), 0);
+        // End (key 35) goes to max
+        d.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(d.value(), 99);
+    }
+
+    #[test]
+    fn dial_mouse_events() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.handle_event(&Event::MousePress { pos: Point::new(32, 32), button: 1 });
+        // value should not change; only signal emitted
+        assert_eq!(d.value(), 0);
+        d.handle_event(&Event::MouseRelease { pos: Point::new(32, 32), button: 1 });
+        assert_eq!(d.value(), 0);
+    }
+
+    #[test]
+    fn dial_signal_accessors() {
+        let d = Dial::new(Rect::new(0, 0, 64, 64));
+        let _ = &d.value_changed;
+        let _ = &d.slider_moved;
+        let _ = &d.slider_pressed;
+        let _ = &d.slider_released;
+    }
+
+    #[test]
+    fn dial_geometry_delegation() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_geometry(Rect::new(10, 10, 80, 80));
+        assert_eq!(d.geometry(), Rect::new(10, 10, 80, 80));
+    }
+
+    #[test]
+    fn dial_disabled_blocks_events() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_value(50);
+        d.set_enabled(false);
+        d.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        // Should stay unchanged because disabled
+        assert_eq!(d.value(), 50);
+    }
+}

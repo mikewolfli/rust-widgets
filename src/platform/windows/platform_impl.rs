@@ -966,7 +966,13 @@ impl Platform for WindowsPlatform {
             let parent_menu = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
-                    Err(_) => return 0,
+                    Err(e) => {
+                        log::error!(
+                            "[rust_widgets][windows] create_menu: handles mutex poisoned: {:?}",
+                            e
+                        );
+                        return 0;
+                    }
                 };
                 match handles.get(&parent).copied() {
                     Some(value) => value,
@@ -1046,7 +1052,10 @@ impl Platform for WindowsPlatform {
             let menu_handle = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
-                    Err(_) => return false,
+                    Err(e) => {
+                        log::error!("[rust_widgets][windows] attach_menu_bar_to_window: handles mutex poisoned: {:?}", e);
+                        return false;
+                    }
                 };
                 match handles.get(&menu_bar).copied() {
                     Some(value) => value,
@@ -1088,7 +1097,13 @@ impl Platform for WindowsPlatform {
             let parent_handle = {
                 let handles = match self.menu_state.handles.lock() {
                     Ok(handles) => handles,
-                    Err(_) => return 0,
+                    Err(e) => {
+                        log::error!(
+                            "[rust_widgets][windows] menu_add_item: handles mutex poisoned: {:?}",
+                            e
+                        );
+                        return 0;
+                    }
                 };
                 match handles.get(&parent_menu).copied() {
                     Some(value) => value,

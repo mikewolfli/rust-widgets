@@ -1,5 +1,6 @@
 //! Render commands for composing widget visuals.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::style::Gradient;
 
 /// Draw command recorded by a render layer.
 #[derive(Debug, Clone)]
@@ -87,6 +88,7 @@ pub enum RenderCommand {
         text: String,
         font: Font,
         color: Color,
+        alignment: HorizontalAlignment,
     },
     /// Draw an image at the specified position and size.
     DrawImage {
@@ -114,4 +116,26 @@ pub enum RenderCommand {
     },
     /// Pop the top clipping rectangle from the clip stack.
     PopClip,
+    /// Draw a filled gradient rectangle.
+    DrawGradient {
+        rect: Rect,
+        gradient: Gradient,
+    },
+    /// Draw an arc (partial circle).
+    DrawArc {
+        center: Point,
+        radius: u32,
+        start_angle: f32,
+        end_angle: f32,
+        color: Color,
+        filled: bool,
+    },
+    /// Draw a path defined by a list of points.
+    DrawPath {
+        points: Vec<Point>,
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    },
 }

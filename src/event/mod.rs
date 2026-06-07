@@ -21,6 +21,7 @@ pub mod types;
 pub use capture::PointerCaptureManager;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
+pub use r#loop::AnimationFrameRequest;
 pub use r#loop::EventLoop;
 pub use timer::TimerManager;
 pub use types::{Event, EventHandler, EventPriority, GestureClass, TouchId};

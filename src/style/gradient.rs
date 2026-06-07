@@ -123,6 +123,7 @@ impl Default for Gradient {
         Self::linear(Point::new(0, 0), Point::new(100, 0))
     }
 }
+
 pub struct GradientBuilder {
     gradient: Gradient,
 }
@@ -174,6 +175,46 @@ mod tests {
         let reversed = gradient.reverse();
         assert_eq!(reversed.stops[0].color, Color::BLUE);
         assert_eq!(reversed.stops[1].color, Color::RED);
+    }
+    #[test]
+    fn gradient_linear_interpolation() {
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+            .add_stop(0.0, Color::BLACK)
+            .add_stop(1.0, Color::WHITE);
+        assert_eq!(g.interpolate(0.0), Color::BLACK);
+        assert_eq!(g.interpolate(1.0), Color::WHITE);
+        let mid = g.interpolate(0.5);
+        assert!(mid.r >= 125 && mid.r <= 131);
+    }
+    #[test]
+    fn gradient_radial_creation() {
+        let g = Gradient::radial(Point::new(50, 50), 30.0)
+            .add_stop(0.0, Color::RED)
+            .add_stop(1.0, Color::BLUE);
+        assert_eq!(g.gradient_type, GradientType::Radial);
+        assert_eq!(g.center, Point::new(50, 50));
+        assert!((g.radius - 30.0).abs() < 1e-6);
+    }
+    #[test]
+    fn gradient_interpolate_clamps() {
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+            .add_stop(0.0, Color::BLACK)
+            .add_stop(1.0, Color::WHITE);
+        assert_eq!(g.interpolate(-0.5), Color::BLACK);
+        assert_eq!(g.interpolate(1.5), Color::WHITE);
+    }
+    #[test]
+    fn gradient_single_stop() {
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0)).add_stop(0.0, Color::RED);
+        assert_eq!(g.interpolate(0.0), Color::RED);
+        assert_eq!(g.interpolate(0.5), Color::RED);
+        assert_eq!(g.interpolate(1.0), Color::RED);
+    }
+    #[test]
+    fn gradient_empty_stops_interpolates_transparent() {
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0));
+        assert_eq!(g.interpolate(0.0), Color::TRANSPARENT);
+        assert_eq!(g.interpolate(0.5), Color::TRANSPARENT);
     }
     #[test]
     fn test_gradient_builder() {

@@ -1,5 +1,5 @@
 //! Software rendering surface: back buffer, surface, and configuration.
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pixel_bytes_len;
 use crate::render::{PaintBackend, RenderCommand, ShapedText, TextMetrics};
 use std::sync::{Mutex, OnceLock};
@@ -182,6 +182,7 @@ impl<'a> RenderContext<'a> {
             text: text.to_string(),
             font: font.clone(),
             color,
+            alignment: HorizontalAlignment::Left,
         });
     }
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
@@ -205,6 +206,14 @@ impl<'a> RenderContext<'a> {
             height,
             data: data.to_vec(),
         });
+    }
+
+    /// Execute an arbitrary render command directly.
+    ///
+    /// Useful for widgets like `Canvas` that store a command buffer
+    /// and replay it during the draw pass.
+    pub fn execute_command(&mut self, command: RenderCommand) {
+        self.backend.execute_command(&command);
     }
 }
 

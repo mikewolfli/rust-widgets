@@ -109,3 +109,94 @@ impl Draw for StatusBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    #[test]
+    fn statusbar_creation_defaults() {
+        let sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert!(sb.message().is_empty());
+        assert!(sb.permanent_message().is_empty());
+        assert!(sb.size_grip_enabled());
+    }
+
+    #[test]
+    fn statusbar_show_message() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert!(sb.message().is_empty());
+        sb.show_message("Ready", 3000);
+        assert_eq!(sb.message(), "Ready");
+    }
+
+    #[test]
+    fn statusbar_clear_message() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        sb.show_message("Busy", 5000);
+        assert_eq!(sb.message(), "Busy");
+        sb.clear_message();
+        assert!(sb.message().is_empty());
+    }
+
+    #[test]
+    fn statusbar_permanent_message() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert!(sb.permanent_message().is_empty());
+        sb.set_permanent_message("Line: 1  Col: 1");
+        assert_eq!(sb.permanent_message(), "Line: 1  Col: 1");
+        sb.set_permanent_message("");
+        assert!(sb.permanent_message().is_empty());
+    }
+
+    #[test]
+    fn statusbar_size_grip() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert!(sb.size_grip_enabled());
+        sb.set_size_grip_enabled(false);
+        assert!(!sb.size_grip_enabled());
+        sb.set_size_grip_enabled(true);
+        assert!(sb.size_grip_enabled());
+    }
+
+    #[test]
+    fn statusbar_geometry_delegation() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        sb.set_geometry(Rect::new(0, 700, 800, 24));
+        assert_eq!(sb.geometry(), Rect::new(0, 700, 800, 24));
+    }
+
+    #[test]
+    fn statusbar_visibility() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert!(sb.is_visible());
+        sb.hide();
+        assert!(!sb.is_visible());
+        sb.show();
+        assert!(sb.is_visible());
+    }
+
+    #[test]
+    fn statusbar_signal_accessors() {
+        let sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        let _ = &sb.message_changed;
+    }
+
+    #[test]
+    fn statusbar_id_kind() {
+        let sb_a = StatusBar::new(Rect::new(0, 0, 800, 24));
+        let sb_b = StatusBar::new(Rect::new(0, 0, 800, 24));
+        assert_ne!(sb_a.id(), sb_b.id());
+        assert_eq!(sb_a.kind(), WidgetKind::StatusBar);
+        assert_eq!(sb_b.kind(), WidgetKind::StatusBar);
+    }
+
+    #[test]
+    fn statusbar_draw_produces_svg_output() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        sb.show_message("Ready", 3000);
+        let svg = crate::widget::svg::render_to_svg(&mut sb);
+        assert!(svg.starts_with("<svg"));
+    }
+}

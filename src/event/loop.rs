@@ -5,6 +5,8 @@ use super::types::{Event, EventPriority};
 use crate::core::ObjectId;
 #[cfg(feature = "touch")]
 use crate::gesture::GestureEngine;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -28,6 +30,13 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
+/// A handle returned by `request_animation_frame` that can be used to cancel the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AnimationFrameRequest {
+    /// Unique identifier for this animation frame request.
+    pub id: u64,
+}
+
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
@@ -40,6 +49,8 @@ pub struct EventLoop {
     dispatch_fn: Option<EventDispatchFn>,
     /// Runtime timer manager emitting `Event::Timer` into this loop queue.
     timer_manager: TimerManager,
+    /// Next animation frame request ID.
+    next_anim_frame_id: AtomicU64,
 }
 
 impl EventLoop {
@@ -53,6 +64,7 @@ impl EventLoop {
             thread_handle: None,
             dispatch_fn: None,
             timer_manager,
+            next_anim_frame_id: AtomicU64::new(1),
         }
     }
 
@@ -69,10 +81,14 @@ impl EventLoop {
         let mut gesture_engine = GestureEngine::new();
         let handle = thread::spawn(move || {
             while *running.lock().unwrap_or_else(recover_lock) {
-                // Process events from the queue
-                if let Some((_target, event, _priority)) =
+                // Phase 1: Process all available events (non-blocking drain)
+                // This handles both Normal and Idle priority events without
+                // letting Idle events block Normal ones.
+                let mut had_work = false;
+                while let Some((_target, event, _priority)) =
                     queue.lock().unwrap_or_else(recover_lock).dequeue()
                 {
+                    had_work = true;
                     // Route through gesture engine for touch events
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if event.is_touch() {
@@ -96,8 +112,36 @@ impl EventLoop {
                         let _ = maybe_gesture_event;
                     }
                 }
-                // Sleep to prevent busy waiting
-                thread::sleep(Duration::from_millis(10));
+                // Phase 2: If no events were available, block until one arrives
+                // This prevents busy-waiting when the queue is truly empty.
+                if !had_work {
+                    if let Some((_target, event, _priority)) =
+                        queue.lock().unwrap_or_else(recover_lock).dequeue_blocking()
+                    {
+                        // Route through gesture engine for touch events
+                        #[cfg(feature = "touch")]
+                        let maybe_gesture_event = if event.is_touch() {
+                            gesture_engine.process(&event, now_ms())
+                        } else {
+                            None
+                        };
+
+                        // Dispatch event to the target widget if a dispatch function is set
+                        if let Some(ref dispatch) = dispatch_fn {
+                            dispatch(_target, &event);
+                            #[cfg(feature = "touch")]
+                            if let Some(ref gesture) = maybe_gesture_event {
+                                dispatch(_target, gesture);
+                            }
+                        } else {
+                            // Fallback: consume values when no dispatch function is set
+                            let _ = _target;
+                            let _ = event;
+                            #[cfg(feature = "touch")]
+                            let _ = maybe_gesture_event;
+                        }
+                    }
+                }
             }
         });
         self.thread_handle = Some(handle);
@@ -127,6 +171,23 @@ impl EventLoop {
             .sender()
             .post_with_priority(target, event, priority)
             .map_err(|e| e.to_string())
+    }
+
+    /// Request the event loop to dispatch a custom animation frame event on the next iteration.
+    ///
+    /// Returns an `AnimationFrameRequest` handle that can be used to identify or cancel
+    /// the request. This is similar to `window.requestAnimationFrame()` in browsers.
+    pub fn request_animation_frame(
+        &self,
+        target: ObjectId,
+    ) -> Result<AnimationFrameRequest, String> {
+        let id = self.next_anim_frame_id.fetch_add(1, Ordering::SeqCst);
+        let event = Event::Custom {
+            name: "animation_frame".to_string(),
+            payload: id.to_le_bytes().to_vec(),
+        };
+        self.post_event(target, event, EventPriority::Normal)?;
+        Ok(AnimationFrameRequest { id })
     }
 
     /// Sets the dispatch callback invoked for each dequeued event.

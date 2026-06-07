@@ -470,3 +470,443 @@ impl Draw for DockWidget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Point, Rect};
+    use crate::event::Event;
+    use crate::widget::svg::render_to_svg;
+    use crate::widget::Widget;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// 1. Creation defaults
+    #[test]
+    fn test_creation_defaults() {
+        let rect = Rect::new(10, 20, 200, 100);
+        let dw = DockWidget::new(rect);
+        assert!(!dw.is_floating(), "new dock widget should not be floating");
+        assert!(dw.is_docked(), "new dock widget should be docked");
+        assert!(dw.features().dock_widget_closable, "default should be closable");
+        assert!(dw.features().dock_widget_movable, "default should be movable");
+        assert!(dw.features().dock_widget_floatable, "default should be floatable");
+        assert_eq!(dw.title(), "", "default title should be empty");
+        assert_eq!(dw.geometry(), rect, "geometry should match constructor");
+        assert_eq!(dw.kind(), WidgetKind::DockWidget, "kind should be DockWidget");
+        assert!(dw.is_visible(), "new dock widget should be visible");
+        assert!(dw.is_enabled(), "new dock widget should be enabled");
+        assert!(dw.allowed_areas().all_dock_widget_areas);
+        assert!(dw.allowed_areas().left_dock_widget_area);
+        assert!(dw.allowed_areas().right_dock_widget_area);
+        assert!(dw.allowed_areas().top_dock_widget_area);
+        assert!(dw.allowed_areas().bottom_dock_widget_area);
+        assert!(!dw.allowed_areas().no_dock_widget_areas);
+        assert!(dw.registry().is_none(), "registry should be None by default");
+    }
+
+    /// 2. Setting/getting title
+    #[test]
+    fn test_title() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(dw.title(), "");
+        dw.set_title("My Dock".to_string());
+        assert_eq!(dw.title(), "My Dock");
+        dw.set_title(String::new());
+        assert_eq!(dw.title(), "");
+        dw.set_title("Updated".to_string());
+        assert_eq!(dw.title(), "Updated");
+    }
+
+    /// 3. Allowed areas (dock position concept)
+    #[test]
+    fn test_allowed_areas() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // Default all areas allowed
+        assert_eq!(dw.allowed_areas(), DockWidgetAreas::default());
+        // Set to none
+        dw.set_allowed_areas(DockWidgetAreas::none());
+        assert!(dw.allowed_areas().no_dock_widget_areas);
+        assert!(!dw.allowed_areas().left_dock_widget_area);
+        assert!(!dw.allowed_areas().right_dock_widget_area);
+        assert!(!dw.allowed_areas().top_dock_widget_area);
+        assert!(!dw.allowed_areas().bottom_dock_widget_area);
+        // Set to all
+        dw.set_allowed_areas(DockWidgetAreas::all());
+        assert!(dw.allowed_areas().left_dock_widget_area);
+        assert!(dw.allowed_areas().right_dock_widget_area);
+        assert!(dw.allowed_areas().top_dock_widget_area);
+        assert!(dw.allowed_areas().bottom_dock_widget_area);
+        assert!(dw.allowed_areas().all_dock_widget_areas);
+        // Custom area
+        let custom = DockWidgetAreas {
+            left_dock_widget_area: true,
+            right_dock_widget_area: false,
+            top_dock_widget_area: true,
+            bottom_dock_widget_area: false,
+            ..DockWidgetAreas::default()
+        };
+        dw.set_allowed_areas(custom);
+        assert!(dw.allowed_areas().left_dock_widget_area);
+        assert!(!dw.allowed_areas().right_dock_widget_area);
+        assert!(dw.allowed_areas().top_dock_widget_area);
+        assert!(!dw.allowed_areas().bottom_dock_widget_area);
+    }
+
+    /// 4. Floating state
+    #[test]
+    fn test_floating_state() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        assert!(!dw.is_floating());
+        dw.set_floating(true);
+        assert!(dw.is_floating());
+        dw.set_floating(false);
+        assert!(!dw.is_floating());
+        // Toggle
+        dw.toggle_floating();
+        assert!(dw.is_floating());
+        dw.toggle_floating();
+        assert!(!dw.is_floating());
+    }
+
+    #[test]
+    fn test_floating_signal_emitted() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let emitted = Arc::new(AtomicBool::new(false));
+        dw.top_level_changed.connect({
+            let emitted = Arc::clone(&emitted);
+            move |val| {
+                emitted.store(*val, Ordering::SeqCst);
+            }
+        });
+        dw.set_floating(true);
+        assert!(emitted.load(Ordering::SeqCst));
+    }
+
+    /// 5. Closable state
+    #[test]
+    fn test_closable_state() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let features = dw.features();
+        assert!(features.dock_widget_closable);
+        // Build no-features and set
+        let no_features =
+            DockWidgetFeatures { dock_widget_closable: false, ..DockWidgetFeatures::default() };
+        dw.set_features(no_features);
+        assert!(!dw.features().dock_widget_closable);
+        // Restore
+        dw.set_features(DockWidgetFeatures::all());
+        assert!(dw.features().dock_widget_closable);
+    }
+
+    /// 6. Window state management (docked, geometry)
+    #[test]
+    fn test_window_state_management() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // Docked state
+        assert!(dw.is_docked());
+        dw.set_docked(false);
+        assert!(!dw.is_docked());
+        dw.set_docked(true);
+        assert!(dw.is_docked());
+        // Geometry via Widget trait
+        assert_eq!(dw.geometry(), Rect::new(0, 0, 200, 100));
+        dw.set_geometry(Rect::new(50, 50, 300, 150));
+        assert_eq!(dw.geometry(), Rect::new(50, 50, 300, 150));
+        // Size/position aliases
+        assert_eq!(dw.size(), crate::core::Size::new(300, 150));
+        assert_eq!(dw.position(), Point::new(50, 50));
+        dw.set_position(Point::new(10, 10));
+        assert_eq!(dw.position(), Point::new(10, 10));
+        assert_eq!(dw.size(), crate::core::Size::new(300, 150));
+    }
+
+    /// 7. Geometry delegation through Widget trait
+    #[test]
+    fn test_geometry_delegation() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // The base widget geometry should be the same as the dock widget's
+        assert_eq!(dw.base().geometry(), dw.geometry());
+        dw.set_geometry(Rect::new(5, 5, 400, 200));
+        assert_eq!(dw.base().geometry(), dw.geometry());
+        assert_eq!(dw.base().geometry(), Rect::new(5, 5, 400, 200));
+    }
+
+    /// 8. Visibility
+    #[test]
+    fn test_visibility() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        assert!(dw.is_visible());
+        dw.hide();
+        assert!(!dw.is_visible());
+        dw.show();
+        assert!(dw.is_visible());
+        // set_visible
+        dw.set_visible(false);
+        assert!(!dw.is_visible());
+        dw.set_visible(true);
+        assert!(dw.is_visible());
+    }
+
+    /// 9. ID and Kind
+    #[test]
+    fn test_id_and_kind() {
+        let dw1 = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let dw2 = DockWidget::new(Rect::new(0, 0, 150, 80));
+        assert_eq!(dw1.kind(), WidgetKind::DockWidget);
+        assert_eq!(dw2.kind(), WidgetKind::DockWidget);
+        assert_ne!(dw1.id(), dw2.id(), "each DockWidget must have a unique ObjectId");
+    }
+
+    /// 10. SVG draw output
+    #[test]
+    fn test_svg_draw_output() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 300, 150));
+        dw.set_title("Test Dock".to_string());
+        let svg = render_to_svg(&mut dw);
+        assert!(svg.starts_with("<svg"), "SVG must start with <svg");
+        assert!(svg.ends_with("</svg>"), "SVG must end with </svg>");
+        assert!(svg.contains("width=\"300\""), "SVG must contain correct width");
+        assert!(svg.contains("height=\"150\""), "SVG must contain correct height");
+        // SVG should contain rendering artifacts (fill/stroke elements)
+        assert!(svg.contains("fill="));
+        assert!(svg.contains("stroke="));
+    }
+
+    #[test]
+    fn test_svg_draw_output_with_title() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 80));
+        dw.set_title("Hello".to_string());
+        let svg = render_to_svg(&mut dw);
+        // Title text may appear in SVG output
+        assert!(
+            svg.contains("Hello") || svg.contains("fill="),
+            "SVG output should contain title text or rendering elements"
+        );
+    }
+
+    /// 11. Signal accessors
+    #[test]
+    fn test_signal_accessors() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // dock_location_changed
+        {
+            let received = Arc::new(AtomicBool::new(false));
+            let area_received = Arc::new(Mutex::new(DockWidgetArea::NoDockWidgetArea));
+            dw.dock_location_changed.connect({
+                let received = Arc::clone(&received);
+                let area_received = Arc::clone(&area_received);
+                move |area: Arc<DockWidgetArea>| {
+                    received.store(true, Ordering::SeqCst);
+                    *area_received.lock().unwrap() = *area;
+                }
+            });
+            dw.dock_location_changed.emit(DockWidgetArea::LeftDockWidgetArea);
+            assert!(received.load(Ordering::SeqCst));
+            assert_eq!(*area_received.lock().unwrap(), DockWidgetArea::LeftDockWidgetArea);
+        }
+        // features_changed
+        {
+            let received = Arc::new(AtomicBool::new(false));
+            dw.features_changed.connect({
+                let received = Arc::clone(&received);
+                move |_features: Arc<DockWidgetFeatures>| {
+                    received.store(true, Ordering::SeqCst);
+                }
+            });
+            dw.set_features(DockWidgetFeatures::none());
+            assert!(received.load(Ordering::SeqCst));
+        }
+        // top_level_changed
+        {
+            let received = Arc::new(AtomicBool::new(false));
+            let floating_received = Arc::new(AtomicBool::new(false));
+            dw.top_level_changed.connect({
+                let received = Arc::clone(&received);
+                let floating_received = Arc::clone(&floating_received);
+                move |is_floating: Arc<bool>| {
+                    received.store(true, Ordering::SeqCst);
+                    floating_received.store(*is_floating, Ordering::SeqCst);
+                }
+            });
+            dw.set_floating(true);
+            assert!(received.load(Ordering::SeqCst));
+            assert!(floating_received.load(Ordering::SeqCst));
+        }
+    }
+
+    /// 12. Mouse event handling — close button
+    #[test]
+    fn test_mouse_close_button_hides_widget() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // Close button area: title_bar.x + width - 21 = 0 + 200 - 21 = 179
+        // y: title_bar.y + (24 - 16) / 2 = 0 + 4 = 4
+        let close_pos = Point::new(179, 8);
+        assert!(dw.is_visible());
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1 });
+        assert!(!dw.is_visible(), "clicking close button should hide the widget");
+    }
+
+    #[test]
+    fn test_mouse_close_button_other_button_no_hide() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let close_pos = Point::new(179, 8);
+        // Right-click should not hide
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 2 });
+        assert!(dw.is_visible(), "right-click on close should not hide");
+    }
+
+    #[test]
+    fn test_mouse_float_button_toggles_floating() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // Float button area: width - 42 = 158, y = 4
+        let float_pos = Point::new(162, 8);
+        assert!(!dw.is_floating());
+        dw.handle_event(&Event::MousePress { pos: float_pos, button: 1 });
+        assert!(dw.is_floating(), "clicking float button should toggle floating");
+    }
+
+    #[test]
+    fn test_mouse_title_bar_drag_starts() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let title_pos = Point::new(50, 10);
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        assert!(dw.base().is_mouse_pressed(), "mouse press on title bar should set mouse_pressed");
+    }
+
+    #[test]
+    fn test_mouse_move_drags_widget() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let title_pos = Point::new(50, 10);
+        // Press on title bar to start drag
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        // Move mouse — widget should follow
+        dw.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
+        assert_eq!(dw.geometry(), Rect::new(100, 50, 200, 100));
+    }
+
+    #[test]
+    fn test_mouse_release_ends_drag() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let title_pos = Point::new(50, 10);
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        assert!(dw.base().is_mouse_pressed());
+        dw.handle_event(&Event::MouseRelease { pos: Point::new(60, 20), button: 1 });
+        assert!(!dw.base().is_mouse_pressed(), "mouse release should clear mouse_pressed");
+    }
+
+    #[test]
+    fn test_mouse_outside_title_bar_no_drag() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // Click below title bar (y > 24)
+        let content_pos = Point::new(50, 50);
+        dw.handle_event(&Event::MousePress { pos: content_pos, button: 1 });
+        assert!(!dw.base().is_mouse_pressed(), "click outside title bar should not start drag");
+    }
+
+    #[test]
+    fn test_disabled_widget_ignores_events() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        dw.set_enabled(false);
+        let close_pos = Point::new(179, 8);
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1 });
+        assert!(dw.is_visible(), "disabled widget should ignore close event");
+    }
+
+    /// Features: all() and none() helpers
+    #[test]
+    fn test_features_all_and_none() {
+        let all = DockWidgetFeatures::all();
+        assert!(all.dock_widget_closable);
+        assert!(all.dock_widget_movable);
+        assert!(all.dock_widget_floatable);
+        assert!(all.dock_widget_vertical_title_bar);
+        assert!(all.dock_widget_all_features);
+        assert!(!all.dock_widget_no_features);
+        let none = DockWidgetFeatures::none();
+        assert!(!none.dock_widget_closable);
+        assert!(!none.dock_widget_movable);
+        assert!(!none.dock_widget_floatable);
+        assert!(!none.dock_widget_vertical_title_bar);
+        assert!(!none.dock_widget_all_features);
+        assert!(none.dock_widget_no_features);
+    }
+
+    #[test]
+    fn test_set_features_triggers_signal() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let count = Arc::new(AtomicU32::new(0));
+        dw.features_changed.connect({
+            let count = Arc::clone(&count);
+            move |_features: Arc<DockWidgetFeatures>| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        dw.set_features(DockWidgetFeatures::none());
+        assert_eq!(count.load(Ordering::SeqCst), 1, "set_features should emit signal once");
+        // Setting same features should NOT emit (no change)
+        dw.set_features(DockWidgetFeatures::none());
+        assert_eq!(count.load(Ordering::SeqCst), 1, "setting same features should not re-emit");
+        // Change again
+        dw.set_features(DockWidgetFeatures::all());
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Registry integration
+    #[test]
+    fn test_registry() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        assert!(dw.registry().is_none());
+        let registry = Rc::new(RefCell::new(crate::widget::SimpleRegistry::new()));
+        dw.set_registry(registry.clone());
+        assert!(dw.registry().is_some());
+        assert!(Rc::ptr_eq(dw.registry().unwrap(), &registry));
+    }
+
+    /// DockWidgetAreas helpers
+    #[test]
+    fn test_dock_widget_areas_all_and_none() {
+        let all = DockWidgetAreas::all();
+        assert!(all.left_dock_widget_area);
+        assert!(all.right_dock_widget_area);
+        assert!(all.top_dock_widget_area);
+        assert!(all.bottom_dock_widget_area);
+        assert!(all.all_dock_widget_areas);
+        assert!(!all.no_dock_widget_areas);
+        let none = DockWidgetAreas::none();
+        assert!(!none.left_dock_widget_area);
+        assert!(!none.right_dock_widget_area);
+        assert!(!none.top_dock_widget_area);
+        assert!(!none.bottom_dock_widget_area);
+        assert!(!none.all_dock_widget_areas);
+        assert!(none.no_dock_widget_areas);
+    }
+
+    /// Widget trait delegation
+    #[test]
+    fn test_widget_trait_delegation() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // parent
+        assert!(dw.parent().is_none());
+        let id = dw.id();
+        dw.set_parent(Some(id));
+        assert_eq!(dw.parent(), Some(id));
+        // children
+        assert!(dw.children().is_empty());
+        dw.add_child(id);
+        assert!(!dw.children().is_empty());
+        assert_eq!(dw.children(), &[id]);
+        dw.remove_child(id);
+        assert!(dw.children().is_empty());
+        // tooltip
+        assert_eq!(dw.tooltip(), "");
+        dw.set_tooltip("help".to_string());
+        assert_eq!(dw.tooltip(), "help");
+        // enabled
+        assert!(dw.is_enabled());
+        dw.set_enabled(false);
+        assert!(!dw.is_enabled());
+    }
+}

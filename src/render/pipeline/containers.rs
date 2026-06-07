@@ -4,747 +4,19 @@
 //!
 //! Also contains the `impl SoftwareSurface` block with all software rendering methods.
 
-use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::pipeline::controls::{centered_text_origin, push_widget_fill_and_border};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{
     blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, cluster_ends_with_zwj,
     draw_bitmap_glyph, estimate_cluster_advance, fill_pixels, inset_rect, is_combining_mark,
     is_variation_selector, line_stroke_coverage_grid, rounded_rect_coverage,
     rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel,
 };
-use crate::render::{default_software_render_config, is_empty_rect};
 use crate::render::{
-    BackBuffer, RenderCommand, SceneLayer, ShapedText, SoftwareRenderConfig, SoftwareSurface,
-    TextCluster, TextMetrics,
+    BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextCluster, TextMetrics,
 };
-use crate::widget::{
-    Canvas, ChartWidget, DockPanel, GridWidget, GroupBox, MdiArea, RichEdit, Splitter, TabWidget,
-    TableWidget, TextEdit, TreeView, Widget,
-};
+use crate::style::{Gradient, GradientType};
 
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &TabWidget) {
-    push_widget_fill_and_border(
-        layer,
-        tab_widget,
-        Some(Color::rgba(245, 247, 252, 255)),
-        Some((Color::rgba(126, 132, 142, 255), 1)),
-    );
-    let rect = tab_widget.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    let count = tab_widget.count().max(1);
-    let tab_height = rect.height.min(26);
-    let tab_width = (rect.width / count as u32).max(24);
-    for index in 0..count {
-        let tab_rect = Rect {
-            x: rect.x + (index as u32 * tab_width) as i32,
-            y: rect.y,
-            width: tab_width.min(rect.width),
-            height: tab_height,
-        };
-        let is_current = tab_widget.current_index() == index;
-        layer.push(RenderCommand::FillRect {
-            rect: tab_rect,
-            color: if is_current {
-                Color::rgba(210, 224, 248, 255)
-            } else {
-                Color::rgba(229, 234, 242, 255)
-            },
-        });
-        layer.push(RenderCommand::DrawText {
-            origin: centered_text_origin(tab_rect),
-            text: format!("Tab{}", index + 1),
-            font: tab_widget.font().cloned().unwrap_or_default(),
-            color: tab_widget.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255)),
-        });
-    }
-}
-/// Append visual commands for a `TextEdit` multi-line text editor representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_text_edit_visual_commands(layer: &mut SceneLayer, text_edit: &TextEdit) {
-    push_widget_fill_and_border(
-        layer,
-        text_edit,
-        Some(Color::WHITE),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-    let text = text_edit.text();
-    if !text.is_empty() {
-        let rect = text_edit.geometry();
-        let padding = 4i32;
-        let text_rect = Rect {
-            x: rect.x + padding,
-            y: rect.y + padding,
-            width: rect.width.saturating_sub(padding as u32 * 2),
-            height: rect.height.saturating_sub(padding as u32 * 2),
-        };
-        layer.push(RenderCommand::DrawText {
-            origin: Point { x: text_rect.x, y: text_rect.y + text_rect.height as i32 / 2 },
-            text: text.to_string(),
-            font: text_edit.font().cloned().unwrap_or_default(),
-            color: text_edit.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
-        });
-    }
-}
-/// Append visual commands for a `RichEdit` rich text editor representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &RichEdit) {
-    let bg_color =
-        if rich_edit.is_read_only() { Color::rgba(245, 245, 245, 255) } else { Color::WHITE };
-    push_widget_fill_and_border(
-        layer,
-        rich_edit,
-        Some(bg_color),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-    let text = rich_edit.text();
-    if !text.is_empty() {
-        let rect = rich_edit.geometry();
-        let padding = 4i32;
-        let text_rect = Rect {
-            x: rect.x + padding,
-            y: rect.y + padding,
-            width: rect.width.saturating_sub(padding as u32 * 2),
-            height: rect.height.saturating_sub(padding as u32 * 2),
-        };
-        layer.push(RenderCommand::DrawText {
-            origin: Point { x: text_rect.x, y: text_rect.y + text_rect.height as i32 / 2 },
-            text: text.to_string(),
-            font: rich_edit.font().cloned().unwrap_or_default(),
-            color: rich_edit.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
-        });
-    }
-    // Draw selection highlight if present
-    if let Some((start, end)) = rich_edit.selection() {
-        if start != end {
-            let rect = rich_edit.geometry();
-            let padding = 4i32;
-            let selection_width = ((end - start) as u32).min(20);
-            layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x: rect.x + padding,
-                    y: rect.y + padding,
-                    width: selection_width,
-                    height: rect.height.saturating_sub(padding as u32 * 2),
-                },
-                color: Color::rgba(128, 192, 255, 128),
-            });
-        }
-    }
-}
-/// Append visual commands for a `TreeView` hierarchical data display representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &TreeView) {
-    push_widget_fill_and_border(
-        layer,
-        tree_view,
-        Some(Color::WHITE),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-    let rect = tree_view.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw header area
-    let header_height = 20u32.min(rect.height);
-    let header_rect = Rect { x: rect.x, y: rect.y, width: rect.width, height: header_height };
-    layer.push(RenderCommand::FillRect {
-        rect: header_rect,
-        color: Color::rgba(235, 238, 243, 255),
-    });
-    layer.push(RenderCommand::DrawRectStroke {
-        rect: header_rect,
-        color: Color::rgba(200, 205, 215, 255),
-        width: 1,
-    });
-    // Draw tree icon placeholder
-    let icon_size = 12u32.min(header_height);
-    if icon_size > 0 {
-        layer.push(RenderCommand::DrawRectStroke {
-            rect: Rect { x: rect.x + 4, y: rect.y + 4, width: icon_size, height: icon_size },
-            color: Color::rgba(100, 100, 100, 255),
-            width: 1,
-        });
-    }
-    // Draw placeholder text for tree structure
-    layer.push(RenderCommand::DrawText {
-        origin: Point { x: rect.x + icon_size as i32 + 12, y: rect.y + header_height as i32 / 2 },
-        text: "Tree".to_string(),
-        font: tree_view.font().cloned().unwrap_or_default(),
-        color: tree_view.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
-    });
-}
-/// Append visual commands for a `TableWidget` data grid representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget: &TableWidget) {
-    push_widget_fill_and_border(
-        layer,
-        table_widget,
-        Some(Color::WHITE),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-    let rect = table_widget.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw header row
-    let header_height = 20u32.min(rect.height / 4).max(16);
-    let header_rect = Rect { x: rect.x, y: rect.y, width: rect.width, height: header_height };
-    layer.push(RenderCommand::FillRect {
-        rect: header_rect,
-        color: Color::rgba(235, 238, 243, 255),
-    });
-    layer.push(RenderCommand::DrawRectStroke {
-        rect: header_rect,
-        color: Color::rgba(200, 205, 215, 255),
-        width: 1,
-    });
-    // Draw column dividers
-    let column_count = 3u32;
-    let column_width = rect.width / column_count;
-    for i in 1..column_count {
-        let x = rect.x + (i * column_width) as i32;
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x, y: rect.y },
-            to: Point { x, y: rect.y + header_height as i32 },
-            color: Color::rgba(200, 205, 215, 255),
-            width: 1,
-        });
-    }
-    // Draw data rows placeholder
-    let row_height = 18u32;
-    let data_height = rect.height.saturating_sub(header_height);
-    let visible_rows = data_height / row_height;
-    for row in 0..visible_rows.min(10) {
-        let y = rect.y + header_height as i32 + (row * row_height) as i32;
-        if y + row_height as i32 > rect.y + rect.height as f32 as i32 {
-            break;
-        }
-        // Row background (alternating)
-        if row % 2 == 1 {
-            layer.push(RenderCommand::FillRect {
-                rect: Rect { x: rect.x, y, width: rect.width, height: row_height },
-                color: Color::rgba(250, 250, 252, 255),
-            });
-        }
-        // Row divider
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x: rect.x, y },
-            to: Point { x: rect.x + rect.width as f32 as i32, y },
-            color: Color::rgba(230, 232, 238, 255),
-            width: 1,
-        });
-    }
-}
-/// Append visual commands for a `GridWidget` layout container representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &GridWidget) {
-    push_widget_fill_and_border(
-        layer,
-        grid_widget,
-        Some(Color::rgba(250, 250, 252, 255)),
-        Some((Color::rgba(180, 185, 195, 255), 1)),
-    );
-    let rect = grid_widget.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw grid lines — read actual dimensions from the widget
-    let rows = grid_widget.rows().max(1);
-    let cols = grid_widget.columns().max(1);
-    let cell_width = rect.width / cols;
-    let cell_height = rect.height / rows;
-    // Horizontal lines
-    for i in 1..rows {
-        let y = rect.y + (i * cell_height) as i32;
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x: rect.x, y },
-            to: Point { x: rect.x + rect.width as f32 as i32, y },
-            color: Color::rgba(210, 215, 225, 255),
-            width: 1,
-        });
-    }
-    // Vertical lines
-    for i in 1..cols {
-        let x = rect.x + (i * cell_width) as i32;
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x, y: rect.y },
-            to: Point { x, y: rect.y + rect.height as f32 as i32 },
-            color: Color::rgba(210, 215, 225, 255),
-            width: 1,
-        });
-    }
-}
-/// Append visual commands for a `ChartWidget` data visualization representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget: &ChartWidget) {
-    push_widget_fill_and_border(
-        layer,
-        chart_widget,
-        Some(Color::WHITE),
-        Some((Color::rgba(122, 128, 138, 255), 1)),
-    );
-    let rect = chart_widget.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    let padding = 20i32;
-    let chart_rect = Rect {
-        x: rect.x + padding,
-        y: rect.y + padding,
-        width: rect.width.saturating_sub(padding as u32 * 2),
-        height: rect.height.saturating_sub(padding as u32 * 2),
-    };
-    if chart_rect.width == 0 || chart_rect.height == 0 {
-        return;
-    }
-    // Draw chart background
-    layer
-        .push(RenderCommand::FillRect { rect: chart_rect, color: Color::rgba(248, 249, 250, 255) });
-    // Draw axis lines
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: chart_rect.x, y: chart_rect.y + chart_rect.height as i32 },
-        to: Point {
-            x: chart_rect.x + chart_rect.width as i32,
-            y: chart_rect.y + chart_rect.height as i32,
-        },
-        color: Color::rgba(100, 100, 100, 255),
-        width: 2,
-    });
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: chart_rect.x, y: chart_rect.y },
-        to: Point { x: chart_rect.x, y: chart_rect.y + chart_rect.height as i32 },
-        color: Color::rgba(100, 100, 100, 255),
-        width: 2,
-    });
-    // Draw sample bar chart bars
-    let bar_count = 5u32;
-    let bar_width = chart_rect.width / (bar_count * 2);
-    let max_bar_height = chart_rect.height.saturating_sub(10);
-    for i in 0..bar_count {
-        let bar_height = max_bar_height * (i + 1) / bar_count;
-        let x = chart_rect.x + (i * bar_width * 2) as i32 + bar_width as i32 / 2;
-        let y = chart_rect.y + chart_rect.height as i32 - bar_height as i32;
-        layer.push(RenderCommand::FillRect {
-            rect: Rect { x, y, width: bar_width, height: bar_height },
-            color: Color::rgba(66, 133, 244, 200),
-        });
-        layer.push(RenderCommand::DrawRectStroke {
-            rect: Rect { x, y, width: bar_width, height: bar_height },
-            color: Color::rgba(66, 133, 244, 255),
-            width: 1,
-        });
-    }
-}
-/// Append visual commands for a `DockPanel` docking container representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &DockPanel) {
-    push_widget_fill_and_border(
-        layer,
-        dock_panel,
-        Some(Color::BACKGROUND),
-        Some((Color::rgba(160, 168, 180, 255), 1)),
-    );
-    let rect = dock_panel.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw dock area dividers
-    let center_x = rect.x + rect.width as f32 as i32 / 2;
-    let center_y = rect.y + rect.height as f32 as i32 / 2;
-    // Vertical center divider
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: center_x, y: rect.y + 4 },
-        to: Point { x: center_x, y: rect.y + rect.height as f32 as i32 - 4 },
-        color: Color::rgba(200, 205, 215, 255),
-        width: 2,
-    });
-    // Horizontal center divider
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: rect.x + 4, y: center_y },
-        to: Point { x: rect.x + rect.width as f32 as i32 - 4, y: center_y },
-        color: Color::rgba(200, 205, 215, 255),
-        width: 2,
-    });
-}
-/// Append visual commands for a `GroupBox` titled container representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_group_box_visual_commands(layer: &mut SceneLayer, group_box: &GroupBox) {
-    let rect = group_box.geometry();
-    // Draw the main border with title area
-    let title_height = 16i32;
-    layer.push(RenderCommand::DrawRectStroke {
-        rect: Rect {
-            x: rect.x,
-            y: rect.y + title_height / 2,
-            width: rect.width,
-            height: rect.height.saturating_sub(title_height as u32 / 2),
-        },
-        color: Color::rgba(140, 145, 155, 255),
-        width: 1,
-    });
-    // Fill title background
-    layer.push(RenderCommand::FillRect {
-        rect: Rect { x: rect.x + 8, y: rect.y, width: 60, height: title_height as u32 },
-        color: Color::BACKGROUND,
-    });
-    // Draw title text
-    layer.push(RenderCommand::DrawText {
-        origin: Point { x: rect.x + 12, y: rect.y + title_height / 2 },
-        text: "Group".to_string(),
-        font: group_box.font().cloned().unwrap_or_default(),
-        color: group_box.foreground_color().unwrap_or(Color::rgba(50, 52, 56, 255)),
-    });
-}
-/// Append visual commands for a `Splitter` resizable divider representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitter) {
-    push_widget_fill_and_border(
-        layer,
-        splitter,
-        Some(Color::rgba(235, 238, 243, 255)),
-        Some((Color::rgba(180, 185, 195, 255), 1)),
-    );
-    let rect = splitter.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw gripper dots/lines
-    let is_horizontal = rect.width > rect.height;
-    if is_horizontal {
-        // Horizontal splitter - vertical gripper line
-        let center_x = rect.x + rect.width as f32 as i32 / 2;
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x: center_x, y: rect.y + 4 },
-            to: Point { x: center_x, y: rect.y + rect.height as f32 as i32 - 4 },
-            color: Color::rgba(160, 165, 175, 255),
-            width: 2,
-        });
-    } else {
-        // Vertical splitter - horizontal gripper line
-        let center_y = rect.y + rect.height as f32 as i32 / 2;
-        layer.push(RenderCommand::DrawLineStroke {
-            from: Point { x: rect.x + 4, y: center_y },
-            to: Point { x: rect.x + rect.width as f32 as i32 - 4, y: center_y },
-            color: Color::rgba(160, 165, 175, 255),
-            width: 2,
-        });
-    }
-}
-/// Append visual commands for an `MdiArea` multiple document interface representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiArea) {
-    push_widget_fill_and_border(
-        layer,
-        mdi_area,
-        Some(Color::rgba(220, 225, 232, 255)),
-        Some((Color::rgba(140, 148, 160, 255), 1)),
-    );
-    let rect = mdi_area.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw placeholder child window frames
-    let child_rect = Rect {
-        x: rect.x + 10,
-        y: rect.y + 10,
-        width: (rect.width / 2).saturating_sub(15),
-        height: (rect.height / 2).saturating_sub(15),
-    };
-    if child_rect.width > 0 && child_rect.height > 0 {
-        // Child window background
-        layer.push(RenderCommand::FillRect { rect: child_rect, color: Color::WHITE });
-        // Child window title bar
-        layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: child_rect.x,
-                y: child_rect.y,
-                width: child_rect.width,
-                height: 20u32.min(child_rect.height),
-            },
-            color: Color::rgba(66, 133, 244, 255),
-        });
-        // Child window border
-        layer.push(RenderCommand::DrawRectStroke {
-            rect: child_rect,
-            color: Color::rgba(120, 128, 140, 255),
-            width: 1,
-        });
-    }
-}
-/// Append visual commands for a `Canvas` drawing surface representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
-    push_widget_fill_and_border(
-        layer,
-        canvas,
-        Some(Color::WHITE),
-        Some((Color::rgba(100, 108, 120, 255), 1)),
-    );
-    let rect = canvas.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Draw canvas grid pattern
-    let grid_size = 20u32;
-    let cols = rect.width / grid_size;
-    let rows = rect.height / grid_size;
-    // Light grid dots
-    for row in 0..rows {
-        for col in 0..cols {
-            let x = rect.x + (col * grid_size) as i32 + grid_size as i32 / 2;
-            let y = rect.y + (row * grid_size) as i32 + grid_size as i32 / 2;
-            layer.push(RenderCommand::FillRect {
-                rect: Rect { x, y, width: 1, height: 1 },
-                color: Color::rgba(220, 225, 235, 255),
-            });
-        }
-    }
-}
-/// Append visual commands for a `SpinBox` numeric input control.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate::widget::SpinBox) {
-    push_widget_fill_and_border(
-        layer,
-        spin_box,
-        Some(Color::WHITE),
-        Some((Color::rgba(160, 168, 180, 255), 1)),
-    );
-    let rect = spin_box.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    // Up/down button width
-    let button_width = (rect.width / 5).clamp(16, 24);
-    let value_area_width = rect.width.saturating_sub(button_width);
-    // Draw value text
-    let value_text = spin_box.value().to_string();
-    let text_color = spin_box.foreground_color().unwrap_or(Color::rgba(40, 44, 52, 255));
-    let padding = 4i32;
-    layer.push(RenderCommand::DrawText {
-        text: value_text,
-        origin: Point { x: rect.x + padding, y: rect.y + rect.height as f32 as i32 / 2 },
-        font: spin_box.font().cloned().unwrap_or_default(),
-        color: text_color,
-    });
-    // Draw up button (top half of right side)
-    let button_x = rect.x + value_area_width as i32;
-    layer.push(RenderCommand::FillRect {
-        rect: Rect { x: button_x, y: rect.y, width: button_width, height: rect.height / 2 },
-        color: Color::rgba(240, 242, 245, 255),
-    });
-    // Draw up arrow
-    let arrow_center_y = rect.y + rect.height as f32 as i32 / 4;
-    let arrow_color = Color::rgba(80, 84, 92, 255);
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x + button_width as i32 / 2 - 3, y: arrow_center_y + 2 },
-        to: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y - 2 },
-        color: arrow_color,
-        width: 1,
-    });
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y - 2 },
-        to: Point { x: button_x + button_width as i32 / 2 + 3, y: arrow_center_y + 2 },
-        color: arrow_color,
-        width: 1,
-    });
-    // Draw down button (bottom half of right side)
-    layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: button_x,
-            y: rect.y + rect.height as f32 as i32 / 2,
-            width: button_width,
-            height: rect.height / 2,
-        },
-        color: Color::rgba(240, 242, 245, 255),
-    });
-    // Draw down arrow
-    let arrow_center_y2 = rect.y + rect.height as f32 as i32 * 3 / 4;
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x + button_width as i32 / 2 - 3, y: arrow_center_y2 - 2 },
-        to: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y2 + 2 },
-        color: arrow_color,
-        width: 1,
-    });
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y2 + 2 },
-        to: Point { x: button_x + button_width as i32 / 2 + 3, y: arrow_center_y2 - 2 },
-        color: arrow_color,
-        width: 1,
-    });
-    // Button separator lines
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x, y: rect.y },
-        to: Point { x: button_x, y: rect.y + rect.height as f32 as i32 },
-        color: Color::rgba(160, 168, 180, 255),
-        width: 1,
-    });
-    layer.push(RenderCommand::DrawLineStroke {
-        from: Point { x: button_x, y: rect.y + rect.height as f32 as i32 / 2 },
-        to: Point { x: button_x + button_width as i32, y: rect.y + rect.height as f32 as i32 / 2 },
-        color: Color::rgba(160, 168, 180, 255),
-        width: 1,
-    });
-}
-/// Append visual commands for a `ListView` widget representation.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_list_view_visual_commands(
-    layer: &mut SceneLayer,
-    list_view: &crate::widget::ListView,
-) {
-    push_widget_fill_and_border(
-        layer,
-        list_view,
-        Some(Color::WHITE),
-        Some((Color::rgba(160, 168, 180, 255), 1)),
-    );
-    let rect = list_view.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    let row_height = 24u32;
-    let padding = 8i32;
-    let text_color = Color::rgba(40, 44, 52, 255);
-    let selected_bg = Color::PRIMARY;
-    let selected_text = Color::WHITE;
-    let font = Font::default_ui();
-    let visible_rows = (rect.height / row_height) as usize;
-    let row_count = list_view.row_count().min(visible_rows);
-    for row in 0..row_count {
-        let row_y = rect.y + (row as u32 * row_height) as i32;
-        let is_selected = list_view.selected_row() == Some(row);
-        let is_focused = list_view.focused_row() == Some(row);
-        // Draw selection background
-        if is_selected {
-            layer.push(RenderCommand::FillRect {
-                rect: Rect { x: rect.x, y: row_y, width: rect.width, height: row_height },
-                color: selected_bg,
-            });
-        }
-        // Draw focus indicator
-        if is_focused && !is_selected {
-            layer.push(RenderCommand::DrawRectStroke {
-                rect: Rect {
-                    x: rect.x + 1,
-                    y: row_y + 1,
-                    width: rect.width.saturating_sub(2),
-                    height: row_height.saturating_sub(2),
-                },
-                color: Color::PRIMARY,
-                width: 1,
-            });
-        }
-        // Draw item text
-        if let Some(text) = list_view.item(row) {
-            layer.push(RenderCommand::DrawText {
-                text,
-                origin: Point { x: rect.x + padding, y: row_y + row_height as i32 / 2 },
-                font: font.clone(),
-                color: if is_selected { selected_text } else { text_color },
-            });
-        }
-    }
-}
-/// Append visual commands for a `ScrollArea` scrollable container.
-#[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
-pub fn append_scroll_area_visual_commands(
-    layer: &mut SceneLayer,
-    scroll_area: &crate::widget::ScrollArea,
-) {
-    push_widget_fill_and_border(
-        layer,
-        scroll_area,
-        Some(Color::rgba(250, 250, 252, 255)),
-        Some((Color::rgba(180, 188, 200, 255), 1)),
-    );
-    let rect = scroll_area.geometry();
-    if is_empty_rect(&rect) {
-        return;
-    }
-    let viewport = scroll_area.viewport();
-    let scroll_offset = viewport.position();
-    let viewport_size = viewport.size();
-    // ScrollArea does not currently expose content geometry; use viewport as a safe baseline.
-    let content_size = viewport.size();
-    // Calculate scrollbar visibility and sizes
-    let needs_h_scroll = content_size.width > viewport_size.width;
-    let needs_v_scroll = content_size.height > viewport_size.height;
-    let scrollbar_size = 12u32;
-    // Horizontal scrollbar
-    if needs_h_scroll {
-        let h_track_y = rect.y + rect.height as f32 as i32 - scrollbar_size as i32;
-        let h_track_width =
-            if needs_v_scroll { rect.width.saturating_sub(scrollbar_size) } else { rect.width };
-        // Track
-        layer.push(RenderCommand::FillRect {
-            rect: Rect { x: rect.x, y: h_track_y, width: h_track_width, height: scrollbar_size },
-            color: Color::rgba(232, 234, 238, 255),
-        });
-        // Thumb
-        let h_ratio = viewport_size.width as f32 / content_size.width as f32;
-        let h_thumb_width = (h_track_width as f32 * h_ratio).max(20.0) as u32;
-        let h_max_offset = content_size.width.saturating_sub(viewport_size.width) as i32;
-        let h_thumb_offset = if h_max_offset > 0 {
-            (scroll_offset.x as f32 / h_max_offset as f32
-                * (h_track_width.saturating_sub(h_thumb_width)) as f32) as i32
-        } else {
-            0
-        };
-        layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: rect.x + h_thumb_offset,
-                y: h_track_y + 2,
-                width: h_thumb_width,
-                height: scrollbar_size.saturating_sub(4),
-            },
-            color: Color::rgba(172, 178, 188, 255),
-        });
-    }
-    // Vertical scrollbar
-    if needs_v_scroll {
-        let v_track_x = rect.x + rect.width as f32 as i32 - scrollbar_size as i32;
-        let v_track_height =
-            if needs_h_scroll { rect.height.saturating_sub(scrollbar_size) } else { rect.height };
-        // Track
-        layer.push(RenderCommand::FillRect {
-            rect: Rect { x: v_track_x, y: rect.y, width: scrollbar_size, height: v_track_height },
-            color: Color::rgba(232, 234, 238, 255),
-        });
-        // Thumb
-        let v_ratio = viewport_size.height as f32 / content_size.height as f32;
-        let v_thumb_height = (v_track_height as f32 * v_ratio).max(20.0) as u32;
-        let v_max_offset = content_size.height.saturating_sub(viewport_size.height) as i32;
-        let v_thumb_offset = if v_max_offset > 0 {
-            (scroll_offset.y as f32 / v_max_offset as f32
-                * (v_track_height.saturating_sub(v_thumb_height)) as f32) as i32
-        } else {
-            0
-        };
-        layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: v_track_x + 2,
-                y: rect.y + v_thumb_offset,
-                width: scrollbar_size.saturating_sub(4),
-                height: v_thumb_height,
-            },
-            color: Color::rgba(172, 178, 188, 255),
-        });
-    }
-    // Corner square (when both scrollbars are visible)
-    if needs_h_scroll && needs_v_scroll {
-        layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: rect.x + rect.width as f32 as i32 - scrollbar_size as i32,
-                y: rect.y + rect.height as f32 as i32 - scrollbar_size as i32,
-                width: scrollbar_size,
-                height: scrollbar_size,
-            },
-            color: Color::rgba(232, 234, 238, 255),
-        });
-    }
-}
 impl SoftwareSurface {
     /// Creates a software surface with size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
@@ -839,6 +111,56 @@ impl SoftwareSurface {
         }
         ShapedText { clusters, advance: total_advance }
     }
+    /// Fills a rectangle with a gradient.
+    pub fn fill_rect_gradient(&mut self, rect: Rect, gradient: &Gradient) {
+        let size = self.buffer.size();
+        let x0 = rect.x.max(0) as u32;
+        let y0 = rect.y.max(0) as u32;
+        let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
+        let y1 = (rect.y + rect.height as f32 as i32).max(0) as u32;
+        let x1 = x1.min(size.width);
+        let y1 = y1.min(size.height);
+        let frame = self.buffer.back_mut();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let pos = match gradient.gradient_type {
+                    GradientType::Linear => {
+                        // Project pixel onto start→end line
+                        let dx = gradient.end_point.x as f32 - gradient.start_point.x as f32;
+                        let dy = gradient.end_point.y as f32 - gradient.start_point.y as f32;
+                        let dot_len = dx * dx + dy * dy;
+                        if dot_len == 0.0 {
+                            0.0
+                        } else {
+                            let px = x as f32 - gradient.start_point.x as f32;
+                            let py = y as f32 - gradient.start_point.y as f32;
+                            ((px * dx + py * dy) / dot_len).clamp(0.0, 1.0)
+                        }
+                    }
+                    GradientType::Radial => {
+                        let dx = x as f32 - gradient.center.x as f32;
+                        let dy = y as f32 - gradient.center.y as f32;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if gradient.radius <= 0.0 {
+                            0.0
+                        } else {
+                            (dist / gradient.radius).clamp(0.0, 1.0)
+                        }
+                    }
+                    GradientType::Conic => {
+                        let dx = x as f32 - gradient.center.x as f32;
+                        let dy = y as f32 - gradient.center.y as f32;
+                        let angle = dy.atan2(dx) + std::f32::consts::PI;
+                        let angle = (angle + gradient.angle) % (2.0 * std::f32::consts::PI);
+                        angle / (2.0 * std::f32::consts::PI)
+                    }
+                };
+                let color = gradient.interpolate(pos);
+                set_pixel(frame, size.width, x, y, color);
+            }
+        }
+    }
+
     /// Fills a rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let size = self.buffer.size();
@@ -1219,14 +541,207 @@ impl SoftwareSurface {
             }
         }
     }
+    /// Draws an arc (partial circle).
+    pub fn draw_arc(
+        &mut self,
+        center: Point,
+        radius: u32,
+        start_angle: f32,
+        end_angle: f32,
+        color: Color,
+        filled: bool,
+    ) {
+        if radius == 0 {
+            return;
+        }
+        let step = 0.02f32;
+        let mut angle = start_angle;
+        let mut points: Vec<Point> = Vec::new();
+        if start_angle <= end_angle {
+            while angle <= end_angle {
+                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
+                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
+                points.push(Point::new(x, y));
+                angle += step;
+            }
+        } else {
+            while angle >= end_angle {
+                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
+                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
+                points.push(Point::new(x, y));
+                angle -= step;
+            }
+        }
+        // Ensure end angle point is included
+        let last_x = center.x + (radius as f32 * end_angle.cos()).round() as i32;
+        let last_y = center.y + (radius as f32 * end_angle.sin()).round() as i32;
+        points.push(Point::new(last_x, last_y));
+
+        if filled {
+            // Triangle fan from center to consecutive arc points
+            for i in 0..points.len().saturating_sub(1) {
+                self.fill_triangle(center, points[i], points[i + 1], color);
+            }
+        } else {
+            // Line segments along the arc
+            for i in 0..points.len().saturating_sub(1) {
+                self.draw_line_with_width(points[i], points[i + 1], color, 1);
+            }
+        }
+    }
+
+    /// Draws a path defined by a list of points.
+    pub fn draw_path(
+        &mut self,
+        points: &[Point],
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        if filled {
+            self.fill_polygon(points, color);
+        } else {
+            // Draw line segments between consecutive points
+            for i in 0..points.len().saturating_sub(1) {
+                self.draw_line_with_width(points[i], points[i + 1], color, width);
+            }
+            if closed {
+                self.draw_line_with_width(points[points.len() - 1], points[0], color, width);
+            }
+        }
+    }
+
+    /// Fills a polygon using a scanline algorithm.
+    fn fill_polygon(&mut self, points: &[Point], color: Color) {
+        let size = self.buffer.size();
+        let frame = self.buffer.back_mut();
+        let n = points.len();
+        if n < 3 {
+            return;
+        }
+
+        // Find min/max y
+        let min_y = points.iter().map(|p| p.y).min().unwrap_or(0).max(0);
+        let max_y = points.iter().map(|p| p.y).max().unwrap_or(0).min(size.height as i32 - 1);
+
+        for y in min_y..=max_y {
+            // Build intersection list
+            let mut intersections: Vec<f32> = Vec::new();
+            let mut j = n - 1;
+            for i in 0..n {
+                let p1 = points[i];
+                let p2 = points[j];
+                // Check if edge crosses scanline y
+                if (p1.y <= y && p2.y > y) || (p2.y <= y && p1.y > y) {
+                    // Edge crosses scanline, compute x intersection
+                    let t = (y - p1.y) as f32 / (p2.y - p1.y) as f32;
+                    let x = p1.x as f32 + (p2.x - p1.x) as f32 * t;
+                    intersections.push(x);
+                }
+                j = i;
+            }
+
+            // Sort intersections
+            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Fill between pairs (pairity fill)
+            let mut i = 0;
+            while i + 1 < intersections.len() {
+                let x_start = intersections[i].ceil() as i32;
+                let x_end = intersections[i + 1].floor() as i32;
+                let x_start = x_start.max(0);
+                let x_end = x_end.min(size.width as i32 - 1);
+                for x in x_start..=x_end {
+                    set_pixel(frame, size.width, x as u32, y as u32, color);
+                }
+                i += 2;
+            }
+        }
+    }
+
+    /// Fills a triangle using scanline rasterization (no AA).
+    fn fill_triangle(&mut self, v0: Point, v1: Point, v2: Point, color: Color) {
+        let mut vs = [v0, v1, v2];
+        vs.sort_by_key(|v| v.y);
+        let [a, b, c] = vs;
+        let size = self.buffer.size();
+        let frame = self.buffer.back_mut();
+
+        if a.y == c.y {
+            let min_x = a.x.min(b.x).min(c.x);
+            let max_x = a.x.max(b.x).max(c.x);
+            if max_x > min_x {
+                for x in min_x.max(0)..=max_x.min(size.width as i32 - 1) {
+                    set_pixel(frame, size.width, x as u32, a.y as u32, color);
+                }
+            }
+            return;
+        }
+        let total_height = c.y - a.y;
+        if total_height <= 0 {
+            return;
+        }
+        let lerp_x =
+            |p1: Point, p2: Point, t: f32| -> f32 { p1.x as f32 + (p2.x - p1.x) as f32 * t };
+        for y in a.y..=c.y {
+            let (x1, x2) = if y < b.y {
+                let sub_h = b.y - a.y;
+                if sub_h == 0 {
+                    continue;
+                }
+                (
+                    lerp_x(a, c, (y - a.y) as f32 / total_height as f32),
+                    lerp_x(a, b, (y - a.y) as f32 / sub_h as f32),
+                )
+            } else {
+                let sub_h = c.y - b.y;
+                if sub_h == 0 {
+                    continue;
+                }
+                (
+                    lerp_x(a, c, (y - a.y) as f32 / total_height as f32),
+                    lerp_x(b, c, (y - b.y) as f32 / sub_h as f32),
+                )
+            };
+            if y < 0 || y as u32 >= size.height {
+                continue;
+            }
+            let x_start = x1.min(x2).ceil() as i32;
+            let x_end = x1.max(x2).floor() as i32;
+            if x_end >= x_start {
+                let x_start = x_start.max(0);
+                let x_end = x_end.min(size.width as i32 - 1);
+                for x in x_start..=x_end {
+                    set_pixel(frame, size.width, x as u32, y as u32, color);
+                }
+            }
+        }
+    }
+
     /// Draws text using the current text raster fallback path.
-    pub fn draw_text(&mut self, origin: Point, text: &str, font: &Font, color: Color) {
+    pub fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) {
         let metrics = self.measure_text(text, font);
         if metrics.width == 0 || metrics.height == 0 {
             return;
         }
         let shaped = self.shape_text(text, font);
-        let mut pen_x = origin.x as f32;
+        let adjusted_origin_x = match alignment {
+            HorizontalAlignment::Left => origin.x,
+            HorizontalAlignment::Center => origin.x - (metrics.width / 2) as i32,
+            HorizontalAlignment::Right => origin.x - metrics.width as i32,
+        };
+        let mut pen_x = adjusted_origin_x as f32;
         let glyph_height = metrics.height.max(1) as i32;
         let size = self.buffer.size();
         let frame = self.buffer.back_mut();
