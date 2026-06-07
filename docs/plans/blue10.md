@@ -1405,3 +1405,48 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 - R9（代码质量债务）完成率：**76%**（本轮新增 clippy 阻断清理）
 
 - BLUE10 总体完成率（按 R1-R9 等权）：**59.9%**
+
+---
+
+## 第十四轮执行回写（2026-06-07）
+
+### 本轮目标（推进 R7.1）
+
+- 在 `Widget` trait 上落地统一无障碍基础接口，确保所有控件默认具备可访问语义入口。
+- 增加回归测试，避免后续重构破坏默认可访问行为。
+
+### 本轮实际完成项
+
+1. R7.1 — `Widget` trait 无障碍接口落地：
+  - 文件：`src/widget/widget_trait.rs`
+  - 新增默认方法：
+    - `accessible_name()`：优先 tooltip，缺省回退到 `WidgetKind`。
+    - `accessible_role()`：基于 `WidgetKind` 输出语义角色。
+    - `accessible_description()`：追加 `disabled/hidden` 状态描述。
+  - 结果：不需要逐个控件补实现，现有全部控件自动具备基础 A11y 元数据接口。
+
+2. R3.4 关联补充 — 无障碍默认行为测试（2）：
+  - 文件：`src/widget/widget_trait.rs`
+  - 新增测试：
+    - `widget_accessible_name_uses_tooltip_when_present`
+    - `widget_accessible_description_reflects_state_flags`
+
+### 证据（不虚标）
+
+1. `cargo test --all-features -q`：通过（`1713 passed; 0 failed; 3 ignored`）。
+2. `cargo clippy --all-features --all-targets -- -D warnings`：通过。
+3. `cargo check --all`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**99%**
+- R2（平台能力对齐）完成率：**62%**
+- R3（测试与门禁基建）完成率：**71%**（本轮新增 2 个 A11y trait 行为测试）
+- R4（配置与文档圆满化）完成率：**78%**
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**10%**（本轮完成 R7.1 的 trait 级接口基座）
+- R8（事件与运行时）完成率：**64%**
+- R9（代码质量债务）完成率：**76%**
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**60.6%**

@@ -1,0 +1,276 @@
+//! iOS platform trait implementation.
+//!
+//! Implements the Platform contract for iOS mobile devices.
+//! This is a state-driven backend that can be progressively enhanced
+//! with native UIKit/SwiftUI bindings.
+
+use super::types::{IosHandleKind, IosMobilePlatform};
+use crate::core::PlatformFamily;
+use crate::platform::{DropEvent, Platform, WidgetTriggerEvent};
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::Duration;
+
+impl Platform for IosMobilePlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "ios-state-backend"
+    }
+
+    fn family(&self) -> PlatformFamily {
+        PlatformFamily::Mobile
+    }
+
+    fn init(&self) {
+        let _ = self.ios_runtime_marker();
+        self.runtime.initialized.store(true, Ordering::SeqCst);
+    }
+
+    fn run(&self) {
+        if !self.runtime.initialized.load(Ordering::SeqCst) {
+            self.init();
+        }
+        // iOS state backend uses polling loop for deterministic behavior.
+        self.runtime.running.store(true, Ordering::SeqCst);
+        while self.runtime.running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(16));
+        }
+    }
+
+    fn quit(&self) {
+        self.runtime.running.store(false, Ordering::SeqCst);
+    }
+
+    fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.insert_widget(IosHandleKind::Window, title, x, y, width, height)
+    }
+
+    fn create_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::Button, text, x, y, width, height)
+    }
+
+    fn create_checkbox(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::CheckBox, text, x, y, width, height)
+    }
+
+    fn create_line_edit(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::LineEdit, text, x, y, width, height)
+    }
+
+    fn create_label(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::Label, text, x, y, width, height)
+    }
+
+    fn create_radio_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::RadioButton, text, x, y, width, height)
+    }
+
+    fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::Slider, "Slider", x, y, width, height)
+    }
+
+    fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
+    }
+
+    fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::ComboBox, "ComboBox", x, y, width, height)
+    }
+
+    fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::ListBox, "ListBox", x, y, width, height)
+    }
+
+    fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
+        if !matches!(self.kind_of(list_box), Some(IosHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self.list_data.lock().expect("ios list data lock poisoned");
+        let entry = data.entry(list_box).or_default();
+        entry.items.push(text.to_string());
+        true
+    }
+
+    fn list_box_remove_item(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(IosHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self.list_data.lock().expect("ios list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.items.remove(index);
+        if let Some(cur) = entry.current_index {
+            if cur == index {
+                entry.current_index = None;
+            } else if cur > index {
+                entry.current_index = Some(cur - 1);
+            }
+        }
+        true
+    }
+
+    fn list_box_clear_items(&self, list_box: u64) -> bool {
+        if !matches!(self.kind_of(list_box), Some(IosHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self.list_data.lock().expect("ios list data lock poisoned");
+        if let Some(entry) = data.get_mut(&list_box) {
+            entry.items.clear();
+            entry.current_index = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn get_widget_text(&self, widget_id: u64) -> String {
+        self.state.widget_text(widget_id)
+    }
+
+    fn set_widget_text(&self, widget_id: u64, text: &str) -> bool {
+        self.state.set_widget_text(widget_id, text)
+    }
+
+    fn get_widget_geometry(&self, widget_id: u64) -> Option<(i32, i32, u32, u32)> {
+        self.state.widget_geometry(widget_id)
+    }
+
+    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) -> bool {
+        self.state.set_widget_geometry(widget_id, x, y, width, height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ios_platform_window_creation() {
+        let platform = IosMobilePlatform::new();
+        platform.init();
+
+        let window_id = platform.create_window("Test Window", 0, 0, 320, 568);
+        assert_ne!(window_id, 0);
+
+        assert_eq!(platform.backend_name(), "ios-state-backend");
+        assert_eq!(platform.family(), PlatformFamily::Mobile);
+    }
+
+    #[test]
+    fn ios_platform_button_requires_valid_parent() {
+        let platform = IosMobilePlatform::new();
+        platform.init();
+
+        // Attempt to create button without valid parent should fail
+        let button_id = platform.create_button(999, "Button", 0, 0, 80, 44);
+        assert_eq!(button_id, 0);
+
+        // Create window as parent
+        let window_id = platform.create_window("Window", 0, 0, 320, 568);
+        assert_ne!(window_id, 0);
+
+        // Now button creation should succeed
+        let button_id = platform.create_button(window_id, "Button", 0, 0, 80, 44);
+        assert_ne!(button_id, 0);
+    }
+
+    #[test]
+    fn ios_platform_list_box_items() {
+        let platform = IosMobilePlatform::new();
+        platform.init();
+
+        let window_id = platform.create_window("Window", 0, 0, 320, 568);
+        let list_box_id = platform.create_list_box(window_id, 0, 0, 320, 200);
+
+        assert!(platform.list_box_add_item(list_box_id, "Item 1"));
+        assert!(platform.list_box_add_item(list_box_id, "Item 2"));
+
+        assert!(platform.list_box_remove_item(list_box_id, 0));
+        assert!(platform.list_box_clear_items(list_box_id));
+    }
+
+    #[test]
+    fn ios_platform_state_serialization() {
+        let platform = IosMobilePlatform::new();
+        platform.init();
+
+        let _window_id = platform.create_window("Window", 0, 0, 320, 568);
+        let result = platform.serialize_state();
+        assert!(result.is_ok());
+    }
+}

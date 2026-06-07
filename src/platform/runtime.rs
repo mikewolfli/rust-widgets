@@ -2,10 +2,17 @@
     feature = "embedded",
     all(
         not(feature = "embedded"),
-        not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+        not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "ios"
+        ))
     )
 ))]
 use crate::core::PlatformFamily;
+#[cfg(target_os = "ios")]
+use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
 #[cfg(all(target_os = "macos", not(feature = "embedded"), not(feature = "objc2-macos")))]
@@ -89,9 +96,15 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
 }
 
+/// iOS state-backed platform backend.
+#[cfg(all(target_os = "ios", not(feature = "embedded")))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(IosMobilePlatform::new())
+}
+
 #[cfg(all(
     not(feature = "embedded"),
-    not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+    not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(StubPlatform::new("unknown-runtime-stub", PlatformFamily::Desktop))

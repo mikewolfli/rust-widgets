@@ -2,6 +2,8 @@
 
 // Platform backend implementations (one per target)
 pub mod harmony;
+#[cfg(target_os = "ios")]
+pub mod ios;
 pub mod linux;
 #[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
 pub mod macos;

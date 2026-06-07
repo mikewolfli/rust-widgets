@@ -119,6 +119,37 @@ pub trait Widget: EventHandler + Any {
     fn tooltip(&self) -> &str {
         self.base().tooltip()
     }
+    /// Returns a human-readable accessibility name used by assistive technologies.
+    ///
+    /// Default behavior prefers tooltip text when present, then falls back to the
+    /// widget kind so every widget has a stable non-empty label.
+    fn accessible_name(&self) -> String {
+        let tooltip = self.tooltip().trim();
+        if tooltip.is_empty() {
+            format!("{:?}", self.kind())
+        } else {
+            tooltip.to_string()
+        }
+    }
+    /// Returns the semantic accessibility role for this widget.
+    fn accessible_role(&self) -> String {
+        format!("{:?}", self.kind())
+    }
+    /// Returns a short accessibility description with current visibility/enabled state.
+    fn accessible_description(&self) -> String {
+        let mut state_flags: Vec<&str> = Vec::new();
+        if !self.is_enabled() {
+            state_flags.push("disabled");
+        }
+        if !self.is_visible() {
+            state_flags.push("hidden");
+        }
+        if state_flags.is_empty() {
+            self.accessible_role()
+        } else {
+            format!("{} ({})", self.accessible_role(), state_flags.join(", "))
+        }
+    }
     fn dpi_scale(&self) -> f32 {
         self.base().dpi_scale()
     }
@@ -293,5 +324,31 @@ pub trait Widget: EventHandler + Any {
     /// easily tappable on touch devices.
     fn contains_point(&self, point: Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Widget;
+    use crate::core::Rect;
+    use crate::widget::base_widgets::button::Button;
+
+    #[test]
+    fn widget_accessible_name_uses_tooltip_when_present() {
+        let mut button = Button::new("Open".to_string(), Rect::new(0, 0, 100, 32));
+        assert_eq!(button.accessible_name(), "Button");
+
+        button.set_tooltip("Open file".to_string());
+        assert_eq!(button.accessible_name(), "Open file");
+    }
+
+    #[test]
+    fn widget_accessible_description_reflects_state_flags() {
+        let mut button = Button::new("Open".to_string(), Rect::new(0, 0, 100, 32));
+        assert_eq!(button.accessible_description(), "Button");
+
+        button.set_enabled(false);
+        button.hide();
+        assert_eq!(button.accessible_description(), "Button (disabled, hidden)");
     }
 }
