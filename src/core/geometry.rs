@@ -27,10 +27,7 @@ impl Point {
     }
     /// Creates a point from u32 coordinates.
     pub const fn from_u32(x: u32, y: u32) -> Self {
-        Self {
-            x: x as i32,
-            y: y as i32,
-        }
+        Self { x: x as i32, y: y as i32 }
     }
     /// Creates a point from i64 coordinates (clamped to i32 range).
     pub fn from_i64(x: i64, y: i64) -> Self {
@@ -67,10 +64,7 @@ impl Point {
     }
     /// Creates a point from usize coordinates (clamped to i32 range).
     pub fn from_usize(x: usize, y: usize) -> Self {
-        Self {
-            x: x.clamp(0, i32::MAX as usize) as i32,
-            y: y.clamp(0, i32::MAX as usize) as i32,
-        }
+        Self { x: x.clamp(0, i32::MAX as usize) as i32, y: y.clamp(0, i32::MAX as usize) as i32 }
     }
     /// Creates a point from isize coordinates (clamped to i32 range).
     pub fn from_isize(x: isize, y: isize) -> Self {
@@ -139,24 +133,15 @@ impl Size {
     }
     /// Creates a size from f32 dimensions (rounded to nearest integer).
     pub fn from_f32(width: f32, height: f32) -> Self {
-        Self {
-            width: width.round().max(0.0) as u32,
-            height: height.round().max(0.0) as u32,
-        }
+        Self { width: width.round().max(0.0) as u32, height: height.round().max(0.0) as u32 }
     }
     /// Creates a size from f32 dimensions (truncated to integer).
     pub fn from_f32_trunc(width: f32, height: f32) -> Self {
-        Self {
-            width: width.max(0.0) as u32,
-            height: height.max(0.0) as u32,
-        }
+        Self { width: width.max(0.0) as u32, height: height.max(0.0) as u32 }
     }
     /// Creates a size from i32 dimensions (clamped to u32 range).
     pub fn from_i32(width: i32, height: i32) -> Self {
-        Self {
-            width: width.max(0) as u32,
-            height: height.max(0) as u32,
-        }
+        Self { width: width.max(0) as u32, height: height.max(0) as u32 }
     }
     /// Creates a size from i64 dimensions (clamped to u32 range).
     pub fn from_i64(width: i64, height: i64) -> Self {
@@ -179,17 +164,11 @@ impl Size {
     }
     /// Creates a size from f64 dimensions (rounded to nearest integer).
     pub fn from_f64(width: f64, height: f64) -> Self {
-        Self {
-            width: width.round().max(0.0) as u32,
-            height: height.round().max(0.0) as u32,
-        }
+        Self { width: width.round().max(0.0) as u32, height: height.round().max(0.0) as u32 }
     }
     /// Creates a size from f64 dimensions (truncated to integer).
     pub fn from_f64_trunc(width: f64, height: f64) -> Self {
-        Self {
-            width: width.max(0.0) as u32,
-            height: height.max(0.0) as u32,
-        }
+        Self { width: width.max(0.0) as u32, height: height.max(0.0) as u32 }
     }
     /// Creates a size from usize dimensions (clamped to u32 range).
     pub fn from_usize(width: usize, height: usize) -> Self {
@@ -273,12 +252,7 @@ pub struct Rect {
 impl Rect {
     /// Creates a rectangle from origin and extent.
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
+        Self { x, y, width, height }
     }
     /// Creates a rectangle from f32 coordinates (rounded to nearest integer).
     pub fn from_f32(x: f32, y: f32, width: f32, height: f32) -> Self {
@@ -300,12 +274,7 @@ impl Rect {
     }
     /// Creates a rectangle from u32 coordinates.
     pub const fn from_u32(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self {
-            x: x as i32,
-            y: y as i32,
-            width,
-            height,
-        }
+        Self { x: x as i32, y: y as i32, width, height }
     }
     /// Creates a rectangle from mixed types (i32 for position, u32 for size).
     pub const fn from_mixed(x: i32, y: i32, width: u32, height: u32) -> Self {
@@ -431,16 +400,10 @@ impl Rect {
     /// width and height. If the original already meets or exceeds the minimum,
     /// returns a clone of self.
     pub fn expand_to_touch_target(&self, min_size: Size) -> Rect {
-        let ex_w = if min_size.width > self.width {
-            (min_size.width - self.width) as i32
-        } else {
-            0
-        };
-        let ey_h = if min_size.height > self.height {
-            (min_size.height - self.height) as i32
-        } else {
-            0
-        };
+        let ex_w =
+            if min_size.width > self.width { (min_size.width - self.width) as i32 } else { 0 };
+        let ey_h =
+            if min_size.height > self.height { (min_size.height - self.height) as i32 } else { 0 };
         // Split expansion evenly on both sides.
         let dx_l = ex_w / 2;
         let dx_r = ex_w - dx_l;
@@ -485,12 +448,7 @@ impl Rect {
     }
     /// Converts rectangle to f32 coordinates.
     pub fn to_f32(&self) -> (f32, f32, f32, f32) {
-        (
-            self.x as f32,
-            self.y as f32,
-            self.width as f32,
-            self.height as f32,
-        )
+        (self.x as f32, self.y as f32, self.width as f32, self.height as f32)
     }
     /// Gets the right edge coordinate (exclusive).
     pub fn right(&self) -> i32 {
@@ -502,28 +460,15 @@ impl Rect {
     }
     /// Gets the center point of the rectangle.
     pub fn center(&self) -> Point {
-        Point::new(
-            self.x + (self.width as i32) / 2,
-            self.y + (self.height as i32) / 2,
-        )
+        Point::new(self.x + (self.width as i32) / 2, self.y + (self.height as i32) / 2)
     }
     /// Converts rectangle to f64 coordinates.
     pub fn to_f64(&self) -> (f64, f64, f64, f64) {
-        (
-            self.x as f64,
-            self.y as f64,
-            self.width as f64,
-            self.height as f64,
-        )
+        (self.x as f64, self.y as f64, self.width as f64, self.height as f64)
     }
     /// Converts rectangle to u32 coordinates (clamped to positive values).
     pub fn to_u32(&self) -> (u32, u32, u32, u32) {
-        (
-            self.x.max(0) as u32,
-            self.y.max(0) as u32,
-            self.width,
-            self.height,
-        )
+        (self.x.max(0) as u32, self.y.max(0) as u32, self.width, self.height)
     }
     /// Creates rectangle from two points (top-left and bottom-right).
     pub fn from_points(top_left: Point, bottom_right: Point) -> Self {
@@ -600,12 +545,7 @@ impl Rect {
         let new_y = self.y.min(point.y);
         let new_max_x = max_x.max(point.x + 1);
         let new_max_y = max_y.max(point.y + 1);
-        Self::new(
-            new_x,
-            new_y,
-            (new_max_x - new_x) as u32,
-            (new_max_y - new_y) as u32,
-        )
+        Self::new(new_x, new_y, (new_max_x - new_x) as u32, (new_max_y - new_y) as u32)
     }
 }
 impl Default for Rect {
@@ -615,11 +555,7 @@ impl Default for Rect {
 }
 impl std::fmt::Display for Rect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Rect({}, {}, {}x{})",
-            self.x, self.y, self.width, self.height
-        )
+        write!(f, "Rect({}, {}, {}x{})", self.x, self.y, self.width, self.height)
     }
 }
 /// Direction used by directional widgets and layouts.
@@ -638,13 +574,7 @@ mod tests {
         let point = Point::new(10, -3);
         let size = Size::new(80, 24);
         assert_eq!(point, Point { x: 10, y: -3 });
-        assert_eq!(
-            size,
-            Size {
-                width: 80,
-                height: 24
-            }
-        );
+        assert_eq!(size, Size { width: 80, height: 24 });
         assert!(!size.is_empty());
         assert!(Size::new(0, 1).is_empty());
     }

@@ -37,13 +37,7 @@ impl NotificationItem {
         message: impl Into<String>,
         level: NotificationLevel,
     ) -> Self {
-        Self {
-            id: id.into(),
-            title: title.into(),
-            message: message.into(),
-            level,
-            read: false,
-        }
+        Self { id: id.into(), title: title.into(), message: message.into(), level, read: false }
     }
 }
 
@@ -359,11 +353,7 @@ mod tests {
         assert_eq!(center.selected_id(), Some("n2"));
         assert_eq!(center.unread_count(), 2);
 
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["n2".to_string()]);
     }
 
@@ -401,12 +391,7 @@ mod tests {
     #[test]
     fn push_sets_selection_to_first() {
         let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
-        center.push(NotificationItem::new(
-            "n1",
-            "Title",
-            "Body",
-            NotificationLevel::Info,
-        ));
+        center.push(NotificationItem::new("n1", "Title", "Body", NotificationLevel::Info));
         assert_eq!(center.selected_id(), Some("n1"));
     }
 
@@ -424,12 +409,7 @@ mod tests {
         let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
         assert!(!center.select_index(0));
 
-        center.push(NotificationItem::new(
-            "n1",
-            "Title",
-            "Body",
-            NotificationLevel::Info,
-        ));
+        center.push(NotificationItem::new("n1", "Title", "Body", NotificationLevel::Info));
         assert!(!center.select_index(5));
         assert_eq!(center.selected_id(), Some("n1"));
     }
@@ -445,12 +425,7 @@ mod tests {
             }
         });
 
-        center.push(NotificationItem::new(
-            "n1",
-            "Title",
-            "Body",
-            NotificationLevel::Info,
-        ));
+        center.push(NotificationItem::new("n1", "Title", "Body", NotificationLevel::Info));
         let got = counts.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert_eq!(got, vec![1]);
     }
@@ -470,12 +445,7 @@ mod tests {
     #[test]
     fn activate_selected_marks_read_and_updates_unread_count() {
         let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
-        center.push(NotificationItem::new(
-            "n1",
-            "Title",
-            "Body",
-            NotificationLevel::Info,
-        ));
+        center.push(NotificationItem::new("n1", "Title", "Body", NotificationLevel::Info));
         assert_eq!(center.unread_count(), 1);
 
         // activate_selected on index 0 (first/only item)
@@ -527,11 +497,7 @@ mod tests {
         center.handle_event(&Event::key_press(40, 0));
         center.handle_event(&Event::key_press(13, 0));
 
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["n2".to_string()]);
     }
 }

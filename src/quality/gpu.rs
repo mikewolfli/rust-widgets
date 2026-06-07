@@ -19,11 +19,7 @@ pub struct GpuCapability {
 }
 impl Default for GpuCapability {
     fn default() -> Self {
-        Self {
-            supports_high_quality: true,
-            is_integrated: false,
-            performance_tier: 3,
-        }
+        Self { supports_high_quality: true, is_integrated: false, performance_tier: 3 }
     }
 }
 impl GpuCapability {
@@ -42,11 +38,7 @@ impl GpuCapability {
             wgpu::DeviceType::VirtualGpu => 2,
             wgpu::DeviceType::Cpu => 1,
         };
-        Self {
-            supports_high_quality,
-            is_integrated,
-            performance_tier,
-        }
+        Self { supports_high_quality, is_integrated, performance_tier }
     }
     /// Creates a default capability when GPU info is unavailable.
     pub fn default_capability() -> Self {

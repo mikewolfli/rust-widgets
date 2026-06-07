@@ -183,10 +183,7 @@ pub struct AnnotationManager {
 }
 impl AnnotationManager {
     pub fn new() -> Self {
-        Self {
-            annotations: HashMap::new(),
-            page_annotations: HashMap::new(),
-        }
+        Self { annotations: HashMap::new(), page_annotations: HashMap::new() }
     }
     pub fn add_annotation(&mut self, annotation: Annotation) {
         let id = annotation.id.clone();
@@ -213,18 +210,11 @@ impl AnnotationManager {
     pub fn get_page_annotations(&self, page: u32) -> Vec<&Annotation> {
         self.page_annotations
             .get(&page)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.annotations.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.annotations.get(id)).collect())
             .unwrap_or_default()
     }
     pub fn get_annotations_in_rect(&self, page: u32, rect: &Rect) -> Vec<&Annotation> {
-        self.get_page_annotations(page)
-            .into_iter()
-            .filter(|a| a.rect.intersects(rect))
-            .collect()
+        self.get_page_annotations(page).into_iter().filter(|a| a.rect.intersects(rect)).collect()
     }
     pub fn clear(&mut self) {
         self.annotations.clear();

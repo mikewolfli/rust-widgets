@@ -87,15 +87,9 @@ impl Color {
     pub fn light_variant(&self, factor: f32) -> Self {
         let f = factor.clamp(0.0, 1.0);
         Self::rgba(
-            (self.r as f32 + (255.0 - self.r as f32) * f)
-                .round()
-                .clamp(0.0, 255.0) as u8,
-            (self.g as f32 + (255.0 - self.g as f32) * f)
-                .round()
-                .clamp(0.0, 255.0) as u8,
-            (self.b as f32 + (255.0 - self.b as f32) * f)
-                .round()
-                .clamp(0.0, 255.0) as u8,
+            (self.r as f32 + (255.0 - self.r as f32) * f).round().clamp(0.0, 255.0) as u8,
+            (self.g as f32 + (255.0 - self.g as f32) * f).round().clamp(0.0, 255.0) as u8,
+            (self.b as f32 + (255.0 - self.b as f32) * f).round().clamp(0.0, 255.0) as u8,
             self.a,
         )
     }

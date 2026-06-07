@@ -76,10 +76,7 @@ impl DiffViewer {
 
     /// Returns count of non-equal lines.
     pub fn change_count(&self) -> usize {
-        self.lines
-            .iter()
-            .filter(|line| line.kind != DiffKind::Equal)
-            .count()
+        self.lines.iter().filter(|line| line.kind != DiffKind::Equal).count()
     }
 
     fn recompute(&mut self) {
@@ -247,11 +244,7 @@ mod tests {
 
         viewer.set_texts("x", "y");
 
-        let got = counts
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = counts.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![1]);
     }
 

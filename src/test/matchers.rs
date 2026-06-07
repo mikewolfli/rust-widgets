@@ -199,11 +199,8 @@ mod tests {
             5,
             "Colors should be close",
         );
-        let rects = vec![
-            Rect::new(0, 0, 50, 50),
-            Rect::new(50, 0, 50, 50),
-            Rect::new(100, 0, 50, 50),
-        ];
+        let rects =
+            vec![Rect::new(0, 0, 50, 50), Rect::new(50, 0, 50, 50), Rect::new(100, 0, 50, 50)];
         assert_no_overlap(&rects, "Rects should not overlap");
     }
 }

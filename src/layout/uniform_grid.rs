@@ -123,14 +123,8 @@ impl Layout for UniformGridLayout {
         let spacing_v = (self.rows - 1) * self.spacing;
 
         // Available inner area after subtracting margins and spacing.
-        let available_w = rect
-            .width
-            .saturating_sub(self.margin * 2)
-            .saturating_sub(spacing_h);
-        let available_h = rect
-            .height
-            .saturating_sub(self.margin * 2)
-            .saturating_sub(spacing_v);
+        let available_w = rect.width.saturating_sub(self.margin * 2).saturating_sub(spacing_h);
+        let available_h = rect.height.saturating_sub(self.margin * 2).saturating_sub(spacing_v);
 
         // Uniform cell size — all cells share the available space equally.
         let cell_width = available_w / self.cols;

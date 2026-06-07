@@ -118,10 +118,7 @@ pub(crate) unsafe extern "system" fn rust_widgets_wnd_proc(
 impl WindowsPlatform {
     pub fn to_wide(s: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
-        std::ffi::OsStr::new(s)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
+        std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
     pub fn get_native_handle(&self, id: u64) -> Option<HWND> {
         #[cfg(target_os = "windows")]
@@ -161,10 +158,7 @@ impl WindowsPlatform {
     /// is done only for windows owned by this platform adapter.
     pub unsafe fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
         use winapi::um::winuser::{SetWindowLongPtrW, GWLP_ID};
-        let command_id = self
-            .menu_state
-            .next_command_id
-            .fetch_add(1, Ordering::SeqCst) as u32;
+        let command_id = self.menu_state.next_command_id.fetch_add(1, Ordering::SeqCst) as u32;
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_ID, command_id as isize);
         }
@@ -301,10 +295,7 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
             use winapi::um::commctrl::TRACKBAR_CLASS;
             use winapi::um::winuser::CreateWindowExW;
             let parent_hwnd = this.get_native_handle(parent)?;
-            let class: Vec<u16> = OsStr::new(TRACKBAR_CLASS)
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
+            let class: Vec<u16> = OsStr::new(TRACKBAR_CLASS).encode_wide().chain(Some(0)).collect();
             let hwnd = unsafe {
                 CreateWindowExW(
                     0,
@@ -325,8 +316,7 @@ impl WindowsPlatformExtSlider for WindowsPlatform {
                 return None;
             }
             let widget_id =
-                this.state
-                    .create_widget(WindowsHandleKind::Slider, "Slider", x, y, width, height);
+                this.state.create_widget(WindowsHandleKind::Slider, "Slider", x, y, width, height);
             this.bind_native_handle(widget_id, hwnd);
             Some(widget_id)
         }

@@ -170,9 +170,7 @@ fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
             ranges.push((from.min(to), from.max(to)));
             continue;
         }
-        let page = part
-            .parse::<u32>()
-            .map_err(|_| format!("invalid page number: '{part}'"))?;
+        let page = part.parse::<u32>().map_err(|_| format!("invalid page number: '{part}'"))?;
         if page == 0 {
             return Err("page numbers are one-based and must be >= 1".to_string());
         }
@@ -214,11 +212,7 @@ pub struct PrintDialog {
 impl PrintDialog {
     /// Creates a print dialog model with default pagination.
     pub fn new() -> Self {
-        Self {
-            copies: 1,
-            pagination: PrintPagination::default(),
-            shown: false,
-        }
+        Self { copies: 1, pagination: PrintPagination::default(), shown: false }
     }
     /// Sets requested copy count and mirrors it into pagination.
     pub fn set_copies(&mut self, copies: u32) {
@@ -312,12 +306,7 @@ impl PrintPreviewDialog {
     /// Creates preview state from a document snapshot.
     pub fn new(document: Box<dyn PrintDocument>) -> Self {
         let page_count = document.page_count();
-        Self {
-            page_count,
-            current_page: 0,
-            document: Some(document),
-            preview_commands: Vec::new(),
-        }
+        Self { page_count, current_page: 0, document: Some(document), preview_commands: Vec::new() }
     }
     /// Returns total page count in preview.
     pub fn page_count(&self) -> u32 {
@@ -359,13 +348,8 @@ impl PrintPreviewDialog {
         };
 
         // Create a temporary printer with the Memory backend to capture output.
-        let printer = Printer {
-            page_size: Size {
-                width: 595,
-                height: 842,
-            },
-            backend: PrintBackend::Memory,
-        };
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
 
         let result = printer.print_with_result(document.as_ref());
 
@@ -404,10 +388,7 @@ impl Printer {
     /// Creates a printer using default page size and backend selection.
     pub fn new() -> Self {
         Self {
-            page_size: Size {
-                width: 595,
-                height: 842,
-            },
+            page_size: Size { width: 595, height: 842 },
             backend: PrintBackend::default_for_platform(),
         }
     }
@@ -442,10 +423,7 @@ impl Printer {
             document.draw_page(page, &mut context);
             context.end_page();
         }
-        let job = PrintJob {
-            page_size: self.page_size,
-            commands: context.commands,
-        };
+        let job = PrintJob { page_size: self.page_size, commands: context.commands };
         self.backend.submit(&job)
     }
     /// Get active print backend name.
@@ -595,10 +573,7 @@ pub struct MemoryPrintContext {
 impl MemoryPrintContext {
     /// Creates an in-memory print context for the given page size.
     pub fn new(page_size: Size) -> Self {
-        Self {
-            page_size,
-            commands: Vec::new(),
-        }
+        Self { page_size, commands: Vec::new() }
     }
     /// Appends a page break marker to the command stream.
     pub fn end_page(&mut self) {
@@ -607,24 +582,18 @@ impl MemoryPrintContext {
 }
 impl PrintContext for MemoryPrintContext {
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32) {
-        self.commands
-            .push(format!("text:{text}@{x},{y}:{font_size}"));
+        self.commands.push(format!("text:{text}@{x},{y}:{font_size}"));
     }
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) {
-        self.commands
-            .push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
+        self.commands.push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
     }
     fn draw_rect(&mut self, rect: Rect, width: f32) {
-        self.commands.push(format!(
-            "rect:{},{},{},{}:{}",
-            rect.x, rect.y, rect.width, rect.height, width
-        ));
+        self.commands
+            .push(format!("rect:{},{},{},{}:{}", rect.x, rect.y, rect.width, rect.height, width));
     }
     fn fill_rect(&mut self, rect: Rect, color: u32) {
-        self.commands.push(format!(
-            "fill:{},{},{},{}:{color}",
-            rect.x, rect.y, rect.width, rect.height
-        ));
+        self.commands
+            .push(format!("fill:{},{},{},{}:{color}", rect.x, rect.y, rect.width, rect.height));
     }
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
         self.commands.push(format!(
@@ -650,10 +619,7 @@ mod tests {
     }
     impl TestDoc {
         fn new(pages: u32) -> Self {
-            Self {
-                pages,
-                drawn: Mutex::new(Vec::new()),
-            }
+            Self { pages, drawn: Mutex::new(Vec::new()) }
         }
         fn drawn_pages(&self) -> Vec<u32> {
             self.drawn.lock().expect("test lock poisoned").clone()
@@ -664,10 +630,7 @@ mod tests {
             self.pages
         }
         fn draw_page(&self, page_num: u32, _context: &mut dyn PrintContext) {
-            self.drawn
-                .lock()
-                .expect("test lock poisoned")
-                .push(page_num);
+            self.drawn.lock().expect("test lock poisoned").push(page_num);
         }
     }
     #[test]
@@ -691,13 +654,8 @@ mod tests {
     }
     #[test]
     fn printer_respects_explicit_pagination() {
-        let printer = Printer {
-            page_size: Size {
-                width: 595,
-                height: 842,
-            },
-            backend: PrintBackend::Memory,
-        };
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
         let doc = TestDoc::new(6);
         let mut pagination = PrintPagination::new();
         pagination.set_range(2, 3);

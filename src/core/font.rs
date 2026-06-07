@@ -28,11 +28,7 @@ impl Font {
     /// This compatibility constructor keeps existing call sites stable and
     /// derives `weight` from `bold` (`700` when bold, otherwise `400`).
     pub fn new(family: impl Into<String>, size: f32, bold: bool, italic: bool) -> Self {
-        let weight = if bold {
-            Self::BOLD_WEIGHT
-        } else {
-            Self::REGULAR_WEIGHT
-        };
+        let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
         Self::with_weight(family, size, weight, italic)
     }
     /// Creates a font descriptor with explicit weight.
@@ -124,11 +120,7 @@ impl Font {
     }
     /// Creates a font with bold style.
     pub fn with_bold(&self, bold: bool) -> Self {
-        let weight = if bold {
-            Self::BOLD_WEIGHT
-        } else {
-            Self::REGULAR_WEIGHT
-        };
+        let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
         Self::with_weight(&self.family, self.size, weight, self.italic)
     }
     /// Creates a font with italic style.
@@ -192,13 +184,7 @@ impl Font {
     }
     /// Returns CSS font shorthand string.
     pub fn to_css(&self) -> String {
-        format!(
-            "{} {} {}px {}",
-            self.style_css(),
-            self.weight_css(),
-            self.size,
-            self.family
-        )
+        format!("{} {} {}px {}", self.style_css(), self.weight_css(), self.size, self.family)
     }
 }
 impl Default for Font {

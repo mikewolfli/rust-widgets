@@ -112,10 +112,7 @@ pub fn try_create_progress_bar(
         }
         let platform_instance = platform_as_windows(platform)?;
         let parent_hwnd = platform_instance.get_native_handle(parent)?;
-        let class: Vec<u16> = OsStr::new(PROGRESS_CLASS)
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        let class: Vec<u16> = OsStr::new(PROGRESS_CLASS).encode_wide().chain(Some(0)).collect();
         // SAFETY: CreateWindowExW with a valid PROGRESS_CLASS wide string, valid
         // parent HWND, and standard styles. Null return is handled gracefully.
         let hwnd = unsafe {

@@ -11,11 +11,7 @@ pub struct InitOptions {
 }
 impl Default for InitOptions {
     fn default() -> Self {
-        Self {
-            language: "en".to_string(),
-            preload_dir: None,
-            diagnostics: false,
-        }
+        Self { language: "en".to_string(), preload_dir: None, diagnostics: false }
     }
 }
 /// Initialization report
@@ -31,11 +27,7 @@ pub struct InitReport {
 impl InitReport {
     /// Create a new empty report
     pub fn new() -> Self {
-        Self {
-            files_loaded: 0,
-            translations_count: 0,
-            errors: Vec::new(),
-        }
+        Self { files_loaded: 0, translations_count: 0, errors: Vec::new() }
     }
 }
 impl Default for InitReport {

@@ -84,14 +84,8 @@ mod tests {
             ControlRoutePreference::NativePreferred,
             ControlRoutePreference::NativePreferred
         );
-        assert_eq!(
-            ControlRoutePreference::CustomRequired,
-            ControlRoutePreference::CustomRequired
-        );
-        assert_ne!(
-            ControlRoutePreference::NativePreferred,
-            ControlRoutePreference::CustomRequired
-        );
+        assert_eq!(ControlRoutePreference::CustomRequired, ControlRoutePreference::CustomRequired);
+        assert_ne!(ControlRoutePreference::NativePreferred, ControlRoutePreference::CustomRequired);
         let _ = format!("{:?}", ControlRoutePreference::NativePreferred);
         let _ = format!("{:?}", ControlRoutePreference::CustomRequired);
     }
@@ -115,10 +109,7 @@ mod tests {
         // Verify that Default trait is implemented by explicit impl, not derive.
         let _state: CustomControlState = CustomControlState::default();
         // Also verify we can construct via struct literal + ..Default
-        let _state2 = CustomControlState {
-            next_widget_id: 42,
-            ..CustomControlState::default()
-        };
+        let _state2 = CustomControlState { next_widget_id: 42, ..CustomControlState::default() };
     }
 
     #[test]

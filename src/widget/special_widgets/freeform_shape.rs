@@ -106,10 +106,9 @@ impl FreeformShapeWidget {
         }
         match &self.path {
             ShapePath::Heart => self.contains_heart(local, w, h),
-            ShapePath::Star {
-                points,
-                inner_radius,
-            } => self.contains_star(local, w, h, *points, *inner_radius),
+            ShapePath::Star { points, inner_radius } => {
+                self.contains_star(local, w, h, *points, *inner_radius)
+            }
             ShapePath::Polygon(v) => self.contains_polygon(local, v),
             ShapePath::RoundedRect { radius } => self.contains_rounded_rect(local, w, h, *radius),
             ShapePath::Bubble { tail_direction } => {
@@ -349,10 +348,9 @@ impl FreeformShapeWidget {
         }
         match &self.path {
             ShapePath::Heart => self.draw_heart(context, rect),
-            ShapePath::Star {
-                points,
-                inner_radius,
-            } => self.draw_star(context, rect, *points, *inner_radius),
+            ShapePath::Star { points, inner_radius } => {
+                self.draw_star(context, rect, *points, *inner_radius)
+            }
             ShapePath::Polygon(v) => self.draw_polygon(context, rect, v),
             ShapePath::RoundedRect { radius } => self.draw_rounded_rect(context, rect, *radius),
             ShapePath::Bubble { tail_direction } => {
@@ -373,17 +371,10 @@ impl FreeformShapeWidget {
         let tip_y = cy + 2 * r;
         let (blx, brx) = (cx - 3 * r, cx + 3 * r);
         for x in blx..=brx {
-            let t = if brx > blx {
-                (x - blx) as f32 / (brx - blx) as f32
-            } else {
-                0.5
-            };
+            let t = if brx > blx { (x - blx) as f32 / (brx - blx) as f32 } else { 0.5 };
             let y0 = (lcy as f32 + (tip_y - lcy) as f32 * (1.0 - (t - 0.5).abs() * 2.0)) as i32;
             if y0 <= tip_y {
-                context.fill_rect(
-                    Rect::new(x, y0, 1, (tip_y - y0 + 1) as u32),
-                    self.fill_color,
-                );
+                context.fill_rect(Rect::new(x, y0, 1, (tip_y - y0 + 1) as u32), self.fill_color);
             }
         }
         if let Some(sc) = self.stroke_color {
@@ -436,10 +427,8 @@ impl FreeformShapeWidget {
             vertices.iter().map(|v| v.x).sum::<i32>() / vertices.len() as i32,
             vertices.iter().map(|v| v.y).sum::<i32>() / vertices.len() as i32,
         );
-        let vs: Vec<Point> = vertices
-            .iter()
-            .map(|v| Point::new(rect.x + v.x, rect.y + v.y))
-            .collect();
+        let vs: Vec<Point> =
+            vertices.iter().map(|v| Point::new(rect.x + v.x, rect.y + v.y)).collect();
         for i in 0..vs.len() {
             let j = (i + 1) % vs.len();
             self.fill_triangle_approx(context, centroid, vs[i], vs[j]);
@@ -474,28 +463,19 @@ impl FreeformShapeWidget {
         context.fill_rounded_rect(rect, r, self.fill_color);
         let (tcx, tcy, tdx, tdy) = match td {
             BubbleTailDirection::Left => (rect.x, rect.y + rect.height as i32 / 2, -1, 0),
-            BubbleTailDirection::Right => (
-                rect.x + rect.width as i32 - 1,
-                rect.y + rect.height as i32 / 2,
-                1,
-                0,
-            ),
+            BubbleTailDirection::Right => {
+                (rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 / 2, 1, 0)
+            }
             BubbleTailDirection::Top => (rect.x + rect.width as i32 / 2, rect.y, 0, -1),
-            BubbleTailDirection::Bottom => (
-                rect.x + rect.width as i32 / 2,
-                rect.y + rect.height as i32 - 1,
-                0,
-                1,
-            ),
+            BubbleTailDirection::Bottom => {
+                (rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 - 1, 0, 1)
+            }
             BubbleTailDirection::TopLeft => (rect.x, rect.y, -1, -1),
             BubbleTailDirection::TopRight => (rect.x + rect.width as i32 - 1, rect.y, 1, -1),
             BubbleTailDirection::BottomLeft => (rect.x, rect.y + rect.height as i32 - 1, -1, 1),
-            BubbleTailDirection::BottomRight => (
-                rect.x + rect.width as i32 - 1,
-                rect.y + rect.height as i32 - 1,
-                1,
-                1,
-            ),
+            BubbleTailDirection::BottomRight => {
+                (rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 - 1, 1, 1)
+            }
         };
         let tip = Point::new(tcx + tdx * ts, tcy + tdy * ts);
         let (bdx, bdy) = match td {
@@ -554,10 +534,7 @@ impl FreeformShapeWidget {
         if pv.len() < 3 {
             return;
         }
-        let vs: Vec<Point> = pv
-            .iter()
-            .map(|v| Point::new(rect.x + v.x, rect.y + v.y))
-            .collect();
+        let vs: Vec<Point> = pv.iter().map(|v| Point::new(rect.x + v.x, rect.y + v.y)).collect();
         let centroid = Point::new(
             vs.iter().map(|v| v.x).sum::<i32>() / vs.len() as i32,
             vs.iter().map(|v| v.y).sum::<i32>() / vs.len() as i32,
@@ -582,10 +559,8 @@ impl FreeformShapeWidget {
             let min_x = a.x.min(b.x).min(c.x);
             let max_x = a.x.max(b.x).max(c.x);
             if max_x > min_x {
-                context.fill_rect(
-                    Rect::new(min_x, a.y, (max_x - min_x) as u32, 1),
-                    self.fill_color,
-                );
+                context
+                    .fill_rect(Rect::new(min_x, a.y, (max_x - min_x) as u32, 1), self.fill_color);
             }
             return;
         }
@@ -618,10 +593,8 @@ impl FreeformShapeWidget {
             let x_start = x1.min(x2).round() as i32;
             let x_end = x1.max(x2).round() as i32;
             if x_end > x_start {
-                context.fill_rect(
-                    Rect::new(x_start, y, (x_end - x_start) as u32, 1),
-                    self.fill_color,
-                );
+                context
+                    .fill_rect(Rect::new(x_start, y, (x_end - x_start) as u32, 1), self.fill_color);
             }
         }
     }

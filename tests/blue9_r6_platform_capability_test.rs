@@ -27,14 +27,8 @@ fn capability_matrix_document_exists() {
     let content =
         std::fs::read_to_string(&matrix_path).expect("Failed to read capability matrix document");
 
-    assert!(
-        content.contains("# Platform Capability Matrix"),
-        "Matrix missing title header"
-    );
-    assert!(
-        content.contains("| Widget |"),
-        "Matrix missing table header"
-    );
+    assert!(content.contains("# Platform Capability Matrix"), "Matrix missing title header");
+    assert!(content.contains("| Widget |"), "Matrix missing table header");
     assert!(
         content.contains("✅") || content.contains("🔶"),
         "Matrix missing capability emoji codes"
@@ -51,22 +45,11 @@ fn capability_matrix_covers_all_platforms() {
     let content =
         std::fs::read_to_string(&matrix_path).expect("Failed to read capability matrix document");
 
-    let required_platforms = [
-        "Windows",
-        "Linux/X11",
-        "macOS",
-        "Wayland",
-        "Mobile",
-        "Harmony",
-        "Embedded/Stub",
-    ];
+    let required_platforms =
+        ["Windows", "Linux/X11", "macOS", "Wayland", "Mobile", "Harmony", "Embedded/Stub"];
 
     for platform in &required_platforms {
-        assert!(
-            content.contains(platform),
-            "Matrix missing platform column: {}",
-            platform
-        );
+        assert!(content.contains(platform), "Matrix missing platform column: {}", platform);
     }
 }
 
@@ -234,10 +217,7 @@ fn all_widget_kinds_have_non_empty_debug_repr() {
 
     for kind in &kinds {
         let debug_str = format!("{:?}", kind);
-        assert!(
-            !debug_str.is_empty(),
-            "WidgetKind variant has an empty debug representation"
-        );
+        assert!(!debug_str.is_empty(), "WidgetKind variant has an empty debug representation");
     }
 }
 

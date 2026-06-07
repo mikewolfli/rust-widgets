@@ -15,12 +15,7 @@ pub struct FormLayout {
 impl FormLayout {
     /// Create a two-column form layout.
     pub fn new(spacing: u32, margin: u32) -> Self {
-        Self {
-            spacing,
-            margin,
-            rows: Vec::new(),
-            items: Vec::new(),
-        }
+        Self { spacing, margin, rows: Vec::new(), items: Vec::new() }
     }
 
     /// Add one form row as `(label, field)` pair.
@@ -76,8 +71,7 @@ impl Layout for FormLayout {
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.rows
-            .retain(|(label, field)| *label != widget_id && *field != widget_id);
+        self.rows.retain(|(label, field)| *label != widget_id && *field != widget_id);
         self.items.retain(|(id, _)| *id != widget_id);
     }
 
@@ -94,9 +88,7 @@ impl Layout for FormLayout {
     }
 
     fn has_child(&self, id: ObjectId) -> bool {
-        self.rows
-            .iter()
-            .any(|(label, field)| *label == id || *field == id)
+        self.rows.iter().any(|(label, field)| *label == id || *field == id)
             || self.items.iter().any(|(widget_id, _)| *widget_id == id)
     }
 
@@ -118,11 +110,8 @@ impl Layout for FormLayout {
         if available_height == 0 {
             return;
         }
-        let spacing_total = if total_entries > 1 {
-            (total_entries as u32 - 1) * self.spacing
-        } else {
-            0
-        };
+        let spacing_total =
+            if total_entries > 1 { (total_entries as u32 - 1) * self.spacing } else { 0 };
         let entry_height = available_height.saturating_sub(spacing_total) / total_entries as u32;
 
         // Layout rows: each row has a label (1/3 width) and a field (2/3 width).
@@ -135,10 +124,7 @@ impl Layout for FormLayout {
         let mut index = 0;
         for (label, field) in &self.rows {
             let y = rect.y + margin + index * (entry_height_i32 + spacing);
-            widgets(
-                *label,
-                Rect::new(rect.x + margin, y, label_width, entry_height),
-            );
+            widgets(*label, Rect::new(rect.x + margin, y, label_width, entry_height));
             widgets(
                 *field,
                 Rect::new(

@@ -14,18 +14,13 @@ impl HistoryEntry {
             url,
             title,
             visit_count: 1,
-            last_visit: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            last_visit: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         }
     }
     pub fn touch(&mut self) {
         self.visit_count += 1;
-        self.last_visit = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        self.last_visit =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     }
 }
 #[derive(Debug, Clone, Default)]
@@ -38,10 +33,7 @@ impl BrowserHistory {
         Self::with_capacity(MAX_HISTORY_ENTRIES)
     }
     pub fn with_capacity(max_entries: usize) -> Self {
-        Self {
-            entries: VecDeque::with_capacity(max_entries),
-            max_entries,
-        }
+        Self { entries: VecDeque::with_capacity(max_entries), max_entries }
     }
     pub fn add_entry(&mut self, url: String, title: String) {
         if let Some(existing) = self.entries.iter_mut().find(|e| e.url == url) {
@@ -288,10 +280,7 @@ mod tests {
     #[test]
     fn test_browser_history_search_by_title() {
         let mut history = BrowserHistory::new();
-        history.add_entry(
-            "https://example.com".to_string(),
-            "Example Page".to_string(),
-        );
+        history.add_entry("https://example.com".to_string(), "Example Page".to_string());
         history.add_entry("https://other.com".to_string(), "Other Site".to_string());
         let results = history.search("page");
         assert_eq!(results.len(), 1);

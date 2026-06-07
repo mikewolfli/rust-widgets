@@ -105,8 +105,7 @@ impl Platform for StubPlatform {
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Window, title, x, y, width, height)
+        self.state.create_widget(StubHandleKind::Window, title, x, y, width, height)
     }
 
     fn create_button(
@@ -118,8 +117,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Button, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::Button, text, x, y, width, height)
     }
 
     fn create_menu_bar(
@@ -133,18 +131,11 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_menu_bar");
         }
-        let id = self
-            .state
-            .create_widget(StubHandleKind::MenuBar, "MenuBar", x, y, width, height);
+        let id = self.state.create_widget(StubHandleKind::MenuBar, "MenuBar", x, y, width, height);
         self.menu_nodes
             .lock()
             .expect("platform lock poisoned")
-            .insert(
-                id,
-                MenuNodeState {
-                    text: "MenuBar".to_string(),
-                },
-            );
+            .insert(id, MenuNodeState { text: "MenuBar".to_string() });
         id
     }
 
@@ -157,8 +148,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::CheckBox, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::CheckBox, text, x, y, width, height)
     }
 
     fn create_line_edit(
@@ -170,8 +160,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::LineEdit, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::LineEdit, text, x, y, width, height)
     }
 
     fn create_label(
@@ -183,8 +172,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Label, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::Label, text, x, y, width, height)
     }
 
     fn create_radio_button(
@@ -196,8 +184,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::RadioButton, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::RadioButton, text, x, y, width, height)
     }
 
     fn create_slider(
@@ -208,8 +195,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Slider, "Slider", x, y, width, height)
+        self.state.create_widget(StubHandleKind::Slider, "Slider", x, y, width, height)
     }
 
     fn create_progress_bar(
@@ -220,14 +206,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
 
     fn create_combo_box(
@@ -239,16 +218,9 @@ impl Platform for StubPlatform {
         height: u32,
     ) -> ObjectId {
         let id =
-            self.state
-                .create_widget(StubHandleKind::ComboBox, "ComboBox", x, y, width, height);
-        self.combo_box_items
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(id, Vec::new());
-        self.combo_box_selection
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(id, None);
+            self.state.create_widget(StubHandleKind::ComboBox, "ComboBox", x, y, width, height);
+        self.combo_box_items.lock().expect("platform lock poisoned").insert(id, Vec::new());
+        self.combo_box_selection.lock().expect("platform lock poisoned").insert(id, None);
         id
     }
 
@@ -271,10 +243,7 @@ impl Platform for StubPlatform {
                 return false;
             }
         }
-        self.combo_box_selection
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(combo_box, None);
+        self.combo_box_selection.lock().expect("platform lock poisoned").insert(combo_box, None);
         true
     }
 
@@ -328,17 +297,9 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        let id = self
-            .state
-            .create_widget(StubHandleKind::ListBox, "ListBox", x, y, width, height);
-        self.list_box_items
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(id, Vec::new());
-        self.list_box_selection
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(id, None);
+        let id = self.state.create_widget(StubHandleKind::ListBox, "ListBox", x, y, width, height);
+        self.list_box_items.lock().expect("platform lock poisoned").insert(id, Vec::new());
+        self.list_box_selection.lock().expect("platform lock poisoned").insert(id, None);
         id
     }
 
@@ -366,10 +327,7 @@ impl Platform for StubPlatform {
             list.remove(index);
             len = list.len();
         }
-        let mut selection = self
-            .list_box_selection
-            .lock()
-            .expect("platform lock poisoned");
+        let mut selection = self.list_box_selection.lock().expect("platform lock poisoned");
         if let Some(current) = selection.get(&list_box).and_then(|value| *value) {
             if current == index {
                 selection.insert(list_box, None);
@@ -389,10 +347,7 @@ impl Platform for StubPlatform {
                 return false;
             }
         }
-        self.list_box_selection
-            .lock()
-            .expect("platform lock poisoned")
-            .insert(list_box, None);
+        self.list_box_selection.lock().expect("platform lock poisoned").insert(list_box, None);
         true
     }
 
@@ -439,8 +394,7 @@ impl Platform for StubPlatform {
     }
 
     fn create_panel(&self, _parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::Panel, "Panel", x, y, width, height)
+        self.state.create_widget(StubHandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu(
@@ -455,18 +409,11 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_menu");
         }
-        let id = self
-            .state
-            .create_widget(StubHandleKind::Menu, text, x, y, width, height);
+        let id = self.state.create_widget(StubHandleKind::Menu, text, x, y, width, height);
         self.menu_nodes
             .lock()
             .expect("platform lock poisoned")
-            .insert(
-                id,
-                MenuNodeState {
-                    text: text.to_string(),
-                },
-            );
+            .insert(id, MenuNodeState { text: text.to_string() });
         id
     }
 
@@ -481,8 +428,7 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_tool_bar");
         }
-        self.state
-            .create_widget(StubHandleKind::ToolBar, "ToolBar", x, y, width, height)
+        self.state.create_widget(StubHandleKind::ToolBar, "ToolBar", x, y, width, height)
     }
 
     fn create_status_bar(
@@ -497,8 +443,7 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_status_bar");
         }
-        self.state
-            .create_widget(StubHandleKind::StatusBar, text, x, y, width, height)
+        self.state.create_widget(StubHandleKind::StatusBar, text, x, y, width, height)
     }
 
     fn create_message_box(
@@ -511,14 +456,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::MessageBox,
-            "MessageBox",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::MessageBox, "MessageBox", x, y, width, height)
     }
 
     fn create_file_dialog(
@@ -529,14 +467,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::FileDialog,
-            "FileDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
 
     fn create_color_dialog(
@@ -547,14 +478,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::ColorDialog,
-            "ColorDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
 
     fn create_font_dialog(
@@ -565,14 +489,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::FontDialog,
-            "FontDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
 
     fn create_spin_box(
@@ -583,8 +500,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height)
+        self.state.create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
 
     fn create_list_view(
@@ -595,8 +511,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(StubHandleKind::ListView, "ListView", x, y, width, height)
+        self.state.create_widget(StubHandleKind::ListView, "ListView", x, y, width, height)
     }
 
     fn create_scroll_area(
@@ -607,14 +522,7 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(
-            StubHandleKind::ScrollArea,
-            "ScrollArea",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.state.create_widget(StubHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
     }
 
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
@@ -633,18 +541,11 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("menu_add_item");
         }
-        let id = self
-            .state
-            .create_widget(StubHandleKind::MenuItem, text, 0, 0, 0, 0);
+        let id = self.state.create_widget(StubHandleKind::MenuItem, text, 0, 0, 0, 0);
         self.menu_nodes
             .lock()
             .expect("platform lock poisoned")
-            .insert(
-                id,
-                MenuNodeState {
-                    text: text.to_string(),
-                },
-            );
+            .insert(id, MenuNodeState { text: text.to_string() });
         let _ = shortcut;
         id
     }
@@ -658,12 +559,7 @@ impl Platform for StubPlatform {
             return self.embedded_unsupported_bool("inject_menu_trigger");
         }
         // Accept only known menu ids to avoid emitting orphan events.
-        if !self
-            .menu_nodes
-            .lock()
-            .expect("platform lock poisoned")
-            .contains_key(&menu_item_id)
-        {
+        if !self.menu_nodes.lock().expect("platform lock poisoned").contains_key(&menu_item_id) {
             return false;
         }
         self.state.push_menu_event(menu_item_id);
@@ -671,8 +567,7 @@ impl Platform for StubPlatform {
     }
 
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
@@ -684,8 +579,7 @@ impl Platform for StubPlatform {
         if !self.state.contains_widget(widget_id) {
             return false;
         }
-        self.state
-            .push_widget_event(WidgetTriggerEvent { widget_id, kind });
+        self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
 
@@ -703,11 +597,8 @@ impl Platform for StubPlatform {
 
     fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
         self.state.set_text(widget_id, text);
-        if let Some(node) = self
-            .menu_nodes
-            .lock()
-            .expect("platform lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(node) =
+            self.menu_nodes.lock().expect("platform lock poisoned").get_mut(&widget_id)
         {
             node.text = text.to_string();
         }

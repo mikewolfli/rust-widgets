@@ -114,27 +114,14 @@ impl Platform for HarmonyPlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(
-            HarmonyHandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
         let id = self.insert_widget(HarmonyHandleKind::ComboBox, "ComboBox", x, y, width, height);
-        self.list_data.lock_guard().insert(
-            id,
-            ListData {
-                items: Vec::new(),
-                current_index: None,
-            },
-        );
+        self.list_data.lock_guard().insert(id, ListData { items: Vec::new(), current_index: None });
         id
     }
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -142,13 +129,7 @@ impl Platform for HarmonyPlatform {
             return 0;
         }
         let id = self.insert_widget(HarmonyHandleKind::ListBox, "ListBox", x, y, width, height);
-        self.list_data.lock_guard().insert(
-            id,
-            ListData {
-                items: Vec::new(),
-                current_index: None,
-            },
-        );
+        self.list_data.lock_guard().insert(id, ListData { items: Vec::new(), current_index: None });
         id
     }
     fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
@@ -227,9 +208,7 @@ impl Platform for HarmonyPlatform {
             return None;
         }
         let data = self.list_data.lock_guard();
-        data.get(&list_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        data.get(&list_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
         if !matches!(self.kind_of(combo_box), Some(HarmonyHandleKind::ComboBox)) {
@@ -285,9 +264,7 @@ impl Platform for HarmonyPlatform {
             return None;
         }
         let data = self.list_data.lock_guard();
-        data.get(&combo_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        data.get(&combo_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
@@ -309,12 +286,7 @@ impl Platform for HarmonyPlatform {
             return 0;
         }
         let id = self.insert_widget(HarmonyHandleKind::Menu, text, x, y, width, height);
-        self.menus
-            .lock_guard()
-            .menu_children
-            .entry(parent)
-            .or_default()
-            .push(id);
+        self.menus.lock_guard().menu_children.entry(parent).or_default().push(id);
         id
     }
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -341,10 +313,7 @@ impl Platform for HarmonyPlatform {
         if matches!(self.kind_of(window), Some(HarmonyHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(HarmonyHandleKind::MenuBar))
         {
-            self.menus
-                .lock_guard()
-                .attached_menu_bar
-                .insert(window, menu_bar);
+            self.menus.lock_guard().attached_menu_bar.insert(window, menu_bar);
             return true;
         }
         false
@@ -356,11 +325,7 @@ impl Platform for HarmonyPlatform {
         let item_id = self.insert_widget(HarmonyHandleKind::MenuItem, text, 0, 0, 0, 0);
         let _ = shortcut;
         let mut menus = self.menus.lock_guard();
-        menus
-            .menu_children
-            .entry(parent_menu)
-            .or_default()
-            .push(item_id);
+        menus.menu_children.entry(parent_menu).or_default().push(item_id);
         item_id
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
@@ -368,21 +333,14 @@ impl Platform for HarmonyPlatform {
     }
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
         // Only menu items may generate menu trigger events.
-        if !matches!(
-            self.kind_of(menu_item_id),
-            Some(HarmonyHandleKind::MenuItem)
-        ) {
+        if !matches!(self.kind_of(menu_item_id), Some(HarmonyHandleKind::MenuItem)) {
             return false;
         }
-        self.menus
-            .lock_guard()
-            .pending_menu_events
-            .push_back(menu_item_id);
+        self.menus.lock_guard().pending_menu_events.push_back(menu_item_id);
         true
     }
     fn poll_widget_triggered(&self) -> Option<u64> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.menus.lock_guard().pending_widget_events.pop_front()
@@ -416,10 +374,7 @@ impl Platform for HarmonyPlatform {
             self.menus
                 .lock_guard()
                 .pending_widget_events
-                .push_back(WidgetTriggerEvent {
-                    widget_id,
-                    kind: WidgetTriggerKind::ValueChanged,
-                });
+                .push_back(WidgetTriggerEvent { widget_id, kind: WidgetTriggerKind::ValueChanged });
         }
     }
     fn get_widget_text(&self, widget_id: u64) -> String {
@@ -477,56 +432,21 @@ impl Platform for HarmonyPlatform {
         self.insert_widget(HarmonyHandleKind::MessageBox, _text, x, y, width, height)
     }
     fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            HarmonyHandleKind::FileDialog,
-            "FileDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::FileDialog, "FileDialog", _x, _y, width, height)
     }
     fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            HarmonyHandleKind::ColorDialog,
-            "ColorDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::ColorDialog, "ColorDialog", _x, _y, width, height)
     }
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            HarmonyHandleKind::FontDialog,
-            "FontDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::FontDialog, "FontDialog", _x, _y, width, height)
     }
     fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(HarmonyHandleKind::SpinBox, "SpinBox", _x, _y, width, height)
     }
     fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            HarmonyHandleKind::ListView,
-            "ListView",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::ListView, "ListView", _x, _y, width, height)
     }
     fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            HarmonyHandleKind::ScrollArea,
-            "ScrollArea",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(HarmonyHandleKind::ScrollArea, "ScrollArea", _x, _y, width, height)
     }
 }

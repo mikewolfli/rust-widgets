@@ -17,9 +17,7 @@ pub fn append_lcd_number_visual_commands(layer: &mut SceneLayer, lcd_number: &Lc
             origin: Point::new(rect.x + 8, rect.y + 4),
             text: "LCDNumber".to_string(),
             font: lcd_number.font().cloned().unwrap_or_default(),
-            color: lcd_number
-                .foreground_color()
-                .unwrap_or(Color::from_rgb(0, 0, 0)),
+            color: lcd_number.foreground_color().unwrap_or(Color::from_rgb(0, 0, 0)),
         });
         if rect.height > 30 {
             // Draw LCD display area

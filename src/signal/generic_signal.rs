@@ -7,9 +7,7 @@ pub struct GenericSignal {
 impl GenericSignal {
     /// Create empty zero-argument signal.
     pub fn new() -> Self {
-        Self {
-            inner: Signal::new(),
-        }
+        Self { inner: Signal::new() }
     }
     /// Connect zero-argument slot and return connection handle.
     pub fn connect<F>(&self, mut slot: F) -> ConnectionHandle

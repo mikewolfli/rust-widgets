@@ -69,10 +69,7 @@ impl PdfDocumentImpl {
         Ok(document)
     }
     pub(crate) fn default_font_resource(&self) -> &str {
-        self.fonts
-            .first()
-            .map(|font| font.resource_name.as_str())
-            .unwrap_or("F1")
+        self.fonts.first().map(|font| font.resource_name.as_str()).unwrap_or("F1")
     }
 }
 impl PdfDocument for PdfDocumentImpl {
@@ -142,11 +139,8 @@ impl PdfDocument for PdfDocumentImpl {
         self.pagination.enabled = enabled;
     }
     fn set_page_numbering_format(&mut self, prefix: &str, start_at: u32) {
-        self.pagination.prefix = if prefix.trim().is_empty() {
-            "Page".to_string()
-        } else {
-            prefix.to_string()
-        };
+        self.pagination.prefix =
+            if prefix.trim().is_empty() { "Page".to_string() } else { prefix.to_string() };
         self.pagination.start_at = start_at.max(1);
     }
     fn set_page_numbering_layout(&mut self, right_margin: f32, bottom_margin: f32, font_size: f32) {

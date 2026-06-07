@@ -10,11 +10,7 @@ pub struct PoolConfig {
 }
 impl Default for PoolConfig {
     fn default() -> Self {
-        Self {
-            initial_size: 16,
-            max_size: 1024,
-            growth_factor: 1.5,
-        }
+        Self { initial_size: 16, max_size: 1024, growth_factor: 1.5 }
     }
 }
 pub struct ObjectPool<T: Poolable> {
@@ -28,11 +24,7 @@ impl<T: Poolable> ObjectPool<T> {
         for _ in 0..config.initial_size {
             pool.push(T::default());
         }
-        Self {
-            pool,
-            config,
-            allocated: 0,
-        }
+        Self { pool, config, allocated: 0 }
     }
     pub fn acquire(&mut self) -> T {
         if let Some(mut obj) = self.pool.pop() {
@@ -78,21 +70,13 @@ pub struct SharedPool<T: Poolable + Send> {
 }
 impl<T: Poolable + Send> SharedPool<T> {
     pub fn new(config: PoolConfig) -> Self {
-        Self {
-            pool: Arc::new(Mutex::new(ObjectPool::new(config))),
-        }
+        Self { pool: Arc::new(Mutex::new(ObjectPool::new(config))) }
     }
     pub fn acquire(&self) -> T {
-        self.pool
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .acquire()
+        self.pool.lock().unwrap_or_else(|e| e.into_inner()).acquire()
     }
     pub fn release(&self, obj: T) {
-        self.pool
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .release(obj);
+        self.pool.lock().unwrap_or_else(|e| e.into_inner()).release(obj);
     }
     pub fn stats(&self) -> PoolStats {
         let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
@@ -105,9 +89,7 @@ impl<T: Poolable + Send> SharedPool<T> {
 }
 impl<T: Poolable + Send> Clone for SharedPool<T> {
     fn clone(&self) -> Self {
-        Self {
-            pool: Arc::clone(&self.pool),
-        }
+        Self { pool: Arc::clone(&self.pool) }
     }
 }
 impl<T: Poolable + Send> Default for SharedPool<T> {
@@ -153,16 +135,10 @@ impl BufferPool {
         for _ in 0..initial_count {
             buffers.push(vec![0u8; buffer_size]);
         }
-        Self {
-            buffers,
-            buffer_size,
-            max_buffers,
-        }
+        Self { buffers, buffer_size, max_buffers }
     }
     pub fn acquire(&mut self) -> Vec<u8> {
-        self.buffers
-            .pop()
-            .unwrap_or_else(|| vec![0u8; self.buffer_size])
+        self.buffers.pop().unwrap_or_else(|| vec![0u8; self.buffer_size])
     }
     pub fn acquire_sized(&mut self, size: usize) -> Vec<u8> {
         if size <= self.buffer_size {
@@ -206,16 +182,10 @@ impl StringPool {
         for _ in 0..initial_count {
             strings.push(String::with_capacity(default_capacity));
         }
-        Self {
-            strings,
-            default_capacity,
-            max_strings,
-        }
+        Self { strings, default_capacity, max_strings }
     }
     pub fn acquire(&mut self) -> String {
-        self.strings
-            .pop()
-            .unwrap_or_else(|| String::with_capacity(self.default_capacity))
+        self.strings.pop().unwrap_or_else(|| String::with_capacity(self.default_capacity))
     }
     pub fn release(&mut self, mut s: String) {
         s.clear();
@@ -246,16 +216,10 @@ impl<T> VecPool<T> {
         for _ in 0..initial_count {
             vecs.push(Vec::with_capacity(default_capacity));
         }
-        Self {
-            vecs,
-            default_capacity,
-            max_vecs,
-        }
+        Self { vecs, default_capacity, max_vecs }
     }
     pub fn acquire(&mut self) -> Vec<T> {
-        self.vecs
-            .pop()
-            .unwrap_or_else(|| Vec::with_capacity(self.default_capacity))
+        self.vecs.pop().unwrap_or_else(|| Vec::with_capacity(self.default_capacity))
     }
     pub fn release(&mut self, mut v: Vec<T>) {
         v.clear();
@@ -291,11 +255,8 @@ mod tests {
     }
     #[test]
     fn test_object_pool() {
-        let mut pool: ObjectPool<TestObject> = ObjectPool::new(PoolConfig {
-            initial_size: 4,
-            max_size: 8,
-            growth_factor: 1.5,
-        });
+        let mut pool: ObjectPool<TestObject> =
+            ObjectPool::new(PoolConfig { initial_size: 4, max_size: 8, growth_factor: 1.5 });
         assert_eq!(pool.available(), 4);
         let obj1 = pool.acquire();
         assert_eq!(pool.allocated(), 1);

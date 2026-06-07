@@ -23,10 +23,7 @@ pub struct VecTreeModel {
 impl VecTreeModel {
     /// Creates a new vector tree model.
     pub fn new(nodes: Vec<String>) -> Self {
-        Self {
-            nodes,
-            data_changed: GenericSignal::new(),
-        }
+        Self { nodes, data_changed: GenericSignal::new() }
     }
     /// Returns a reference to the data changed signal.
     pub fn data_changed_signal(&self) -> &GenericSignal {
@@ -124,10 +121,7 @@ impl TreeView {
     }
     /// Returns current visible node count.
     pub fn node_count(&self) -> usize {
-        self.model
-            .as_ref()
-            .map(|model| model.node_count())
-            .unwrap_or(0)
+        self.model.as_ref().map(|model| model.node_count()).unwrap_or(0)
     }
     /// Returns node path by visible index.
     pub fn node_path(&self, index: usize) -> Option<String> {
@@ -174,8 +168,7 @@ impl TreeView {
     }
     /// Returns selected node index if present.
     pub fn selected_node(&self) -> Option<usize> {
-        self.selected_node
-            .filter(|index| *index < self.node_count())
+        self.selected_node.filter(|index| *index < self.node_count())
     }
     fn normalize_projection_state(&mut self) {
         let node_count = self.node_count();

@@ -79,10 +79,7 @@ mod tests {
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
@@ -103,9 +100,7 @@ mod tests {
             .expect("embedded task should execute within timeout");
         assert!(frame >= 1);
         engine.quit();
-        handle
-            .join()
-            .expect("embedded render loop thread should join");
+        handle.join().expect("embedded render loop thread should join");
     }
 
     #[test]
@@ -144,9 +139,7 @@ mod tests {
             .expect("third embedded task should execute within timeout");
         assert_eq!([first, second, third], [1, 2, 3]);
         engine.quit();
-        handle
-            .join()
-            .expect("embedded render loop thread should join");
+        handle.join().expect("embedded render loop thread should join");
     }
 
     use std::sync::{Mutex, OnceLock};

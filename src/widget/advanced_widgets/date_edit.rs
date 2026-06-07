@@ -13,18 +13,10 @@ pub struct Date {
 }
 impl Date {
     pub fn new(year: i32, month: u8, day: u8) -> Self {
-        Self {
-            year,
-            month: month.clamp(1, 12),
-            day: day.clamp(1, 31),
-        }
+        Self { year, month: month.clamp(1, 12), day: day.clamp(1, 31) }
     }
     pub fn today() -> Self {
-        Self {
-            year: 2024,
-            month: 1,
-            day: 1,
-        }
+        Self { year: 2024, month: 1, day: 1 }
     }
     pub fn year(&self) -> i32 {
         self.year
@@ -191,10 +183,7 @@ impl Draw for DateEdit {
         context.draw_rect(rect, Color::from_rgb(150, 150, 150));
         let text = self.date.to_string();
         context.draw_text(
-            Point {
-                x: rect.x + 6,
-                y: rect.y + (rect.height as i32 / 2),
-            },
+            Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
             &text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),

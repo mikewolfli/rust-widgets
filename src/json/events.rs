@@ -25,10 +25,7 @@ unsafe impl Sync for EventHandlerContext {}
 impl EventHandlerContext {
     /// Create a new event handler context.
     pub fn new(trigger: WidgetTriggerEvent) -> Self {
-        Self {
-            trigger,
-            user_data: None,
-        }
+        Self { trigger, user_data: None }
     }
 
     /// Attach opaque user data.
@@ -79,9 +76,7 @@ pub struct EventHandlerMap {
 impl EventHandlerMap {
     /// Create an empty handler registry.
     pub fn new() -> Self {
-        Self {
-            handlers: HashMap::new(),
-        }
+        Self { handlers: HashMap::new() }
     }
 
     /// Register a named handler.
@@ -293,9 +288,8 @@ mod tests {
     #[test]
     fn handler_passed_correct_trigger() {
         let mut map = EventHandlerMap::new();
-        let captured_trigger = std::rc::Rc::new(std::cell::RefCell::new(
-            None::<crate::platform::WidgetTriggerKind>,
-        ));
+        let captured_trigger =
+            std::rc::Rc::new(std::cell::RefCell::new(None::<crate::platform::WidgetTriggerKind>));
         let captured_clone = captured_trigger.clone();
         map.register("capture", move |ctx| {
             *captured_clone.borrow_mut() = Some(ctx.trigger.kind);

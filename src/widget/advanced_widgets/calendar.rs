@@ -121,10 +121,7 @@ impl Calendar {
     }
     /// Shows next month.
     pub fn show_next_month(&mut self) {
-        if let Some(next_month) = self
-            .selected_date
-            .with_month(self.selected_date.month() + 1)
-        {
+        if let Some(next_month) = self.selected_date.with_month(self.selected_date.month() + 1) {
             self.set_selected_date(next_month);
         } else if let Some(next_year) = self.selected_date.with_year(self.selected_date.year() + 1)
         {
@@ -136,10 +133,7 @@ impl Calendar {
     }
     /// Shows previous month.
     pub fn show_previous_month(&mut self) {
-        if let Some(prev_month) = self
-            .selected_date
-            .with_month(self.selected_date.month() - 1)
-        {
+        if let Some(prev_month) = self.selected_date.with_month(self.selected_date.month() - 1) {
             self.set_selected_date(prev_month);
         } else if let Some(prev_year) = self.selected_date.with_year(self.selected_date.year() - 1)
         {
@@ -183,10 +177,7 @@ impl Calendar {
         }
         // Calculate date based on row and column
         // SAFETY: Day 1 exists in every month.
-        let first_day = self
-            .selected_date
-            .with_day(1)
-            .expect("day 1 exists in every month");
+        let first_day = self.selected_date.with_day(1).expect("day 1 exists in every month");
         let first_weekday = first_day.weekday();
         let days_from_start =
             (row - 1) * 7 + col - (first_weekday.num_days_from_monday() as i32) + 1;
@@ -225,9 +216,8 @@ impl EventHandler for Calendar {
                     }
                     38 => {
                         // Up arrow
-                        if let Some(prev_week) = self
-                            .selected_date
-                            .checked_sub_signed(chrono::TimeDelta::days(7))
+                        if let Some(prev_week) =
+                            self.selected_date.checked_sub_signed(chrono::TimeDelta::days(7))
                         {
                             self.set_selected_date(prev_week);
                         }
@@ -240,9 +230,8 @@ impl EventHandler for Calendar {
                     }
                     40 => {
                         // Down arrow
-                        if let Some(next_week) = self
-                            .selected_date
-                            .checked_add_signed(chrono::TimeDelta::days(7))
+                        if let Some(next_week) =
+                            self.selected_date.checked_add_signed(chrono::TimeDelta::days(7))
                         {
                             self.set_selected_date(next_week);
                         }
@@ -271,26 +260,16 @@ impl Draw for Calendar {
         let rect = self.geometry();
         context.fill_rect(rect, Color::from_rgb(255, 255, 255));
         context.draw_rect(rect, Color::from_rgb(190, 190, 190));
-        let title = format!(
-            "{} {}",
-            self.selected_date.format("%B"),
-            self.selected_date.year()
-        );
+        let title = format!("{} {}", self.selected_date.format("%B"), self.selected_date.year());
         context.draw_text(
-            Point {
-                x: rect.x + 8,
-                y: rect.y + 8,
-            },
+            Point { x: rect.x + 8, y: rect.y + 8 },
             &title,
             &Font::default(),
             Color::from_rgb(40, 40, 40),
         );
         let value = self.selected_date.format(&self.date_format).to_string();
         context.draw_text(
-            Point {
-                x: rect.x + 8,
-                y: rect.y + 28,
-            },
+            Point { x: rect.x + 8, y: rect.y + 28 },
             &value,
             &Font::default(),
             Color::from_rgb(20, 20, 20),

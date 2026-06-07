@@ -187,10 +187,7 @@ impl Draw for ProgressBar {
         let text = self.format_text();
         if !text.is_empty() {
             context.draw_text(
-                Point::new(
-                    rect.x + rect.width as i32 / 2,
-                    rect.y + rect.height as i32 / 2,
-                ),
+                Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2),
                 &text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),

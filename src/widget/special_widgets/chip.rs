@@ -20,11 +20,7 @@ pub struct ChipItem {
 impl ChipItem {
     /// Creates a new chip item.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            selected: false,
-        }
+        Self { id: id.into(), label: label.into(), selected: false }
     }
 }
 
@@ -111,11 +107,7 @@ impl Chip {
 
     /// Returns ids of selected chips.
     pub fn selected_ids(&self) -> Vec<&str> {
-        self.items
-            .iter()
-            .filter(|item| item.selected)
-            .map(|item| item.id.as_str())
-            .collect()
+        self.items.iter().filter(|item| item.selected).map(|item| item.id.as_str()).collect()
     }
 
     /// Toggles chip selection.
@@ -163,12 +155,7 @@ impl Chip {
         for (i, item) in self.items.iter().enumerate() {
             let width = Self::chip_width(item, self.chip_padding).max(10);
             if i == index {
-                return Some(Rect::new(
-                    x,
-                    rect.y + 4,
-                    width as u32,
-                    rect.height.saturating_sub(8),
-                ));
+                return Some(Rect::new(x, rect.y + 4, width as u32, rect.height.saturating_sub(8)));
             }
             x += width + self.chip_spacing;
         }
@@ -318,11 +305,7 @@ mod tests {
         });
 
         assert!(chip.toggle_index(2));
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["urgent".to_string()]);
     }
 
@@ -338,10 +321,7 @@ mod tests {
     #[test]
     fn set_items_adds_chips() {
         let mut chip = Chip::new(Rect::new(0, 0, 800, 600));
-        chip.set_items(vec![
-            ChipItem::new("a", "Alpha"),
-            ChipItem::new("b", "Beta"),
-        ]);
+        chip.set_items(vec![ChipItem::new("a", "Alpha"), ChipItem::new("b", "Beta")]);
 
         assert_eq!(chip.items().len(), 2);
         assert_eq!(chip.items()[0].id, "a");

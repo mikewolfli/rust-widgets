@@ -111,17 +111,10 @@ impl Draw for ChartWidget {
 
         if self.data.is_empty() {
             // No data — draw placeholder text
-            let text_origin = crate::core::Point {
-                x: rect.x + 4,
-                y: rect.y + rect.height as i32 / 2,
-            };
+            let text_origin =
+                crate::core::Point { x: rect.x + 4, y: rect.y + rect.height as i32 / 2 };
             let font = Font::simple("Sans", 12.0);
-            context.draw_text(
-                text_origin,
-                "No data",
-                &font,
-                Color::from_rgb(180, 180, 180),
-            );
+            context.draw_text(text_origin, "No data", &font, Color::from_rgb(180, 180, 180));
             return;
         }
 
@@ -150,10 +143,7 @@ impl ChartWidget {
         let bottom_margin: i32 = 20;
         let chart_w = (rect.width as i32).saturating_sub(padding * 2);
         let bar_area_x = rect.x.saturating_add(padding);
-        let baseline_y = rect
-            .y
-            .saturating_add(rect.height as i32)
-            .saturating_sub(bottom_margin);
+        let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(bottom_margin);
         let top_y = rect.y.saturating_add(padding);
         let bar_width = (chart_w / n as i32).max(4).saturating_sub(2);
         let gap = 2;
@@ -183,15 +173,9 @@ impl ChartWidget {
             );
             if i < self.labels.len() {
                 let label = &self.labels[i];
-                let label_text = if label.len() > 6 {
-                    format!("{}..", &label[..4])
-                } else {
-                    label.clone()
-                };
-                let label_origin = crate::core::Point {
-                    x: x + 1,
-                    y: baseline_y + 12,
-                };
+                let label_text =
+                    if label.len() > 6 { format!("{}..", &label[..4]) } else { label.clone() };
+                let label_origin = crate::core::Point { x: x + 1, y: baseline_y + 12 };
                 context.draw_text(
                     label_origin,
                     &label_text,
@@ -214,10 +198,7 @@ impl ChartWidget {
         let bottom_margin: i32 = 20;
         let chart_w = (rect.width as i32).saturating_sub(padding * 2);
         let bar_area_x = rect.x.saturating_add(padding);
-        let baseline_y = rect
-            .y
-            .saturating_add(rect.height as i32)
-            .saturating_sub(bottom_margin);
+        let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(bottom_margin);
         let top_y = rect.y.saturating_add(padding);
         let step_x = chart_w / (n.saturating_sub(1) as i32).max(1);
         let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
@@ -243,15 +224,10 @@ impl ChartWidget {
             context.fill_circle(*pt, 3, line_color);
             if i < self.labels.len() {
                 let label = &self.labels[i];
-                let label_text = if label.len() > 6 {
-                    format!("{}..", &label[..4])
-                } else {
-                    label.clone()
-                };
-                let label_origin = crate::core::Point {
-                    x: pt.x.saturating_sub(6),
-                    y: baseline_y + 12,
-                };
+                let label_text =
+                    if label.len() > 6 { format!("{}..", &label[..4]) } else { label.clone() };
+                let label_origin =
+                    crate::core::Point { x: pt.x.saturating_sub(6), y: baseline_y + 12 };
                 context.draw_text(
                     label_origin,
                     &label_text,
@@ -271,9 +247,7 @@ impl ChartWidget {
         }
         let cx = rect.x + rect.width as i32 / 2;
         let cy = rect.y + rect.height as i32 / 2;
-        let radius = (rect.width.min(rect.height) as i32 / 2)
-            .saturating_sub(10)
-            .max(10);
+        let radius = (rect.width.min(rect.height) as i32 / 2).saturating_sub(10).max(10);
         let pie_colors = [
             Color::from_rgb(66, 133, 244),
             Color::from_rgb(219, 68, 55),
@@ -335,10 +309,7 @@ impl ChartWidget {
         let bottom_margin: i32 = 20;
         let chart_w = (rect.width as i32).saturating_sub(padding * 2);
         let bar_area_x = rect.x.saturating_add(padding);
-        let baseline_y = rect
-            .y
-            .saturating_add(rect.height as i32)
-            .saturating_sub(bottom_margin);
+        let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(bottom_margin);
         let top_y = rect.y.saturating_add(padding);
         let step_x = chart_w / (n as i32).max(1);
         let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
@@ -351,15 +322,10 @@ impl ChartWidget {
             context.fill_circle(crate::core::Point { x, y }, 3, dot_color);
             if i < self.labels.len() {
                 let label = &self.labels[i];
-                let label_text = if label.len() > 6 {
-                    format!("{}..", &label[..4])
-                } else {
-                    label.clone()
-                };
-                let label_origin = crate::core::Point {
-                    x: x.saturating_sub(6),
-                    y: baseline_y + 12,
-                };
+                let label_text =
+                    if label.len() > 6 { format!("{}..", &label[..4]) } else { label.clone() };
+                let label_origin =
+                    crate::core::Point { x: x.saturating_sub(6), y: baseline_y + 12 };
                 context.draw_text(
                     label_origin,
                     &label_text,

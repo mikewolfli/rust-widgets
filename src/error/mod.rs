@@ -107,18 +107,12 @@ pub struct RwError {
 impl RwError {
     /// Create a new error from an ID and message.
     pub fn new(id: ErrorId, message: impl Into<String>) -> Self {
-        Self {
-            id,
-            message: message.into(),
-        }
+        Self { id, message: message.into() }
     }
 
     /// Shorthand for a "not implemented" error.
     pub fn not_implemented(feature: impl Into<String>) -> Self {
-        Self::new(
-            ErrorId::NOT_IMPLEMENTED,
-            format!("not implemented: {}", feature.into()),
-        )
+        Self::new(ErrorId::NOT_IMPLEMENTED, format!("not implemented: {}", feature.into()))
     }
 
     /// Create a new error from a message string (uses SUCCESS code —

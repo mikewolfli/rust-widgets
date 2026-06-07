@@ -59,16 +59,8 @@ pub(crate) fn parse_security_diagnostics(text: &str) -> Option<PdfSecurity> {
     let copy_permission = text.contains("copy=true");
     let annotation_permission = text.contains("annot=true");
     Some(PdfSecurity {
-        user_password: if user_password.is_empty() {
-            None
-        } else {
-            Some(user_password)
-        },
-        owner_password: if owner_password.is_empty() {
-            None
-        } else {
-            Some(owner_password)
-        },
+        user_password: if user_password.is_empty() { None } else { Some(user_password) },
+        owner_password: if owner_password.is_empty() { None } else { Some(owner_password) },
         print_permission,
         edit_permission,
         copy_permission,

@@ -8,20 +8,12 @@
 use crate::core::PlatformFamily;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
-#[cfg(all(
-    target_os = "macos",
-    not(feature = "embedded"),
-    not(feature = "objc2-macos")
-))]
+#[cfg(all(target_os = "macos", not(feature = "embedded"), not(feature = "objc2-macos")))]
 use crate::platform::macos::MacOSPlatform;
 #[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 use crate::platform::mobile;
 pub use crate::platform::types::*;
-#[cfg(all(
-    target_os = "linux",
-    not(feature = "embedded"),
-    feature = "wayland-native"
-))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
 use crate::platform::wayland::WaylandPlatform;
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
@@ -45,11 +37,7 @@ use std::sync::OnceLock;
 ///  1. `$WAYLAND_DISPLAY` environment variable is set → Wayland
 ///  2. `$XDG_SESSION_TYPE` equals `"wayland"` → Wayland
 ///  3. Otherwise → assume X11/"plain" Linux
-#[cfg(all(
-    target_os = "linux",
-    not(feature = "embedded"),
-    feature = "wayland-native"
-))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
 fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")
@@ -63,10 +51,7 @@ fn is_wayland_session() -> bool {
 
 #[cfg(feature = "embedded")]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new(
-        "embedded-runtime-stub",
-        PlatformFamily::Embedded,
-    ))
+    Box::new(StubPlatform::new("embedded-runtime-stub", PlatformFamily::Embedded))
 }
 
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
@@ -75,21 +60,13 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// Select objc2 preview backend when migration feature is enabled on macOS.
-#[cfg(all(
-    target_os = "macos",
-    feature = "objc2-macos",
-    not(feature = "embedded")
-))]
+#[cfg(all(target_os = "macos", feature = "objc2-macos", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(crate::platform::macos_objc2::MacOSObjc2Platform::new())
 }
 
 /// Select legacy Cocoa backend when objc2 migration feature is disabled.
-#[cfg(all(
-    target_os = "macos",
-    not(feature = "objc2-macos"),
-    not(feature = "embedded")
-))]
+#[cfg(all(target_os = "macos", not(feature = "objc2-macos"), not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(MacOSPlatform::new())
 }
@@ -97,11 +74,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// Linux runtime auto-detection:
 ///   - Wayland session → WaylandPlatform (when wayland-native feature enabled)
 ///   - Otherwise → LinuxPlatform (GTK or state-backed)
-#[cfg(all(
-    target_os = "linux",
-    not(feature = "embedded"),
-    feature = "wayland-native"
-))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
 fn create_native_platform() -> Box<dyn Platform> {
     if is_wayland_session() {
         Box::new(WaylandPlatform::new())
@@ -111,11 +84,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// Linux without wayland-native feature → always use LinuxPlatform.
-#[cfg(all(
-    target_os = "linux",
-    not(feature = "embedded"),
-    not(feature = "wayland-native")
-))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), not(feature = "wayland-native")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
 }
@@ -125,10 +94,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new(
-        "unknown-runtime-stub",
-        PlatformFamily::Desktop,
-    ))
+    Box::new(StubPlatform::new("unknown-runtime-stub", PlatformFamily::Desktop))
 }
 
 // ---------------------------------------------------------------------------

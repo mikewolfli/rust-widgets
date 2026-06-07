@@ -81,10 +81,7 @@ pub(crate) struct MacObjc2RuntimeState {
 }
 impl MacObjc2RuntimeState {
     pub(crate) fn new() -> Self {
-        Self {
-            initialized: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }
+        Self { initialized: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 /// Preview objc2-backed macOS platform adapter.
@@ -134,5 +131,11 @@ impl MacOSObjc2Platform {
     pub(crate) fn objc2_runtime_marker(&self) -> usize {
         // Marker for objc2 migration preview backend
         0
+    }
+}
+
+impl Default for MacOSObjc2Platform {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -243,17 +243,11 @@ pub struct AdapterSelector {
 impl AdapterSelector {
     /// Creates a new adapter selector with default strategy
     pub fn new() -> Self {
-        Self {
-            strategy: AdapterSelectionStrategy::Auto,
-            allow_fallback: true,
-        }
+        Self { strategy: AdapterSelectionStrategy::Auto, allow_fallback: true }
     }
     /// Creates a new adapter selector with specific strategy
     pub fn with_strategy(strategy: AdapterSelectionStrategy) -> Self {
-        Self {
-            strategy,
-            allow_fallback: true,
-        }
+        Self { strategy, allow_fallback: true }
     }
     /// Sets whether to allow fallback to lower priority adapters
     pub fn allow_fallback(mut self, allow: bool) -> Self {
@@ -492,14 +486,8 @@ mod tests {
     }
     #[test]
     fn test_gpu_type_from_device_type() {
-        assert!(matches!(
-            GpuType::from(GpuDeviceType::DiscreteGpu),
-            GpuType::Discrete
-        ));
-        assert!(matches!(
-            GpuType::from(GpuDeviceType::IntegratedGpu),
-            GpuType::Integrated
-        ));
+        assert!(matches!(GpuType::from(GpuDeviceType::DiscreteGpu), GpuType::Discrete));
+        assert!(matches!(GpuType::from(GpuDeviceType::IntegratedGpu), GpuType::Integrated));
         assert!(matches!(GpuType::from(GpuDeviceType::Cpu), GpuType::Cpu));
     }
     #[test]

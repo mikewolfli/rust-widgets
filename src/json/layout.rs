@@ -22,18 +22,11 @@ pub enum DeclarativeLayoutKind {
     /// Vertical box layout.
     VBox { spacing: u32, margin: u32 },
     /// Grid layout.
-    Grid {
-        columns: u32,
-        spacing: u32,
-        margin: u32,
-    },
+    Grid { columns: u32, spacing: u32, margin: u32 },
     /// Stack layout (card stack).
     Stack { spacing: u32 },
     /// Splitter layout.
-    Splitter {
-        orientation: Orientation,
-        margin: u32,
-    },
+    Splitter { orientation: Orientation, margin: u32 },
     /// Form layout (label-field pairs).
     Form { spacing: u32, margin: u32 },
 }
@@ -134,9 +127,7 @@ pub fn add_widget_to_layout_grid(
 /// { "type": "hbox", "spacing": 4, "margin": 2 }
 /// ```
 pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "layout must be a JSON object".to_string())?;
+    let obj = value.as_object().ok_or_else(|| "layout must be a JSON object".to_string())?;
 
     let type_str = obj
         .get("type")
@@ -151,11 +142,7 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
         "vbox" | "VBox" | "vertical" => Ok(DeclarativeLayoutKind::VBox { spacing, margin }),
         "grid" | "Grid" => {
             let columns = obj.get("columns").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
-            Ok(DeclarativeLayoutKind::Grid {
-                columns,
-                spacing,
-                margin,
-            })
+            Ok(DeclarativeLayoutKind::Grid { columns, spacing, margin })
         }
         "stack" | "Stack" => Ok(DeclarativeLayoutKind::Stack { spacing }),
         "splitter" | "Splitter" => {
@@ -163,10 +150,7 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
                 Some("vertical" | "v" | "V") => Orientation::Vertical,
                 _ => Orientation::Horizontal,
             };
-            Ok(DeclarativeLayoutKind::Splitter {
-                orientation,
-                margin,
-            })
+            Ok(DeclarativeLayoutKind::Splitter { orientation, margin })
         }
         "form" | "Form" => Ok(DeclarativeLayoutKind::Form { spacing, margin }),
         _ => Err(format!("unknown layout type: '{}'", type_str)),
@@ -182,11 +166,9 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
         DeclarativeLayoutKind::VBox { spacing, margin } => {
             Box::new(VBoxLayout::new(spacing, margin))
         }
-        DeclarativeLayoutKind::Grid {
-            columns,
-            spacing,
-            margin,
-        } => Box::new(GridLayout::new(1, columns, spacing, margin)),
+        DeclarativeLayoutKind::Grid { columns, spacing, margin } => {
+            Box::new(GridLayout::new(1, columns, spacing, margin))
+        }
         DeclarativeLayoutKind::Stack { .. } => Box::new(StackLayout::new()),
         DeclarativeLayoutKind::Splitter { orientation, .. } => {
             Box::new(SplitterLayout::new(orientation, 0))
@@ -216,18 +198,10 @@ impl ChildLayoutAttrs {
     pub fn from_value(value: &serde_json::Value) -> Self {
         let obj = value.as_object();
         Self {
-            stretch: obj
-                .and_then(|o| o.get("stretch"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as u32,
-            col: obj
-                .and_then(|o| o.get("col"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
-            row: obj
-                .and_then(|o| o.get("row"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
+            stretch: obj.and_then(|o| o.get("stretch")).and_then(|v| v.as_u64()).unwrap_or(1)
+                as u32,
+            col: obj.and_then(|o| o.get("col")).and_then(|v| v.as_u64()).map(|v| v as u32),
+            row: obj.and_then(|o| o.get("row")).and_then(|v| v.as_u64()).map(|v| v as u32),
             col_span: obj
                 .and_then(|o| o.get("col_span"))
                 .and_then(|v| v.as_u64())
@@ -249,26 +223,14 @@ mod tests {
         let json: Value =
             serde_json::from_str(r#"{"type": "hbox", "spacing": 4, "margin": 2}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::HBox {
-                spacing: 4,
-                margin: 2
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::HBox { spacing: 4, margin: 2 });
     }
 
     #[test]
     fn parse_vbox_layout() {
         let json: Value = serde_json::from_str(r#"{"type": "vbox", "spacing": 2}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::VBox {
-                spacing: 2,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::VBox { spacing: 2, margin: 0 });
     }
 
     #[test]
@@ -276,14 +238,7 @@ mod tests {
         let json: Value =
             serde_json::from_str(r#"{"type": "grid", "columns": 3, "spacing": 2}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::Grid {
-                columns: 3,
-                spacing: 2,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::Grid { columns: 3, spacing: 2, margin: 0 });
     }
 
     #[test]
@@ -294,10 +249,7 @@ mod tests {
 
     #[test]
     fn create_hbox_from_kind() {
-        let kind = DeclarativeLayoutKind::HBox {
-            spacing: 4,
-            margin: 2,
-        };
+        let kind = DeclarativeLayoutKind::HBox { spacing: 4, margin: 2 };
         let _layout = create_layout_from_kind(&kind);
         // Verify it creates without error
     }
@@ -344,61 +296,30 @@ mod tests {
     fn parse_hbox_aliases() {
         let hbox_json: Value = serde_json::from_str(r#"{"type": "HBox", "spacing": 6}"#).unwrap();
         let kind = parse_layout_kind(&hbox_json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::HBox {
-                spacing: 6,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::HBox { spacing: 6, margin: 0 });
 
         let horiz_json: Value =
             serde_json::from_str(r#"{"type": "horizontal", "spacing": 2, "margin": 1}"#).unwrap();
         let kind2 = parse_layout_kind(&horiz_json).unwrap();
-        assert_eq!(
-            kind2,
-            DeclarativeLayoutKind::HBox {
-                spacing: 2,
-                margin: 1
-            }
-        );
+        assert_eq!(kind2, DeclarativeLayoutKind::HBox { spacing: 2, margin: 1 });
     }
 
     #[test]
     fn parse_vbox_aliases() {
         let vbox_json: Value = serde_json::from_str(r#"{"type": "VBox", "margin": 3}"#).unwrap();
         let kind = parse_layout_kind(&vbox_json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::VBox {
-                spacing: 0,
-                margin: 3
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::VBox { spacing: 0, margin: 3 });
 
         let vert_json: Value = serde_json::from_str(r#"{"type": "vertical"}"#).unwrap();
         let kind2 = parse_layout_kind(&vert_json).unwrap();
-        assert_eq!(
-            kind2,
-            DeclarativeLayoutKind::VBox {
-                spacing: 0,
-                margin: 0
-            }
-        );
+        assert_eq!(kind2, DeclarativeLayoutKind::VBox { spacing: 0, margin: 0 });
     }
 
     #[test]
     fn parse_grid_default_columns() {
         let json: Value = serde_json::from_str(r#"{"type": "grid"}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::Grid {
-                columns: 2,
-                spacing: 0,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::Grid { columns: 2, spacing: 0, margin: 0 });
     }
 
     #[test]
@@ -414,10 +335,7 @@ mod tests {
         let kind = parse_layout_kind(&json).unwrap();
         assert_eq!(
             kind,
-            DeclarativeLayoutKind::Splitter {
-                orientation: Orientation::Horizontal,
-                margin: 2
-            }
+            DeclarativeLayoutKind::Splitter { orientation: Orientation::Horizontal, margin: 2 }
         );
     }
 
@@ -429,10 +347,7 @@ mod tests {
         let kind = parse_layout_kind(&json).unwrap();
         assert_eq!(
             kind,
-            DeclarativeLayoutKind::Splitter {
-                orientation: Orientation::Vertical,
-                margin: 4
-            }
+            DeclarativeLayoutKind::Splitter { orientation: Orientation::Vertical, margin: 4 }
         );
     }
 
@@ -441,40 +356,18 @@ mod tests {
         let json: Value =
             serde_json::from_str(r#"{"type": "form", "spacing": 6, "margin": 2}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::Form {
-                spacing: 6,
-                margin: 2
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::Form { spacing: 6, margin: 2 });
     }
 
     #[test]
     fn create_all_layout_kinds() {
         let kinds = vec![
-            DeclarativeLayoutKind::HBox {
-                spacing: 4,
-                margin: 2,
-            },
-            DeclarativeLayoutKind::VBox {
-                spacing: 4,
-                margin: 2,
-            },
-            DeclarativeLayoutKind::Grid {
-                columns: 3,
-                spacing: 2,
-                margin: 1,
-            },
+            DeclarativeLayoutKind::HBox { spacing: 4, margin: 2 },
+            DeclarativeLayoutKind::VBox { spacing: 4, margin: 2 },
+            DeclarativeLayoutKind::Grid { columns: 3, spacing: 2, margin: 1 },
             DeclarativeLayoutKind::Stack { spacing: 8 },
-            DeclarativeLayoutKind::Splitter {
-                orientation: Orientation::Horizontal,
-                margin: 3,
-            },
-            DeclarativeLayoutKind::Form {
-                spacing: 6,
-                margin: 2,
-            },
+            DeclarativeLayoutKind::Splitter { orientation: Orientation::Horizontal, margin: 3 },
+            DeclarativeLayoutKind::Form { spacing: 6, margin: 2 },
         ];
         for kind in &kinds {
             let _layout = create_layout_from_kind(kind);
@@ -512,10 +405,7 @@ mod tests {
         let kind = parse_layout_kind(&json).unwrap();
         assert_eq!(
             kind,
-            DeclarativeLayoutKind::Splitter {
-                orientation: Orientation::Vertical,
-                margin: 0
-            }
+            DeclarativeLayoutKind::Splitter { orientation: Orientation::Vertical, margin: 0 }
         );
     }
 
@@ -526,10 +416,7 @@ mod tests {
         let kind = parse_layout_kind(&json).unwrap();
         assert_eq!(
             kind,
-            DeclarativeLayoutKind::Splitter {
-                orientation: Orientation::Vertical,
-                margin: 0
-            }
+            DeclarativeLayoutKind::Splitter { orientation: Orientation::Vertical, margin: 0 }
         );
     }
 
@@ -539,14 +426,7 @@ mod tests {
         let json: Value =
             serde_json::from_str(r#"{"type": "Grid", "columns": 5, "spacing": 3}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::Grid {
-                columns: 5,
-                spacing: 3,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::Grid { columns: 5, spacing: 3, margin: 0 });
     }
 
     #[test]
@@ -560,12 +440,6 @@ mod tests {
     fn parse_form_with_alias() {
         let json: Value = serde_json::from_str(r#"{"type": "Form"}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
-        assert_eq!(
-            kind,
-            DeclarativeLayoutKind::Form {
-                spacing: 0,
-                margin: 0
-            }
-        );
+        assert_eq!(kind, DeclarativeLayoutKind::Form { spacing: 0, margin: 0 });
     }
 }

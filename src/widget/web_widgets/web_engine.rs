@@ -361,8 +361,7 @@ impl WebEngineView {
         self.private_browsing = enabled;
     }
     fn update_navigation_state(&self) {
-        self.navigation_state_changed
-            .emit((self.can_go_back, self.can_go_forward));
+        self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
     }
 }
 impl Widget for WebEngineView {
@@ -539,9 +538,7 @@ mod tests {
     #[test]
     fn web_engine_wrappers_forward_timer_completion() {
         let mut wrapper = WebEnginePage::new(Rect::new(0, 0, 320, 200));
-        wrapper
-            .inner_mut()
-            .set_url("https://example.com/path".to_string());
+        wrapper.inner_mut().set_url("https://example.com/path".to_string());
         assert!(wrapper.inner().is_loading());
 
         wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));

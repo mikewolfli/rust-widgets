@@ -137,9 +137,7 @@ impl Platform for WindowsPlatform {
         }
     }
     fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
-        Some(NativeCapabilityContract::from_platform_caps(
-            self.capabilities(),
-        ))
+        Some(NativeCapabilityContract::from_platform_caps(self.capabilities()))
     }
     fn embedded_capability_contract(&self) -> Option<EmbeddedCapabilityContract> {
         None
@@ -245,15 +243,11 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                log::error!(
-                    "[rust_widgets][windows] create_window failed for title='{}'",
-                    title
-                );
+                log::error!("[rust_widgets][windows] create_window failed for title='{}'", title);
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::Window, title, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             unsafe {
                 ShowWindow(hwnd, SW_SHOW);
@@ -263,8 +257,7 @@ impl Platform for WindowsPlatform {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.state
-                .create_widget(WindowsHandleKind::Window, title, x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height)
         }
     }
     fn create_button(
@@ -308,8 +301,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::Button, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::Button, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
@@ -318,8 +310,7 @@ impl Platform for WindowsPlatform {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.state
-                .create_widget(WindowsHandleKind::Button, text, x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::Button, text, x, y, width, height)
         }
     }
     fn create_label(
@@ -387,8 +378,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::CheckBox, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::CheckBox, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
@@ -443,8 +433,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::RadioButton, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::RadioButton, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
@@ -506,8 +495,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::LineEdit, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::LineEdit, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             unsafe {
                 self.bind_control_command(widget_id, hwnd);
@@ -914,8 +902,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::Panel, "Panel", x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::Panel, "Panel", x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             widget_id
         }
@@ -1012,8 +999,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::Menu, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::Menu, text, x, y, width, height);
             if let Ok(mut handles) = self.menu_state.handles.lock() {
                 handles.insert(widget_id, submenu_handle as usize);
             }
@@ -1114,10 +1100,7 @@ impl Platform for WindowsPlatform {
                     }
                 }
             };
-            let command_id = self
-                .menu_state
-                .next_command_id
-                .fetch_add(1, Ordering::SeqCst) as u32;
+            let command_id = self.menu_state.next_command_id.fetch_add(1, Ordering::SeqCst) as u32;
             let text_wide = Self::to_wide(text);
             let append_ok = unsafe {
                 AppendMenuW(
@@ -1133,9 +1116,7 @@ impl Platform for WindowsPlatform {
                 );
                 return 0;
             }
-            let item_id = self
-                .state
-                .create_widget(WindowsHandleKind::Menu, text, 0, 0, 0, 0);
+            let item_id = self.state.create_widget(WindowsHandleKind::Menu, text, 0, 0, 0, 0);
             if let Ok(mut map) = self.menu_state.menu_command_to_item.lock() {
                 map.insert(command_id, item_id);
             }
@@ -1203,8 +1184,7 @@ impl Platform for WindowsPlatform {
         }
     }
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         #[cfg(target_os = "windows")]
@@ -1337,8 +1317,7 @@ impl Platform for WindowsPlatform {
                 return 0;
             }
             let widget_id =
-                self.state
-                    .create_widget(WindowsHandleKind::StatusBar, text, x, y, width, height);
+                self.state.create_widget(WindowsHandleKind::StatusBar, text, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
             widget_id
         }
@@ -1363,12 +1342,8 @@ impl Platform for WindowsPlatform {
         {
             // State-backed MessageBox surrogate until native MessageBoxW integration lands.
             let _ = (parent, text);
-            log::warn!(
-                "[rust_widgets][windows] MessageBox surrogate for '{}'",
-                title
-            );
-            self.state
-                .create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
+            log::warn!("[rust_widgets][windows] MessageBox surrogate for '{}'", title);
+            self.state.create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1388,8 +1363,7 @@ impl Platform for WindowsPlatform {
         {
             // State-backed FileDialog surrogate until native IFileOpenDialog integration lands.
             log::warn!("[rust_widgets][windows] FileDialog surrogate");
-            self.state
-                .create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1409,8 +1383,7 @@ impl Platform for WindowsPlatform {
         {
             // State-backed ColorDialog surrogate until native CHOOSECOLORW integration lands.
             log::warn!("[rust_widgets][windows] ColorDialog surrogate");
-            self.state
-                .create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1430,8 +1403,7 @@ impl Platform for WindowsPlatform {
         {
             // State-backed FontDialog surrogate until native CHOOSEFONTW integration lands.
             log::warn!("[rust_widgets][windows] FontDialog surrogate");
-            self.state
-                .create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1456,8 +1428,7 @@ impl Platform for WindowsPlatform {
             log::warn!(
                 "[rust_widgets][windows] SpinBox surrogate until native up-down control lands"
             );
-            self.state
-                .create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1482,8 +1453,7 @@ impl Platform for WindowsPlatform {
             log::warn!(
                 "[rust_widgets][windows] ListView surrogate until native SysListView32 lands"
             );
-            self.state
-                .create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
+            self.state.create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
         }
         #[cfg(not(target_os = "windows"))]
         {

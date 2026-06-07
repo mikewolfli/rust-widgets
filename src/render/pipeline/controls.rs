@@ -29,15 +29,10 @@ pub(crate) fn push_widget_fill_and_border<W: Widget>(
                 color: background,
             });
         } else {
-            layer.push(RenderCommand::FillRect {
-                rect,
-                color: background,
-            });
+            layer.push(RenderCommand::FillRect { rect, color: background });
         }
     }
-    let border_color = widget
-        .border_color()
-        .or_else(|| fallback_border.map(|value| value.0));
+    let border_color = widget.border_color().or_else(|| fallback_border.map(|value| value.0));
     let border_width = if widget.border_width() > 0 {
         widget.border_width()
     } else {
@@ -53,20 +48,13 @@ pub(crate) fn push_widget_fill_and_border<W: Widget>(
                     width: border_width,
                 });
             } else {
-                layer.push(RenderCommand::DrawRectStroke {
-                    rect,
-                    color,
-                    width: border_width,
-                });
+                layer.push(RenderCommand::DrawRectStroke { rect, color, width: border_width });
             }
         }
     }
 }
 pub(crate) fn centered_text_origin(rect: Rect) -> Point {
-    Point {
-        x: rect.x + 6,
-        y: rect.y + (rect.height as i32 / 2) - 4,
-    }
+    Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) - 4 }
 }
 pub(crate) fn normalized_progress_i32(value: i32, min: i32, max: i32) -> f32 {
     if max <= min {
@@ -87,10 +75,7 @@ pub fn append_window_visual_commands(layer: &mut SceneLayer, window: &Window) {
     let rect = window.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: rect.x + 8,
-                y: rect.y + 4,
-            },
+            origin: Point { x: rect.x + 8, y: rect.y + 4 },
             text: window.title().to_string(),
             font: window.font().cloned().unwrap_or_default(),
             color: window.foreground_color().unwrap_or(Color::FOREGROUND),
@@ -116,9 +101,7 @@ pub fn append_label_visual_commands(layer: &mut SceneLayer, label: &Label) {
             origin: centered_text_origin(label.geometry()),
             text: label.text().to_string(),
             font: label.font().cloned().unwrap_or_default(),
-            color: label
-                .foreground_color()
-                .unwrap_or(Color::rgba(30, 30, 30, 255)),
+            color: label.foreground_color().unwrap_or(Color::rgba(30, 30, 30, 255)),
         });
     }
 }
@@ -130,17 +113,9 @@ pub fn append_button_visual_commands(layer: &mut SceneLayer, button: &Button) {
         ButtonState::Disabled => Color::LIGHT_GRAY,
         ButtonState::Normal => Color::PRIMARY,
     };
-    let fallback_fg = if matches!(button.state(), ButtonState::Disabled) {
-        Color::GRAY
-    } else {
-        Color::WHITE
-    };
-    push_widget_fill_and_border(
-        layer,
-        button,
-        Some(fallback_bg),
-        Some((Color::DARK_GRAY, 1)),
-    );
+    let fallback_fg =
+        if matches!(button.state(), ButtonState::Disabled) { Color::GRAY } else { Color::WHITE };
+    push_widget_fill_and_border(layer, button, Some(fallback_bg), Some((Color::DARK_GRAY, 1)));
     if !button.text().is_empty() {
         layer.push(RenderCommand::DrawText {
             origin: centered_text_origin(button.geometry()),
@@ -166,15 +141,11 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
     };
     layer.push(RenderCommand::FillRect {
         rect: indicator,
-        color: checkbox
-            .background_color()
-            .unwrap_or(Color::rgba(250, 250, 250, 255)),
+        color: checkbox.background_color().unwrap_or(Color::rgba(250, 250, 250, 255)),
     });
     layer.push(RenderCommand::DrawRectStroke {
         rect: indicator,
-        color: checkbox
-            .border_color()
-            .unwrap_or(Color::rgba(90, 98, 108, 255)),
+        color: checkbox.border_color().unwrap_or(Color::rgba(90, 98, 108, 255)),
         width: checkbox.border_width().max(1),
     });
     match checkbox.state() {
@@ -186,9 +157,7 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
                     width: indicator.width.saturating_sub(6),
                     height: indicator.height.saturating_sub(6),
                 },
-                color: checkbox
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(40, 120, 230, 255)),
+                color: checkbox.foreground_color().unwrap_or(Color::rgba(40, 120, 230, 255)),
             });
         }
         CheckState::PartiallyChecked => {
@@ -199,9 +168,7 @@ pub fn append_checkbox_visual_commands(layer: &mut SceneLayer, checkbox: &CheckB
                     width: indicator.width.saturating_sub(4),
                     height: 2,
                 },
-                color: checkbox
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(40, 120, 230, 255)),
+                color: checkbox.foreground_color().unwrap_or(Color::rgba(40, 120, 230, 255)),
             });
         }
         CheckState::Unchecked => {}
@@ -215,25 +182,18 @@ pub fn append_radiobutton_visual_commands(layer: &mut SceneLayer, radio: &RadioB
         return;
     }
     let radius = (rect.width.min(rect.height).min(16) / 2).max(4);
-    let center = Point {
-        x: rect.x + 2 + radius as i32,
-        y: rect.y + (rect.height as i32 / 2),
-    };
+    let center = Point { x: rect.x + 2 + radius as i32, y: rect.y + (rect.height as i32 / 2) };
     layer.push(RenderCommand::DrawCircleStroke {
         center,
         radius,
-        color: radio
-            .border_color()
-            .unwrap_or(Color::rgba(92, 98, 108, 255)),
+        color: radio.border_color().unwrap_or(Color::rgba(92, 98, 108, 255)),
         width: radio.border_width().max(1),
     });
     if radio.is_checked() {
         layer.push(RenderCommand::FillCircle {
             center,
             radius: radius.saturating_sub(3).max(1),
-            color: radio
-                .foreground_color()
-                .unwrap_or(Color::rgba(45, 122, 235, 255)),
+            color: radio.foreground_color().unwrap_or(Color::rgba(45, 122, 235, 255)),
         });
     }
 }
@@ -252,9 +212,7 @@ pub fn append_line_edit_visual_commands(layer: &mut SceneLayer, line_edit: &Line
             origin: centered_text_origin(line_edit.geometry()),
             text,
             font: line_edit.font().cloned().unwrap_or_default(),
-            color: line_edit
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 26, 26, 255)),
+            color: line_edit.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
         });
     }
 }
@@ -266,10 +224,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
         return;
     }
     // Render main background
-    layer.push(RenderCommand::FillRect {
-        rect,
-        color: Color::WHITE,
-    });
+    layer.push(RenderCommand::FillRect { rect, color: Color::WHITE });
     layer.push(RenderCommand::DrawRectStroke {
         rect,
         color: Color::rgba(122, 128, 138, 255),
@@ -282,10 +237,8 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
         width: arrow_width,
         height: rect.height,
     };
-    layer.push(RenderCommand::FillRect {
-        rect: arrow_rect,
-        color: Color::rgba(235, 238, 243, 255),
-    });
+    layer
+        .push(RenderCommand::FillRect { rect: arrow_rect, color: Color::rgba(235, 238, 243, 255) });
     layer.push(RenderCommand::DrawRectStroke {
         rect: arrow_rect,
         color: Color::rgba(122, 128, 138, 255),
@@ -297,9 +250,7 @@ pub fn append_combo_box_visual_commands(layer: &mut SceneLayer, combo_box: &Comb
             origin: centered_text_origin(rect),
             text,
             font: combo_box.font().cloned().unwrap_or_default(),
-            color: combo_box
-                .foreground_color()
-                .unwrap_or(Color::rgba(28, 30, 34, 255)),
+            color: combo_box.foreground_color().unwrap_or(Color::rgba(28, 30, 34, 255)),
         });
     }
     if combo_box.count() > 0 {
@@ -371,9 +322,7 @@ pub fn append_list_box_visual_commands(layer: &mut SceneLayer, list_box: &ListBo
                 origin: centered_text_origin(item_rect),
                 text: item.to_string(),
                 font: list_box.font().cloned().unwrap_or_default(),
-                color: list_box
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(30, 32, 36, 255)),
+                color: list_box.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255)),
             });
         }
     }
@@ -418,64 +367,36 @@ pub fn append_slider_visual_commands(layer: &mut SceneLayer, slider: &Slider) {
     }
     layer.push(RenderCommand::FillRect {
         rect,
-        color: slider
-            .background_color()
-            .unwrap_or(Color::rgba(238, 241, 246, 255)),
+        color: slider.background_color().unwrap_or(Color::rgba(238, 241, 246, 255)),
     });
     let ratio = normalized_progress_i32(slider.value(), slider.minimum(), slider.maximum());
     if rect.width >= rect.height {
         let track_y = rect.y + rect.height as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
-            from: Point {
-                x: rect.x + 4,
-                y: track_y,
-            },
-            to: Point {
-                x: rect.x + rect.width as f32 as i32 - 4,
-                y: track_y,
-            },
-            color: slider
-                .border_color()
-                .unwrap_or(Color::rgba(126, 132, 142, 255)),
+            from: Point { x: rect.x + 4, y: track_y },
+            to: Point { x: rect.x + rect.width as f32 as i32 - 4, y: track_y },
+            color: slider.border_color().unwrap_or(Color::rgba(126, 132, 142, 255)),
             width: 2,
         });
         let thumb_x = rect.x + ((rect.width.saturating_sub(1) as f32) * ratio).round() as i32;
         layer.push(RenderCommand::FillCircle {
-            center: Point {
-                x: thumb_x,
-                y: track_y,
-            },
+            center: Point { x: thumb_x, y: track_y },
             radius: (rect.height / 3).max(3),
-            color: slider
-                .foreground_color()
-                .unwrap_or(Color::rgba(70, 140, 248, 255)),
+            color: slider.foreground_color().unwrap_or(Color::rgba(70, 140, 248, 255)),
         });
     } else {
         let track_x = rect.x + rect.width as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
-            from: Point {
-                x: track_x,
-                y: rect.y + 4,
-            },
-            to: Point {
-                x: track_x,
-                y: rect.y + rect.height as f32 as i32 - 4,
-            },
-            color: slider
-                .border_color()
-                .unwrap_or(Color::rgba(126, 132, 142, 255)),
+            from: Point { x: track_x, y: rect.y + 4 },
+            to: Point { x: track_x, y: rect.y + rect.height as f32 as i32 - 4 },
+            color: slider.border_color().unwrap_or(Color::rgba(126, 132, 142, 255)),
             width: 2,
         });
         let thumb_y = rect.y + ((rect.height.saturating_sub(1) as f32) * ratio).round() as i32;
         layer.push(RenderCommand::FillCircle {
-            center: Point {
-                x: track_x,
-                y: thumb_y,
-            },
+            center: Point { x: track_x, y: thumb_y },
             radius: (rect.width / 3).max(3),
-            color: slider
-                .foreground_color()
-                .unwrap_or(Color::rgba(70, 140, 248, 255)),
+            color: slider.foreground_color().unwrap_or(Color::rgba(70, 140, 248, 255)),
         });
     }
 }
@@ -488,15 +409,10 @@ pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &Sc
     }
     layer.push(RenderCommand::FillRect {
         rect,
-        color: scroll_bar
-            .background_color()
-            .unwrap_or(Color::rgba(229, 233, 239, 255)),
+        color: scroll_bar.background_color().unwrap_or(Color::rgba(229, 233, 239, 255)),
     });
-    let ratio = normalized_progress_i32(
-        scroll_bar.value(),
-        scroll_bar.minimum(),
-        scroll_bar.maximum(),
-    );
+    let ratio =
+        normalized_progress_i32(scroll_bar.value(), scroll_bar.minimum(), scroll_bar.maximum());
     let denom = (scroll_bar.maximum() - scroll_bar.minimum()).max(1) as f32;
     let page_ratio = (scroll_bar.page_step().max(1) as f32
         / (denom + scroll_bar.page_step().max(1) as f32))
@@ -512,9 +428,7 @@ pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &Sc
                 width: thumb_width.max(6).min(rect.width),
                 height: rect.height,
             },
-            color: scroll_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(144, 151, 164, 255)),
+            color: scroll_bar.foreground_color().unwrap_or(Color::rgba(144, 151, 164, 255)),
         });
     } else {
         let thumb_height = ((rect.height as f32) * page_ratio).round() as u32;
@@ -527,9 +441,7 @@ pub fn append_scroll_bar_visual_commands(layer: &mut SceneLayer, scroll_bar: &Sc
                 width: rect.width,
                 height: thumb_height.max(6).min(rect.height),
             },
-            color: scroll_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(144, 151, 164, 255)),
+            color: scroll_bar.foreground_color().unwrap_or(Color::rgba(144, 151, 164, 255)),
         });
     }
 }

@@ -16,12 +16,7 @@ pub struct FixedSizeQueue<T, const N: usize = DEFAULT_QUEUE_CAPACITY> {
 }
 impl<T, const N: usize> FixedSizeQueue<T, N> {
     pub fn new() -> Self {
-        Self {
-            buffer: std::array::from_fn(|_| None),
-            head: 0,
-            tail: 0,
-            len: 0,
-        }
+        Self { buffer: std::array::from_fn(|_| None), head: 0, tail: 0, len: 0 }
     }
     pub fn push(&mut self, item: T) -> Result<(), QueueError> {
         if self.len >= N {
@@ -85,12 +80,7 @@ pub struct RingBuffer<T> {
 }
 impl<T> RingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
-        Self {
-            buffer: (0..capacity).map(|_| None).collect(),
-            head: 0,
-            tail: 0,
-            len: 0,
-        }
+        Self { buffer: (0..capacity).map(|_| None).collect(), head: 0, tail: 0, len: 0 }
     }
     pub fn push(&mut self, item: T) -> Result<(), QueueError> {
         if self.len >= self.buffer.len() {
@@ -171,10 +161,7 @@ pub struct PriorityQueue<T> {
 }
 impl<T> PriorityQueue<T> {
     pub fn new() -> Self {
-        Self {
-            queues: Default::default(),
-            len: 0,
-        }
+        Self { queues: Default::default(), len: 0 }
     }
     pub fn push(&mut self, item: T, priority: u8) {
         let priority = (priority.min(7)) as usize;
@@ -276,10 +263,8 @@ impl<T> BlockingQueue<T> {
                 return Err(QueueError::Empty);
             }
             let remaining = timeout - elapsed;
-            let result = self
-                .condvar
-                .wait_timeout(queue, remaining)
-                .unwrap_or_else(|e| e.into_inner());
+            let result =
+                self.condvar.wait_timeout(queue, remaining).unwrap_or_else(|e| e.into_inner());
             queue = result.0;
         }
     }
@@ -298,10 +283,7 @@ impl<T> BlockingQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
     pub fn clear(&self) {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -335,10 +317,7 @@ impl<T> BoundedQueue<T> {
             if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
-            queue = self
-                .condvar_not_full
-                .wait(queue)
-                .unwrap_or_else(|e| e.into_inner());
+            queue = self.condvar_not_full.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
         queue.push_back(item);
         self.condvar_not_empty.notify_one();
@@ -366,10 +345,7 @@ impl<T> BoundedQueue<T> {
             if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
                 return Err(QueueError::Closed);
             }
-            queue = self
-                .condvar_not_empty
-                .wait(queue)
-                .unwrap_or_else(|e| e.into_inner());
+            queue = self.condvar_not_empty.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
     }
     pub fn try_pop(&self) -> Option<T> {
@@ -392,10 +368,7 @@ impl<T> BoundedQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     pub fn is_empty(&self) -> bool {
-        self.queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
     pub fn is_full(&self) -> bool {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len() >= self.capacity

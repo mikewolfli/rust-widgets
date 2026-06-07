@@ -96,10 +96,7 @@ impl VirtualList {
 
     /// Returns total row count.
     pub fn row_count(&self) -> usize {
-        self.data_source
-            .as_ref()
-            .map(|s| s.row_count())
-            .unwrap_or(0)
+        self.data_source.as_ref().map(|s| s.row_count()).unwrap_or(0)
     }
 
     /// Returns current top visible row.
@@ -222,12 +219,7 @@ impl VirtualList {
 
         let rows = self.fetch_window_rows(start, len);
         if revision > 0 {
-            self.window_cache = Some(WindowCache {
-                start,
-                len,
-                revision,
-                rows: rows.clone(),
-            });
+            self.window_cache = Some(WindowCache { start, len, revision, rows: rows.clone() });
         } else {
             self.window_cache = None;
         }

@@ -24,9 +24,7 @@ pub struct WebViewEnhanced {
 
 impl WebViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
-        Self {
-            core: WebViewCore::new(WidgetKind::WebView, geometry, "WebView", "about:blank"),
-        }
+        Self { core: WebViewCore::new(WidgetKind::WebView, geometry, "WebView", "about:blank") }
     }
 
     // -- Accessors that delegate to core --
@@ -264,10 +262,7 @@ mod tests {
         view.set_javascript_enabled(false);
         let result = view.evaluate_javascript("1 + 1");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("JavaScript is disabled"));
+        assert!(result.unwrap_err().message.contains("JavaScript is disabled"));
     }
 
     #[test]

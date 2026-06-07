@@ -19,13 +19,7 @@ fn font() -> Font {
 }
 #[test]
 fn text_metrics_scale_with_dpi() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 100,
-            height: 40,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
     let m1 = surface.measure_text("hello", &font());
     surface.set_dpi_scale(2.0);
     let m2 = surface.measure_text("hello", &font());
@@ -34,13 +28,7 @@ fn text_metrics_scale_with_dpi() {
 }
 #[test]
 fn double_buffer_present_swaps_frame() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 4,
-            height: 4,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 4, height: 4 }, 1.0);
     surface.begin_frame(Color::RED);
     surface.end_frame();
     assert_eq!(&surface.frame_rgba()[0..4], &[255, 0, 0, 255]);
@@ -50,78 +38,36 @@ fn double_buffer_present_swaps_frame() {
 }
 #[test]
 fn fill_rect_writes_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
     surface.begin_frame(Color::BLACK);
-    surface.fill_rect(
-        Rect {
-            x: 2,
-            y: 2,
-            width: 3,
-            height: 3,
-        },
-        Color::rgba(1, 2, 3, 255),
-    );
+    surface.fill_rect(Rect { x: 2, y: 2, width: 3, height: 3 }, Color::rgba(1, 2, 3, 255));
     surface.end_frame();
     let idx = ((3 * 8 + 3) * 4) as usize;
     assert_eq!(&surface.frame_rgba()[idx..idx + 4], &[1, 2, 3, 255]);
 }
 #[test]
 fn shaping_merges_combining_marks_into_one_cluster() {
-    let surface = SoftwareSurface::new(
-        Size {
-            width: 100,
-            height: 40,
-        },
-        1.0,
-    );
+    let surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
     let shaped = surface.shape_text("e\u{0301}", &font());
     assert_eq!(shaped.cluster_count(), 1);
 }
 #[test]
 fn shaping_merges_zwj_sequence_into_one_cluster() {
-    let surface = SoftwareSurface::new(
-        Size {
-            width: 100,
-            height: 40,
-        },
-        1.0,
-    );
+    let surface = SoftwareSurface::new(Size { width: 100, height: 40 }, 1.0);
     let shaped = surface.shape_text("👨\u{200D}👩\u{200D}👧\u{200D}👦", &font());
     assert_eq!(shaped.cluster_count(), 1);
 }
 #[test]
 fn scene_composition_respects_layer_order() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
     let mut back = SceneLayer::new(0);
     back.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 0,
-            y: 0,
-            width: 8,
-            height: 8,
-        },
+        rect: Rect { x: 0, y: 0, width: 8, height: 8 },
         color: Color::rgba(10, 20, 30, 255),
     });
     let mut front = SceneLayer::new(10);
     front.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 2,
-            y: 2,
-            width: 2,
-            height: 2,
-        },
+        rect: Rect { x: 2, y: 2, width: 2, height: 2 },
         color: Color::rgba(200, 1, 2, 255),
     });
     let mut scene = RenderScene::new();
@@ -144,47 +90,24 @@ fn scene_composes_through_paint_backend_strategy() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 1,
-            y: 1,
-            width: 2,
-            height: 2,
-        },
+        rect: Rect { x: 1, y: 1, width: 2, height: 2 },
         color: Color::rgba(7, 8, 9, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::BLACK);
     let idx = 36;
     assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[7, 8, 9, 255]);
 }
 #[test]
 fn software_backend_delegates_text_shaping() {
-    let backend = SoftwarePaintBackend::new(
-        Size {
-            width: 100,
-            height: 40,
-        },
-        1.0,
-    );
+    let backend = SoftwarePaintBackend::new(Size { width: 100, height: 40 }, 1.0);
     let shaped = backend.shape_text("e\u{0301}", &font());
     assert_eq!(shaped.cluster_count(), 1);
 }
 #[test]
 fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 80,
-            height: 30,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 80, height: 30 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_text(Point { x: 4, y: 4 }, "A", &font(), Color::WHITE);
     surface.end_frame();
@@ -204,13 +127,7 @@ fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
 }
 #[test]
 fn fill_circle_writes_center_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
     surface.begin_frame(Color::BLACK);
     surface.fill_circle(Point { x: 6, y: 6 }, 3, Color::rgba(9, 10, 11, 255));
     surface.end_frame();
@@ -232,13 +149,7 @@ fn scene_composition_supports_circle_commands() {
         color: Color::rgba(200, 201, 202, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::BLACK);
     let stroke_idx = ((5 * 12 + 7) * 4) as usize;
     let stroke_px = &backend.frame_rgba()[stroke_idx..stroke_idx + 4];
@@ -253,13 +164,7 @@ fn scene_composition_supports_circle_commands() {
 }
 #[test]
 fn draw_circle_with_width_expands_stroke_band() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_circle_with_width(Point { x: 8, y: 8 }, 4, Color::rgba(170, 171, 172, 255), 2);
     surface.end_frame();
@@ -272,21 +177,12 @@ fn draw_circle_with_width_expands_stroke_band() {
 }
 #[test]
 fn fill_circle_aa_applies_partial_alpha_on_edge_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(190, 191, 192, 255));
     surface.end_frame();
     let center_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[center_idx..center_idx + 4],
-        &[190, 191, 192, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[190, 191, 192, 255]);
     let edge_idx = ((8 * 16 + 12) * 4) as usize;
     let edge_alpha = surface.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
@@ -302,13 +198,7 @@ fn scene_composition_supports_stroke_circle_command() {
         width: 2,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let band_idx = ((8 * 16 + 10) * 4) as usize;
     let band_px = &backend.frame_rgba()[band_idx..band_idx + 4];
@@ -327,32 +217,17 @@ fn scene_composition_supports_aa_fill_circle_command() {
         color: Color::rgba(200, 201, 202, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let center_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[center_idx..center_idx + 4],
-        &[200, 201, 202, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[center_idx..center_idx + 4], &[200, 201, 202, 255]);
     let edge_idx = ((8 * 16 + 12) * 4) as usize;
     let edge_alpha = backend.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
 }
 #[test]
 fn draw_line_with_width_marks_neighbor_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
     surface.begin_frame(Color::BLACK);
     surface.draw_line_with_width(
         Point { x: 2, y: 6 },
@@ -362,20 +237,11 @@ fn draw_line_with_width_marks_neighbor_pixels() {
     );
     surface.end_frame();
     let center_idx = ((6 * 12 + 5) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[center_idx..center_idx + 4],
-        &[21, 22, 23, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[21, 22, 23, 255]);
     let upper_idx = ((5 * 12 + 5) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[upper_idx..upper_idx + 4],
-        &[21, 22, 23, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[upper_idx..upper_idx + 4], &[21, 22, 23, 255]);
     let lower_idx = ((7 * 12 + 5) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[lower_idx..lower_idx + 4],
-        &[21, 22, 23, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[lower_idx..lower_idx + 4], &[21, 22, 23, 255]);
 }
 #[test]
 fn scene_composition_supports_stroke_line_command() {
@@ -388,232 +254,120 @@ fn scene_composition_supports_stroke_line_command() {
         width: 3,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::BLACK);
     let idx = ((5 * 12 + 5) * 4) as usize;
     assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[31, 32, 33, 255]);
 }
 #[test]
 fn draw_rect_with_width_marks_neighbor_border_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
     surface.begin_frame(Color::BLACK);
     surface.draw_rect_with_width(
-        Rect {
-            x: 4,
-            y: 4,
-            width: 6,
-            height: 6,
-        },
+        Rect { x: 4, y: 4, width: 6, height: 6 },
         Color::rgba(41, 42, 43, 255),
         3,
     );
     surface.end_frame();
     let border_idx = ((4 * 14 + 6) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[border_idx..border_idx + 4],
-        &[41, 42, 43, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[border_idx..border_idx + 4], &[41, 42, 43, 255]);
     let neighbor_idx = ((5 * 14 + 6) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[neighbor_idx..neighbor_idx + 4],
-        &[41, 42, 43, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[neighbor_idx..neighbor_idx + 4], &[41, 42, 43, 255]);
 }
 #[test]
 fn scene_composition_supports_stroke_rect_command() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawRectStroke {
-        rect: Rect {
-            x: 4,
-            y: 4,
-            width: 6,
-            height: 6,
-        },
+        rect: Rect { x: 4, y: 4, width: 6, height: 6 },
         color: Color::rgba(51, 52, 53, 255),
         width: 3,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 14, height: 14 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::BLACK);
     let idx = ((5 * 14 + 6) * 4) as usize;
     assert_eq!(&backend.frame_rgba()[idx..idx + 4], &[51, 52, 53, 255]);
 }
 #[test]
 fn fill_rounded_rect_writes_center_and_preserves_corner() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
     surface.begin_frame(Color::BLACK);
     surface.fill_rounded_rect(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 8,
-            height: 8,
-        },
+        Rect { x: 3, y: 3, width: 8, height: 8 },
         3,
         Color::rgba(61, 62, 63, 255),
     );
     surface.end_frame();
     let center_idx = ((7 * 14 + 7) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[center_idx..center_idx + 4],
-        &[61, 62, 63, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[61, 62, 63, 255]);
     let corner_idx = ((3 * 14 + 3) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[corner_idx..corner_idx + 4],
-        &[0, 0, 0, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[corner_idx..corner_idx + 4], &[0, 0, 0, 255]);
 }
 #[test]
 fn scene_composition_supports_rounded_rect_commands() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRect {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 8,
-            height: 8,
-        },
+        rect: Rect { x: 3, y: 3, width: 8, height: 8 },
         radius: 3,
         color: Color::rgba(71, 72, 73, 255),
     });
     layer.push(RenderCommand::DrawRoundedRectStroke {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 8,
-            height: 8,
-        },
+        rect: Rect { x: 3, y: 3, width: 8, height: 8 },
         radius: 3,
         color: Color::rgba(81, 82, 83, 255),
         width: 2,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 14, height: 14 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::BLACK);
     let stroke_idx = ((3 * 14 + 7) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[stroke_idx..stroke_idx + 4],
-        &[81, 82, 83, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[stroke_idx..stroke_idx + 4], &[81, 82, 83, 255]);
     let fill_idx = ((7 * 14 + 7) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[fill_idx..fill_idx + 4],
-        &[71, 72, 73, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[fill_idx..fill_idx + 4], &[71, 72, 73, 255]);
 }
 #[test]
 fn draw_rounded_rect_aa_with_width_produces_soft_edge() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_rounded_rect_aa_with_width(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        Rect { x: 3, y: 3, width: 10, height: 10 },
         4,
         Color::rgba(230, 231, 232, 255),
         2,
     );
     surface.end_frame();
     let core_idx = ((3 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[core_idx..core_idx + 4],
-        &[230, 231, 232, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[core_idx..core_idx + 4], &[230, 231, 232, 255]);
     let edge_idx = ((4 * 16 + 3) * 4) as usize;
     let edge_alpha = surface.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
 }
 #[test]
 fn fill_rounded_rect_aa_produces_soft_corner_edge() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_rounded_rect_aa(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        Rect { x: 3, y: 3, width: 10, height: 10 },
         4,
         Color::rgba(250, 210, 170, 255),
     );
     surface.end_frame();
     let center_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[center_idx..center_idx + 4],
-        &[250, 210, 170, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[center_idx..center_idx + 4], &[250, 210, 170, 255]);
     let edge_idx = ((4 * 16 + 3) * 4) as usize;
     let edge_alpha = surface.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
 }
 #[test]
 fn aa_sample_level_changes_rounded_rect_edge_coverage() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.set_aa_samples_per_axis(1);
     assert_eq!(surface.aa_samples_per_axis(), 1);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_rounded_rect_aa(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        Rect { x: 3, y: 3, width: 10, height: 10 },
         4,
         Color::rgba(200, 100, 50, 255),
     );
@@ -624,12 +378,7 @@ fn aa_sample_level_changes_rounded_rect_edge_coverage() {
     assert_eq!(surface.aa_samples_per_axis(), 4);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_rounded_rect_aa(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        Rect { x: 3, y: 3, width: 10, height: 10 },
         4,
         Color::rgba(200, 100, 50, 255),
     );
@@ -639,56 +388,28 @@ fn aa_sample_level_changes_rounded_rect_edge_coverage() {
 }
 #[test]
 fn render_config_applies_and_clamps_aa_samples() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
     assert_eq!(surface.render_config().aa_samples_per_axis, 4);
-    surface.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 0,
-    });
+    surface.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 0 });
     assert_eq!(surface.render_config().aa_samples_per_axis, 1);
-    surface.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 12,
-    });
+    surface.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 12 });
     assert_eq!(surface.render_config().aa_samples_per_axis, 8);
 }
 #[test]
 fn backend_render_config_passthrough_clamps_values() {
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
     assert_eq!(backend.render_config().aa_samples_per_axis, 4);
-    backend.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 0,
-    });
+    backend.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 0 });
     assert_eq!(backend.render_config().aa_samples_per_axis, 1);
-    backend.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 20,
-    });
+    backend.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 20 });
     assert_eq!(backend.render_config().aa_samples_per_axis, 8);
 }
 #[test]
 fn paint_backend_trait_render_config_updates_software_backend() {
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
     PaintBackend::apply_render_config(
         &mut backend,
-        SoftwareRenderConfig {
-            aa_samples_per_axis: 3,
-        },
+        SoftwareRenderConfig { aa_samples_per_axis: 3 },
     );
     assert_eq!(PaintBackend::render_config(&backend).aa_samples_per_axis, 3);
 }
@@ -697,32 +418,17 @@ fn scene_compose_with_temporary_config_restores_backend_state() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        rect: Rect { x: 3, y: 3, width: 10, height: 10 },
         radius: 4,
         color: Color::rgba(100, 110, 120, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
-    backend.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 4,
-    });
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+    backend.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 4 });
     scene.compose_with_backend_config(
         &mut backend,
         Color::TRANSPARENT,
-        Some(SoftwareRenderConfig {
-            aa_samples_per_axis: 1,
-        }),
+        Some(SoftwareRenderConfig { aa_samples_per_axis: 1 }),
     );
     assert_eq!(backend.render_config().aa_samples_per_axis, 4);
 }
@@ -731,58 +437,29 @@ fn scene_compose_with_temporary_config_changes_aa_output() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        rect: Rect { x: 3, y: 3, width: 10, height: 10 },
         radius: 4,
         color: Color::rgba(150, 151, 152, 255),
     });
     scene.add_layer(layer);
-    let mut backend_default = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
-    backend_default.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 4,
-    });
+    let mut backend_default = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+    backend_default.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 4 });
     scene.compose_with_backend(&mut backend_default, Color::TRANSPARENT);
     let edge_idx = ((4 * 16 + 3) * 4) as usize;
     let alpha_default = backend_default.frame_rgba()[edge_idx + 3];
-    let mut backend_temp = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
-    backend_temp.apply_render_config(SoftwareRenderConfig {
-        aa_samples_per_axis: 4,
-    });
+    let mut backend_temp = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
+    backend_temp.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 4 });
     scene.compose_with_backend_config(
         &mut backend_temp,
         Color::TRANSPARENT,
-        Some(SoftwareRenderConfig {
-            aa_samples_per_axis: 1,
-        }),
+        Some(SoftwareRenderConfig { aa_samples_per_axis: 1 }),
     );
     let alpha_temp = backend_temp.frame_rgba()[edge_idx + 3];
     assert_ne!(alpha_default, alpha_temp);
 }
 #[test]
 fn aa_sample_level_changes_circle_edge_coverage() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.set_aa_samples_per_axis(1);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_circle_aa(Point { x: 8, y: 8 }, 4, Color::rgba(120, 121, 122, 255));
@@ -798,13 +475,7 @@ fn aa_sample_level_changes_circle_edge_coverage() {
 }
 #[test]
 fn aa_sample_level_changes_line_edge_coverage() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.set_aa_samples_per_axis(1);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_line_aa_with_width(
@@ -830,13 +501,7 @@ fn aa_sample_level_changes_line_edge_coverage() {
 }
 #[test]
 fn circle_stroke_applies_partial_alpha_on_edge_pixels() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_circle(Point { x: 7, y: 7 }, 3, Color::rgba(100, 120, 140, 255));
     surface.end_frame();
@@ -846,21 +511,10 @@ fn circle_stroke_applies_partial_alpha_on_edge_pixels() {
 }
 #[test]
 fn rounded_rect_fill_applies_partial_alpha_at_corner_edge() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 14,
-            height: 14,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 14, height: 14 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.fill_rounded_rect(
-        Rect {
-            x: 3,
-            y: 3,
-            width: 8,
-            height: 8,
-        },
+        Rect { x: 3, y: 3, width: 8, height: 8 },
         3,
         Color::rgba(90, 91, 92, 255),
     );
@@ -871,13 +525,7 @@ fn rounded_rect_fill_applies_partial_alpha_at_corner_edge() {
 }
 #[test]
 fn draw_line_aa_produces_partial_alpha_on_neighbor_pixel() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_line_aa(
         Point { x: 1, y: 1 },
@@ -899,13 +547,7 @@ fn scene_composition_supports_aa_line_command() {
         color: Color::rgba(140, 150, 160, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 12,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 12, height: 12 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let idx = ((3 * 12 + 4) * 4) as usize;
     let px = &backend.frame_rgba()[idx..idx + 4];
@@ -916,13 +558,7 @@ fn scene_composition_supports_aa_line_command() {
 }
 #[test]
 fn draw_line_aa_with_width_expands_band_and_keeps_soft_edge() {
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
     surface.draw_line_aa_with_width(
         Point { x: 2, y: 8 },
@@ -932,10 +568,7 @@ fn draw_line_aa_with_width_expands_band_and_keeps_soft_edge() {
     );
     surface.end_frame();
     let core_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &surface.frame_rgba()[core_idx..core_idx + 4],
-        &[210, 211, 212, 255]
-    );
+    assert_eq!(&surface.frame_rgba()[core_idx..core_idx + 4], &[210, 211, 212, 255]);
     let edge_idx = ((9 * 16 + 8) * 4) as usize;
     let edge_alpha = surface.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
@@ -951,19 +584,10 @@ fn scene_composition_supports_aa_stroke_line_command() {
         width: 3,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let core_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[core_idx..core_idx + 4],
-        &[220, 221, 222, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[core_idx..core_idx + 4], &[220, 221, 222, 255]);
     let edge_idx = ((9 * 16 + 8) * 4) as usize;
     let edge_alpha = backend.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
@@ -973,30 +597,16 @@ fn scene_composition_supports_aa_stroke_rounded_rect_command() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawRoundedRectStrokeAA {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        rect: Rect { x: 3, y: 3, width: 10, height: 10 },
         radius: 4,
         color: Color::rgba(240, 241, 242, 255),
         width: 2,
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let core_idx = ((3 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[core_idx..core_idx + 4],
-        &[240, 241, 242, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[core_idx..core_idx + 4], &[240, 241, 242, 255]);
     let edge_idx = ((4 * 16 + 3) * 4) as usize;
     let edge_alpha = backend.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
@@ -1006,29 +616,15 @@ fn scene_composition_supports_aa_fill_rounded_rect_command() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
-        rect: Rect {
-            x: 3,
-            y: 3,
-            width: 10,
-            height: 10,
-        },
+        rect: Rect { x: 3, y: 3, width: 10, height: 10 },
         radius: 4,
         color: Color::rgba(120, 130, 140, 255),
     });
     scene.add_layer(layer);
-    let mut backend = SoftwarePaintBackend::new(
-        Size {
-            width: 16,
-            height: 16,
-        },
-        1.0,
-    );
+    let mut backend = SoftwarePaintBackend::new(Size { width: 16, height: 16 }, 1.0);
     scene.compose_with_backend(&mut backend, Color::TRANSPARENT);
     let center_idx = ((8 * 16 + 8) * 4) as usize;
-    assert_eq!(
-        &backend.frame_rgba()[center_idx..center_idx + 4],
-        &[120, 130, 140, 255]
-    );
+    assert_eq!(&backend.frame_rgba()[center_idx..center_idx + 4], &[120, 130, 140, 255]);
     let edge_idx = ((4 * 16 + 3) * 4) as usize;
     let edge_alpha = backend.frame_rgba()[edge_idx + 3];
     assert!(edge_alpha > 0 && edge_alpha < 255);
@@ -1044,45 +640,22 @@ fn auto_compose_handles_draw_text_scene_with_gpu_or_cpu_backend() {
         color: Color::rgba(250, 120, 40, 255),
     });
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 48,
-            height: 24,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 48, height: 24 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
 }
 #[test]
 fn auto_compose_produces_expected_pixels_for_simple_rect_scene() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 2,
-            y: 2,
-            width: 6,
-            height: 4,
-        },
+        rect: Rect { x: 2, y: 2, width: 6, height: 4 },
         color: Color::rgba(11, 22, 33, 255),
     });
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 16,
-            height: 12,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 16, height: 12 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
     let idx = ((3 * 16 + 3) * 4) as usize;
     assert_eq!(&surface.frame_rgba()[idx..idx + 4], &[11, 22, 33, 255]);
 }
@@ -1091,22 +664,11 @@ fn auto_compose_updates_last_backend_diagnostics() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 1,
-            y: 1,
-            width: 3,
-            height: 3,
-        },
+        rect: Rect { x: 1, y: 1, width: 3, height: 3 },
         color: Color::rgba(1, 2, 3, 255),
     });
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 8,
-            height: 8,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 8, height: 8 }, 1.0);
     let selected = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
     assert_eq!(selected, last_auto_render_backend());
 }
@@ -1115,22 +677,11 @@ fn auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected() {
     let mut scene = RenderScene::new();
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-        },
+        rect: Rect { x: 0, y: 0, width: 1, height: 1 },
         color: Color::rgba(9, 8, 7, 255),
     });
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 0,
-            height: 0,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 0, height: 0 }, 1.0);
     let selected = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
     assert_eq!(selected, AutoRenderBackend::CpuSoftware);
     assert_eq!(last_auto_render_backend(), AutoRenderBackend::CpuSoftware);
@@ -1206,18 +757,9 @@ fn auto_compose_renders_base_control_scene_with_gpu_or_cpu_backend() {
     append_label_visual_commands(&mut layer, &label);
     append_line_edit_visual_commands(&mut layer, &line_edit);
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 128,
-            height: 88,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 128, height: 88 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
     let sample = |x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * surface.size().width + x) * 4) as usize;
         [
@@ -1309,18 +851,9 @@ fn auto_compose_renders_data_range_scene_with_gpu_or_cpu_backend() {
     append_slider_visual_commands(&mut layer, &slider);
     append_scroll_bar_visual_commands(&mut layer, &scroll);
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 256,
-            height: 128,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 256, height: 128 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
     let sample = |x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * surface.size().width + x) * 4) as usize;
         [
@@ -1407,18 +940,9 @@ fn auto_compose_renders_host_navigation_scene_with_gpu_or_cpu_backend() {
     append_status_bar_visual_commands(&mut layer, &status_bar);
     append_tab_widget_visual_commands(&mut layer, &tabs);
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 280,
-            height: 190,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 280, height: 190 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
     let sample = |x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * surface.size().width + x) * 4) as usize;
         [
@@ -1585,18 +1109,9 @@ fn gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend() {
     append_status_bar_visual_commands(&mut layer, &status_bar);
     append_tab_widget_visual_commands(&mut layer, &tabs);
     scene.add_layer(layer);
-    let mut surface = SoftwareSurface::new(
-        Size {
-            width: 340,
-            height: 260,
-        },
-        1.0,
-    );
+    let mut surface = SoftwareSurface::new(Size { width: 340, height: 260 }, 1.0);
     let backend = scene.compose_to_config_auto(&mut surface, Color::TRANSPARENT, None);
-    assert!(matches!(
-        backend,
-        AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware
-    ));
+    assert!(matches!(backend, AutoRenderBackend::GpuWgpu | AutoRenderBackend::CpuSoftware));
     let idx = ((20 * surface.size().width + 20) * 4) as usize;
     // Validate pixel at computed index (smoke check: should be non-zero if rendered)
     let _ = idx;

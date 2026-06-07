@@ -12,8 +12,5 @@ fn main() {
 
     let mut surface = SoftwareSurface::new(Size::new(120, 80), 1.0);
     scene.compose_to(&mut surface, Color::from_rgb(255, 255, 255));
-    println!(
-        "demo_wgpu_control_parity: composed {} bytes",
-        surface.frame_rgba().len()
-    );
+    println!("demo_wgpu_control_parity: composed {} bytes", surface.frame_rgba().len());
 }

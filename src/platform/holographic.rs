@@ -77,11 +77,7 @@ pub struct HolographicKey {
 impl HolographicKey {
     /// Create a new key definition.
     pub const fn new(character: char, bounds: Rect) -> Self {
-        Self {
-            character,
-            bounds,
-            shift_character: None,
-        }
+        Self { character, bounds, shift_character: None }
     }
 
     /// Set an alternate character for shift mode.
@@ -191,12 +187,7 @@ impl KeyboardLayout {
             Rect::new(bs_x as i32, 0, key_w as u32, key_h as u32),
         ));
 
-        Self {
-            keys,
-            surface_width,
-            surface_height,
-            shift_active: false,
-        }
+        Self { keys, surface_width, surface_height, shift_active: false }
     }
 
     /// Find the key at a given position on the projection surface.
@@ -280,10 +271,7 @@ impl HolographicKeyboardDetector {
 
     /// Create a detector with a custom keyboard layout.
     pub fn with_layout(layout: KeyboardLayout) -> Self {
-        Self {
-            layout,
-            ..Default::default()
-        }
+        Self { layout, ..Default::default() }
     }
 
     /// Configure the press depth threshold (closer = smaller value).
@@ -323,10 +311,8 @@ impl HolographicKeyboardDetector {
                     // Finger made contact — register the initial touch.
                     self.state = FingerState::Pressed;
                     // Find which key is under the finger.
-                    self.pressed_key = self
-                        .layout
-                        .key_at(pos)
-                        .map(|k| self.layout.character_for(k));
+                    self.pressed_key =
+                        self.layout.key_at(pos).map(|k| self.layout.character_for(k));
                     None
                 } else if depth > self.release_threshold {
                     // Finger moved away before contact — cancel.

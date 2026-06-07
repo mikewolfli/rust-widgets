@@ -25,12 +25,7 @@ pub struct TabBarTab {
 impl TabBarTab {
     /// Creates a new tab with the given title.
     pub fn new(title: String) -> Self {
-        Self {
-            title,
-            icon: None,
-            tooltip: String::new(),
-            enabled: true,
-        }
+        Self { title, icon: None, tooltip: String::new(), enabled: true }
     }
 
     /// Returns the tab title.
@@ -374,12 +369,7 @@ impl TabBar {
         let char_width = 8;
         let width = (text.len() as u32).saturating_mul(char_width);
         let height = 16;
-        TextMetrics {
-            width,
-            height,
-            ascent: 12,
-            descent: 4,
-        }
+        TextMetrics { width, height, ascent: 12, descent: 4 }
     }
 
     /// Returns the index of the tab at the given point, or None.
@@ -463,21 +453,13 @@ impl TabBar {
         }
 
         // Text color.
-        let text_color = if !is_enabled {
-            Color::from_rgb(150, 150, 150)
-        } else {
-            Color::from_rgb(0, 0, 0)
-        };
+        let text_color =
+            if !is_enabled { Color::from_rgb(150, 150, 150) } else { Color::from_rgb(0, 0, 0) };
 
         // Draw tab title.
         let text_x = tab_rect.x + 6;
         let text_y = tab_rect.y + tab_rect.height as i32 / 2;
-        context.draw_text(
-            Point::new(text_x, text_y),
-            &tab.title,
-            &Font::default(),
-            text_color,
-        );
+        context.draw_text(Point::new(text_x, text_y), &tab.title, &Font::default(), text_color);
 
         // Draw close button if closable.
         if let Some(close_rect) = self.close_rect(index) {

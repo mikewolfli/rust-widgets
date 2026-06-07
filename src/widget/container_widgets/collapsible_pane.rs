@@ -178,10 +178,7 @@ impl Draw for CollapsiblePane {
         let border_color = Color::from_rgb(180, 180, 180);
         context.draw_line(
             Point::from_f32(hdr.x as f32, (hdr.y + hdr.height as i32) as f32),
-            Point::from_f32(
-                (hdr.x + hdr.width as i32) as f32,
-                (hdr.y + hdr.height as i32) as f32,
-            ),
+            Point::from_f32((hdr.x + hdr.width as i32) as f32, (hdr.y + hdr.height as i32) as f32),
             border_color,
         );
 

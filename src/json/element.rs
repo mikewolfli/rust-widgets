@@ -35,18 +35,14 @@ pub struct BoundJsonLayout {
 
 impl fmt::Debug for BoundJsonLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BoundJsonLayout")
-            .field("len", &self.len())
-            .finish()
+        f.debug_struct("BoundJsonLayout").field("len", &self.len()).finish()
     }
 }
 
 impl BoundJsonLayout {
     /// Create a new empty layout binding.
     pub fn new() -> Self {
-        Self {
-            name_map: HashMap::new(),
-        }
+        Self { name_map: HashMap::new() }
     }
 
     /// Register a name-to-id mapping (called during instantiation).
@@ -80,9 +76,8 @@ impl BoundJsonLayout {
     /// btn.set_text("Confirm");
     /// ```
     pub fn widget_by_name<T: WidgetHandle>(&self, name: &str) -> Result<T, String> {
-        let raw_id = self
-            .id(name)
-            .ok_or_else(|| format!("widget '{}' not found in layout", name))?;
+        let raw_id =
+            self.id(name).ok_or_else(|| format!("widget '{}' not found in layout", name))?;
         Ok(T::from_raw(raw_id))
     }
 

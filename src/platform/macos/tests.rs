@@ -7,9 +7,7 @@ mod tests {
     use crate::platform::macos::{HandleKind, MacOSPlatform};
     use crate::platform::{DropEvent, Platform};
     fn insert_dummy_widget(platform: &MacOSPlatform) -> ObjectId {
-        platform
-            .state
-            .create_widget(HandleKind::Button, "dummy", 0, 0, 10, 10)
+        platform.state.create_widget(HandleKind::Button, "dummy", 0, 0, 10, 10)
     }
     #[test]
     fn macos_backend_ime_and_accessibility_state_roundtrip() {
@@ -17,11 +15,7 @@ mod tests {
         let widget_id = insert_dummy_widget(&platform);
         assert!(Platform::set_widget_ime_enabled(&platform, widget_id, true));
         assert!(Platform::is_widget_ime_enabled(&platform, widget_id));
-        assert!(Platform::set_widget_accessibility_name(
-            &platform,
-            widget_id,
-            "Accessible"
-        ));
+        assert!(Platform::set_widget_accessibility_name(&platform, widget_id, "Accessible"));
         assert_eq!(
             Platform::get_widget_accessibility_name(&platform, widget_id),
             "Accessible".to_string()
@@ -33,12 +27,7 @@ mod tests {
         let widget_id = insert_dummy_widget(&platform);
         assert!(Platform::set_clipboard_text(&platform, "hello"));
         assert_eq!(Platform::get_clipboard_text(&platform), "hello".to_string());
-        assert!(Platform::begin_drag(
-            &platform,
-            widget_id,
-            "text/plain",
-            b"abc"
-        ));
+        assert!(Platform::begin_drag(&platform, widget_id, "text/plain", b"abc"));
         let event = Platform::poll_drop_event(&platform).expect("drop event should exist");
         assert_eq!(event.source_widget_id, widget_id);
         assert_eq!(event.mime, "text/plain");

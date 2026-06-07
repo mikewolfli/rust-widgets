@@ -66,16 +66,10 @@ pub struct PluginError {
 }
 impl PluginError {
     pub fn new(message: String) -> Self {
-        Self {
-            message,
-            code: None,
-        }
+        Self { message, code: None }
     }
     pub fn with_code(message: String, code: u32) -> Self {
-        Self {
-            message,
-            code: Some(code),
-        }
+        Self { message, code: Some(code) }
     }
 }
 impl std::fmt::Display for PluginError {
@@ -95,11 +89,7 @@ pub struct PluginManager {
 }
 impl PluginManager {
     pub fn new() -> Self {
-        Self {
-            plugins: HashMap::new(),
-            next_id: 1,
-            allowed_permissions: HashMap::new(),
-        }
+        Self { plugins: HashMap::new(), next_id: 1, allowed_permissions: HashMap::new() }
     }
     pub fn register(&mut self, mut plugin: Box<dyn Plugin>) -> Result<PluginId, PluginError> {
         let id = self.next_id;
@@ -159,10 +149,7 @@ impl PluginManager {
     pub fn grant_permission(&mut self, id: PluginId, permission: PluginPermission) -> bool {
         if let Some(plugin) = self.plugins.get(&id) {
             if plugin.info().permissions.contains(&permission) {
-                self.allowed_permissions
-                    .entry(id)
-                    .or_default()
-                    .push(permission);
+                self.allowed_permissions.entry(id).or_default().push(permission);
                 true
             } else {
                 false
@@ -177,10 +164,7 @@ impl PluginManager {
         }
     }
     pub fn has_permission(&self, id: PluginId, permission: &PluginPermission) -> bool {
-        self.allowed_permissions
-            .get(&id)
-            .map(|perms| perms.contains(permission))
-            .unwrap_or(false)
+        self.allowed_permissions.get(&id).map(|perms| perms.contains(permission)).unwrap_or(false)
     }
     pub fn get(&self, id: PluginId) -> Option<&dyn Plugin> {
         self.plugins.get(&id).map(|p| p.as_ref())
@@ -265,12 +249,8 @@ mod tests {
     #[test]
     fn test_plugin_manager_register_increments_id() {
         let mut mgr = PluginManager::new();
-        let id1 = mgr
-            .register(Box::new(ContentPlugin::new("p1", "1.0")))
-            .unwrap();
-        let id2 = mgr
-            .register(Box::new(ContentPlugin::new("p2", "1.0")))
-            .unwrap();
+        let id1 = mgr.register(Box::new(ContentPlugin::new("p1", "1.0"))).unwrap();
+        let id2 = mgr.register(Box::new(ContentPlugin::new("p2", "1.0"))).unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(mgr.list().len(), 2);
@@ -279,9 +259,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_unregister() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         assert!(mgr.unregister(id).is_ok());
         assert!(mgr.list().is_empty());
     }
@@ -297,9 +275,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_enable() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         assert!(mgr.enable(id).is_ok());
         assert_eq!(mgr.list()[0].state, PluginState::Enabled);
         assert_eq!(mgr.list_enabled().len(), 1);
@@ -315,9 +291,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_disable() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         mgr.enable(id).unwrap();
         assert!(mgr.disable(id).is_ok());
         assert_eq!(mgr.list()[0].state, PluginState::Disabled);
@@ -326,9 +300,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_disable_when_not_enabled() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         // Plugin is in Installed state, not Enabled — should fail
         let result = mgr.disable(id);
         assert!(result.is_err());
@@ -337,9 +309,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_plugin_lifecycle() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("cycle", "0.1")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("cycle", "0.1"))).unwrap();
         assert_eq!(mgr.list()[0].state, PluginState::Installed);
         mgr.enable(id).unwrap();
         assert_eq!(mgr.list()[0].state, PluginState::Enabled);
@@ -352,10 +322,8 @@ mod tests {
     #[test]
     fn test_plugin_manager_list() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(ContentPlugin::new("a", "1.0")))
-            .unwrap();
-        mgr.register(Box::new(ContentPlugin::new("b", "2.0")))
-            .unwrap();
+        mgr.register(Box::new(ContentPlugin::new("a", "1.0"))).unwrap();
+        mgr.register(Box::new(ContentPlugin::new("b", "2.0"))).unwrap();
         let list = mgr.list();
         assert_eq!(list.len(), 2);
         let names: Vec<&str> = list.iter().map(|p| p.name.as_str()).collect();
@@ -366,12 +334,8 @@ mod tests {
     #[test]
     fn test_plugin_manager_list_enabled() {
         let mut mgr = PluginManager::new();
-        let id_a = mgr
-            .register(Box::new(ContentPlugin::new("a", "1.0")))
-            .unwrap();
-        let _id_b = mgr
-            .register(Box::new(ContentPlugin::new("b", "1.0")))
-            .unwrap();
+        let id_a = mgr.register(Box::new(ContentPlugin::new("a", "1.0"))).unwrap();
+        let _id_b = mgr.register(Box::new(ContentPlugin::new("b", "1.0"))).unwrap();
         mgr.enable(id_a).unwrap();
         let enabled = mgr.list_enabled();
         assert_eq!(enabled.len(), 1);
@@ -381,9 +345,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_get() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         let plugin = mgr.get(id);
         assert!(plugin.is_some());
         assert_eq!(plugin.unwrap().info().name, "test");
@@ -393,9 +355,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_with_plugin() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         let result = mgr.with_plugin(id, |p| p.info().name.clone());
         assert_eq!(result, Some("test".to_string()));
         let none_result = mgr.with_plugin(999, |p| p.info().name.clone());
@@ -405,9 +365,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_send_message_disabled_returns_none() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         // Plugin is Installed (not Enabled), so send_message returns None
         assert!(mgr.send_message(id, "hello").is_none());
     }
@@ -428,10 +386,8 @@ mod tests {
     #[test]
     fn test_plugin_manager_clear() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(ContentPlugin::new("a", "1.0")))
-            .unwrap();
-        mgr.register(Box::new(ContentPlugin::new("b", "1.0")))
-            .unwrap();
+        mgr.register(Box::new(ContentPlugin::new("a", "1.0"))).unwrap();
+        mgr.register(Box::new(ContentPlugin::new("b", "1.0"))).unwrap();
         assert_eq!(mgr.list().len(), 2);
         mgr.clear();
         assert!(mgr.list().is_empty());
@@ -440,9 +396,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_grant_permission() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         // ContentPlugin has NetworkAccess permission
         assert!(mgr.grant_permission(id, PluginPermission::NetworkAccess));
         assert!(mgr.has_permission(id, &PluginPermission::NetworkAccess));
@@ -451,9 +405,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_grant_permission_not_requested() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         // ContentPlugin does NOT have Camera permission in its list
         assert!(!mgr.grant_permission(id, PluginPermission::Camera));
     }
@@ -461,9 +413,7 @@ mod tests {
     #[test]
     fn test_plugin_manager_revoke_permission() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         mgr.grant_permission(id, PluginPermission::NetworkAccess);
         assert!(mgr.has_permission(id, &PluginPermission::NetworkAccess));
         mgr.revoke_permission(id, &PluginPermission::NetworkAccess);
@@ -513,18 +463,13 @@ mod tests {
         assert_eq!(plugin.info.name, "my-plugin");
         assert_eq!(plugin.info.version, "0.1.0");
         assert_eq!(plugin.info.state, PluginState::NotInstalled);
-        assert!(plugin
-            .info
-            .permissions
-            .contains(&PluginPermission::NetworkAccess));
+        assert!(plugin.info.permissions.contains(&PluginPermission::NetworkAccess));
     }
 
     #[test]
     fn test_content_plugin_register_handler_and_process() {
         let mut plugin = ContentPlugin::new("handler-plugin", "1.0");
-        plugin.register_handler("text/plain", |content| {
-            Some(format!("processed: {}", content))
-        });
+        plugin.register_handler("text/plain", |content| Some(format!("processed: {}", content)));
         let result = plugin.process("text/plain", "hello");
         assert_eq!(result, Some("processed: hello".to_string()));
     }
@@ -552,10 +497,7 @@ mod tests {
 
     #[test]
     fn test_plugin_state_discriminants() {
-        assert_ne!(
-            PluginState::NotInstalled as u8,
-            PluginState::Installed as u8
-        );
+        assert_ne!(PluginState::NotInstalled as u8, PluginState::Installed as u8);
         assert_ne!(PluginState::Enabled as u8, PluginState::Disabled as u8);
         assert_ne!(PluginState::Blocked as u8, PluginState::Error as u8);
     }
@@ -590,13 +532,10 @@ impl ContentPlugin {
     where
         F: Fn(&str) -> Option<String> + Send + Sync + 'static,
     {
-        self.content_handlers
-            .insert(content_type.to_string(), Box::new(handler));
+        self.content_handlers.insert(content_type.to_string(), Box::new(handler));
     }
     pub fn process(&self, content_type: &str, content: &str) -> Option<String> {
-        self.content_handlers
-            .get(content_type)
-            .and_then(|handler| handler(content))
+        self.content_handlers.get(content_type).and_then(|handler| handler(content))
     }
 }
 impl Plugin for ContentPlugin {

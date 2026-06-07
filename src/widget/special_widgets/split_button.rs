@@ -18,10 +18,7 @@ pub struct SplitAction {
 impl SplitAction {
     /// Creates a split action.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-        }
+        Self { id: id.into(), label: label.into() }
     }
 }
 
@@ -83,11 +80,7 @@ impl SplitButton {
     /// Replaces all actions.
     pub fn set_actions(&mut self, actions: Vec<SplitAction>) {
         self.actions = actions;
-        self.primary_action_index = if self.actions.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        self.primary_action_index = if self.actions.is_empty() { None } else { Some(0) };
         self.highlighted_action_index = self.primary_action_index;
         self.base.request_layout();
         self.base.request_redraw();
@@ -113,8 +106,7 @@ impl SplitButton {
 
     /// Returns current primary action index.
     pub fn primary_action_index(&self) -> Option<usize> {
-        self.primary_action_index
-            .filter(|index| *index < self.actions.len())
+        self.primary_action_index.filter(|index| *index < self.actions.len())
     }
 
     /// Returns whether menu is open.
@@ -124,8 +116,7 @@ impl SplitButton {
 
     /// Returns highlighted action index when menu is open.
     pub fn highlighted_action_index(&self) -> Option<usize> {
-        self.highlighted_action_index
-            .filter(|index| *index < self.actions.len())
+        self.highlighted_action_index.filter(|index| *index < self.actions.len())
     }
 
     /// Sets menu row height.
@@ -401,10 +392,7 @@ impl Draw for SplitButton {
         );
 
         context.draw_text(
-            Point::new(
-                arrow.x + (arrow.width as i32 / 2) - 3,
-                arrow.y + arrow.height as i32 / 2,
-            ),
+            Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow.y + arrow.height as i32 / 2),
             "v",
             &Font::default(),
             Color::from_rgb(64, 74, 88),
@@ -467,11 +455,7 @@ mod tests {
         });
 
         assert!(split.trigger_primary());
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["run.default".to_string()]);
     }
 
@@ -494,11 +478,7 @@ mod tests {
         split.handle_event(&Event::key_press(13, 0));
 
         assert_eq!(split.primary_action_index(), Some(1));
-        let got = selected
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["run.debug".to_string()]);
         assert!(!split.menu_open());
     }
@@ -583,15 +563,8 @@ mod tests {
 
         // Direct call still works but event handler ignores
         split.handle_event(&Event::key_press(40, 0));
-        let _got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        assert!(
-            !split.menu_open(),
-            "disabled widget should not open menu via events"
-        );
+        let _got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert!(!split.menu_open(), "disabled widget should not open menu via events");
     }
 
     #[test]
@@ -628,11 +601,7 @@ mod tests {
         split.close_menu();
         assert!(!split.menu_open());
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![true, false]);
     }
 }

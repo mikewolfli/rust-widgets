@@ -40,13 +40,7 @@ pub struct SvgPaintBackend {
 impl SvgPaintBackend {
     /// Create a new SVG backend with the given canvas size.
     pub fn new(size: Size) -> Self {
-        Self {
-            size,
-            dpi_scale: 1.0,
-            elements: Vec::new(),
-            clip_depth: 0,
-            svg_output: None,
-        }
+        Self { size, dpi_scale: 1.0, elements: Vec::new(), clip_depth: 0, svg_output: None }
     }
 
     /// Finalize and retrieve the full SVG document string.
@@ -62,14 +56,8 @@ impl SvgPaintBackend {
     /// Build the SVG document from the collected elements.
     fn build_svg(&self) -> String {
         let mut svg = String::from(r#"<svg xmlns="http://www.w3.org/2000/svg""#);
-        svg.push_str(&format!(
-            r#" width="{}" height="{}""#,
-            self.size.width, self.size.height
-        ));
-        svg.push_str(&format!(
-            r#" viewBox="0 0 {} {}">"#,
-            self.size.width, self.size.height
-        ));
+        svg.push_str(&format!(r#" width="{}" height="{}""#, self.size.width, self.size.height));
+        svg.push_str(&format!(r#" viewBox="0 0 {} {}">"#, self.size.width, self.size.height));
         for element in &self.elements {
             svg.push('\n');
             svg.push_str("  ");
@@ -164,11 +152,7 @@ impl PaintBackend for SvgPaintBackend {
         if clear.a > 0 {
             let fill = color_to_rgba(&clear);
             let bg_rect = crate::core::Rect::new(0, 0, self.size.width, self.size.height);
-            self.push_element(format!(
-                r#"<rect {} fill="{}" />"#,
-                rect_attrs(&bg_rect),
-                fill
-            ));
+            self.push_element(format!(r#"<rect {} fill="{}" />"#, rect_attrs(&bg_rect), fill));
         }
     }
 
@@ -192,16 +176,8 @@ impl PaintBackend for SvgPaintBackend {
                 ));
             }
 
-            RenderCommand::FillRoundedRect {
-                rect,
-                radius,
-                color,
-            }
-            | RenderCommand::FillRoundedRectAA {
-                rect,
-                radius,
-                color,
-            } => {
+            RenderCommand::FillRoundedRect { rect, radius, color }
+            | RenderCommand::FillRoundedRectAA { rect, radius, color } => {
                 self.push_element(format!(
                     r#"<rect {} rx="{}" ry="{}" fill="{}" />"#,
                     rect_attrs(rect),
@@ -230,18 +206,8 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Rounded rectangle outlines ─────────────────────────────
-            RenderCommand::DrawRoundedRectStroke {
-                rect,
-                radius,
-                color,
-                width,
-            }
-            | RenderCommand::DrawRoundedRectStrokeAA {
-                rect,
-                radius,
-                color,
-                width,
-            } => {
+            RenderCommand::DrawRoundedRectStroke { rect, radius, color, width }
+            | RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
                 self.push_element(format!(
                     r#"<rect {} rx="{}" ry="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
                     rect_attrs(rect),
@@ -264,18 +230,8 @@ impl PaintBackend for SvgPaintBackend {
                 ));
             }
 
-            RenderCommand::DrawLineStroke {
-                from,
-                to,
-                color,
-                width,
-            }
-            | RenderCommand::DrawLineStrokeAA {
-                from,
-                to,
-                color,
-                width,
-            } => {
+            RenderCommand::DrawLineStroke { from, to, color, width }
+            | RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
                 self.push_element(format!(
                     r#"<line {} x2="{}" y2="{}" stroke="{}" stroke-width="{}" />"#,
                     point_attrs(from),
@@ -287,16 +243,8 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Filled circles ─────────────────────────────────────────
-            RenderCommand::FillCircle {
-                center,
-                radius,
-                color,
-            }
-            | RenderCommand::FillCircleAA {
-                center,
-                radius,
-                color,
-            } => {
+            RenderCommand::FillCircle { center, radius, color }
+            | RenderCommand::FillCircleAA { center, radius, color } => {
                 self.push_element(format!(
                     r#"<circle cx="{}" cy="{}" r="{}" fill="{}" />"#,
                     center.x,
@@ -307,11 +255,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Circle outlines ────────────────────────────────────────
-            RenderCommand::DrawCircle {
-                center,
-                radius,
-                color,
-            } => {
+            RenderCommand::DrawCircle { center, radius, color } => {
                 self.push_element(format!(
                     r#"<circle cx="{}" cy="{}" r="{}" fill="none" stroke="{}" stroke-width="1" />"#,
                     center.x,
@@ -321,12 +265,7 @@ impl PaintBackend for SvgPaintBackend {
                 ));
             }
 
-            RenderCommand::DrawCircleStroke {
-                center,
-                radius,
-                color,
-                width,
-            } => {
+            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
                 self.push_element(format!(
                     r#"<circle cx="{}" cy="{}" r="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
                     center.x,
@@ -338,12 +277,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Text ───────────────────────────────────────────────────
-            RenderCommand::DrawText {
-                origin,
-                text,
-                font,
-                color,
-            } => {
+            RenderCommand::DrawText { origin, text, font, color } => {
                 self.push_element(format!(
                     r#"<text x="{}" y="{}" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
                     origin.x,
@@ -358,13 +292,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Image ──────────────────────────────────────────────────
-            RenderCommand::DrawImage {
-                x,
-                y,
-                width,
-                height,
-                data,
-            } => {
+            RenderCommand::DrawImage { x, y, width, height, data } => {
                 if !data.is_empty() && *width > 0 && *height > 0 {
                     // Convert RGBA pixel data to BMP and base64-encode for embedding.
                     let bmp = rgba_to_bmp(*width, *height, data);
@@ -389,12 +317,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Clipping ───────────────────────────────────────────────
-            RenderCommand::PushClip {
-                x,
-                y,
-                width,
-                height,
-            } => {
+            RenderCommand::PushClip { x, y, width, height } => {
                 let clip_id = format!("clip_{}", self.clip_depth);
                 // Build a minimal <defs> clipPath — SVG renderers need the
                 // definition available before the referencing <g> element.
@@ -434,19 +357,11 @@ impl PaintBackend for SvgPaintBackend {
 
     fn measure_text(&self, text: &str, _font: &Font) -> TextMetrics {
         // Approximate measurement: 8px per character width, 16px height.
-        TextMetrics {
-            width: text.len() as u32 * 8,
-            height: 16,
-            ascent: 12,
-            descent: 4,
-        }
+        TextMetrics { width: text.len() as u32 * 8, height: 16, ascent: 12, descent: 4 }
     }
 
     fn shape_text(&self, text: &str, _font: &Font) -> ShapedText {
-        ShapedText {
-            clusters: vec![],
-            advance: text.len() as f32 * 8.0,
-        }
+        ShapedText { clusters: vec![], advance: text.len() as f32 * 8.0 }
     }
 
     fn frame_rgba(&self) -> &[u8] {
@@ -554,12 +469,7 @@ mod tests {
             font: Font::default_ui(),
             color: Color::BLACK,
         });
-        svg.execute_command(&RenderCommand::PushClip {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 100,
-        });
+        svg.execute_command(&RenderCommand::PushClip { x: 0, y: 0, width: 100, height: 100 });
         svg.execute_command(&RenderCommand::PopClip);
         svg.execute_command(&RenderCommand::DrawImage {
             x: 100,
@@ -666,18 +576,8 @@ mod tests {
     fn svg_backend_clip_nesting() {
         let mut svg = SvgPaintBackend::new(Size::new(100, 100));
         svg.begin_frame(Color::WHITE);
-        svg.execute_command(&RenderCommand::PushClip {
-            x: 10,
-            y: 10,
-            width: 50,
-            height: 50,
-        });
-        svg.execute_command(&RenderCommand::PushClip {
-            x: 20,
-            y: 20,
-            width: 30,
-            height: 30,
-        });
+        svg.execute_command(&RenderCommand::PushClip { x: 10, y: 10, width: 50, height: 50 });
+        svg.execute_command(&RenderCommand::PushClip { x: 20, y: 20, width: 30, height: 30 });
         svg.execute_command(&RenderCommand::PopClip);
         svg.execute_command(&RenderCommand::PopClip);
         svg.end_frame();

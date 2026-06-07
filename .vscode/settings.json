@@ -4,5 +4,11 @@
     },
     "trae.agent.docker.keep": true,
     "trae.agent.docker.keepDelay": 3000,
-    "python-envs.defaultEnvManager": "ms-python.python:pyenv"
+    "python-envs.defaultEnvManager": "ms-python.python:pyenv",
+    "rust-analyzer.check.command": "clippy",
+    "rust-analyzer.cargo.allFeatures": true,
+    "editor.formatOnSave": true,
+    "files.exclude": {
+        "**/target": true
+    }
 }

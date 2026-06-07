@@ -185,38 +185,27 @@ impl Menu {
         let rect = self.geometry();
         let mut y = base_y;
         for (i, item) in self.items.iter().enumerate() {
-            let h = if item.is_separator() {
-                Self::separator_height()
-            } else {
-                Self::item_height()
-            };
+            let h =
+                if item.is_separator() { Self::separator_height() } else { Self::item_height() };
             if i == index {
-                return Rect {
-                    x: rect.x,
-                    y: y as i32,
-                    width: rect.width,
-                    height: h as u32,
-                };
+                return Rect { x: rect.x, y: y as i32, width: rect.width, height: h as u32 };
             }
             y += h;
         }
-        Rect {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        }
+        Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn popup_height(&self) -> f32 {
         self.items
             .iter()
-            .map(|item| {
-                if item.is_separator() {
-                    Self::separator_height()
-                } else {
-                    Self::item_height()
-                }
-            })
+            .map(
+                |item| {
+                    if item.is_separator() {
+                        Self::separator_height()
+                    } else {
+                        Self::item_height()
+                    }
+                },
+            )
             .sum::<f32>()
             + 4.0
     }
@@ -357,12 +346,7 @@ impl Draw for Menu {
             let is_hovered = self.hovered_index == Some(i);
             if is_hovered {
                 context.fill_rect(
-                    Rect::new(
-                        rect.x + 2,
-                        y as i32,
-                        rect.width - 4,
-                        Self::item_height() as u32,
-                    ),
+                    Rect::new(rect.x + 2, y as i32, rect.width - 4, Self::item_height() as u32),
                     Color::from_rgb(0, 120, 215),
                 );
             }

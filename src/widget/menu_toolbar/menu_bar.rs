@@ -12,10 +12,7 @@ pub struct MenuBarEntry {
 }
 impl MenuBarEntry {
     pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            enabled: true,
-        }
+        Self { title: title.into(), enabled: true }
     }
 
     // --- Accessors ---
@@ -98,21 +95,11 @@ impl MenuBar {
         for (i, entry) in self.entries.iter().enumerate() {
             let w = Self::entry_width(entry.title()) as i32;
             if i == index {
-                return Rect {
-                    x,
-                    y: rect.y,
-                    width: w as u32,
-                    height: rect.height,
-                };
+                return Rect { x, y: rect.y, width: w as u32, height: rect.height };
             }
             x += w;
         }
-        Rect {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        }
+        Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn hit_entry(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
@@ -188,12 +175,7 @@ impl Draw for MenuBar {
             let w = Self::entry_width(entry.title()) as i32;
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
-            let entry_rect = Rect {
-                x,
-                y: rect.y,
-                width: w as u32,
-                height: rect.height,
-            };
+            let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
             if is_active {
                 context.fill_rect(entry_rect, Color::from_rgb(0, 120, 215));
             } else if is_hovered {

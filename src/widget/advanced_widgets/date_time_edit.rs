@@ -188,10 +188,7 @@ impl Draw for DateTimeEdit {
         context.draw_rect(rect, Color::from_rgb(150, 150, 150));
         let text = self.datetime.to_string();
         context.draw_text(
-            Point {
-                x: rect.x + 6,
-                y: rect.y + (rect.height as i32 / 2),
-            },
+            Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
             &text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),

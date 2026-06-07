@@ -30,9 +30,7 @@ mod tests {
     fn combo_selection_notify_enqueues_selection_and_value_events() {
         let platform = WindowsPlatform::new();
         let combo =
-            platform
-                .state
-                .create_widget(WindowsHandleKind::ComboBox, "ComboBox", 0, 0, 120, 24);
+            platform.state.create_widget(WindowsHandleKind::ComboBox, "ComboBox", 0, 0, 120, 24);
         assert!(enqueue_control_notify_event(&platform, combo, 1));
         let mut queue = platform
             .menu_state
@@ -49,10 +47,7 @@ mod tests {
         );
         assert_eq!(
             queue.pop_front(),
-            Some(WidgetTriggerEvent {
-                widget_id: combo,
-                kind: WidgetTriggerKind::ValueChanged,
-            })
+            Some(WidgetTriggerEvent { widget_id: combo, kind: WidgetTriggerKind::ValueChanged })
         );
     }
 }

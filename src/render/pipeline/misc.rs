@@ -18,28 +18,17 @@ pub fn append_activity_indicator_visual_commands(
         Some((Color::SECONDARY, 1)),
     );
     let rect = activity_indicator.geometry();
-    let center = Point {
-        x: rect.x + (rect.width / 2) as i32,
-        y: rect.y + (rect.height / 2) as i32,
-    };
+    let center =
+        Point { x: rect.x + (rect.width / 2) as i32, y: rect.y + (rect.height / 2) as i32 };
     let radius = (rect.width.min(rect.height) / 2 - 4) as f32;
     // Draw activity indicator
     for i in 0..8 {
         let angle = (i as f32) * std::f32::consts::PI / 4.0;
         let alpha = (i as f32 / 8.0) * 255.0;
-        let color = Color {
-            r: 0,
-            g: 128,
-            b: 255,
-            a: alpha as u8,
-        };
+        let color = Color { r: 0, g: 128, b: 255, a: alpha as u8 };
         let x = center.x + (angle.cos() * radius) as i32;
         let y = center.y + (angle.sin() * radius) as i32;
-        layer.push(RenderCommand::DrawCircle {
-            center: Point { x, y },
-            radius: 3,
-            color,
-        });
+        layer.push(RenderCommand::DrawCircle { center: Point { x, y }, radius: 3, color });
     }
 }
 /// Append visual commands for a `ToggleButton` baseline representation.
@@ -51,11 +40,7 @@ pub fn append_toggle_button_visual_commands(
     push_widget_fill_and_border(
         layer,
         toggle_button,
-        Some(if toggle_button.is_checked() {
-            Color::PRIMARY
-        } else {
-            Color::BACKGROUND
-        }),
+        Some(if toggle_button.is_checked() { Color::PRIMARY } else { Color::BACKGROUND }),
         Some((Color::rgba(122, 128, 138, 255), 1)),
     );
     let rect = toggle_button.geometry();
@@ -69,9 +54,7 @@ pub fn append_toggle_button_visual_commands(
         color: if toggle_button.is_checked() {
             Color::WHITE
         } else {
-            toggle_button
-                .foreground_color()
-                .unwrap_or(Color::rgba(30, 32, 36, 255))
+            toggle_button.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255))
         },
     });
 }
@@ -126,10 +109,7 @@ pub fn append_check_list_box_visual_commands(
         if let Some(item) = check_list_box.item(row) {
             layer.push(RenderCommand::DrawText {
                 text: item.to_string(),
-                origin: Point {
-                    x: rect.x + padding + 24,
-                    y: row_y + row_height as i32 / 2,
-                },
+                origin: Point { x: rect.x + padding + 24, y: row_y + row_height as i32 / 2 },
                 font: font.clone(),
                 color: text_color,
             });
@@ -153,19 +133,12 @@ pub fn append_double_spin_box_visual_commands(
         return;
     }
     // Draw value text
-    let text_rect = Rect {
-        x: rect.x + 8,
-        y: rect.y,
-        width: rect.width - 32,
-        height: rect.height,
-    };
+    let text_rect = Rect { x: rect.x + 8, y: rect.y, width: rect.width - 32, height: rect.height };
     layer.push(RenderCommand::DrawText {
         origin: centered_text_origin(text_rect),
         text: format!("{:.2}", double_spin_box.value()),
         font: double_spin_box.font().cloned().unwrap_or_default(),
-        color: double_spin_box
-            .foreground_color()
-            .unwrap_or(Color::rgba(30, 32, 36, 255)),
+        color: double_spin_box.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255)),
     });
     // Draw up/down buttons
     let button_width = 32u32;
@@ -229,17 +202,9 @@ pub fn append_dial_visual_commands(layer: &mut SceneLayer, dial: &crate::widget:
         x: center.x + (angle.cos() * radius as f64) as i32,
         y: center.y + (angle.sin() * radius as f64) as i32,
     };
-    layer.push(RenderCommand::DrawLine {
-        from: center,
-        to: needle_end,
-        color: Color::PRIMARY,
-    });
+    layer.push(RenderCommand::DrawLine { from: center, to: needle_end, color: Color::PRIMARY });
     // Draw center point
-    layer.push(RenderCommand::FillCircle {
-        center,
-        radius: 4,
-        color: Color::PRIMARY,
-    });
+    layer.push(RenderCommand::FillCircle { center, radius: 4, color: Color::PRIMARY });
 }
 /// Append visual commands for a `Wizard` baseline representation.
 #[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
@@ -253,10 +218,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
     let rect = wizard.geometry();
     if rect.width > 16 && rect.height > 12 {
         layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: rect.x + 8,
-                y: rect.y + 4,
-            },
+            origin: Point { x: rect.x + 8, y: rect.y + 4 },
             text: "Wizard".to_string(),
             font: wizard.font().cloned().unwrap_or_default(),
             color: wizard.foreground_color().unwrap_or(Color::FOREGROUND),
@@ -264,19 +226,11 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
         if rect.height > 30 {
             // Draw header
             layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x: rect.x,
-                    y: rect.y + 24,
-                    width: rect.width,
-                    height: 40,
-                },
+                rect: Rect { x: rect.x, y: rect.y + 24, width: rect.width, height: 40 },
                 color: Color::PRIMARY,
             });
             layer.push(RenderCommand::DrawText {
-                origin: Point {
-                    x: rect.x + 16,
-                    y: rect.y + 40,
-                },
+                origin: Point { x: rect.x + 16, y: rect.y + 40 },
                 text: "Wizard Step 1 of 3".to_string(),
                 font: wizard.font().cloned().unwrap_or_default(),
                 color: Color::WHITE,
@@ -333,9 +287,7 @@ pub fn append_wizard_visual_commands(layer: &mut SceneLayer, wizard: &crate::wid
                 }),
                 text: "Back".to_string(),
                 font: wizard.font().cloned().unwrap_or_default(),
-                color: wizard
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(30, 32, 36, 255)),
+                color: wizard.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255)),
             });
             // Next button
             layer.push(RenderCommand::FillRect {

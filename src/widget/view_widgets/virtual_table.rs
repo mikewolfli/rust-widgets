@@ -66,18 +66,12 @@ impl VirtualTable {
 
     /// Returns row count.
     pub fn row_count(&self) -> usize {
-        self.data_source
-            .as_ref()
-            .map(|source| source.row_count())
-            .unwrap_or(0)
+        self.data_source.as_ref().map(|source| source.row_count()).unwrap_or(0)
     }
 
     /// Returns column count.
     pub fn column_count(&self) -> usize {
-        self.data_source
-            .as_ref()
-            .map(|source| source.column_count())
-            .unwrap_or(0)
+        self.data_source.as_ref().map(|source| source.column_count()).unwrap_or(0)
     }
 
     /// Returns whether source is bound.
@@ -204,9 +198,7 @@ impl VirtualTable {
         let visible_rows = (self.base.geometry().height / self.row_height.max(1)) as usize;
         let visible_cols = (self.base.geometry().width / self.column_width.max(1)) as usize;
         let row_len = visible_rows.saturating_add(self.overscan_rows * 2).max(1);
-        let col_len = visible_cols
-            .saturating_add(self.overscan_columns * 2)
-            .max(1);
+        let col_len = visible_cols.saturating_add(self.overscan_columns * 2).max(1);
         (row_start, row_len, col_start, col_len)
     }
 
@@ -366,11 +358,7 @@ mod tests {
 
         table.set_scroll_row(10);
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert!(!got.is_empty());
     }
 

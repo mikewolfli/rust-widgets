@@ -23,10 +23,7 @@ pub struct VecListModel {
 impl VecListModel {
     /// Creates a new vector list model.
     pub fn new(items: Vec<String>) -> Self {
-        Self {
-            items,
-            data_changed: GenericSignal::new(),
-        }
+        Self { items, data_changed: GenericSignal::new() }
     }
     /// Returns a reference to the data changed signal.
     pub fn data_changed_signal(&self) -> &GenericSignal {
@@ -82,11 +79,7 @@ impl Default for SelectionModel {
 impl SelectionModel {
     /// Creates a new selection model.
     pub fn new() -> Self {
-        Self {
-            mode: SelectionMode::Single,
-            selected_rows: Vec::new(),
-            current_row: None,
-        }
+        Self { mode: SelectionMode::Single, selected_rows: Vec::new(), current_row: None }
     }
     /// Sets selection mode.
     pub fn set_mode(&mut self, mode: SelectionMode) {
@@ -266,17 +259,11 @@ impl ListView {
     }
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selection
-            .current_row()
-            .filter(|row| *row < self.row_count())
+        self.selection.current_row().filter(|row| *row < self.row_count())
     }
     /// All selected rows in stable order.
     pub fn selected_rows(&self) -> Vec<usize> {
-        self.selection
-            .rows()
-            .into_iter()
-            .filter(|row| *row < self.row_count())
-            .collect()
+        self.selection.rows().into_iter().filter(|row| *row < self.row_count()).collect()
     }
     /// Sets row selection mode.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {

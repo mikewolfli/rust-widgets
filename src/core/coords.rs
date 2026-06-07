@@ -52,22 +52,12 @@ pub fn point_to_cartesian_f32(x: f32, y: f32, height: f32) -> (f32, f32) {
 /// Converts a rectangle from Cartesian to screen coordinates.
 #[inline]
 pub fn rect_to_screen(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height - rect.y - rect.height as i32,
-        rect.width,
-        rect.height,
-    )
+    Rect::new(rect.x, height - rect.y - rect.height as i32, rect.width, rect.height)
 }
 /// Converts a rectangle from screen to Cartesian coordinates.
 #[inline]
 pub fn rect_to_cartesian(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height - rect.y - rect.height as i32,
-        rect.width,
-        rect.height,
-    )
+    Rect::new(rect.x, height - rect.y - rect.height as i32, rect.width, rect.height)
 }
 /// Flips a Y coordinate around the center of a given height.
 #[inline]
@@ -82,12 +72,7 @@ pub fn flip_point_y(point: Point, height: i32) -> Point {
 /// Flips a rectangle's Y coordinates around the center of a given height.
 #[inline]
 pub fn flip_rect_y(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height - rect.y - rect.height as i32,
-        rect.width,
-        rect.height,
-    )
+    Rect::new(rect.x, height - rect.y - rect.height as i32, rect.width, rect.height)
 }
 /// Converts a rectangle from Cartesian to screen coordinates (f32).
 #[inline]
@@ -193,10 +178,7 @@ pub fn clamp_point_to_rect_f32(
     rect_width: f32,
     rect_height: f32,
 ) -> (f32, f32) {
-    (
-        x.clamp(rect_x, rect_x + rect_width - 1.0),
-        y.clamp(rect_y, rect_y + rect_height - 1.0),
-    )
+    (x.clamp(rect_x, rect_x + rect_width - 1.0), y.clamp(rect_y, rect_y + rect_height - 1.0))
 }
 /// Converts DPI-scaled coordinates to physical pixels.
 #[inline]
@@ -253,18 +235,9 @@ mod tests {
     }
     #[test]
     fn test_point_to_cartesian() {
-        assert_eq!(
-            point_to_cartesian(Point::new(10, 0), 100),
-            Point::new(10, 100)
-        );
-        assert_eq!(
-            point_to_cartesian(Point::new(10, 50), 100),
-            Point::new(10, 50)
-        );
-        assert_eq!(
-            point_to_cartesian(Point::new(10, 100), 100),
-            Point::new(10, 0)
-        );
+        assert_eq!(point_to_cartesian(Point::new(10, 0), 100), Point::new(10, 100));
+        assert_eq!(point_to_cartesian(Point::new(10, 50), 100), Point::new(10, 50));
+        assert_eq!(point_to_cartesian(Point::new(10, 100), 100), Point::new(10, 0));
     }
     #[test]
     fn test_rect_to_screen() {

@@ -95,11 +95,7 @@ pub enum Event {
     LongPress { pos: Point },
     /// Rapid linear finger motion.
     #[cfg(feature = "touch")]
-    Swipe {
-        start: Point,
-        end: Point,
-        velocity: f32,
-    },
+    Swipe { start: Point, end: Point, velocity: f32 },
     /// Two-finger pinch (scale < 1 = zoom out, > 1 = zoom in).
     #[cfg(feature = "touch")]
     Pinch { scale: f32 },
@@ -108,76 +104,45 @@ pub enum Event {
     Rotate { angle: f32 },
     /// Finger drag with motion tracking.
     #[cfg(feature = "touch")]
-    Drag {
-        pos: Point,
-        touch_id: TouchId,
-        delta: Point,
-    },
+    Drag { pos: Point, touch_id: TouchId, delta: Point },
     /// Two-finger tap (≈ right-click equivalent on touchscreens).
     #[cfg(feature = "touch")]
     TwoFingerTap { pos: Point },
     /// Two-finger swipe (e.g., page navigation with two fingers).
     #[cfg(feature = "touch")]
-    TwoFingerSwipe {
-        centroid_start: Point,
-        centroid_end: Point,
-        velocity: f32,
-    },
+    TwoFingerSwipe { centroid_start: Point, centroid_end: Point, velocity: f32 },
     /// Velocity-based fling/flick with vector velocity (vx, vy).
     #[cfg(feature = "touch")]
-    Fling {
-        pos: Point,
-        velocity: Point,
-        touch_id: TouchId,
-    },
+    Fling { pos: Point, velocity: Point, touch_id: TouchId },
     // ── Holographic / 3D events (BLUE8 P4-5, gated behind `holographic` feature) ──
     /// 3D touch/gesture with depth information (holographic).
     #[cfg(feature = "holographic")]
-    HolographicTouch {
-        pos: Point,
-        depth: f32,
-        touch_id: TouchId,
-    },
+    HolographicTouch { pos: Point, depth: f32, touch_id: TouchId },
 }
 impl Event {
     /// Creates a mouse press event.
     pub fn mouse_press(x: i32, y: i32, button: u32) -> Self {
-        Self::MousePress {
-            pos: Point::new(x, y),
-            button,
-        }
+        Self::MousePress { pos: Point::new(x, y), button }
     }
     /// Creates a mouse release event.
     pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {
-        Self::MouseRelease {
-            pos: Point::new(x, y),
-            button,
-        }
+        Self::MouseRelease { pos: Point::new(x, y), button }
     }
     /// Creates a mouse double-click event.
     pub fn mouse_double_click(x: i32, y: i32, button: u32) -> Self {
-        Self::MouseDoubleClick {
-            pos: Point::new(x, y),
-            button,
-        }
+        Self::MouseDoubleClick { pos: Point::new(x, y), button }
     }
     /// Creates a mouse move event.
     pub fn mouse_move(x: i32, y: i32) -> Self {
-        Self::MouseMove {
-            pos: Point::new(x, y),
-        }
+        Self::MouseMove { pos: Point::new(x, y) }
     }
     /// Creates a mouse enter event.
     pub fn mouse_enter(x: i32, y: i32) -> Self {
-        Self::MouseEnter {
-            pos: Point::new(x, y),
-        }
+        Self::MouseEnter { pos: Point::new(x, y) }
     }
     /// Creates a mouse leave event.
     pub fn mouse_leave(x: i32, y: i32) -> Self {
-        Self::MouseLeave {
-            pos: Point::new(x, y),
-        }
+        Self::MouseLeave { pos: Point::new(x, y) }
     }
     /// Creates a key press event.
     pub fn key_press(key: u32, modifiers: u32) -> Self {
@@ -193,9 +158,7 @@ impl Event {
     }
     /// Creates a resize event.
     pub fn resize(width: u32, height: u32) -> Self {
-        Self::Resize {
-            size: Size::new(width, height),
-        }
+        Self::Resize { size: Size::new(width, height) }
     }
     /// Creates a timer event.
     pub fn timer(id: u32) -> Self {
@@ -203,65 +166,43 @@ impl Event {
     }
     /// Creates a mouse wheel event.
     pub fn wheel(delta_x: i32, delta_y: i32, modifiers: u32) -> Self {
-        Self::Wheel {
-            delta: Point::new(delta_x, delta_y),
-            modifiers,
-        }
+        Self::Wheel { delta: Point::new(delta_x, delta_y), modifiers }
     }
     // ── Touch / Gesture constructors ──
     /// Creates a touch begin event.
     #[cfg(feature = "touch")]
     pub fn touch_begin(x: i32, y: i32, touch_id: TouchId) -> Self {
-        Self::TouchBegin {
-            pos: Point::new(x, y),
-            touch_id,
-        }
+        Self::TouchBegin { pos: Point::new(x, y), touch_id }
     }
     /// Creates a touch end event.
     #[cfg(feature = "touch")]
     pub fn touch_end(x: i32, y: i32, touch_id: TouchId) -> Self {
-        Self::TouchEnd {
-            pos: Point::new(x, y),
-            touch_id,
-        }
+        Self::TouchEnd { pos: Point::new(x, y), touch_id }
     }
     /// Creates a touch move event.
     #[cfg(feature = "touch")]
     pub fn touch_move(x: i32, y: i32, touch_id: TouchId) -> Self {
-        Self::TouchMove {
-            pos: Point::new(x, y),
-            touch_id,
-        }
+        Self::TouchMove { pos: Point::new(x, y), touch_id }
     }
     /// Creates a tap gesture event.
     #[cfg(feature = "touch")]
     pub fn tap(x: i32, y: i32) -> Self {
-        Self::Tap {
-            pos: Point::new(x, y),
-        }
+        Self::Tap { pos: Point::new(x, y) }
     }
     /// Creates a double-tap gesture event.
     #[cfg(feature = "touch")]
     pub fn double_tap(x: i32, y: i32) -> Self {
-        Self::DoubleTap {
-            pos: Point::new(x, y),
-        }
+        Self::DoubleTap { pos: Point::new(x, y) }
     }
     /// Creates a long-press gesture event.
     #[cfg(feature = "touch")]
     pub fn long_press(x: i32, y: i32) -> Self {
-        Self::LongPress {
-            pos: Point::new(x, y),
-        }
+        Self::LongPress { pos: Point::new(x, y) }
     }
     /// Creates a swipe gesture event.
     #[cfg(feature = "touch")]
     pub fn swipe(start_x: i32, start_y: i32, end_x: i32, end_y: i32, velocity: f32) -> Self {
-        Self::Swipe {
-            start: Point::new(start_x, start_y),
-            end: Point::new(end_x, end_y),
-            velocity,
-        }
+        Self::Swipe { start: Point::new(start_x, start_y), end: Point::new(end_x, end_y), velocity }
     }
     /// Creates a pinch gesture event.
     #[cfg(feature = "touch")]
@@ -276,18 +217,12 @@ impl Event {
     /// Creates a drag event.
     #[cfg(feature = "touch")]
     pub fn drag(x: i32, y: i32, touch_id: TouchId, delta_x: i32, delta_y: i32) -> Self {
-        Self::Drag {
-            pos: Point::new(x, y),
-            touch_id,
-            delta: Point::new(delta_x, delta_y),
-        }
+        Self::Drag { pos: Point::new(x, y), touch_id, delta: Point::new(delta_x, delta_y) }
     }
     /// Creates a two-finger tap gesture event.
     #[cfg(feature = "touch")]
     pub fn two_finger_tap(x: i32, y: i32) -> Self {
-        Self::TwoFingerTap {
-            pos: Point::new(x, y),
-        }
+        Self::TwoFingerTap { pos: Point::new(x, y) }
     }
     /// Creates a two-finger swipe gesture event.
     #[cfg(feature = "touch")]
@@ -307,21 +242,13 @@ impl Event {
     /// Creates a fling gesture event.
     #[cfg(feature = "touch")]
     pub fn fling(x: i32, y: i32, vx: i32, vy: i32, touch_id: TouchId) -> Self {
-        Self::Fling {
-            pos: Point::new(x, y),
-            velocity: Point::new(vx, vy),
-            touch_id,
-        }
+        Self::Fling { pos: Point::new(x, y), velocity: Point::new(vx, vy), touch_id }
     }
 
     /// Creates a holographic (3D) touch event.
     #[cfg(feature = "holographic")]
     pub fn holographic_touch(x: i32, y: i32, depth: f32, touch_id: TouchId) -> Self {
-        Self::HolographicTouch {
-            pos: Point::new(x, y),
-            depth,
-            touch_id,
-        }
+        Self::HolographicTouch { pos: Point::new(x, y), depth, touch_id }
     }
 
     /// Creates an orientation changed event.
@@ -486,11 +413,7 @@ mod tests {
     fn swipe_fields_correct() {
         let e = Event::swipe(0, 0, 100, 200, 500.0);
         match e {
-            Event::Swipe {
-                start,
-                end,
-                velocity,
-            } => {
+            Event::Swipe { start, end, velocity } => {
                 assert_eq!(start.x, 0);
                 assert_eq!(start.y, 0);
                 assert_eq!(end.x, 100);
@@ -526,11 +449,7 @@ mod tests {
     fn two_finger_swipe_fields_correct() {
         let e = Event::two_finger_swipe(0, 0, 100, 200, 300.0);
         match e {
-            Event::TwoFingerSwipe {
-                centroid_start,
-                centroid_end,
-                velocity,
-            } => {
+            Event::TwoFingerSwipe { centroid_start, centroid_end, velocity } => {
                 assert_eq!(centroid_start.x, 0);
                 assert_eq!(centroid_start.y, 0);
                 assert_eq!(centroid_end.x, 100);
@@ -553,11 +472,7 @@ mod tests {
     fn fling_creation() {
         let e = Event::fling(50, 60, 10, -5, 3);
         match e {
-            Event::Fling {
-                pos,
-                velocity,
-                touch_id,
-            } => {
+            Event::Fling { pos, velocity, touch_id } => {
                 assert_eq!(pos.x, 50);
                 assert_eq!(pos.y, 60);
                 assert_eq!(velocity.x, 10);
@@ -605,11 +520,7 @@ mod tests {
     fn drag_fields_correct() {
         let e = Event::drag(50, 60, 1, 5, -3);
         match e {
-            Event::Drag {
-                pos,
-                touch_id,
-                delta,
-            } => {
+            Event::Drag { pos, touch_id, delta } => {
                 assert_eq!(pos.x, 50);
                 assert_eq!(pos.y, 60);
                 assert_eq!(touch_id, 1);

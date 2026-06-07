@@ -32,20 +32,10 @@ pub struct TestResult {
 }
 impl TestResult {
     pub fn pass(name: &str, duration: Duration) -> Self {
-        Self {
-            name: name.to_string(),
-            passed: true,
-            duration,
-            message: None,
-        }
+        Self { name: name.to_string(), passed: true, duration, message: None }
     }
     pub fn fail(name: &str, duration: Duration, message: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            passed: false,
-            duration,
-            message: Some(message.to_string()),
-        }
+        Self { name: name.to_string(), passed: false, duration, message: Some(message.to_string()) }
     }
 }
 /// Test runner
@@ -55,10 +45,7 @@ pub struct TestRunner {
 }
 impl TestRunner {
     pub fn new() -> Self {
-        Self {
-            config: TestConfig::default(),
-            results: Vec::new(),
-        }
+        Self { config: TestConfig::default(), results: Vec::new() }
     }
     pub fn with_config(mut self, config: TestConfig) -> Self {
         self.config = config;
@@ -114,10 +101,7 @@ pub struct Benchmark {
 }
 impl Benchmark {
     pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            iterations: 1000,
-        }
+        Self { name: name.to_string(), iterations: 1000 }
     }
     pub fn with_iterations(mut self, iterations: u32) -> Self {
         self.iterations = iterations;

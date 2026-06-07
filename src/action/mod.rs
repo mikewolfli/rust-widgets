@@ -17,11 +17,9 @@ mod tests {
         assert!(mgr.register_action("save", "Save"));
         let counter = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&counter);
-        mgr.action("save")
-            .expect("action exists")
-            .connect_triggered(move || {
-                c.fetch_add(1, Ordering::SeqCst);
-            });
+        mgr.action("save").expect("action exists").connect_triggered(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
         assert!(mgr.bind_shortcut("Ctrl+S", "save"));
         assert!(mgr.trigger_shortcut("ctrl+s"));
         assert_eq!(counter.load(Ordering::SeqCst), 1);

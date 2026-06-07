@@ -181,14 +181,7 @@ impl fmt::Display for DiagnosticReport {
             writeln!(f)?;
             for (i, issue) in self.issues.iter().enumerate() {
                 let sev = severity_label_localised(issue.severity);
-                writeln!(
-                    f,
-                    "  {}. [{}] {} — {}",
-                    i + 1,
-                    sev,
-                    issue.category,
-                    issue.description
-                )?;
+                writeln!(f, "  {}. [{}] {} — {}", i + 1, sev, issue.category, issue.description)?;
                 if let Some(wid) = issue.widget_id {
                     writeln!(f, "     widget: {}", wid)?;
                 }
@@ -292,9 +285,8 @@ impl LayoutInspector {
         NATIVE_LAYOUTS.with(|layouts| {
             let mut layouts = layouts.borrow_mut();
             // Update in-place if already registered.
-            if let Some(entry) = layouts
-                .iter_mut()
-                .find(|e: &&mut NativeLayoutEntry| e.parent_id == parent_id)
+            if let Some(entry) =
+                layouts.iter_mut().find(|e: &&mut NativeLayoutEntry| e.parent_id == parent_id)
             {
                 entry.label = label.to_string();
                 entry.item_count = item_count;
@@ -367,12 +359,7 @@ impl LayoutInspector {
         GEOMETRY_SNAPSHOT.with(|snap| snap.borrow_mut().clear());
         NATIVE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
 
-        DiagnosticReport {
-            issues,
-            recommendations,
-            widgets_inspected,
-            layouts_inspected,
-        }
+        DiagnosticReport { issues, recommendations, widgets_inspected, layouts_inspected }
     }
 
     // ── Diagnostic check implementations ─────────────────────
@@ -438,10 +425,7 @@ impl LayoutInspector {
             .filter(|(_, rect)| rect.width == 0 || rect.height == 0)
             .map(|(widget_id, rect)| {
                 let desc = if rect.width == 0 && rect.height == 0 {
-                    format!(
-                        "widget {} has zero size (0x0) — completely invisible",
-                        widget_id
-                    )
+                    format!("widget {} has zero size (0x0) — completely invisible", widget_id)
                 } else if rect.width == 0 {
                     format!(
                         "widget {} has zero width (height={}) — horizontally collapsed",
@@ -488,10 +472,7 @@ impl LayoutInspector {
             std::collections::HashMap::new();
         for (widget_id, _) in geometries {
             let parent = parent_of.get(widget_id).copied().flatten();
-            children_by_parent
-                .entry(parent)
-                .or_default()
-                .push(*widget_id);
+            children_by_parent.entry(parent).or_default().push(*widget_id);
         }
 
         // Build rect_by_id for fast lookup.
@@ -637,9 +618,7 @@ mod tests {
 
     /// Acquire the test lock, recovering from poison if a previous test panicked.
     fn lock_inspector() -> std::sync::MutexGuard<'static, ()> {
-        LAYOUT_INSPECTOR_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        LAYOUT_INSPECTOR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // ── Enable/disable ──
@@ -715,15 +694,9 @@ mod tests {
             label: "main".into(),
         });
         let report = LayoutInspector::run_once(&reg);
-        let orphan_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("orphan"))
-            .collect();
-        assert!(
-            orphan_issues.is_empty(),
-            "windows without parent should not be orphans"
-        );
+        let orphan_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("orphan")).collect();
+        assert!(orphan_issues.is_empty(), "windows without parent should not be orphans");
         LayoutInspector::disable();
     }
 
@@ -745,15 +718,9 @@ mod tests {
             label: "ok".into(),
         });
         let report = LayoutInspector::run_once(&reg);
-        let orphan_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("orphan"))
-            .collect();
-        assert!(
-            orphan_issues.is_empty(),
-            "widget with parent should not be orphan"
-        );
+        let orphan_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("orphan")).collect();
+        assert!(orphan_issues.is_empty(), "widget with parent should not be orphan");
         LayoutInspector::disable();
     }
 
@@ -766,11 +733,8 @@ mod tests {
         LayoutInspector::register_native_layout(100, "hbox_main", 0, "HBoxLayout");
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
-        let empty_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("empty layout"))
-            .collect();
+        let empty_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("empty layout")).collect();
         assert_eq!(empty_issues.len(), 1);
         LayoutInspector::disable();
     }
@@ -782,11 +746,8 @@ mod tests {
         LayoutInspector::register_native_layout(100, "hbox_main", 3, "HBoxLayout");
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
-        let empty_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("empty layout"))
-            .collect();
+        let empty_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("empty layout")).collect();
         assert!(empty_issues.is_empty());
         LayoutInspector::disable();
     }
@@ -801,10 +762,7 @@ mod tests {
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
         assert!(report.has_errors());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.description.contains("zero width")));
+        assert!(report.issues.iter().any(|i| i.description.contains("zero width")));
         LayoutInspector::disable();
     }
 
@@ -816,10 +774,7 @@ mod tests {
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
         assert!(report.has_errors());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.description.contains("zero height")));
+        assert!(report.issues.iter().any(|i| i.description.contains("zero height")));
         LayoutInspector::disable();
     }
 
@@ -831,10 +786,7 @@ mod tests {
         let reg = WidgetRegistry::new();
         let report = LayoutInspector::run_once(&reg);
         assert!(report.has_errors());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.description.contains("zero size")));
+        assert!(report.issues.iter().any(|i| i.description.contains("zero size")));
         LayoutInspector::disable();
     }
 
@@ -888,11 +840,8 @@ mod tests {
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 60, 30));
         LayoutInspector::record_geometry(2, Rect::new(50, 0, 60, 30));
         let report = LayoutInspector::run_once(&reg);
-        let overlap_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("overlap"))
-            .collect();
+        let overlap_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
         assert_eq!(overlap_issues.len(), 1);
         LayoutInspector::disable();
     }
@@ -924,11 +873,8 @@ mod tests {
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 60, 30));
         LayoutInspector::record_geometry(2, Rect::new(60, 0, 60, 30));
         let report = LayoutInspector::run_once(&reg);
-        let overlap_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("overlap"))
-            .collect();
+        let overlap_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
         assert!(overlap_issues.is_empty());
         LayoutInspector::disable();
     }
@@ -952,11 +898,8 @@ mod tests {
         });
         LayoutInspector::record_geometry(1, Rect::new(0, 0, 200, 30));
         let report = LayoutInspector::run_once(&reg);
-        let overlap_issues: Vec<_> = report
-            .issues
-            .iter()
-            .filter(|i| i.description.contains("overlap"))
-            .collect();
+        let overlap_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
         assert!(overlap_issues.is_empty());
         LayoutInspector::disable();
     }
@@ -1028,10 +971,7 @@ mod tests {
             );
         }
         assert!(!report.recommendations.is_empty());
-        assert!(report
-            .recommendations
-            .iter()
-            .any(|r| r.title.contains("Recalculate")));
+        assert!(report.recommendations.iter().any(|r| r.title.contains("Recalculate")));
         LayoutInspector::disable();
     }
 

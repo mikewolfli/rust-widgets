@@ -47,15 +47,9 @@ impl PrivacySettings {
         settings.block_all_cookies = true;
         settings.clear_cookies_on_exit = true;
         settings.block_tracking_types.insert(TrackingType::Cookies);
-        settings
-            .block_tracking_types
-            .insert(TrackingType::LocalStorage);
-        settings
-            .block_tracking_types
-            .insert(TrackingType::SessionStorage);
-        settings
-            .block_tracking_types
-            .insert(TrackingType::ThirdPartyScripts);
+        settings.block_tracking_types.insert(TrackingType::LocalStorage);
+        settings.block_tracking_types.insert(TrackingType::SessionStorage);
+        settings.block_tracking_types.insert(TrackingType::ThirdPartyScripts);
         settings
     }
     pub fn balanced() -> Self {
@@ -129,10 +123,7 @@ impl Cookie {
     }
     pub fn is_expired(&self) -> bool {
         if let Some(expires) = self.expires {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             return now > expires;
         }
         false
@@ -147,9 +138,7 @@ pub struct CookieJar {
 }
 impl CookieJar {
     pub fn new() -> Self {
-        Self {
-            cookies: HashMap::new(),
-        }
+        Self { cookies: HashMap::new() }
     }
     pub fn add(&mut self, cookie: Cookie) {
         let key = format!("{}:{}", cookie.domain, cookie.name);
@@ -205,11 +194,7 @@ pub struct TrackingProtection {
 }
 impl TrackingProtection {
     pub fn new(settings: PrivacySettings) -> Self {
-        Self {
-            settings,
-            attempts: Vec::new(),
-            blocked_count: 0,
-        }
+        Self { settings, attempts: Vec::new(), blocked_count: 0 }
     }
     pub fn settings(&self) -> &PrivacySettings {
         &self.settings
@@ -224,10 +209,7 @@ impl TrackingProtection {
             tracking_type,
             domain: domain.to_string(),
             url: url.to_string(),
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             blocked,
         };
         if blocked {
@@ -303,10 +285,7 @@ mod tests {
         assert!(settings.should_block_tracking_type(TrackingType::WebBeacon));
         assert!(settings.should_block_tracking_type(TrackingType::Fingerprinting));
         assert!(!settings.should_block_tracking_type(TrackingType::Cookies));
-        assert_eq!(
-            settings.cookie_duration_limit,
-            Some(Duration::from_secs(86400 * 30))
-        );
+        assert_eq!(settings.cookie_duration_limit, Some(Duration::from_secs(86400 * 30)));
     }
 
     #[test]
@@ -326,14 +305,8 @@ mod tests {
     fn test_privacy_settings_balanced() {
         let balanced = PrivacySettings::balanced();
         let default = PrivacySettings::new();
-        assert_eq!(
-            balanced.block_third_party_cookies,
-            default.block_third_party_cookies
-        );
-        assert_eq!(
-            balanced.block_tracking_cookies,
-            default.block_tracking_cookies
-        );
+        assert_eq!(balanced.block_third_party_cookies, default.block_third_party_cookies);
+        assert_eq!(balanced.block_tracking_cookies, default.block_tracking_cookies);
         assert_eq!(balanced.block_all_cookies, default.block_all_cookies);
         assert_eq!(balanced.do_not_track, default.do_not_track);
     }
@@ -386,11 +359,8 @@ mod tests {
 
     #[test]
     fn test_cookie_new() {
-        let cookie = Cookie::new(
-            "session".to_string(),
-            "abc123".to_string(),
-            "example.com".to_string(),
-        );
+        let cookie =
+            Cookie::new("session".to_string(), "abc123".to_string(), "example.com".to_string());
         assert_eq!(cookie.name, "session");
         assert_eq!(cookie.value, "abc123");
         assert_eq!(cookie.domain, "example.com");
@@ -402,11 +372,7 @@ mod tests {
 
     #[test]
     fn test_cookie_is_expired_when_no_expiry() {
-        let cookie = Cookie::new(
-            "test".to_string(),
-            "val".to_string(),
-            "example.com".to_string(),
-        );
+        let cookie = Cookie::new("test".to_string(), "val".to_string(), "example.com".to_string());
         assert!(!cookie.is_expired());
     }
 
@@ -428,21 +394,13 @@ mod tests {
 
     #[test]
     fn test_cookie_is_third_party() {
-        let cookie = Cookie::new(
-            "test".to_string(),
-            "val".to_string(),
-            "other.com".to_string(),
-        );
+        let cookie = Cookie::new("test".to_string(), "val".to_string(), "other.com".to_string());
         assert!(cookie.is_third_party("example.com"));
     }
 
     #[test]
     fn test_cookie_is_not_third_party_same_domain() {
-        let cookie = Cookie::new(
-            "test".to_string(),
-            "val".to_string(),
-            "example.com".to_string(),
-        );
+        let cookie = Cookie::new("test".to_string(), "val".to_string(), "example.com".to_string());
         assert!(!cookie.is_third_party("example.com"));
     }
 
@@ -458,11 +416,8 @@ mod tests {
     #[test]
     fn test_cookie_jar_add_and_get() {
         let mut jar = CookieJar::new();
-        let cookie = Cookie::new(
-            "session".to_string(),
-            "abc".to_string(),
-            "example.com".to_string(),
-        );
+        let cookie =
+            Cookie::new("session".to_string(), "abc".to_string(), "example.com".to_string());
         jar.add(cookie);
         assert_eq!(jar.len(), 1);
         let retrieved = jar.get("example.com", "session");
@@ -473,11 +428,7 @@ mod tests {
     #[test]
     fn test_cookie_jar_remove() {
         let mut jar = CookieJar::new();
-        jar.add(Cookie::new(
-            "a".to_string(),
-            "1".to_string(),
-            "example.com".to_string(),
-        ));
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "example.com".to_string()));
         let removed = jar.remove("example.com", "a");
         assert!(removed.is_some());
         assert!(jar.is_empty());
@@ -492,16 +443,8 @@ mod tests {
     #[test]
     fn test_cookie_jar_clear() {
         let mut jar = CookieJar::new();
-        jar.add(Cookie::new(
-            "a".to_string(),
-            "1".to_string(),
-            "a.com".to_string(),
-        ));
-        jar.add(Cookie::new(
-            "b".to_string(),
-            "2".to_string(),
-            "b.com".to_string(),
-        ));
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "a.com".to_string()));
+        jar.add(Cookie::new("b".to_string(), "2".to_string(), "b.com".to_string()));
         jar.clear();
         assert!(jar.is_empty());
     }
@@ -520,11 +463,7 @@ mod tests {
             http_only: false,
             same_site: SameSite::Lax,
         });
-        jar.add(Cookie::new(
-            "fresh".to_string(),
-            "new".to_string(),
-            "example.com".to_string(),
-        ));
+        jar.add(Cookie::new("fresh".to_string(), "new".to_string(), "example.com".to_string()));
         jar.clear_expired();
         assert_eq!(jar.len(), 1);
         assert!(jar.get("example.com", "fresh").is_some());
@@ -533,16 +472,8 @@ mod tests {
     #[test]
     fn test_cookie_jar_clear_for_domain() {
         let mut jar = CookieJar::new();
-        jar.add(Cookie::new(
-            "a".to_string(),
-            "1".to_string(),
-            "example.com".to_string(),
-        ));
-        jar.add(Cookie::new(
-            "b".to_string(),
-            "2".to_string(),
-            "other.com".to_string(),
-        ));
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "example.com".to_string()));
+        jar.add(Cookie::new("b".to_string(), "2".to_string(), "other.com".to_string()));
         jar.clear_for_domain("example.com");
         assert_eq!(jar.len(), 1);
         assert!(jar.get("other.com", "b").is_some());
@@ -551,16 +482,8 @@ mod tests {
     #[test]
     fn test_cookie_jar_cookies_for_domain() {
         let mut jar = CookieJar::new();
-        jar.add(Cookie::new(
-            "a".to_string(),
-            "1".to_string(),
-            "example.com".to_string(),
-        ));
-        jar.add(Cookie::new(
-            "b".to_string(),
-            "2".to_string(),
-            "api.example.com".to_string(),
-        ));
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "example.com".to_string()));
+        jar.add(Cookie::new("b".to_string(), "2".to_string(), "api.example.com".to_string()));
         let cookies = jar.cookies_for_domain("example.com");
         assert_eq!(cookies.len(), 2);
     }
@@ -568,16 +491,8 @@ mod tests {
     #[test]
     fn test_cookie_jar_all_cookies() {
         let mut jar = CookieJar::new();
-        jar.add(Cookie::new(
-            "a".to_string(),
-            "1".to_string(),
-            "a.com".to_string(),
-        ));
-        jar.add(Cookie::new(
-            "b".to_string(),
-            "2".to_string(),
-            "b.com".to_string(),
-        ));
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "a.com".to_string()));
+        jar.add(Cookie::new("b".to_string(), "2".to_string(), "b.com".to_string()));
         assert_eq!(jar.all_cookies().len(), 2);
     }
 
@@ -625,11 +540,7 @@ mod tests {
     #[test]
     fn test_tracking_protection_clear_attempts() {
         let mut tp = TrackingProtection::new(PrivacySettings::strict());
-        tp.check_tracking(
-            TrackingType::WebBeacon,
-            "beacon.com",
-            "https://beacon.com/pixel",
-        );
+        tp.check_tracking(TrackingType::WebBeacon, "beacon.com", "https://beacon.com/pixel");
         assert_eq!(tp.attempts().len(), 1);
         tp.clear_attempts();
         assert!(tp.attempts().is_empty());
@@ -640,11 +551,7 @@ mod tests {
     #[test]
     fn test_tracking_protection_clear_stats() {
         let mut tp = TrackingProtection::new(PrivacySettings::strict());
-        tp.check_tracking(
-            TrackingType::Fingerprinting,
-            "tracker.com",
-            "https://tracker.com",
-        );
+        tp.check_tracking(TrackingType::Fingerprinting, "tracker.com", "https://tracker.com");
         assert_eq!(tp.blocked_count(), 1);
         tp.clear_stats();
         assert_eq!(tp.blocked_count(), 0);

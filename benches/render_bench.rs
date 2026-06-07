@@ -5,9 +5,7 @@ use rust_widgets::render::*;
 fn bench_fill_pixels(c: &mut Criterion) {
     let mut pixels = vec![0u8; 1920 * 1080 * 4];
     let color = Color::rgba(128, 64, 32, 255);
-    c.bench_function("fill_pixels 1080p", |b| {
-        b.iter(|| fill_pixels(&mut pixels, color))
-    });
+    c.bench_function("fill_pixels 1080p", |b| b.iter(|| fill_pixels(&mut pixels, color)));
 }
 
 fn bench_blend_pixel(c: &mut Criterion) {

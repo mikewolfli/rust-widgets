@@ -11,10 +11,7 @@ use std::any::Any;
 pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
     fn base(&self) -> &BaseWidget {
-        panic!(
-            "Widget::base() not implemented — override in {}",
-            std::any::type_name::<Self>()
-        );
+        panic!("Widget::base() not implemented — override in {}", std::any::type_name::<Self>());
     }
     /// Returns mutable base widget state for default trait delegation.
     fn base_mut(&mut self) -> &mut BaseWidget {

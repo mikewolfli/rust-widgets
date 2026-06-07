@@ -73,10 +73,7 @@ fn migration_regression_matrix_snapshot() {
     let window = backend.create_window("w", 0, 0, 200, 120);
     let _button = backend.create_button(window, "btn", 10, 10, 80, 24);
     let snapshot = backend.serialize_state().expect("Should serialize state");
-    assert!(
-        snapshot.contains("btn"),
-        "Snapshot should contain button text"
-    );
+    assert!(snapshot.contains("btn"), "Snapshot should contain button text");
 }
 
 #[test]
@@ -88,18 +85,12 @@ fn objc2_toolbar_statusbar_parity() {
     let toolbar = backend.create_tool_bar(window, 0, 0, 200, 24);
     assert!(toolbar > 0, "ToolBar should be created");
     backend.set_widget_visible(toolbar, true);
-    assert!(
-        backend.is_widget_visible(toolbar),
-        "ToolBar should be visible"
-    );
+    assert!(backend.is_widget_visible(toolbar), "ToolBar should be visible");
     let statusbar = backend.create_status_bar(window, "Ready", 0, 96, 200, 24);
     assert!(statusbar > 0, "StatusBar should be created");
     assert_eq!(backend.get_widget_text(statusbar), "Ready");
     backend.set_widget_visible(statusbar, true);
-    assert!(
-        backend.is_widget_visible(statusbar),
-        "StatusBar should be visible"
-    );
+    assert!(backend.is_widget_visible(statusbar), "StatusBar should be visible");
 }
 
 #[test]
@@ -119,10 +110,7 @@ fn objc2_menu_stack_parity() {
         "MenuBar should be attached to window"
     );
     // Inject and poll one menu trigger event.
-    assert!(
-        backend.inject_menu_trigger(item),
-        "Should inject menu trigger"
-    );
+    assert!(backend.inject_menu_trigger(item), "Should inject menu trigger");
     let triggered = backend.poll_menu_triggered();
     assert_eq!(triggered, Some(item), "Should poll triggered menu item");
 }
@@ -172,43 +160,25 @@ fn objc2_controls_parity() {
     assert!(button > 0, "Button should be created");
     assert_eq!(backend.get_widget_text(button), "btn");
     backend.set_widget_enabled(button, false);
-    assert!(
-        !backend.is_widget_enabled(button),
-        "Button should be disabled"
-    );
+    assert!(!backend.is_widget_enabled(button), "Button should be disabled");
     backend.set_widget_visible(button, false);
-    assert!(
-        !backend.is_widget_visible(button),
-        "Button should be hidden"
-    );
+    assert!(!backend.is_widget_visible(button), "Button should be hidden");
     // Checkbox parity checks.
     let checkbox = backend.create_checkbox(window, "chk", 20, 40, 80, 24);
     assert!(checkbox > 0, "Checkbox should be created");
     assert_eq!(backend.get_widget_text(checkbox), "chk");
     backend.set_widget_enabled(checkbox, true);
-    assert!(
-        backend.is_widget_enabled(checkbox),
-        "Checkbox should be enabled"
-    );
+    assert!(backend.is_widget_enabled(checkbox), "Checkbox should be enabled");
     backend.set_widget_visible(checkbox, true);
-    assert!(
-        backend.is_widget_visible(checkbox),
-        "Checkbox should be visible"
-    );
+    assert!(backend.is_widget_visible(checkbox), "Checkbox should be visible");
     // Line edit parity checks.
     let line_edit = backend.create_line_edit(window, "edit", 30, 70, 100, 24);
     assert!(line_edit > 0, "LineEdit should be created");
     assert_eq!(backend.get_widget_text(line_edit), "edit");
     backend.set_widget_enabled(line_edit, true);
-    assert!(
-        backend.is_widget_enabled(line_edit),
-        "LineEdit should be enabled"
-    );
+    assert!(backend.is_widget_enabled(line_edit), "LineEdit should be enabled");
     backend.set_widget_visible(line_edit, true);
-    assert!(
-        backend.is_widget_visible(line_edit),
-        "LineEdit should be visible"
-    );
+    assert!(backend.is_widget_visible(line_edit), "LineEdit should be visible");
 }
 
 #[test]
@@ -228,10 +198,7 @@ fn objc2_runloop_integration_and_quit() {
     });
     // Backend should report not-running after quit.
     assert!(
-        !backend
-            .runtime
-            .running
-            .load(std::sync::atomic::Ordering::SeqCst),
+        !backend.runtime.running.load(std::sync::atomic::Ordering::SeqCst),
         "Backend should not be running after quit"
     );
 }
@@ -250,15 +217,9 @@ fn objc2_window_lifecycle_parity() {
     backend.set_widget_geometry(window, 120, 220, 800, 600);
     // Verify show/hide visibility transitions.
     backend.show_widget(window);
-    assert!(
-        backend.is_widget_visible(window),
-        "Window should be visible"
-    );
+    assert!(backend.is_widget_visible(window), "Window should be visible");
     backend.hide_widget(window);
-    assert!(
-        !backend.is_widget_visible(window),
-        "Window should be hidden"
-    );
+    assert!(!backend.is_widget_visible(window), "Window should be hidden");
 }
 
 #[test]
@@ -272,26 +233,11 @@ fn objc2_basic_control_and_clipboard_parity() {
     // Create a child button.
     let button = backend.create_button(window, "ok", 10, 10, 80, 24);
     assert!(button > 0, "Button should be created and have a valid id");
-    assert_eq!(
-        backend.get_widget_text(button),
-        "ok",
-        "Button text should match"
-    );
+    assert_eq!(backend.get_widget_text(button), "ok", "Button text should match");
     // Update button text.
     backend.set_widget_text(button, "updated");
-    assert_eq!(
-        backend.get_widget_text(button),
-        "updated",
-        "Button text should update"
-    );
+    assert_eq!(backend.get_widget_text(button), "updated", "Button text should update");
     // Clipboard set/get roundtrip.
-    assert!(
-        backend.set_clipboard_text("clip"),
-        "Should set clipboard text"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "clip",
-        "Clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("clip"), "Should set clipboard text");
+    assert_eq!(backend.get_clipboard_text(), "clip", "Clipboard text should match");
 }

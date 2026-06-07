@@ -9,10 +9,7 @@ pub struct TestHarness {
 }
 impl TestHarness {
     pub fn new() -> Self {
-        Self {
-            events: VecDeque::new(),
-            screen_size: Size::new(800, 600),
-        }
+        Self { events: VecDeque::new(), screen_size: Size::new(800, 600) }
     }
     pub fn with_screen_size(mut self, size: Size) -> Self {
         self.screen_size = size;
@@ -30,9 +27,7 @@ impl TestHarness {
         self.send_event(Event::MouseRelease { pos: point, button });
     }
     pub fn send_mouse_move(&mut self, x: i32, y: i32) {
-        self.send_event(Event::MouseMove {
-            pos: Point::from_f32(x as f32, y as f32),
-        });
+        self.send_event(Event::MouseMove { pos: Point::from_f32(x as f32, y as f32) });
     }
     pub fn send_key_press(&mut self, key: u32, modifiers: u32) {
         self.send_event(Event::KeyPress { key, modifiers });
@@ -70,10 +65,7 @@ pub struct WidgetTester<W: Widget> {
 }
 impl<W: Widget> WidgetTester<W> {
     pub fn new(widget: W) -> Self {
-        Self {
-            widget,
-            harness: TestHarness::new(),
-        }
+        Self { widget, harness: TestHarness::new() }
     }
     pub fn with_harness(mut self, harness: TestHarness) -> Self {
         self.harness = harness;
@@ -190,10 +182,8 @@ mod tests {
         harness.send_mouse_click(100, 100, 0); // 0 = Left button
         harness.send_key_press(65, 0);
         assert_eq!(harness.event_count(), 3);
-        let handled = harness.dispatch_to(&mut Label::new(
-            "Test".to_string(),
-            Rect::new(0, 0, 100, 30),
-        ));
+        let handled =
+            harness.dispatch_to(&mut Label::new("Test".to_string(), Rect::new(0, 0, 100, 30)));
         // dispatch_to returns the number of dispatched events (3)
         // Label handles events without returning a "handled" count,
         // so dispatch_to always returns the number of events processed
@@ -202,11 +192,8 @@ mod tests {
     #[test]
     fn test_layout_tester() {
         let tester = LayoutTester::new(Rect::new(0, 0, 400, 300));
-        let positions = vec![
-            Rect::new(0, 0, 100, 50),
-            Rect::new(100, 0, 100, 50),
-            Rect::new(200, 0, 100, 50),
-        ];
+        let positions =
+            vec![Rect::new(0, 0, 100, 50), Rect::new(100, 0, 100, 50), Rect::new(200, 0, 100, 50)];
         tester.assert_fits_in_container(&positions);
         tester.assert_no_overlap(&positions);
     }

@@ -22,12 +22,7 @@ pub struct MapMarker {
 impl MapMarker {
     /// Creates a map marker.
     pub fn new(id: impl Into<String>, label: impl Into<String>, x: f32, y: f32) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            x,
-            y,
-        }
+        Self { id: id.into(), label: label.into(), x, y }
     }
 }
 
@@ -260,10 +255,7 @@ impl Draw for MapView {
 
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
-            &format!(
-                "Center ({:.1}, {:.1})  Zoom {:.2}x",
-                self.center_x, self.center_y, self.zoom
-            ),
+            &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
             &Font::default(),
             Color::from_rgb(45, 58, 74),
         );
@@ -316,11 +308,7 @@ mod tests {
         map.handle_event(&Event::mouse_press(200, 120, 1));
 
         assert_eq!(map.selected_marker_id(), Some("m1"));
-        let got = selected
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["m1".to_string()]);
     }
 

@@ -105,16 +105,10 @@ mod tests {
     fn get_control_backend_for_widget_returns_non_null() {
         let backend = get_control_backend_for_widget(WidgetKind::Button);
         let name = backend.backend_name();
-        assert!(
-            !name.is_empty(),
-            "backend_name must not be empty for Button"
-        );
+        assert!(!name.is_empty(), "backend_name must not be empty for Button");
         let backend2 = get_control_backend_for_widget(WidgetKind::Canvas);
         let name2 = backend2.backend_name();
-        assert!(
-            !name2.is_empty(),
-            "backend_name must not be empty for Canvas"
-        );
+        assert!(!name2.is_empty(), "backend_name must not be empty for Canvas");
     }
 
     #[test]
@@ -132,11 +126,7 @@ mod tests {
         for kind in &kinds {
             let backend = get_control_backend_for_widget(*kind);
             let name = backend.backend_name();
-            assert!(
-                !name.is_empty(),
-                "backend_name must not be empty for {:?}",
-                kind
-            );
+            assert!(!name.is_empty(), "backend_name must not be empty for {:?}", kind);
             let _ = backend.kind();
         }
     }

@@ -130,22 +130,12 @@ impl ColorPicker {
 
     fn hue_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(
-            rect.x + rect.width as i32 - 34,
-            rect.y + 8,
-            12,
-            rect.height.saturating_sub(44),
-        )
+        Rect::new(rect.x + rect.width as i32 - 34, rect.y + 8, 12, rect.height.saturating_sub(44))
     }
 
     fn alpha_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(
-            rect.x + rect.width as i32 - 18,
-            rect.y + 8,
-            10,
-            rect.height.saturating_sub(44),
-        )
+        Rect::new(rect.x + rect.width as i32 - 18, rect.y + 8, 10, rect.height.saturating_sub(44))
     }
 
     fn preset_rect(&self, index: usize) -> Option<Rect> {
@@ -291,21 +281,11 @@ impl Draw for ColorPicker {
         }
 
         context.fill_rect(
-            Rect::new(
-                rect.x + rect.width as i32 - 70,
-                rect.y + rect.height as i32 - 28,
-                56,
-                18,
-            ),
+            Rect::new(rect.x + rect.width as i32 - 70, rect.y + rect.height as i32 - 28, 56, 18),
             self.color,
         );
         context.draw_rect(
-            Rect::new(
-                rect.x + rect.width as i32 - 70,
-                rect.y + rect.height as i32 - 28,
-                56,
-                18,
-            ),
+            Rect::new(rect.x + rect.width as i32 - 70, rect.y + rect.height as i32 - 28, 56, 18),
             Color::from_rgb(40, 48, 63),
         );
 
@@ -384,11 +364,7 @@ mod tests {
         });
 
         assert!(picker.apply_preset(1));
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert!(!got.is_empty());
     }
 }

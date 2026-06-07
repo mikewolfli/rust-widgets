@@ -338,18 +338,12 @@ impl Frame {
         );
         context.draw_line(
             Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-            Point::from_f32(
-                rect.x as f32 + rect.width as f32,
-                rect.y as f32 + rect.height as f32,
-            ),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
             light_color,
         );
         context.draw_line(
             Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-            Point::from_f32(
-                rect.x as f32 + rect.width as f32,
-                rect.y as f32 + rect.height as f32,
-            ),
+            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
             light_color,
         );
         // Inner border (raised)

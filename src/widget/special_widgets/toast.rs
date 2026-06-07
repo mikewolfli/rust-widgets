@@ -36,12 +36,7 @@ impl ToastItem {
         level: ToastLevel,
         ttl_ms: u32,
     ) -> Self {
-        Self {
-            id: id.into(),
-            message: message.into(),
-            level,
-            ttl_ms: ttl_ms.max(100),
-        }
+        Self { id: id.into(), message: message.into(), level, ttl_ms: ttl_ms.max(100) }
     }
 }
 
@@ -234,12 +229,8 @@ impl Draw for ToastStack {
                 continue;
             }
 
-            let row = Rect::new(
-                rect.x + 4,
-                y + 2,
-                rect.width.saturating_sub(8),
-                self.row_height - 4,
-            );
+            let row =
+                Rect::new(rect.x + 4, y + 2, rect.width.saturating_sub(8), self.row_height - 4);
             let bg = if self.selected_index == Some(index) {
                 Color::from_rgb(225, 235, 250)
             } else {
@@ -274,12 +265,7 @@ mod tests {
     fn push_and_dismiss_update_len() {
         let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
         stack.push(ToastItem::new("t1", "Saved", ToastLevel::Success, 2500));
-        stack.push(ToastItem::new(
-            "t2",
-            "Build failed",
-            ToastLevel::Error,
-            3500,
-        ));
+        stack.push(ToastItem::new("t2", "Build failed", ToastLevel::Error, 3500));
 
         assert_eq!(stack.toasts().len(), 2);
         assert_eq!(stack.selected_id(), Some("t2"));
@@ -303,11 +289,7 @@ mod tests {
         });
 
         assert!(stack.activate_selected());
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["t1".to_string()]);
     }
 
@@ -423,11 +405,7 @@ mod tests {
         });
 
         assert!(stack.dismiss_selected());
-        let got = dismissed
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = dismissed.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["t2".to_string()]);
     }
 
@@ -445,11 +423,7 @@ mod tests {
         });
 
         stack.handle_event(&Event::key_press(13, 0));
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["t1".to_string()]);
     }
 

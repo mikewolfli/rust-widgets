@@ -17,34 +17,12 @@ mod tests {
             16,
             16,
             &[
-                commands::WgpuDrawCommand::Clear {
-                    color: types::Rgba8 {
-                        r: 0,
-                        g: 0,
-                        b: 0,
-                        a: 0,
-                    },
-                },
+                commands::WgpuDrawCommand::Clear { color: types::Rgba8 { r: 0, g: 0, b: 0, a: 0 } },
                 commands::WgpuDrawCommand::DrawText {
-                    rect: types::PixelRect {
-                        x: 0,
-                        y: 0,
-                        width: 16,
-                        height: 16,
-                    },
+                    rect: types::PixelRect { x: 0, y: 0, width: 16, height: 16 },
                     text: "AB".to_string(),
-                    color: types::Rgba8 {
-                        r: 220,
-                        g: 10,
-                        b: 40,
-                        a: 255,
-                    },
-                    clip: Some(types::PixelRect {
-                        x: 0,
-                        y: 0,
-                        width: 8,
-                        height: 16,
-                    }),
+                    color: types::Rgba8 { r: 220, g: 10, b: 40, a: 255 },
+                    clip: Some(types::PixelRect { x: 0, y: 0, width: 8, height: 16 }),
                 },
             ],
         )
@@ -70,19 +48,12 @@ mod tests {
     }
     #[test]
     fn command_raster_draw_image_scales_with_deterministic_sampling() {
-        let source = vec![
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
-        ];
+        let source = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
         let pixels = raster::rasterize_draw_commands_rgba8(
             4,
             4,
             &[commands::WgpuDrawCommand::DrawImage {
-                rect: types::PixelRect {
-                    x: 0,
-                    y: 0,
-                    width: 4,
-                    height: 4,
-                },
+                rect: types::PixelRect { x: 0, y: 0, width: 4, height: 4 },
                 rgba8: source,
                 image_width: 2,
                 image_height: 2,
@@ -92,12 +63,7 @@ mod tests {
         .expect("image raster should succeed");
         let sample = |x: u32, y: u32| -> [u8; 4] {
             let offset = ((y * 4 + x) * 4) as usize;
-            [
-                pixels[offset],
-                pixels[offset + 1],
-                pixels[offset + 2],
-                pixels[offset + 3],
-            ]
+            [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]]
         };
         assert_eq!(sample(0, 0), [255, 0, 0, 255]);
         assert_eq!(sample(3, 0), [0, 255, 0, 255]);
@@ -110,12 +76,7 @@ mod tests {
             4,
             4,
             &[commands::WgpuDrawCommand::DrawImage {
-                rect: types::PixelRect {
-                    x: 0,
-                    y: 0,
-                    width: 4,
-                    height: 4,
-                },
+                rect: types::PixelRect { x: 0, y: 0, width: 4, height: 4 },
                 rgba8: vec![0; 12],
                 image_width: 2,
                 image_height: 2,

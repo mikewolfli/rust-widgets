@@ -48,9 +48,7 @@ pub struct PdfReader {
 impl PdfReader {
     /// Create a new PDF reader
     pub fn new() -> Self {
-        Self {
-            backend_name: "pdf-minimal-v1",
-        }
+        Self { backend_name: "pdf-minimal-v1" }
     }
     /// Load PDF from file
     pub fn load(&self, path: &str) -> Result<Box<dyn PdfDocument>, std::io::Error> {
@@ -91,10 +89,7 @@ impl PdfReader {
         }
         if parsed_pages.is_empty() {
             for _ in 0..page_count {
-                doc.add_page(Size {
-                    width: 595,
-                    height: 842,
-                });
+                doc.add_page(Size { width: 595, height: 842 });
             }
         } else {
             for page in parsed_pages {
@@ -133,10 +128,7 @@ pub(crate) fn parse_pdf_pages(text: &str) -> Vec<ParsedPdfPage> {
         if !is_page_object {
             continue;
         }
-        let size = parse_page_media_box(body).unwrap_or(Size {
-            width: 595,
-            height: 842,
-        });
+        let size = parse_page_media_box(body).unwrap_or(Size { width: 595, height: 842 });
         let content_obj_id = parse_contents_object_id(body);
         let content = content_obj_id
             .and_then(|id| objects.get(&id))

@@ -12,12 +12,7 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn new(name: &str, data: Vec<u8>, width: u32, height: u32) -> Self {
-        Self {
-            name: name.to_string(),
-            data,
-            width,
-            height,
-        }
+        Self { name: name.to_string(), data, width, height }
     }
     pub fn hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -33,12 +28,7 @@ impl Snapshot {
     pub fn load(name: &str, dir: &str) -> Result<Self, String> {
         let path = Path::new(dir).join(format!("{}.bin", name));
         let data = fs::read(&path).map_err(|e| e.to_string())?;
-        Ok(Self {
-            name: name.to_string(),
-            data,
-            width: 0,
-            height: 0,
-        })
+        Ok(Self { name: name.to_string(), data, width: 0, height: 0 })
     }
     pub fn compare(&self, other: &Snapshot, tolerance: f32) -> SnapshotComparison {
         if self.data.len() != other.data.len() {
@@ -58,11 +48,8 @@ impl Snapshot {
                 diff_count += 1;
             }
         }
-        let diff_percentage = if total_pixels > 0 {
-            (diff_count as f32 / total_pixels as f32) * 100.0
-        } else {
-            0.0
-        };
+        let diff_percentage =
+            if total_pixels > 0 { (diff_count as f32 / total_pixels as f32) * 100.0 } else { 0.0 };
         if diff_percentage == 0.0 {
             SnapshotComparison::Identical
         } else if diff_percentage <= tolerance {
@@ -78,13 +65,8 @@ impl Snapshot {
 #[derive(Debug, Clone)]
 pub enum SnapshotComparison {
     Identical,
-    Similar {
-        diff_percentage: f32,
-    },
-    Different {
-        reason: String,
-        diff_percentage: f32,
-    },
+    Similar { diff_percentage: f32 },
+    Different { reason: String, diff_percentage: f32 },
 }
 impl SnapshotComparison {
     pub fn is_match(&self) -> bool {
@@ -94,9 +76,7 @@ impl SnapshotComparison {
         match self {
             Self::Identical => 0.0,
             Self::Similar { diff_percentage } => *diff_percentage,
-            Self::Different {
-                diff_percentage, ..
-            } => *diff_percentage,
+            Self::Different { diff_percentage, .. } => *diff_percentage,
         }
     }
 }
@@ -108,11 +88,7 @@ pub struct SnapshotManager {
 }
 impl SnapshotManager {
     pub fn new(snapshot_dir: &str) -> Self {
-        Self {
-            snapshot_dir: snapshot_dir.to_string(),
-            tolerance: 0.01,
-            update_mode: false,
-        }
+        Self { snapshot_dir: snapshot_dir.to_string(), tolerance: 0.01, update_mode: false }
     }
     pub fn with_tolerance(mut self, tolerance: f32) -> Self {
         self.tolerance = tolerance;
@@ -158,10 +134,7 @@ pub struct PerformanceSnapshot {
 }
 impl PerformanceSnapshot {
     pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            metrics: Vec::new(),
-        }
+        Self { name: name.to_string(), metrics: Vec::new() }
     }
     pub fn add_metric(&mut self, name: &str, value: f64) {
         self.metrics.push((name.to_string(), value));

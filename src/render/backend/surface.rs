@@ -16,12 +16,7 @@ impl BackBuffer {
     /// Creates a new back buffer for size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
         let bytes = pixel_bytes_len(size);
-        Self {
-            size,
-            dpi_scale: dpi_scale.max(0.1),
-            front: vec![0; bytes],
-            back: vec![0; bytes],
-        }
+        Self { size, dpi_scale: dpi_scale.max(0.1), front: vec![0; bytes], back: vec![0; bytes] }
     }
     /// Resizes front/back buffers to the new size.
     pub fn resize(&mut self, size: Size) {
@@ -70,17 +65,13 @@ pub struct SoftwareRenderConfig {
 }
 impl Default for SoftwareRenderConfig {
     fn default() -> Self {
-        Self {
-            aa_samples_per_axis: 4,
-        }
+        Self { aa_samples_per_axis: 4 }
     }
 }
 impl SoftwareRenderConfig {
     /// Build a config with normalized value bounds.
     pub fn normalized(self) -> Self {
-        Self {
-            aa_samples_per_axis: self.aa_samples_per_axis.clamp(1, 8),
-        }
+        Self { aa_samples_per_axis: self.aa_samples_per_axis.clamp(1, 8) }
     }
 }
 fn global_software_render_config() -> &'static Mutex<SoftwareRenderConfig> {
@@ -95,15 +86,12 @@ pub(crate) fn software_render_config_test_lock() -> &'static Mutex<()> {
 }
 /// Set process-wide default software render configuration.
 pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
-    *global_software_render_config()
-        .lock()
-        .expect("software render config lock poisoned") = config.normalized();
+    *global_software_render_config().lock().expect("software render config lock poisoned") =
+        config.normalized();
 }
 /// Get process-wide default software render configuration.
 pub fn default_software_render_config() -> SoftwareRenderConfig {
-    *global_software_render_config()
-        .lock()
-        .expect("software render config lock poisoned")
+    *global_software_render_config().lock().expect("software render config lock poisoned")
 }
 /// Render context for custom widget drawing.
 pub struct RenderContext<'a> {
@@ -123,41 +111,27 @@ impl<'a> RenderContext<'a> {
         self.backend.dpi_scale()
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::FillRect { rect, color });
+        self.backend.execute_command(&RenderCommand::FillRect { rect, color });
     }
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::DrawRect { rect, color });
+        self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
     }
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
-        self.backend
-            .execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
+        self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
     }
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::FillRoundedRect {
-                rect,
-                radius,
-                color,
-            });
+        self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
     }
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::FillRoundedRectAA {
-                rect,
-                radius,
-                color,
-            });
+        self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
     }
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
-        self.backend
-            .execute_command(&RenderCommand::DrawRoundedRectStroke {
-                rect,
-                radius,
-                color,
-                width,
-            });
+        self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke {
+            rect,
+            radius,
+            color,
+            width,
+        });
     }
     pub fn draw_rounded_rect_stroke_aa(
         &mut self,
@@ -166,69 +140,41 @@ impl<'a> RenderContext<'a> {
         color: Color,
         width: u32,
     ) {
-        self.backend
-            .execute_command(&RenderCommand::DrawRoundedRectStrokeAA {
-                rect,
-                radius,
-                color,
-                width,
-            });
+        self.backend.execute_command(&RenderCommand::DrawRoundedRectStrokeAA {
+            rect,
+            radius,
+            color,
+            width,
+        });
     }
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::DrawLine { from, to, color });
+        self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
     }
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
-        self.backend
-            .execute_command(&RenderCommand::DrawLineAA { from, to, color });
+        self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
     }
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
-        self.backend
-            .execute_command(&RenderCommand::DrawLineStroke {
-                from,
-                to,
-                color,
-                width,
-            });
+        self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
     }
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
-        self.backend
-            .execute_command(&RenderCommand::DrawLineStrokeAA {
-                from,
-                to,
-                color,
-                width,
-            });
+        self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
     }
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillCircle {
-            center,
-            radius,
-            color,
-        });
+        self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
     }
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::FillCircleAA {
-            center,
-            radius,
-            color,
-        });
+        self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
     }
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.backend.execute_command(&RenderCommand::DrawCircle {
+        self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
+    }
+    pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
+        self.backend.execute_command(&RenderCommand::DrawCircleStroke {
             center,
             radius,
             color,
+            width,
         });
-    }
-    pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
-        self.backend
-            .execute_command(&RenderCommand::DrawCircleStroke {
-                center,
-                radius,
-                color,
-                width,
-            });
     }
     pub fn draw_text(&mut self, origin: Point, text: &str, font: &Font, color: Color) {
         self.backend.execute_command(&RenderCommand::DrawText {
@@ -245,12 +191,7 @@ impl<'a> RenderContext<'a> {
         self.backend.shape_text(text, font)
     }
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
-        self.backend.execute_command(&RenderCommand::PushClip {
-            x,
-            y,
-            width,
-            height,
-        });
+        self.backend.execute_command(&RenderCommand::PushClip { x, y, width, height });
     }
     pub fn pop_clip(&mut self) {
         self.backend.execute_command(&RenderCommand::PopClip);
@@ -285,10 +226,7 @@ mod tests {
                 .lock()
                 .expect("software render config test lock poisoned");
             let original = default_software_render_config();
-            Self {
-                _lock: lock,
-                original,
-            }
+            Self { _lock: lock, original }
         }
     }
 
@@ -497,9 +435,7 @@ mod tests {
     #[test]
     fn software_surface_apply_render_config_clamps() {
         let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
-        surface.apply_render_config(SoftwareRenderConfig {
-            aa_samples_per_axis: 99,
-        });
+        surface.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: 99 });
         assert_eq!(surface.aa_samples_per_axis(), 8);
     }
 
@@ -789,9 +725,7 @@ mod tests {
         let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
         backend.begin_frame(Color::WHITE);
         let mut ctx = RenderContext::new(&mut backend);
-        let data = vec![
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
-        ];
+        let data = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
         ctx.draw_image(0, 0, 2, 2, &data);
         backend.end_frame();
 
@@ -817,55 +751,39 @@ mod tests {
 
     #[test]
     fn software_render_config_normalized_clamps_low() {
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 0,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 0 };
         let norm = config.normalized();
         assert_eq!(norm.aa_samples_per_axis, 1);
     }
 
     #[test]
     fn software_render_config_normalized_clamps_high() {
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 100,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 100 };
         let norm = config.normalized();
         assert_eq!(norm.aa_samples_per_axis, 8);
     }
 
     #[test]
     fn software_render_config_normalized_preserves_valid() {
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 2,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 2 };
         let norm = config.normalized();
         assert_eq!(norm.aa_samples_per_axis, 2);
     }
 
     #[test]
     fn software_render_config_normalized_edge_cases() {
-        let config_low = SoftwareRenderConfig {
-            aa_samples_per_axis: 1,
-        };
+        let config_low = SoftwareRenderConfig { aa_samples_per_axis: 1 };
         assert_eq!(config_low.normalized().aa_samples_per_axis, 1);
 
-        let config_high = SoftwareRenderConfig {
-            aa_samples_per_axis: 8,
-        };
+        let config_high = SoftwareRenderConfig { aa_samples_per_axis: 8 };
         assert_eq!(config_high.normalized().aa_samples_per_axis, 8);
     }
 
     #[test]
     fn software_render_config_equality() {
-        let a = SoftwareRenderConfig {
-            aa_samples_per_axis: 4,
-        };
-        let b = SoftwareRenderConfig {
-            aa_samples_per_axis: 4,
-        };
-        let c = SoftwareRenderConfig {
-            aa_samples_per_axis: 2,
-        };
+        let a = SoftwareRenderConfig { aa_samples_per_axis: 4 };
+        let b = SoftwareRenderConfig { aa_samples_per_axis: 4 };
+        let c = SoftwareRenderConfig { aa_samples_per_axis: 2 };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -883,9 +801,7 @@ mod tests {
     #[test]
     fn set_default_software_render_config_updates_global() {
         let _guard = SoftwareRenderConfigTestGuard::new();
-        let custom = SoftwareRenderConfig {
-            aa_samples_per_axis: 2,
-        };
+        let custom = SoftwareRenderConfig { aa_samples_per_axis: 2 };
         set_default_software_render_config(custom);
         let retrieved = default_software_render_config();
         assert_eq!(retrieved.aa_samples_per_axis, 2);
@@ -894,9 +810,7 @@ mod tests {
     #[test]
     fn set_default_software_render_config_clamps() {
         let _guard = SoftwareRenderConfigTestGuard::new();
-        let custom = SoftwareRenderConfig {
-            aa_samples_per_axis: 99,
-        };
+        let custom = SoftwareRenderConfig { aa_samples_per_axis: 99 };
         set_default_software_render_config(custom);
         let retrieved = default_software_render_config();
         assert_eq!(retrieved.aa_samples_per_axis, 8);

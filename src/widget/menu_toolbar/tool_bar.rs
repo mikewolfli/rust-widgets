@@ -146,8 +146,7 @@ impl ToolBar {
         let changed = self.orientation != o;
         self.orientation = o;
         if changed {
-            self.orientation_changed
-                .emit(o == ToolBarOrientation::Horizontal);
+            self.orientation_changed.emit(o == ToolBarOrientation::Horizontal);
         }
     }
     pub fn set_icon_size(&mut self, size: f32) {
@@ -218,12 +217,7 @@ impl ToolBar {
             }
             offset += sz as i32;
         }
-        Rect {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        }
+        Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn hit_item(&self, pos: Point) -> Option<usize> {
         for i in 0..self.items.len() {
@@ -322,10 +316,7 @@ impl Draw for ToolBar {
             } else {
                 Color::from_rgb(245, 245, 245)
             };
-            context.fill_rect(
-                Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
-                bg,
-            );
+            context.fill_rect(Rect::new(item_r.x, item_r.y, item_r.width, item_r.height), bg);
             if is_hovered || item.is_checked() {
                 context.draw_rect(
                     Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
@@ -338,10 +329,7 @@ impl Draw for ToolBar {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                Point::new(
-                    item_r.x + item_r.width as i32 / 2,
-                    item_r.y + item_r.height as i32 / 2,
-                ),
+                Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),
                 item.text(),
                 &Font::default(),
                 fg,

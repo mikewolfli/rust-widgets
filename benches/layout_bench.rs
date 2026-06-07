@@ -14,10 +14,7 @@ fn make_flow_layout(item_count: usize) -> FlowLayout {
     };
     let mut layout = FlowLayout::with_config(config);
     for i in 0..item_count {
-        let button = Button::new(
-            format!("Item {i}"),
-            Rect::new(0, 0, 96 + (i % 4) as u32 * 8, 32),
-        );
+        let button = Button::new(format!("Item {i}"), Rect::new(0, 0, 96 + (i % 4) as u32 * 8, 32));
         layout.add_child(Box::new(button));
     }
     layout

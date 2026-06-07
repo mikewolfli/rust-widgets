@@ -20,10 +20,7 @@ impl<'a> ActionRouter<'a> {
         shortcut_mgr: &'a mut crate::shortcut::ShortcutManager,
         action_mgr: &'a mut ActionManager,
     ) -> Self {
-        Self {
-            shortcut_mgr,
-            action_mgr,
-        }
+        Self { shortcut_mgr, action_mgr }
     }
 
     /// Registers an action AND its keyboard shortcut in one step.
@@ -38,10 +35,7 @@ impl<'a> ActionRouter<'a> {
         if !self.action_mgr.register_action(action_id.clone(), text) {
             return false;
         }
-        if !self
-            .shortcut_mgr
-            .register(action_id.clone(), shortcut.clone(), "")
-        {
+        if !self.shortcut_mgr.register(action_id.clone(), shortcut.clone(), "") {
             return false;
         }
         // Also register in ActionManager's shortcut map
@@ -63,10 +57,7 @@ impl<'a> ActionRouter<'a> {
         if self.action_mgr.action(&action_id).is_none() {
             return false;
         }
-        if !self
-            .shortcut_mgr
-            .register(action_id.clone(), shortcut.clone(), "")
-        {
+        if !self.shortcut_mgr.register(action_id.clone(), shortcut.clone(), "") {
             return false;
         }
         self.action_mgr.bind_shortcut_type(&shortcut, action_id)

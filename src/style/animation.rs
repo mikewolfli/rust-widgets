@@ -212,11 +212,8 @@ impl Animation {
         }
         let animation_elapsed = elapsed - self.config.delay;
         let raw_progress = animation_elapsed.as_secs_f32() / self.config.duration.as_secs_f32();
-        let progress = if self.config.infinite {
-            raw_progress % 1.0
-        } else {
-            (raw_progress % 1.0).min(1.0)
-        };
+        let progress =
+            if self.config.infinite { raw_progress % 1.0 } else { (raw_progress % 1.0).min(1.0) };
         let eased_progress = self.config.easing.apply(progress);
         match self.config.direction {
             AnimationDirection::Normal => eased_progress,
@@ -267,11 +264,7 @@ pub struct ColorAnimation {
 }
 impl ColorAnimation {
     pub fn new(config: AnimationConfig, from: Color, to: Color) -> Self {
-        Self {
-            animation: Animation::new(config),
-            from_color: from,
-            to_color: to,
-        }
+        Self { animation: Animation::new(config), from_color: from, to_color: to }
     }
     pub fn start(&mut self) {
         self.animation.start();
@@ -304,11 +297,7 @@ pub struct FloatAnimation {
 }
 impl FloatAnimation {
     pub fn new(config: AnimationConfig, from: f32, to: f32) -> Self {
-        Self {
-            animation: Animation::new(config),
-            from_value: from,
-            to_value: to,
-        }
+        Self { animation: Animation::new(config), from_value: from, to_value: to }
     }
     pub fn start(&mut self) {
         self.animation.start();

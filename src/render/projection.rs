@@ -253,10 +253,7 @@ pub struct ProjectionLayoutHelper {
 impl ProjectionLayoutHelper {
     /// Create a new layout helper for the given screen and config.
     pub fn new(screen_size: Size, config: ProjectionRenderConfig) -> Self {
-        Self {
-            screen_size,
-            config,
-        }
+        Self { screen_size, config }
     }
 
     /// Returns the content area rectangle (screen minus indicator bar).
@@ -266,12 +263,7 @@ impl ProjectionLayoutHelper {
         } else {
             0
         };
-        (
-            0,
-            0,
-            self.screen_size.width,
-            self.screen_size.height.saturating_sub(indicator_h),
-        )
+        (0, 0, self.screen_size.width, self.screen_size.height.saturating_sub(indicator_h))
     }
 
     /// Returns the page indicator bar rectangle at the bottom of the screen.
@@ -396,11 +388,7 @@ mod tests {
     fn projection_config_scale_font() {
         let cfg = ProjectionRenderConfig::new();
         let scaled = cfg.scale_font_size(12.0);
-        assert!(
-            (scaled - 14.4).abs() < 1e-4,
-            "expected ~14.4, got {}",
-            scaled
-        );
+        assert!((scaled - 14.4).abs() < 1e-4, "expected ~14.4, got {}", scaled);
     }
 
     #[test]

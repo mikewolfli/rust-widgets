@@ -222,10 +222,7 @@ impl Draw for Button {
                 Color::from_rgb(0, 0, 0)
             };
             context.draw_text(
-                Point {
-                    x: rect.x + 6,
-                    y: rect.y + rect.height as i32 / 2,
-                },
+                Point { x: rect.x + 6, y: rect.y + rect.height as i32 / 2 },
                 &self.text,
                 &self.font().cloned().unwrap_or_default(),
                 text_color,
@@ -497,14 +494,8 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         });
-        btn.handle_event(&Event::KeyPress {
-            key: 13,
-            modifiers: 0,
-        });
-        assert!(
-            clicked.load(Ordering::SeqCst),
-            "Enter key should trigger click"
-        );
+        btn.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(clicked.load(Ordering::SeqCst), "Enter key should trigger click");
     }
 
     #[test]
@@ -517,14 +508,8 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         });
-        btn.handle_event(&Event::KeyPress {
-            key: 32,
-            modifiers: 0,
-        });
-        assert!(
-            clicked.load(Ordering::SeqCst),
-            "Space key should trigger click"
-        );
+        btn.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(clicked.load(Ordering::SeqCst), "Space key should trigger click");
     }
 
     #[test]
@@ -537,36 +522,24 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         });
-        btn.handle_event(&Event::KeyPress {
-            key: 65,
-            modifiers: 0,
-        }); // 'A'
-        assert!(
-            !clicked.load(Ordering::SeqCst),
-            "Non-Enter/Space key should NOT trigger click"
-        );
+        btn.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
+        assert!(!clicked.load(Ordering::SeqCst), "Non-Enter/Space key should NOT trigger click");
     }
 
     #[test]
     fn mouse_enter_sets_hovered() {
         let mut btn = make_button();
         assert!(!btn.hovered);
-        btn.handle_event(&Event::MouseEnter {
-            pos: Point::new(10, 10),
-        });
+        btn.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
         assert!(btn.hovered);
     }
 
     #[test]
     fn mouse_leave_clears_hovered() {
         let mut btn = make_button();
-        btn.handle_event(&Event::MouseEnter {
-            pos: Point::new(10, 10),
-        });
+        btn.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
         assert!(btn.hovered);
-        btn.handle_event(&Event::MouseLeave {
-            pos: Point::new(10, 10),
-        });
+        btn.handle_event(&Event::MouseLeave { pos: Point::new(10, 10) });
         assert!(!btn.hovered);
     }
 
@@ -605,10 +578,7 @@ mod tests {
     #[test]
     fn event_touch_begin_presses() {
         let mut b = make_button();
-        let event = Event::TouchBegin {
-            pos: Point::new(15, 25),
-            touch_id: 0,
-        };
+        let event = Event::TouchBegin { pos: Point::new(15, 25), touch_id: 0 };
         b.handle_event(&event);
         assert!(b.is_pressed());
         assert_eq!(b.state(), ButtonState::Pressed);
@@ -627,10 +597,7 @@ mod tests {
         });
 
         b.press();
-        let event = Event::TouchEnd {
-            pos: Point::new(15, 25),
-            touch_id: 0,
-        };
+        let event = Event::TouchEnd { pos: Point::new(15, 25), touch_id: 0 };
         b.handle_event(&event);
         assert!(!b.is_pressed());
         assert_eq!(b.state(), ButtonState::Normal);
@@ -649,9 +616,7 @@ mod tests {
             }
         });
 
-        let event = Event::Tap {
-            pos: Point::new(15, 25),
-        };
+        let event = Event::Tap { pos: Point::new(15, 25) };
         b.handle_event(&event);
         assert!(clicked.load(Ordering::SeqCst));
         // Tap does not change pressed state
@@ -690,9 +655,7 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         });
-        let event = Event::Tap {
-            pos: Point::new(15, 25),
-        };
+        let event = Event::Tap { pos: Point::new(15, 25) };
         b.handle_event(&event);
         assert!(!clicked.load(Ordering::SeqCst));
     }
@@ -702,10 +665,7 @@ mod tests {
     fn event_disabled_ignores_touch_begin() {
         let mut b = make_button();
         b.set_enabled_state(false);
-        let event = Event::TouchBegin {
-            pos: Point::new(15, 25),
-            touch_id: 0,
-        };
+        let event = Event::TouchBegin { pos: Point::new(15, 25), touch_id: 0 };
         b.handle_event(&event);
         assert!(!b.is_pressed());
     }
@@ -715,10 +675,7 @@ mod tests {
     fn event_disabled_ignores_touch_end() {
         let mut b = make_button();
         b.set_enabled_state(false);
-        let event = Event::TouchEnd {
-            pos: Point::new(15, 25),
-            touch_id: 0,
-        };
+        let event = Event::TouchEnd { pos: Point::new(15, 25), touch_id: 0 };
         b.handle_event(&event);
         assert!(!b.is_pressed());
     }
@@ -807,9 +764,7 @@ mod tests {
         let mut b = make_button();
         let default_style = b.style().clone();
         // Verify we can set a modified style via builder pattern.
-        let new_style = default_style
-            .clone()
-            .with_background(Color::from_rgb(255, 0, 0));
+        let new_style = default_style.clone().with_background(Color::from_rgb(255, 0, 0));
         b.set_style(new_style.clone());
         assert_eq!(b.style().background_color, new_style.background_color);
     }

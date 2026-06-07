@@ -140,19 +140,11 @@ impl PdfPage for PdfPageImpl {
         self.form_fields.insert(name.to_string(), field);
     }
     fn add_checkbox(&mut self, name: &str, rect: Rect, checked: bool) {
-        let field = PdfFormField::CheckBox {
-            name: name.to_string(),
-            rect,
-            checked,
-        };
+        let field = PdfFormField::CheckBox { name: name.to_string(), rect, checked };
         self.form_fields.insert(name.to_string(), field);
     }
     fn add_button(&mut self, name: &str, rect: Rect, text: &str) {
-        let field = PdfFormField::Button {
-            name: name.to_string(),
-            rect,
-            text: text.to_string(),
-        };
+        let field = PdfFormField::Button { name: name.to_string(), rect, text: text.to_string() };
         self.form_fields.insert(name.to_string(), field);
     }
     fn content(&self) -> Vec<u8> {

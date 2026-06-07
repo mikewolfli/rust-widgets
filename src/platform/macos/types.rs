@@ -102,10 +102,7 @@ extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
 }
 extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSButton actions.
-    log::info!(
-        "[rust_widgets] on_button_clicked: CALLED! sender={:?}",
-        sender
-    );
+    log::info!("[rust_widgets] on_button_clicked: CALLED! sender={:?}", sender);
     // Use catch_unwind to prevent panics from crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         unsafe {
@@ -114,26 +111,17 @@ extern "C" fn on_button_clicked(_this: &Object, _cmd: Sel, sender: id) {
                 return;
             }
             let represented: id = msg_send![sender, representedObject];
-            log::debug!(
-                "[rust_widgets] on_button_clicked: represented={:?}",
-                represented
-            );
+            log::debug!("[rust_widgets] on_button_clicked: represented={:?}", represented);
             if represented == nil {
                 log::error!("[rust_widgets] on_button_clicked: representedObject is nil");
                 return;
             }
             let widget_id: u64 = msg_send![represented, unsignedLongLongValue];
-            log::debug!(
-                "[rust_widgets] on_button_clicked: widget_id = {}",
-                widget_id
-            );
+            log::debug!("[rust_widgets] on_button_clicked: widget_id = {}", widget_id);
             if widget_id != 0 {
                 // Push the event first (radio button handling is secondary)
                 if let Ok(mut events) = widget_events().lock() {
-                    events.push(WidgetTriggerEvent {
-                        widget_id,
-                        kind: WidgetTriggerKind::Clicked,
-                    });
+                    events.push(WidgetTriggerEvent { widget_id, kind: WidgetTriggerKind::Clicked });
                     log::debug!(
                         "[rust_widgets] on_button_clicked: event pushed, queue size = {}",
                         events.len()
@@ -158,10 +146,7 @@ pub(crate) fn menu_target_class() -> *const Class {
         let mut decl = ClassDecl::new("RustWidgetsMenuTarget", superclass)
             .expect("failed to declare RustWidgetsMenuTarget");
         unsafe {
-            decl.add_method(
-                sel!(onMenuItem:),
-                on_menu_item as extern "C" fn(&Object, Sel, id),
-            );
+            decl.add_method(sel!(onMenuItem:), on_menu_item as extern "C" fn(&Object, Sel, id));
         }
         (decl.register() as *const Class) as usize
     })) as *const Class
@@ -203,20 +188,14 @@ pub(crate) fn button_target_class() -> *const Class {
 pub(crate) fn shared_button_target() -> id {
     let ptr = *BUTTON_TARGET.get_or_init(|| unsafe {
         let class = button_target_class();
-        log::info!(
-            "[rust_widgets] shared_button_target: creating target with class {:?}",
-            class
-        );
+        log::info!("[rust_widgets] shared_button_target: creating target with class {:?}", class);
         let obj: id = msg_send![class, new];
         log::error!("[rust_widgets] shared_button_target: created obj {:?}", obj);
         // Retain the object to keep it alive
         let _: () = msg_send![obj, retain];
         obj as usize
     });
-    log::info!(
-        "[rust_widgets] shared_button_target: returning target {:?}",
-        ptr as id
-    );
+    log::info!("[rust_widgets] shared_button_target: returning target {:?}", ptr as id);
     ptr as id
 }
 const MOD_SHIFT: u64 = 1 << 17;
@@ -272,10 +251,7 @@ impl Default for MacOSPlatform {
 
 impl MacOSPlatform {
     pub(crate) fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
-        NSRect::new(
-            NSPoint::new(x as f64, y as f64),
-            NSSize::new(width as f64, height as f64),
-        )
+        NSRect::new(NSPoint::new(x as f64, y as f64), NSSize::new(width as f64, height as f64))
     }
     pub(crate) fn window_style() -> NSWindowStyleMask {
         NSWindowStyleMask::NSTitledWindowMask
@@ -284,11 +260,7 @@ impl MacOSPlatform {
             | NSWindowStyleMask::NSMiniaturizableWindowMask
     }
     pub(crate) fn get_handle(&self, widget_id: ObjectId) -> Option<CocoaHandle> {
-        self.handles
-            .lock()
-            .expect("macos handle lock poisoned")
-            .get(&widget_id)
-            .copied()
+        self.handles.lock().expect("macos handle lock poisoned").get(&widget_id).copied()
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_handle(
@@ -350,13 +322,15 @@ impl MacOSPlatform {
             items
                 .iter()
                 .enumerate()
-                .map(|(idx, item)| {
-                    if Some(idx) == selected {
-                        format!("> {item}")
-                    } else {
-                        item.clone()
-                    }
-                })
+                .map(
+                    |(idx, item)| {
+                        if Some(idx) == selected {
+                            format!("> {item}")
+                        } else {
+                            item.clone()
+                        }
+                    },
+                )
                 .collect::<Vec<_>>()
                 .join("\n")
         };

@@ -10,10 +10,7 @@ pub struct StackLayout {
 impl StackLayout {
     /// Create stack layout with no pages.
     pub fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            current: 0,
-        }
+        Self { items: Vec::new(), current: 0 }
     }
     /// Select visible page by index.
     pub fn set_current_index(&mut self, index: usize) {

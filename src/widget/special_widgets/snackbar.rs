@@ -97,12 +97,7 @@ impl Snackbar {
     fn action_rect(&self) -> Option<Rect> {
         self.action_label.as_ref()?;
         let rect = self.geometry();
-        Some(Rect::new(
-            rect.x + rect.width as i32 - 90,
-            rect.y + rect.height as i32 - 28,
-            76,
-            20,
-        ))
+        Some(Rect::new(rect.x + rect.width as i32 - 90, rect.y + rect.height as i32 - 28, 76, 20))
     }
 
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
@@ -236,11 +231,7 @@ mod tests {
 
         bar.handle_event(&Event::key_press(13, 0));
 
-        let got = actions
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = actions.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["Retry".to_string()]);
     }
 

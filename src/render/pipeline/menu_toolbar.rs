@@ -41,9 +41,7 @@ pub fn append_menu_bar_visual_commands(layer: &mut SceneLayer, menu_bar: &MenuBa
             origin: centered_text_origin(slot_rect),
             text: label,
             font: menu_bar.font().cloned().unwrap_or_default(),
-            color: menu_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(32, 34, 38, 255)),
+            color: menu_bar.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255)),
         });
     }
 }
@@ -64,15 +62,10 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
     let mut content_offset = 0i32;
     if !menu.title().is_empty() {
         layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: rect.x + 8,
-                y: rect.y + 4,
-            },
+            origin: Point { x: rect.x + 8, y: rect.y + 4 },
             text: menu.title().to_string(),
             font: menu.font().cloned().unwrap_or_default(),
-            color: menu
-                .foreground_color()
-                .unwrap_or(Color::rgba(22, 24, 30, 255)),
+            color: menu.foreground_color().unwrap_or(Color::rgba(22, 24, 30, 255)),
         });
         content_offset = 20;
     }
@@ -98,10 +91,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
         if item.is_separator() {
             // Draw separator line
             layer.push(RenderCommand::DrawLine {
-                from: Point {
-                    x: rect.x + 8,
-                    y: row_y + (row_height / 2) as i32,
-                },
+                from: Point { x: rect.x + 8, y: row_y + (row_height / 2) as i32 },
                 to: Point {
                     x: rect.x + rect.width as f32 as i32 - 8,
                     y: row_y + (row_height / 2) as i32,
@@ -114,10 +104,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             if item.is_checkable() {
                 if item.is_checked() {
                     layer.push(RenderCommand::DrawText {
-                        origin: Point {
-                            x: text_offset_x,
-                            y: row_y + 4,
-                        },
+                        origin: Point { x: text_offset_x, y: row_y + 4 },
                         text: "✓".to_string(),
                         font: menu.font().cloned().unwrap_or_default(),
                         color: Color::rgba(32, 34, 38, 255),
@@ -128,16 +115,12 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             text_offset_x += icon_width;
             // Draw item text
             let text_color = if item.is_enabled() {
-                menu.foreground_color()
-                    .unwrap_or(Color::rgba(32, 34, 38, 255))
+                menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
             } else {
                 Color::rgba(128, 128, 128, 255)
             };
             layer.push(RenderCommand::DrawText {
-                origin: Point {
-                    x: text_offset_x,
-                    y: row_y + 4,
-                },
+                origin: Point { x: text_offset_x, y: row_y + 4 },
                 text: item.text().to_string(),
                 font: menu.font().cloned().unwrap_or_default(),
                 color: text_color,
@@ -157,10 +140,7 @@ pub fn append_menu_visual_commands(layer: &mut SceneLayer, menu: &Menu) {
             // Draw submenu arrow
             if item.has_submenu() {
                 layer.push(RenderCommand::DrawText {
-                    origin: Point {
-                        x: rect.x + rect.width as f32 as i32 - 16,
-                        y: row_y + 4,
-                    },
+                    origin: Point { x: rect.x + rect.width as f32 as i32 - 16, y: row_y + 4 },
                     text: "▶".to_string(),
                     font: menu.font().cloned().unwrap_or_default(),
                     color: Color::rgba(100, 100, 100, 255),
@@ -207,10 +187,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
         if item.is_separator() {
             // Draw separator line
             layer.push(RenderCommand::DrawLine {
-                from: Point {
-                    x: rect.x + 8,
-                    y: row_y + (row_height / 2) as i32,
-                },
+                from: Point { x: rect.x + 8, y: row_y + (row_height / 2) as i32 },
                 to: Point {
                     x: rect.x + rect.width as f32 as i32 - 8,
                     y: row_y + (row_height / 2) as i32,
@@ -223,10 +200,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             if item.is_checkable() {
                 if item.is_checked() {
                     layer.push(RenderCommand::DrawText {
-                        origin: Point {
-                            x: text_offset_x,
-                            y: row_y + 4,
-                        },
+                        origin: Point { x: text_offset_x, y: row_y + 4 },
                         text: "✓".to_string(),
                         font: context_menu.font().cloned().unwrap_or_default(),
                         color: Color::rgba(32, 34, 38, 255),
@@ -237,17 +211,12 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             text_offset_x += icon_width;
             // Draw item text
             let text_color = if item.is_enabled() {
-                context_menu
-                    .foreground_color()
-                    .unwrap_or(Color::rgba(32, 34, 38, 255))
+                context_menu.foreground_color().unwrap_or(Color::rgba(32, 34, 38, 255))
             } else {
                 Color::rgba(128, 128, 128, 255)
             };
             layer.push(RenderCommand::DrawText {
-                origin: Point {
-                    x: text_offset_x,
-                    y: row_y + 4,
-                },
+                origin: Point { x: text_offset_x, y: row_y + 4 },
                 text: item.text().to_string(),
                 font: context_menu.font().cloned().unwrap_or_default(),
                 color: text_color,
@@ -267,10 +236,7 @@ pub fn append_context_menu_visual_commands(layer: &mut SceneLayer, context_menu:
             // Draw submenu arrow
             if item.has_submenu() {
                 layer.push(RenderCommand::DrawText {
-                    origin: Point {
-                        x: rect.x + rect.width as f32 as i32 - 16,
-                        y: row_y + 4,
-                    },
+                    origin: Point { x: rect.x + rect.width as f32 as i32 - 16, y: row_y + 4 },
                     text: "▶".to_string(),
                     font: context_menu.font().cloned().unwrap_or_default(),
                     color: Color::rgba(100, 100, 100, 255),
@@ -334,9 +300,7 @@ pub fn append_tool_bar_visual_commands(layer: &mut SceneLayer, tool_bar: &ToolBa
         });
         // Draw item text (if no icon or as tooltip)
         let text_color = if item.is_enabled() {
-            tool_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(30, 32, 36, 255))
+            tool_bar.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255))
         } else {
             Color::rgba(128, 128, 128, 255)
         };
@@ -370,9 +334,7 @@ pub fn append_status_bar_visual_commands(layer: &mut SceneLayer, status_bar: &St
             origin: centered_text_origin(rect),
             text: status_bar.message().to_string(),
             font: status_bar.font().cloned().unwrap_or_default(),
-            color: status_bar
-                .foreground_color()
-                .unwrap_or(Color::rgba(34, 36, 40, 255)),
+            color: status_bar.foreground_color().unwrap_or(Color::rgba(34, 36, 40, 255)),
         });
     }
 }

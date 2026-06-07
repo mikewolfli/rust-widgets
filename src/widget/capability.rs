@@ -251,11 +251,7 @@ impl WidgetFactory {
     /// Registers one widget capability and constructor.
     pub fn register(&mut self, capability: WidgetCapability, ctor: WidgetCtor) {
         let idx = self.capabilities.len();
-        if self
-            .kind_to_index
-            .iter()
-            .all(|(kind, _)| *kind != capability.kind)
-        {
+        if self.kind_to_index.iter().all(|(kind, _)| *kind != capability.kind) {
             self.kind_to_index.push((capability.kind, idx));
         }
 
@@ -324,15 +320,12 @@ impl WidgetFactory {
         widget: &dyn Widget,
         property_name: &str,
     ) -> Result<CapabilityValue, CapabilityAccessError> {
-        let capability = self
-            .capability_for_widget(widget)
-            .ok_or(CapabilityAccessError::UnknownWidget)?;
+        let capability =
+            self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
         let normalized = normalize_key(property_name);
-        let Some(property) = capability
-            .properties
-            .iter()
-            .find(|schema| normalize_key(schema.name) == normalized)
+        let Some(property) =
+            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -353,15 +346,12 @@ impl WidgetFactory {
         property_name: &str,
         value: CapabilityValue,
     ) -> Result<(), CapabilityAccessError> {
-        let capability = self
-            .capability_for_widget(widget)
-            .ok_or(CapabilityAccessError::UnknownWidget)?;
+        let capability =
+            self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
         let normalized = normalize_key(property_name);
-        let Some(property) = capability
-            .properties
-            .iter()
-            .find(|schema| normalize_key(schema.name) == normalized)
+        let Some(property) =
+            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -392,15 +382,12 @@ impl WidgetFactory {
         kind_or_name: &str,
         property_name: &str,
     ) -> Result<CapabilityValue, CapabilityAccessError> {
-        let capability = self
-            .capability(kind_or_name)
-            .ok_or(CapabilityAccessError::UnknownWidget)?;
+        let capability =
+            self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
         let normalized = normalize_key(property_name);
-        let Some(property) = capability
-            .properties
-            .iter()
-            .find(|schema| normalize_key(schema.name) == normalized)
+        let Some(property) =
+            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -415,15 +402,12 @@ impl WidgetFactory {
         kind_or_name: &str,
         property_name: &str,
     ) -> Result<PropertySchema, CapabilityAccessError> {
-        let capability = self
-            .capability(kind_or_name)
-            .ok_or(CapabilityAccessError::UnknownWidget)?;
+        let capability =
+            self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
         let normalized = normalize_key(property_name);
-        let Some(property) = capability
-            .properties
-            .iter()
-            .find(|schema| normalize_key(schema.name) == normalized)
+        let Some(property) =
+            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -436,18 +420,14 @@ impl WidgetFactory {
         &self,
         kind_or_name: &str,
     ) -> Result<WidgetCapabilityManifest, CapabilityAccessError> {
-        let capability = self
-            .capability(kind_or_name)
-            .ok_or(CapabilityAccessError::UnknownWidget)?;
+        let capability =
+            self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
         let mut properties = Vec::with_capacity(capability.properties.len());
         for property in capability.properties {
             let default_value = default_widget_property_value(capability.kind, property.name)
                 .ok_or(CapabilityAccessError::UnsupportedOnWidget)?;
-            properties.push(CapabilityPropertyManifest {
-                schema: *property,
-                default_value,
-            });
+            properties.push(CapabilityPropertyManifest { schema: *property, default_value });
         }
 
         Ok(WidgetCapabilityManifest {
@@ -579,9 +559,7 @@ fn read_widget_property_value(
             }
             "alignment" => {
                 if let Some(label) = widget_as::<Label>(widget) {
-                    Ok(CapabilityValue::String(
-                        alignment_to_str(label.alignment()).to_string(),
-                    ))
+                    Ok(CapabilityValue::String(alignment_to_str(label.alignment()).to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -598,9 +576,7 @@ fn read_widget_property_value(
             }
             "state" => {
                 if let Some(check_box) = widget_as::<CheckBox>(widget) {
-                    Ok(CapabilityValue::String(
-                        check_state_to_str(check_box.state()).to_string(),
-                    ))
+                    Ok(CapabilityValue::String(check_state_to_str(check_box.state()).to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -876,9 +852,7 @@ fn read_widget_property_value(
             }
             "selected_count" => {
                 if let Some(list_box) = widget_as::<ListBox>(widget) {
-                    Ok(CapabilityValue::UInt(
-                        list_box.selected_indices().len() as u64
-                    ))
+                    Ok(CapabilityValue::UInt(list_box.selected_indices().len() as u64))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1088,9 +1062,7 @@ fn read_widget_property_value(
             }
             "alignment" => {
                 if let Some(group_box) = widget_as::<GroupBox>(widget) {
-                    Ok(CapabilityValue::String(
-                        alignment_to_str(group_box.alignment()).to_string(),
-                    ))
+                    Ok(CapabilityValue::String(alignment_to_str(group_box.alignment()).to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1168,9 +1140,7 @@ fn read_widget_property_value(
             }
             "mode" => {
                 if let Some(lcd) = widget_as::<LCDNumber>(widget) {
-                    Ok(CapabilityValue::String(
-                        lcd_mode_to_str(lcd.mode()).to_string(),
-                    ))
+                    Ok(CapabilityValue::String(lcd_mode_to_str(lcd.mode()).to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1196,9 +1166,7 @@ fn read_widget_property_value(
             }
             "description" => {
                 if let Some(command_link) = widget_as::<CommandLink>(widget) {
-                    Ok(CapabilityValue::String(
-                        command_link.description().to_string(),
-                    ))
+                    Ok(CapabilityValue::String(command_link.description().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1215,9 +1183,7 @@ fn read_widget_property_value(
         WidgetKind::FontComboBox => match property_name {
             "current_font_family" => {
                 if let Some(font_combo) = widget_as::<FontComboBox>(widget) {
-                    Ok(CapabilityValue::String(
-                        font_combo.current_font().family.clone(),
-                    ))
+                    Ok(CapabilityValue::String(font_combo.current_font().family.clone()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1384,27 +1350,21 @@ fn read_widget_property_value(
         WidgetKind::Calendar => match property_name {
             "selected_date" => {
                 if let Some(calendar) = widget_as::<Calendar>(widget) {
-                    Ok(CapabilityValue::String(naive_date_to_string(
-                        calendar.selected_date(),
-                    )))
+                    Ok(CapabilityValue::String(naive_date_to_string(calendar.selected_date())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "minimum_date" => {
                 if let Some(calendar) = widget_as::<Calendar>(widget) {
-                    Ok(CapabilityValue::String(naive_date_to_string(
-                        calendar.minimum_date(),
-                    )))
+                    Ok(CapabilityValue::String(naive_date_to_string(calendar.minimum_date())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "maximum_date" => {
                 if let Some(calendar) = widget_as::<Calendar>(widget) {
-                    Ok(CapabilityValue::String(naive_date_to_string(
-                        calendar.maximum_date(),
-                    )))
+                    Ok(CapabilityValue::String(naive_date_to_string(calendar.maximum_date())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1434,9 +1394,7 @@ fn read_widget_property_value(
             }
             "horizontal_header_visible" => {
                 if let Some(calendar) = widget_as::<Calendar>(widget) {
-                    Ok(CapabilityValue::Bool(
-                        calendar.is_horizontal_header_visible(),
-                    ))
+                    Ok(CapabilityValue::Bool(calendar.is_horizontal_header_visible()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1467,27 +1425,21 @@ fn read_widget_property_value(
             }
             "minimum_date" => {
                 if let Some(date_edit) = widget_as::<DateEdit>(widget) {
-                    Ok(CapabilityValue::String(date_to_string(
-                        date_edit.minimum_date(),
-                    )))
+                    Ok(CapabilityValue::String(date_to_string(date_edit.minimum_date())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "maximum_date" => {
                 if let Some(date_edit) = widget_as::<DateEdit>(widget) {
-                    Ok(CapabilityValue::String(date_to_string(
-                        date_edit.maximum_date(),
-                    )))
+                    Ok(CapabilityValue::String(date_to_string(date_edit.maximum_date())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "display_format" => {
                 if let Some(date_edit) = widget_as::<DateEdit>(widget) {
-                    Ok(CapabilityValue::String(
-                        date_edit.display_format().to_string(),
-                    ))
+                    Ok(CapabilityValue::String(date_edit.display_format().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1511,27 +1463,21 @@ fn read_widget_property_value(
             }
             "minimum_time" => {
                 if let Some(time_edit) = widget_as::<TimeEdit>(widget) {
-                    Ok(CapabilityValue::String(time_to_string(
-                        time_edit.minimum_time(),
-                    )))
+                    Ok(CapabilityValue::String(time_to_string(time_edit.minimum_time())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "maximum_time" => {
                 if let Some(time_edit) = widget_as::<TimeEdit>(widget) {
-                    Ok(CapabilityValue::String(time_to_string(
-                        time_edit.maximum_time(),
-                    )))
+                    Ok(CapabilityValue::String(time_to_string(time_edit.maximum_time())))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
             "display_format" => {
                 if let Some(time_edit) = widget_as::<TimeEdit>(widget) {
-                    Ok(CapabilityValue::String(
-                        time_edit.display_format().to_string(),
-                    ))
+                    Ok(CapabilityValue::String(time_edit.display_format().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1548,9 +1494,7 @@ fn read_widget_property_value(
             }
             "placeholder_text" => {
                 if let Some(line_edit) = widget_as::<LineEdit>(widget) {
-                    Ok(CapabilityValue::String(
-                        line_edit.placeholder_text().to_string(),
-                    ))
+                    Ok(CapabilityValue::String(line_edit.placeholder_text().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1617,9 +1561,7 @@ fn read_widget_property_value(
             }
             "view_mode" => {
                 if let Some(list_view) = widget_as::<ListView>(widget) {
-                    Ok(CapabilityValue::String(
-                        view_mode_to_str(list_view.view_mode()).to_string(),
-                    ))
+                    Ok(CapabilityValue::String(view_mode_to_str(list_view.view_mode()).to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -1680,12 +1622,12 @@ fn read_widget_property_value(
                         Ok(CapabilityValue::UInt(data_grid.sort_specs().len() as u64))
                     }
                     "filter_count" => Ok(CapabilityValue::UInt(data_grid.filters().len() as u64)),
-                    "sort_specs" => Ok(CapabilityValue::String(sort_specs_to_string(
-                        data_grid.sort_specs(),
-                    ))),
-                    "filters" => Ok(CapabilityValue::String(column_filters_to_string(
-                        data_grid.filters(),
-                    ))),
+                    "sort_specs" => {
+                        Ok(CapabilityValue::String(sort_specs_to_string(data_grid.sort_specs())))
+                    }
+                    "filters" => {
+                        Ok(CapabilityValue::String(column_filters_to_string(data_grid.filters())))
+                    }
                     "visible_window" => {
                         let (row_start, row_len, col_start, col_len) = data_grid.visible_window();
                         Ok(CapabilityValue::String(format!(
@@ -1712,9 +1654,9 @@ fn read_widget_property_value(
                     "overscan_rows" => {
                         Ok(CapabilityValue::UInt(virtual_table.overscan_rows() as u64))
                     }
-                    "overscan_columns" => Ok(CapabilityValue::UInt(
-                        virtual_table.overscan_columns() as u64,
-                    )),
+                    "overscan_columns" => {
+                        Ok(CapabilityValue::UInt(virtual_table.overscan_columns() as u64))
+                    }
                     "visible_window" => {
                         let (row_start, row_len, col_start, col_len) =
                             virtual_table.visible_window();
@@ -2025,9 +1967,7 @@ fn read_widget_property_value(
             }
             "input_line" => {
                 if let Some(terminal_view) = widget_as::<TerminalView>(widget) {
-                    Ok(CapabilityValue::String(
-                        terminal_view.input_line().to_string(),
-                    ))
+                    Ok(CapabilityValue::String(terminal_view.input_line().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -3702,19 +3642,13 @@ fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError> {
     }
 
     let (second, msec) = if let Some((sec, frac)) = second_part.split_once('.') {
-        let second = sec
-            .parse::<u8>()
-            .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+        let second = sec.parse::<u8>().map_err(|_| CapabilityAccessError::TypeMismatch)?;
         let frac_trimmed = frac.chars().take(3).collect::<String>();
         let scale = 10u16.pow((3usize.saturating_sub(frac_trimmed.len())) as u32);
-        let raw = frac_trimmed
-            .parse::<u16>()
-            .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+        let raw = frac_trimmed.parse::<u16>().map_err(|_| CapabilityAccessError::TypeMismatch)?;
         (second, raw * scale)
     } else {
-        let second = second_part
-            .parse::<u8>()
-            .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+        let second = second_part.parse::<u8>().map_err(|_| CapabilityAccessError::TypeMismatch)?;
         (second, 0)
     };
 
@@ -3746,13 +3680,7 @@ fn expect_weekday(value: CapabilityValue) -> Result<chrono::Weekday, CapabilityA
 fn sort_specs_to_string(sort_specs: &[SortSpec]) -> String {
     sort_specs
         .iter()
-        .map(|spec| {
-            format!(
-                "{}:{}",
-                spec.column,
-                if spec.descending { "desc" } else { "asc" }
-            )
-        })
+        .map(|spec| format!("{}:{}", spec.column, if spec.descending { "desc" } else { "asc" }))
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -3811,10 +3739,8 @@ fn expect_column_filters(
             .next()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .ok_or(CapabilityAccessError::TypeMismatch)?;
-        let query = parts
-            .next()
-            .map(|v| v.to_string())
-            .ok_or(CapabilityAccessError::TypeMismatch)?;
+        let query =
+            parts.next().map(|v| v.to_string()).ok_or(CapabilityAccessError::TypeMismatch)?;
         filters.push(ColumnFilter { column, query });
     }
     Ok(filters)
@@ -4635,11 +4561,7 @@ fn create_dial(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 }
 
 fn create_window(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let title = if text.is_empty() {
-        "Window".to_string()
-    } else {
-        text.to_string()
-    };
+    let title = if text.is_empty() { "Window".to_string() } else { text.to_string() };
     Box::new(Window::new(title, geometry))
 }
 
@@ -4808,10 +4730,7 @@ fn create_grid(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 }
 
 fn create_freeform_shape(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(FreeformShapeWidget::new(
-        geometry,
-        ShapePath::RoundedRect { radius: 8 },
-    ))
+    Box::new(FreeformShapeWidget::new(geometry, ShapePath::RoundedRect { radius: 8 }))
 }
 
 // ── Dialog widget constructors ────────────────────────────────
@@ -7000,13 +6919,7 @@ fn list_box_capability() -> WidgetCapability {
         aliases: &["listbox"],
         properties: LIST_BOX_PROPERTIES,
         events: &["item_selected", "item_activated", "selection_changed"],
-        commands: &[
-            "add_item",
-            "remove_item",
-            "clear",
-            "clear_selection",
-            "set_selection_mode",
-        ],
+        commands: &["add_item", "remove_item", "clear", "clear_selection", "set_selection_mode"],
     }
 }
 
@@ -7038,12 +6951,7 @@ fn dial_capability() -> WidgetCapability {
         canonical_name: "dial",
         aliases: &["knob"],
         properties: DIAL_PROPERTIES,
-        events: &[
-            "value_changed",
-            "slider_moved",
-            "slider_pressed",
-            "slider_released",
-        ],
+        events: &["value_changed", "slider_moved", "slider_pressed", "slider_released"],
         commands: &["set_range", "set_value", "set_wrapping"],
     }
 }
@@ -7145,12 +7053,7 @@ fn tool_box_capability() -> WidgetCapability {
         aliases: &["toolbox"],
         properties: TOOL_BOX_PROPERTIES,
         events: &["current_changed"],
-        commands: &[
-            "add_item",
-            "remove_item",
-            "set_current_index",
-            "set_orientation",
-        ],
+        commands: &["add_item", "remove_item", "set_current_index", "set_orientation"],
     }
 }
 
@@ -7161,13 +7064,7 @@ fn tab_bar_capability() -> WidgetCapability {
         aliases: &["tabbar"],
         properties: TAB_BAR_PROPERTIES,
         events: &["current_changed", "tab_close_requested", "tab_moved"],
-        commands: &[
-            "add_tab",
-            "remove_tab",
-            "set_current_index",
-            "set_closable",
-            "set_movable",
-        ],
+        commands: &["add_tab", "remove_tab", "set_current_index", "set_closable", "set_movable"],
     }
 }
 
@@ -7178,12 +7075,7 @@ fn calendar_capability() -> WidgetCapability {
         aliases: &["date_calendar"],
         properties: CALENDAR_PROPERTIES,
         events: &["selection_changed"],
-        commands: &[
-            "set_selected_date",
-            "set_date_range",
-            "set_first_day_of_week",
-            "show_today",
-        ],
+        commands: &["set_selected_date", "set_date_range", "set_first_day_of_week", "show_today"],
     }
 }
 
@@ -7279,13 +7171,7 @@ fn tree_table_capability() -> WidgetCapability {
         aliases: &["treetable"],
         properties: TREE_TABLE_PROPERTIES,
         events: &["projection_changed", "selection_changed"],
-        commands: &[
-            "set_model",
-            "clear_model",
-            "expand_row",
-            "collapse_row",
-            "select_row",
-        ],
+        commands: &["set_model", "clear_model", "expand_row", "collapse_row", "select_row"],
     }
 }
 
@@ -7327,12 +7213,7 @@ fn menu_capability() -> WidgetCapability {
         canonical_name: "menu",
         aliases: &["context_menu"],
         properties: MENU_PROPERTIES,
-        events: &[
-            "triggered",
-            "triggered_index",
-            "about_to_show",
-            "about_to_hide",
-        ],
+        events: &["triggered", "triggered_index", "about_to_show", "about_to_hide"],
         commands: &["clear", "add_action", "add_separator"],
     }
 }
@@ -7371,13 +7252,7 @@ fn ribbon_bar_capability() -> WidgetCapability {
         aliases: &["ribbonbar", "ribbon"],
         properties: RIBBON_BAR_PROPERTIES,
         events: &["current_tab_changed", "item_triggered"],
-        commands: &[
-            "add_tab",
-            "add_group",
-            "add_item",
-            "add_large_item",
-            "clear",
-        ],
+        commands: &["add_tab", "add_group", "add_item", "add_large_item", "clear"],
     }
 }
 
@@ -7453,20 +7328,8 @@ fn media_player_capability() -> WidgetCapability {
         canonical_name: "media_player",
         aliases: &["mediaplayer"],
         properties: MEDIA_PLAYER_PROPERTIES,
-        events: &[
-            "playback_changed",
-            "position_changed",
-            "volume_changed",
-            "source_changed",
-        ],
-        commands: &[
-            "set_source",
-            "clear_source",
-            "play",
-            "pause",
-            "seek_to",
-            "set_volume",
-        ],
+        events: &["playback_changed", "position_changed", "volume_changed", "source_changed"],
+        commands: &["set_source", "clear_source", "play", "pause", "seek_to", "set_volume"],
     }
 }
 
@@ -7591,12 +7454,7 @@ fn input_dialog_capability() -> WidgetCapability {
             "accepted",
             "rejected",
         ],
-        commands: &[
-            "set_mode",
-            "set_text_value",
-            "set_int_value",
-            "set_double_value",
-        ],
+        commands: &["set_mode", "set_text_value", "set_int_value", "set_double_value"],
     }
 }
 
@@ -7631,11 +7489,7 @@ fn scroll_area_capability() -> WidgetCapability {
         aliases: &["scrollarea"],
         properties: SCROLL_AREA_PROPERTIES,
         events: &["scroll_position_changed"],
-        commands: &[
-            "set_widget_resizable",
-            "set_horizontal_policy",
-            "set_vertical_policy",
-        ],
+        commands: &["set_widget_resizable", "set_horizontal_policy", "set_vertical_policy"],
     }
 }
 
@@ -7685,17 +7539,8 @@ fn dock_widget_capability() -> WidgetCapability {
         canonical_name: "dock_widget",
         aliases: &["dockwidget", "dock"],
         properties: DOCK_WIDGET_PROPERTIES,
-        events: &[
-            "dock_location_changed",
-            "features_changed",
-            "top_level_changed",
-        ],
-        commands: &[
-            "set_title",
-            "set_floating",
-            "set_features",
-            "set_allowed_areas",
-        ],
+        events: &["dock_location_changed", "features_changed", "top_level_changed"],
+        commands: &["set_title", "set_floating", "set_features", "set_allowed_areas"],
     }
 }
 
@@ -7706,12 +7551,7 @@ fn mdi_area_capability() -> WidgetCapability {
         aliases: &["mdiarea", "mdi"],
         properties: MDI_AREA_PROPERTIES,
         events: &["subwindow_activated"],
-        commands: &[
-            "add_subwindow",
-            "remove_subwindow",
-            "set_view_mode",
-            "activate_subwindow",
-        ],
+        commands: &["add_subwindow", "remove_subwindow", "set_view_mode", "activate_subwindow"],
     }
 }
 
@@ -7750,14 +7590,7 @@ fn web_view_capability() -> WidgetCapability {
             "error_occurred",
             "navigation_state_changed",
         ],
-        commands: &[
-            "set_url",
-            "load_url",
-            "reload",
-            "go_back",
-            "go_forward",
-            "stop",
-        ],
+        commands: &["set_url", "load_url", "reload", "go_back", "go_forward", "stop"],
     }
 }
 
@@ -7769,12 +7602,7 @@ fn pie_menu_capability() -> WidgetCapability {
         canonical_name: "pie_menu",
         aliases: &["piemenu", "radial_menu"],
         properties: PIE_MENU_PROPERTIES,
-        events: &[
-            "triggered",
-            "triggered_text",
-            "about_to_show",
-            "about_to_hide",
-        ],
+        events: &["triggered", "triggered_text", "about_to_show", "about_to_hide"],
         commands: &["add_item", "remove_item", "set_radius", "set_current_index"],
     }
 }
@@ -7870,20 +7698,16 @@ mod tests {
         let factory = WidgetFactory::new_with_defaults();
         let rect = Rect::new(1, 2, 120, 40);
 
-        let button = factory
-            .create("btn", rect, "Run")
-            .expect("button must be created via alias");
+        let button = factory.create("btn", rect, "Run").expect("button must be created via alias");
         assert_eq!(button.kind(), WidgetKind::Button);
         assert_eq!(button.geometry(), rect);
 
-        let label = factory
-            .create("label", rect, "Name")
-            .expect("label must be created by canonical name");
+        let label =
+            factory.create("label", rect, "Name").expect("label must be created by canonical name");
         assert_eq!(label.kind(), WidgetKind::Label);
 
-        let check_box = factory
-            .create("checkbox", rect, "Accept")
-            .expect("checkbox must be created via alias");
+        let check_box =
+            factory.create("checkbox", rect, "Accept").expect("checkbox must be created via alias");
         assert_eq!(check_box.kind(), WidgetKind::CheckBox);
 
         let radio_button = factory
@@ -7891,34 +7715,28 @@ mod tests {
             .expect("radio button must be created via alias");
         assert_eq!(radio_button.kind(), WidgetKind::RadioButton);
 
-        let slider = factory
-            .create("slider", rect, "")
-            .expect("slider must be created by canonical name");
+        let slider =
+            factory.create("slider", rect, "").expect("slider must be created by canonical name");
         assert_eq!(slider.kind(), WidgetKind::Slider);
 
-        let line_edit = factory
-            .create("input", rect, "hello")
-            .expect("line edit must be created via alias");
+        let line_edit =
+            factory.create("input", rect, "hello").expect("line edit must be created via alias");
         assert_eq!(line_edit.kind(), WidgetKind::LineEdit);
 
-        let table = factory
-            .create("table", rect, "")
-            .expect("table widget must be created via alias");
+        let table =
+            factory.create("table", rect, "").expect("table widget must be created via alias");
         assert_eq!(table.kind(), WidgetKind::Table);
 
-        let data_view = factory
-            .create("dataview", rect, "")
-            .expect("data view must be created via alias");
+        let data_view =
+            factory.create("dataview", rect, "").expect("data view must be created via alias");
         assert_eq!(data_view.kind(), WidgetKind::DataView);
 
-        let tree = factory
-            .create("treeview", rect, "")
-            .expect("tree view must be created via alias");
+        let tree =
+            factory.create("treeview", rect, "").expect("tree view must be created via alias");
         assert_eq!(tree.kind(), WidgetKind::TreeView);
 
-        let ribbon = factory
-            .create("ribbon", rect, "")
-            .expect("ribbon bar must be created via alias");
+        let ribbon =
+            factory.create("ribbon", rect, "").expect("ribbon bar must be created via alias");
         assert_eq!(ribbon.kind(), WidgetKind::RibbonBar);
 
         let color_picker = factory
@@ -7931,9 +7749,7 @@ mod tests {
             .expect("code editor must be created via alias");
         assert_eq!(code_editor.kind(), WidgetKind::RichEdit);
 
-        let gantt = factory
-            .create("gantt", rect, "")
-            .expect("gantt must be created via alias");
+        let gantt = factory.create("gantt", rect, "").expect("gantt must be created via alias");
         assert_eq!(gantt.kind(), WidgetKind::Chart);
 
         let terminal = factory
@@ -7941,14 +7757,11 @@ mod tests {
             .expect("terminal view must be created via alias");
         assert_eq!(terminal.kind(), WidgetKind::TextEdit);
 
-        let snackbar = factory
-            .create("snackbar", rect, "Saved")
-            .expect("snackbar must be created via alias");
+        let snackbar =
+            factory.create("snackbar", rect, "Saved").expect("snackbar must be created via alias");
         assert_eq!(snackbar.kind(), WidgetKind::StatusBar);
 
-        let map = factory
-            .create("mapview", rect, "")
-            .expect("map view must be created via alias");
+        let map = factory.create("mapview", rect, "").expect("map view must be created via alias");
         assert_eq!(map.kind(), WidgetKind::Canvas);
 
         let media = factory
@@ -7956,9 +7769,8 @@ mod tests {
             .expect("media player must be created via alias");
         assert_eq!(media.kind(), WidgetKind::WebView);
 
-        let breadcrumb = factory
-            .create("breadcrumb", rect, "")
-            .expect("breadcrumb must be created via alias");
+        let breadcrumb =
+            factory.create("breadcrumb", rect, "").expect("breadcrumb must be created via alias");
         assert_eq!(breadcrumb.kind(), WidgetKind::Panel);
 
         let split_button = factory
@@ -7971,14 +7783,10 @@ mod tests {
             .expect("segmented control must be created via alias");
         assert_eq!(segmented_control.kind(), WidgetKind::ToggleButton);
 
-        let chip = factory
-            .create("chips", rect, "")
-            .expect("chip must be created via alias");
+        let chip = factory.create("chips", rect, "").expect("chip must be created via alias");
         assert_eq!(chip.kind(), WidgetKind::CheckListBox);
 
-        let grid = factory
-            .create("gridwidget", rect, "")
-            .expect("grid must be created via alias");
+        let grid = factory.create("gridwidget", rect, "").expect("grid must be created via alias");
         assert_eq!(grid.kind(), WidgetKind::Grid);
 
         let shape = factory
@@ -7991,29 +7799,24 @@ mod tests {
             .expect("progress bar must be created via alias");
         assert_eq!(progress.kind(), WidgetKind::ProgressBar);
 
-        let scroll = factory
-            .create("scrollbar", rect, "")
-            .expect("scroll bar must be created via alias");
+        let scroll =
+            factory.create("scrollbar", rect, "").expect("scroll bar must be created via alias");
         assert_eq!(scroll.kind(), WidgetKind::ScrollBar);
 
-        let list_box = factory
-            .create("listbox", rect, "")
-            .expect("list box must be created via alias");
+        let list_box =
+            factory.create("listbox", rect, "").expect("list box must be created via alias");
         assert_eq!(list_box.kind(), WidgetKind::ListBox);
 
-        let spin_box = factory
-            .create("spinbox", rect, "")
-            .expect("spin box must be created via alias");
+        let spin_box =
+            factory.create("spinbox", rect, "").expect("spin box must be created via alias");
         assert_eq!(spin_box.kind(), WidgetKind::SpinBox);
 
-        let combo_box = factory
-            .create("combobox", rect, "")
-            .expect("combo box must be created via alias");
+        let combo_box =
+            factory.create("combobox", rect, "").expect("combo box must be created via alias");
         assert_eq!(combo_box.kind(), WidgetKind::ComboBox);
 
-        let dial = factory
-            .create("dial", rect, "")
-            .expect("dial must be created by canonical name");
+        let dial =
+            factory.create("dial", rect, "").expect("dial must be created by canonical name");
         assert_eq!(dial.kind(), WidgetKind::Dial);
 
         let window = factory
@@ -8031,9 +7834,8 @@ mod tests {
             .expect("splitter must be created by canonical name");
         assert_eq!(splitter.kind(), WidgetKind::Splitter);
 
-        let lcd_number = factory
-            .create("lcdnumber", rect, "")
-            .expect("lcd number must be created via alias");
+        let lcd_number =
+            factory.create("lcdnumber", rect, "").expect("lcd number must be created via alias");
         assert_eq!(lcd_number.kind(), WidgetKind::LCDNumber);
 
         let command_link = factory
@@ -8051,14 +7853,12 @@ mod tests {
             .expect("action must be created by canonical name");
         assert_eq!(action.kind(), WidgetKind::Action);
 
-        let tool_box = factory
-            .create("toolbox", rect, "")
-            .expect("tool box must be created via alias");
+        let tool_box =
+            factory.create("toolbox", rect, "").expect("tool box must be created via alias");
         assert_eq!(tool_box.kind(), WidgetKind::ToolBox);
 
-        let tab_bar = factory
-            .create("tabbar", rect, "")
-            .expect("tab bar must be created via alias");
+        let tab_bar =
+            factory.create("tabbar", rect, "").expect("tab bar must be created via alias");
         assert_eq!(tab_bar.kind(), WidgetKind::TabBar);
 
         let calendar = factory
@@ -8066,24 +7866,20 @@ mod tests {
             .expect("calendar must be created by canonical name");
         assert_eq!(calendar.kind(), WidgetKind::Calendar);
 
-        let date_edit = factory
-            .create("dateedit", rect, "")
-            .expect("date edit must be created via alias");
+        let date_edit =
+            factory.create("dateedit", rect, "").expect("date edit must be created via alias");
         assert_eq!(date_edit.kind(), WidgetKind::DatePicker);
 
-        let time_edit = factory
-            .create("timeedit", rect, "")
-            .expect("time edit must be created via alias");
+        let time_edit =
+            factory.create("timeedit", rect, "").expect("time edit must be created via alias");
         assert_eq!(time_edit.kind(), WidgetKind::TimePicker);
 
-        let data_grid = factory
-            .create("datagrid", rect, "")
-            .expect("data grid must be created via alias");
+        let data_grid =
+            factory.create("datagrid", rect, "").expect("data grid must be created via alias");
         assert_eq!(data_grid.kind(), WidgetKind::Table);
 
-        let tree_table = factory
-            .create("treetable", rect, "")
-            .expect("tree table must be created via alias");
+        let tree_table =
+            factory.create("treetable", rect, "").expect("tree table must be created via alias");
         assert_eq!(tree_table.kind(), WidgetKind::TreeView);
 
         let virtual_table = factory
@@ -8095,25 +7891,19 @@ mod tests {
     #[test]
     fn capability_by_kind_returns_expected_schema() {
         let factory = WidgetFactory::new_with_defaults();
-        let table_cap = factory
-            .capability_by_kind(WidgetKind::Table)
-            .expect("table capability must exist");
+        let table_cap =
+            factory.capability_by_kind(WidgetKind::Table).expect("table capability must exist");
 
         assert_eq!(table_cap.canonical_name, "table_widget");
         assert!(table_cap.properties.iter().any(|p| p.name == "has_model"));
-        assert!(table_cap
-            .properties
-            .iter()
-            .any(|p| p.name == "has_delegate"));
+        assert!(table_cap.properties.iter().any(|p| p.name == "has_delegate"));
         assert!(table_cap.events.contains(&"selection_changed"));
     }
 
     #[test]
     fn create_unknown_widget_returns_none() {
         let factory = WidgetFactory::new_with_defaults();
-        assert!(factory
-            .create("not_registered", Rect::new(0, 0, 1, 1), "")
-            .is_none());
+        assert!(factory.create("not_registered", Rect::new(0, 0, 1, 1), "").is_none());
         assert!(factory.capability("not_registered").is_none());
     }
 
@@ -8325,12 +8115,9 @@ mod tests {
         let mut menu = Menu::new("File", Rect::new(0, 0, 200, 80));
         menu.add_action("Open");
 
-        let title = factory
-            .read_property(&menu, "title")
-            .expect("title should be readable");
-        let item_count = factory
-            .read_property(&menu, "item_count")
-            .expect("item_count should be readable");
+        let title = factory.read_property(&menu, "title").expect("title should be readable");
+        let item_count =
+            factory.read_property(&menu, "item_count").expect("item_count should be readable");
 
         assert_eq!(title, CapabilityValue::String("File".to_string()));
         assert_eq!(item_count, CapabilityValue::UInt(1));
@@ -8366,11 +8153,7 @@ mod tests {
 
         let mut button = Button::new("Run".to_string(), Rect::new(0, 0, 120, 30));
         factory
-            .write_property(
-                &mut button,
-                "text",
-                CapabilityValue::String("Stop".to_string()),
-            )
+            .write_property(&mut button, "text", CapabilityValue::String("Stop".to_string()))
             .expect("button text should be writable");
         factory
             .write_property(&mut button, "enabled", CapabilityValue::Bool(false))
@@ -8380,11 +8163,7 @@ mod tests {
 
         let mut menu = Menu::new("File", Rect::new(0, 0, 200, 80));
         factory
-            .write_property(
-                &mut menu,
-                "title",
-                CapabilityValue::String("Tools".to_string()),
-            )
+            .write_property(&mut menu, "title", CapabilityValue::String("Tools".to_string()))
             .expect("menu title should be writable");
         assert_eq!(menu.title(), "Tools");
 
@@ -8427,10 +8206,7 @@ mod tests {
             factory.read_property(&button, "text"),
             Ok(CapabilityValue::String("Run".to_string()))
         );
-        assert_eq!(
-            factory.read_property(&button, "default"),
-            Ok(CapabilityValue::Bool(true))
-        );
+        assert_eq!(factory.read_property(&button, "default"), Ok(CapabilityValue::Bool(true)));
 
         let mut line_edit = LineEdit::new(Rect::new(0, 0, 120, 30));
         line_edit.set_text("abc".to_string());
@@ -8440,14 +8216,8 @@ mod tests {
             factory.read_property(&line_edit, "text"),
             Ok(CapabilityValue::String("abc".to_string()))
         );
-        assert_eq!(
-            factory.read_property(&line_edit, "max_length"),
-            Ok(CapabilityValue::UInt(32))
-        );
-        assert_eq!(
-            factory.read_property(&line_edit, "read_only"),
-            Ok(CapabilityValue::Bool(true))
-        );
+        assert_eq!(factory.read_property(&line_edit, "max_length"), Ok(CapabilityValue::UInt(32)));
+        assert_eq!(factory.read_property(&line_edit, "read_only"), Ok(CapabilityValue::Bool(true)));
     }
 
     #[test]
@@ -8458,26 +8228,11 @@ mod tests {
         let menu = Menu::new("File", Rect::new(0, 0, 160, 100));
         let menubar = MenuBar::new(Rect::new(0, 0, 240, 24));
 
-        assert_eq!(
-            factory.read_property(&list, "focused_row"),
-            Ok(CapabilityValue::Null)
-        );
-        assert_eq!(
-            factory.read_property(&tree, "focused_node"),
-            Ok(CapabilityValue::Null)
-        );
-        assert_eq!(
-            factory.read_property(&tree, "selected_node"),
-            Ok(CapabilityValue::Null)
-        );
-        assert_eq!(
-            factory.read_property(&menu, "hovered_index"),
-            Ok(CapabilityValue::Null)
-        );
-        assert_eq!(
-            factory.read_property(&menubar, "active_index"),
-            Ok(CapabilityValue::Null)
-        );
+        assert_eq!(factory.read_property(&list, "focused_row"), Ok(CapabilityValue::Null));
+        assert_eq!(factory.read_property(&tree, "focused_node"), Ok(CapabilityValue::Null));
+        assert_eq!(factory.read_property(&tree, "selected_node"), Ok(CapabilityValue::Null));
+        assert_eq!(factory.read_property(&menu, "hovered_index"), Ok(CapabilityValue::Null));
+        assert_eq!(factory.read_property(&menubar, "active_index"), Ok(CapabilityValue::Null));
     }
 
     #[test]
@@ -8493,11 +8248,7 @@ mod tests {
             )
             .expect("list selection mode should be writable");
         factory
-            .write_property(
-                &mut list,
-                "view_mode",
-                CapabilityValue::String("details".to_string()),
-            )
+            .write_property(&mut list, "view_mode", CapabilityValue::String("details".to_string()))
             .expect("list view mode should be writable");
         assert_eq!(
             factory.read_property(&list, "selection_mode"),
@@ -8560,10 +8311,7 @@ mod tests {
                 CapabilityValue::String("0=alpha,2=beta".to_string()),
             )
             .expect("data grid filters should be writable");
-        assert_eq!(
-            factory.read_property(&data_grid, "row_height"),
-            Ok(CapabilityValue::UInt(28))
-        );
+        assert_eq!(factory.read_property(&data_grid, "row_height"), Ok(CapabilityValue::UInt(28)));
         assert_eq!(
             factory.read_property(&data_grid, "frozen_columns"),
             Ok(CapabilityValue::UInt(0))
@@ -8572,10 +8320,7 @@ mod tests {
             factory.read_property(&data_grid, "sort_spec_count"),
             Ok(CapabilityValue::UInt(2))
         );
-        assert_eq!(
-            factory.read_property(&data_grid, "filter_count"),
-            Ok(CapabilityValue::UInt(2))
-        );
+        assert_eq!(factory.read_property(&data_grid, "filter_count"), Ok(CapabilityValue::UInt(2)));
         assert_eq!(
             factory.read_property(&data_grid, "sort_specs"),
             Ok(CapabilityValue::String("1:desc,3:asc".to_string()))
@@ -8597,10 +8342,7 @@ mod tests {
         factory
             .write_property(&mut tree_table, "selected_row", CapabilityValue::UInt(0))
             .expect("tree table selected_row should be writable");
-        assert_eq!(
-            factory.read_property(&tree_table, "selected_row"),
-            Ok(CapabilityValue::Null)
-        );
+        assert_eq!(factory.read_property(&tree_table, "selected_row"), Ok(CapabilityValue::Null));
 
         let mut virtual_table = VirtualTable::new(Rect::new(0, 0, 260, 120));
         factory
@@ -8610,25 +8352,13 @@ mod tests {
             .write_property(&mut virtual_table, "row_height", CapabilityValue::UInt(26))
             .expect("virtual table row_height should be writable");
         factory
-            .write_property(
-                &mut virtual_table,
-                "column_width",
-                CapabilityValue::UInt(140),
-            )
+            .write_property(&mut virtual_table, "column_width", CapabilityValue::UInt(140))
             .expect("virtual table column_width should be writable");
         factory
-            .write_property(
-                &mut virtual_table,
-                "overscan_rows",
-                CapabilityValue::UInt(4),
-            )
+            .write_property(&mut virtual_table, "overscan_rows", CapabilityValue::UInt(4))
             .expect("virtual table overscan_rows should be writable");
         factory
-            .write_property(
-                &mut virtual_table,
-                "overscan_columns",
-                CapabilityValue::UInt(3),
-            )
+            .write_property(&mut virtual_table, "overscan_columns", CapabilityValue::UInt(3))
             .expect("virtual table overscan_columns should be writable");
         assert_eq!(
             factory.read_property(&virtual_table, "scroll_row"),
@@ -8660,19 +8390,13 @@ mod tests {
         factory
             .write_property(&mut list, "focused_row", CapabilityValue::Null)
             .expect("list focused_row should accept Null");
-        assert_eq!(
-            factory.read_property(&list, "focused_row"),
-            Ok(CapabilityValue::Null)
-        );
+        assert_eq!(factory.read_property(&list, "focused_row"), Ok(CapabilityValue::Null));
 
         let mut tree = TreeView::new(Rect::new(0, 0, 160, 100));
         factory
             .write_property(&mut tree, "focused_node", CapabilityValue::Null)
             .expect("tree focused_node should accept Null");
-        assert_eq!(
-            factory.read_property(&tree, "focused_node"),
-            Ok(CapabilityValue::Null)
-        );
+        assert_eq!(factory.read_property(&tree, "focused_node"), Ok(CapabilityValue::Null));
     }
 
     #[test]
@@ -8789,10 +8513,7 @@ mod tests {
             factory.default_property_value("chip", "multi_select"),
             Ok(CapabilityValue::Bool(false))
         );
-        assert_eq!(
-            factory.default_property_value("grid", "rows"),
-            Ok(CapabilityValue::UInt(1))
-        );
+        assert_eq!(factory.default_property_value("grid", "rows"), Ok(CapabilityValue::UInt(1)));
         assert_eq!(
             factory.default_property_value("freeformshape", "stroke_width"),
             Ok(CapabilityValue::UInt(2))
@@ -8888,9 +8609,8 @@ mod tests {
     fn capability_manifest_exports_defaults_and_metadata() {
         let factory = WidgetFactory::new_with_defaults();
 
-        let manifest = factory
-            .capability_manifest("table")
-            .expect("table manifest should be exportable");
+        let manifest =
+            factory.capability_manifest("table").expect("table manifest should be exportable");
 
         assert_eq!(manifest.kind, WidgetKind::Table);
         assert_eq!(manifest.canonical_name, "table_widget");
@@ -8910,10 +8630,7 @@ mod tests {
             .iter()
             .find(|entry| entry.schema.name == "selection_mode")
             .expect("selection_mode schema should exist");
-        assert_eq!(
-            selection_mode.default_value,
-            CapabilityValue::String("single".to_string())
-        );
+        assert_eq!(selection_mode.default_value, CapabilityValue::String("single".to_string()));
     }
 
     #[test]
@@ -8925,10 +8642,7 @@ mod tests {
             factory.read_property(&list, "has_data_source"),
             Ok(CapabilityValue::Bool(false))
         );
-        assert_eq!(
-            factory.read_property(&list, "selected_row"),
-            Ok(CapabilityValue::Null)
-        );
+        assert_eq!(factory.read_property(&list, "selected_row"), Ok(CapabilityValue::Null));
 
         factory
             .write_property(&mut list, "row_height", CapabilityValue::UInt(32))
@@ -8940,18 +8654,9 @@ mod tests {
             .write_property(&mut list, "scroll_row", CapabilityValue::UInt(7))
             .expect("scroll_row should be writable");
 
-        assert_eq!(
-            factory.read_property(&list, "row_height"),
-            Ok(CapabilityValue::UInt(32))
-        );
-        assert_eq!(
-            factory.read_property(&list, "overscan"),
-            Ok(CapabilityValue::UInt(4))
-        );
+        assert_eq!(factory.read_property(&list, "row_height"), Ok(CapabilityValue::UInt(32)));
+        assert_eq!(factory.read_property(&list, "overscan"), Ok(CapabilityValue::UInt(4)));
         // Without a data source, scroll_row is normalized back to 0.
-        assert_eq!(
-            factory.read_property(&list, "scroll_row"),
-            Ok(CapabilityValue::UInt(0))
-        );
+        assert_eq!(factory.read_property(&list, "scroll_row"), Ok(CapabilityValue::UInt(0)));
     }
 }

@@ -147,17 +147,11 @@ impl TableWidget {
     }
     /// Current selected row index.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selection
-            .current_row()
-            .filter(|row| *row < self.row_count())
+        self.selection.current_row().filter(|row| *row < self.row_count())
     }
     /// All selected rows in stable order.
     pub fn selected_rows(&self) -> Vec<usize> {
-        self.selection
-            .rows()
-            .into_iter()
-            .filter(|row| *row < self.row_count())
-            .collect()
+        self.selection.rows().into_iter().filter(|row| *row < self.row_count()).collect()
     }
     /// Sets row selection mode.
     pub fn set_selection_mode(

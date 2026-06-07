@@ -189,8 +189,7 @@ impl crate::event::EventHandler for Splitter {
                     if (pos_primary - acc).abs() <= handle_width / 2.0 {
                         // Store drag state: negative index-1 to indicate dragging
                         // and save the initial position for delta calculation
-                        self.layout
-                            .set_ratio(i, self.layout.ratio(i).unwrap_or(1.0));
+                        self.layout.set_ratio(i, self.layout.ratio(i).unwrap_or(1.0));
                         break;
                     }
                 }

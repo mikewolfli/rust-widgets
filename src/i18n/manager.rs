@@ -46,19 +46,16 @@ impl I18nManager {
         if let Some(path) = self.translation_paths.get(language) {
             let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
             let mut content = String::new();
-            file.read_to_string(&mut content)
-                .map_err(|e| format!("Failed to read file: {}", e))?;
+            file.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {}", e))?;
             let translation_file: TranslationFile = serde_json::from_str(&content)
                 .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-            self.translations
-                .insert(language.to_string(), translation_file);
+            self.translations.insert(language.to_string(), translation_file);
             if let Some(modified) = File::open(path)
                 .ok()
                 .and_then(|f| f.metadata().ok())
                 .and_then(|m| m.modified().ok())
             {
-                self.file_modification_times
-                    .insert(language.to_string(), modified);
+                self.file_modification_times.insert(language.to_string(), modified);
             }
             if let Some(ref sender) = self.reload_sender {
                 if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
@@ -70,10 +67,7 @@ impl I18nManager {
             }
             Ok(())
         } else {
-            Err(format!(
-                "Translation file path not found for language: {}",
-                language
-            ))
+            Err(format!("Translation file path not found for language: {}", language))
         }
     }
     /// Check and reload all modified translation files

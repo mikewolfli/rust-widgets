@@ -13,12 +13,7 @@ pub struct SplitterLayout {
 impl SplitterLayout {
     /// Creates a splitter layout with orientation and pane spacing.
     pub fn new(orientation: Orientation, spacing: u32) -> Self {
-        Self {
-            orientation,
-            spacing,
-            panes: Vec::new(),
-            ratios: Vec::new(),
-        }
+        Self { orientation, spacing, panes: Vec::new(), ratios: Vec::new() }
     }
 
     /// Returns layout orientation.

@@ -230,12 +230,7 @@ impl Color {
     }
     /// Converts color to f32 tuple (r, g, b, a) in 0.0-1.0 range.
     pub fn to_f32(&self) -> (f32, f32, f32, f32) {
-        (
-            self.r as f32 / 255.0,
-            self.g as f32 / 255.0,
-            self.b as f32 / 255.0,
-            self.a as f32 / 255.0,
-        )
+        (self.r as f32 / 255.0, self.g as f32 / 255.0, self.b as f32 / 255.0, self.a as f32 / 255.0)
     }
     /// Converts color to i32 tuple (r, g, b, a) in 0-255 range.
     pub fn to_i32(&self) -> (i32, i32, i32, i32) {
@@ -247,12 +242,7 @@ impl Color {
     }
     /// Creates a color with modified alpha (f32 in 0.0-1.0 range).
     pub fn with_alpha_f32(&self, alpha: f32) -> Self {
-        Self::rgba(
-            self.r,
-            self.g,
-            self.b,
-            (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
-        )
+        Self::rgba(self.r, self.g, self.b, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
     }
     /// Blends two colors with given weight (0.0 = self, 1.0 = other).
     pub fn blend(&self, other: &Self, weight: f32) -> Self {
@@ -303,11 +293,7 @@ impl From<&str> for Color {
 }
 impl std::fmt::Display for Color {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Color(#{:02X}{:02X}{:02X}{:02X})",
-            self.r, self.g, self.b, self.a
-        )
+        write!(f, "Color(#{:02X}{:02X}{:02X}{:02X})", self.r, self.g, self.b, self.a)
     }
 }
 #[cfg(test)]
@@ -315,22 +301,10 @@ mod tests {
     use super::*;
     #[test]
     fn color_hex_parse_and_serialize_are_deterministic() {
-        assert_eq!(
-            Color::parse_hex("#112233"),
-            Some(Color::rgba(0x11, 0x22, 0x33, 0xFF))
-        );
-        assert_eq!(
-            Color::parse_hex("#11223344"),
-            Some(Color::rgba(0x11, 0x22, 0x33, 0x44))
-        );
-        assert_eq!(
-            Color::parse_hex("#abc"),
-            Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF))
-        );
-        assert_eq!(
-            Color::parse_hex(" #AbCd "),
-            Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xDD))
-        );
+        assert_eq!(Color::parse_hex("#112233"), Some(Color::rgba(0x11, 0x22, 0x33, 0xFF)));
+        assert_eq!(Color::parse_hex("#11223344"), Some(Color::rgba(0x11, 0x22, 0x33, 0x44)));
+        assert_eq!(Color::parse_hex("#abc"), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF)));
+        assert_eq!(Color::parse_hex(" #AbCd "), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xDD)));
         assert_eq!(Color::parse_hex("112233"), None);
         assert_eq!(Color::parse_hex("#12"), None);
         let color = Color::rgba(0x0A, 0x1B, 0x2C, 0x7D);

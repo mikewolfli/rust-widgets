@@ -66,11 +66,7 @@ impl CheckBox {
     }
     /// Sets checked state (true = checked, false = unchecked).
     pub fn set_checked(&mut self, checked: bool) {
-        self.set_state(if checked {
-            CheckState::Checked
-        } else {
-            CheckState::Unchecked
-        });
+        self.set_state(if checked { CheckState::Checked } else { CheckState::Unchecked });
     }
     /// Returns the text label displayed next to the checkbox.
     pub fn text(&self) -> &str {
@@ -375,8 +371,7 @@ mod tests {
         cb.set_tristate_enabled(true);
         let states = Arc::new(Mutex::new(Vec::new()));
         let s2 = states.clone();
-        cb.state_changed
-            .connect(move |s| s2.lock().unwrap().push(*s));
+        cb.state_changed.connect(move |s| s2.lock().unwrap().push(*s));
         cb.toggle(); // Unchecked → Checked
         cb.toggle(); // Checked → PartiallyChecked
         cb.toggle(); // PartiallyChecked → Unchecked
@@ -478,10 +473,7 @@ mod tests {
     fn test_touch_begin_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::TouchBegin {
-            touch_id: 0,
-            pos: Point::new(10, 10),
-        });
+        cb.handle_event(&Event::TouchBegin { touch_id: 0, pos: Point::new(10, 10) });
         // Current implementation does not match TouchBegin – falls through to _
         assert_eq!(cb.state(), CheckState::Unchecked);
     }
@@ -491,9 +483,7 @@ mod tests {
     fn test_tap_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::Tap {
-            pos: Point::new(10, 10),
-        });
+        cb.handle_event(&Event::Tap { pos: Point::new(10, 10) });
         // Current implementation does not match Tap – falls through to _
         assert_eq!(cb.state(), CheckState::Unchecked);
     }

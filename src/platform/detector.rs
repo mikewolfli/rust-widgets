@@ -113,11 +113,7 @@ impl DeviceEnvironment {
         // Fallback: heuristic based on screen width (logical points) and DPI scale.
         // High DPI (>= 2.0) is more common on mobile/tablet displays.
         // Only reached when no feature flag above is active.
-        #[cfg(all(
-            not(feature = "tablet"),
-            not(feature = "mobile"),
-            not(feature = "embedded")
-        ))]
+        #[cfg(all(not(feature = "tablet"), not(feature = "mobile"), not(feature = "embedded")))]
         {
             let width = _screen_size.width.max(320);
             if width < 480 {
@@ -272,11 +268,7 @@ mod tests {
         let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
         // Compile-time feature overrides heuristic.
         // Without a feature flag: width >= 1024 -> Desktop.
-        if cfg!(not(any(
-            feature = "tablet",
-            feature = "mobile",
-            feature = "embedded"
-        ))) {
+        if cfg!(not(any(feature = "tablet", feature = "mobile", feature = "embedded"))) {
             assert_eq!(env.device_class, DeviceClass::Desktop);
         } else {
             // Feature is set, so class matches whichever feature is active.
@@ -293,11 +285,7 @@ mod tests {
     #[test]
     fn small_screen_heuristic_is_mobile() {
         let env = DeviceEnvironment::detect(Size::new(360, 640), 2.0);
-        if cfg!(not(any(
-            feature = "tablet",
-            feature = "mobile",
-            feature = "embedded"
-        ))) {
+        if cfg!(not(any(feature = "tablet", feature = "mobile", feature = "embedded"))) {
             assert_eq!(env.device_class, DeviceClass::Mobile);
         } else {
             assert!(matches!(
@@ -313,11 +301,7 @@ mod tests {
     #[test]
     fn medium_screen_heuristic_is_tablet() {
         let env = DeviceEnvironment::detect(Size::new(768, 1024), 1.0);
-        if cfg!(not(any(
-            feature = "tablet",
-            feature = "mobile",
-            feature = "embedded"
-        ))) {
+        if cfg!(not(any(feature = "tablet", feature = "mobile", feature = "embedded"))) {
             assert_eq!(env.device_class, DeviceClass::Tablet);
         } else {
             assert!(matches!(
@@ -377,26 +361,11 @@ mod tests {
 
     #[test]
     fn touch_spacing_values() {
-        assert_eq!(
-            DeviceEnvironment::touch_target_params(DeviceClass::Desktop).1,
-            8
-        );
-        assert_eq!(
-            DeviceEnvironment::touch_target_params(DeviceClass::Tablet).1,
-            12
-        );
-        assert_eq!(
-            DeviceEnvironment::touch_target_params(DeviceClass::Mobile).1,
-            16
-        );
-        assert_eq!(
-            DeviceEnvironment::touch_target_params(DeviceClass::Embedded).1,
-            10
-        );
-        assert_eq!(
-            DeviceEnvironment::touch_target_params(DeviceClass::Projector).1,
-            6
-        );
+        assert_eq!(DeviceEnvironment::touch_target_params(DeviceClass::Desktop).1, 8);
+        assert_eq!(DeviceEnvironment::touch_target_params(DeviceClass::Tablet).1, 12);
+        assert_eq!(DeviceEnvironment::touch_target_params(DeviceClass::Mobile).1, 16);
+        assert_eq!(DeviceEnvironment::touch_target_params(DeviceClass::Embedded).1, 10);
+        assert_eq!(DeviceEnvironment::touch_target_params(DeviceClass::Projector).1, 6);
     }
 
     #[test]

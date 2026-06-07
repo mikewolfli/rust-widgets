@@ -228,20 +228,12 @@ impl MenuConfig {
              - Hardware Acceleration: {}\n\
              - Performance Level: {:?}",
             if self.animations_enabled { "On" } else { "Off" },
-            if self.transparency_enabled {
-                "On"
-            } else {
-                "Off"
-            },
+            if self.transparency_enabled { "On" } else { "Off" },
             if self.shadows_enabled { "On" } else { "Off" },
             if self.blur_enabled { "On" } else { "Off" },
             self.animation_speed,
             self.max_visible_items,
-            if self.hardware_acceleration {
-                "On"
-            } else {
-                "Off"
-            },
+            if self.hardware_acceleration { "On" } else { "Off" },
             self.hardware_caps.performance_level
         )
     }

@@ -32,11 +32,7 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self {
-            app_name: String::new(),
-            organization: String::new(),
-            enable_i18n: true,
-        }
+        Self { app_name: String::new(), organization: String::new(), enable_i18n: true }
     }
 }
 
@@ -113,9 +109,7 @@ pub struct App {
 impl App {
     /// Create a new application handle with default configuration.
     pub fn new() -> Self {
-        Self {
-            config: AppConfig::default(),
-        }
+        Self { config: AppConfig::default() }
     }
 
     /// Create a new application handle with a custom configuration.

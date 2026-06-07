@@ -56,13 +56,7 @@ pub struct CachedText {
 }
 impl CachedText {
     pub fn new(key: TextKey, size: Size, bounds: Rect) -> Self {
-        Self {
-            key,
-            size,
-            bounds,
-            data: Vec::new(),
-            timestamp: 0,
-        }
+        Self { key, size, bounds, data: Vec::new(), timestamp: 0 }
     }
     pub fn with_data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
@@ -81,11 +75,7 @@ pub struct CacheConfig {
 }
 impl Default for CacheConfig {
     fn default() -> Self {
-        Self {
-            max_entries: 1000,
-            max_memory_bytes: 10 * 1024 * 1024,
-            ttl_seconds: 300,
-        }
+        Self { max_entries: 1000, max_memory_bytes: 10 * 1024 * 1024, ttl_seconds: 300 }
     }
 }
 pub struct TextCache {
@@ -206,11 +196,7 @@ impl TextCache {
         if self.cache.is_empty() {
             return false;
         }
-        let oldest_key = self
-            .cache
-            .iter()
-            .min_by_key(|(_, v)| v.timestamp)
-            .map(|(k, _)| k.clone());
+        let oldest_key = self.cache.iter().min_by_key(|(_, v)| v.timestamp).map(|(k, _)| k.clone());
         if let Some(key) = oldest_key {
             self.remove(&key);
             return true;
@@ -218,12 +204,8 @@ impl TextCache {
         false
     }
     pub fn prune_expired(&mut self) {
-        let expired: Vec<TextKey> = self
-            .cache
-            .iter()
-            .filter(|(_, v)| self.is_expired(v))
-            .map(|(k, _)| k.clone())
-            .collect();
+        let expired: Vec<TextKey> =
+            self.cache.iter().filter(|(_, v)| self.is_expired(v)).map(|(k, _)| k.clone()).collect();
         for key in expired {
             self.remove(&key);
         }
@@ -260,10 +242,7 @@ pub struct GlyphInfo {
 }
 impl GlyphCache {
     pub fn new(max_entries: usize) -> Self {
-        Self {
-            glyphs: HashMap::new(),
-            max_entries,
-        }
+        Self { glyphs: HashMap::new(), max_entries }
     }
     pub fn get(&self, c: char, size: u16, font_family: &str) -> Option<&GlyphInfo> {
         self.glyphs.get(&(c, size, font_family.to_string()))

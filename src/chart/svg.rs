@@ -19,11 +19,7 @@ pub struct SvgChartContext {
 impl SvgChartContext {
     /// Create SVG context with explicit viewport size.
     pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            width: width.max(1),
-            height: height.max(1),
-            elements: Vec::new(),
-        }
+        Self { width: width.max(1), height: height.max(1), elements: Vec::new() }
     }
     /// Return SVG XML text.
     pub fn to_svg_string(&self) -> String {
@@ -93,11 +89,8 @@ impl ChartContext for SvgChartContext {
         if points.is_empty() {
             return;
         }
-        let pts: String = points
-            .iter()
-            .map(|p| format!("{:.2},{:.2}", p.x, p.y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let pts: String =
+            points.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect::<Vec<_>>().join(" ");
         self.elements.push(format!(
             "<polygon points=\"{}\" fill=\"{}\" fill-opacity=\"{:.3}\" stroke=\"none\" />",
             pts,
@@ -135,11 +128,8 @@ impl ChartContext for SvgChartContext {
             let rad = angle.to_radians();
             pts.push(Point::from_f64(cx + rad.cos() * r, cy + rad.sin() * r));
         }
-        let polygon_str: String = pts
-            .iter()
-            .map(|p| format!("{:.2},{:.2}", p.x, p.y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let polygon_str: String =
+            pts.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect::<Vec<_>>().join(" ");
         self.elements.push(format!(
             "<polygon points=\"{}\" fill=\"{}\" fill-opacity=\"{:.3}\" stroke=\"none\" />",
             polygon_str,
@@ -200,38 +190,25 @@ pub fn render_chart_to_svg_file(
 }
 impl ChartContext for MemoryChartContext {
     fn draw_line(&mut self, from: Point, to: Point, width: f32, _color: Color) {
-        self.commands.push(format!(
-            "line:{},{}->{},{}:{width}",
-            from.x, from.y, to.x, to.y
-        ));
+        self.commands.push(format!("line:{},{}->{},{}:{width}", from.x, from.y, to.x, to.y));
     }
     fn draw_rect(&mut self, rect: Rect, _color: Color) {
-        self.commands.push(format!(
-            "rect:{},{},{},{}",
-            rect.x, rect.y, rect.width, rect.height
-        ));
+        self.commands.push(format!("rect:{},{},{},{}", rect.x, rect.y, rect.width, rect.height));
     }
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, _color: Color) {
-        self.commands
-            .push(format!("text:{text}@{},{}:{font_size}", pos.x, pos.y));
+        self.commands.push(format!("text:{text}@{},{}:{font_size}", pos.x, pos.y));
     }
     fn draw_circle(&mut self, center: Point, radius: f32, _color: Color) {
-        self.commands
-            .push(format!("circle:{},{}:{radius}", center.x, center.y));
+        self.commands.push(format!("circle:{},{}:{radius}", center.x, center.y));
     }
     fn draw_polygon(&mut self, points: &[Point], _color: Color) {
-        let pts: String = points
-            .iter()
-            .map(|p| format!("{},{}", p.x, p.y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let pts: String =
+            points.iter().map(|p| format!("{},{}", p.x, p.y)).collect::<Vec<_>>().join(" ");
         self.commands.push(format!("polygon:[{}]", pts));
     }
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, _color: Color) {
-        self.commands.push(format!(
-            "path_segment:{},{}->{},{}:{width}",
-            start.x, start.y, end.x, end.y
-        ));
+        self.commands
+            .push(format!("path_segment:{},{}->{},{}:{width}", start.x, start.y, end.x, end.y));
     }
     fn draw_arc(
         &mut self,
@@ -247,26 +224,18 @@ impl ChartContext for MemoryChartContext {
         ));
     }
     fn draw_path(&mut self, points: &[Point], width: f32, _color: Color) {
-        let pts: String = points
-            .iter()
-            .map(|p| format!("{},{}", p.x, p.y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let pts: String =
+            points.iter().map(|p| format!("{},{}", p.x, p.y)).collect::<Vec<_>>().join(" ");
         self.commands.push(format!("path:[{}]:{width}", pts));
     }
     fn draw_ellipse(&mut self, center: Point, radius_x: f32, radius_y: f32, _color: Color) {
-        self.commands.push(format!(
-            "ellipse:{},{}:{}x{}",
-            center.x, center.y, radius_x, radius_y
-        ));
+        self.commands.push(format!("ellipse:{},{}:{}x{}", center.x, center.y, radius_x, radius_y));
     }
     fn set_fill_color(&mut self, color: Color) {
-        self.commands
-            .push(format!("set_fill_color:{}", svg_color_hex(color)));
+        self.commands.push(format!("set_fill_color:{}", svg_color_hex(color)));
     }
     fn set_stroke_color(&mut self, color: Color) {
-        self.commands
-            .push(format!("set_stroke_color:{}", svg_color_hex(color)));
+        self.commands.push(format!("set_stroke_color:{}", svg_color_hex(color)));
     }
 }
 fn svg_color_hex(color: Color) -> String {
@@ -276,7 +245,5 @@ fn svg_alpha(color: Color) -> f32 {
     color.a as f32 / 255.0
 }
 fn svg_escape_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }

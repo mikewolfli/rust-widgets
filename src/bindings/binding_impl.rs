@@ -15,11 +15,7 @@ fn harmony_lookup_widget(node_handle: u64) -> Option<u64> {
     if node_handle == 0 {
         return None;
     }
-    harmony_node_registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&node_handle)
-        .copied()
+    harmony_node_registry().lock().unwrap_or_else(|e| e.into_inner()).get(&node_handle).copied()
 }
 /// Convert stable C ABI trigger code to internal typed trigger enum.
 fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
@@ -279,11 +275,8 @@ pub extern "C" fn rust_widgets_menu_add_item(
     shortcut: *const c_char,
 ) -> u64 {
     c_try!({
-        let shortcut_text = if shortcut.is_null() {
-            None
-        } else {
-            Some(c_str_or_default(shortcut))
-        };
+        let shortcut_text =
+            if shortcut.is_null() { None } else { Some(c_str_or_default(shortcut)) };
         get_control_backend().menu_add_item(
             parent_menu,
             &c_str_or_default(text),
@@ -399,10 +392,7 @@ pub extern "C" fn rust_widgets_harmony_lookup_widget_id(node_handle: u64) -> u64
 #[no_mangle]
 pub extern "C" fn rust_widgets_harmony_clear_node_bindings() {
     c_try_void!({
-        harmony_node_registry()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        harmony_node_registry().lock().unwrap_or_else(|e| e.into_inner()).clear();
     })
 }
 /// Harmony callback alias: menu trigger by node handle.
@@ -587,10 +577,8 @@ pub extern "C" fn rust_widgets_platform_dpi_scale_factor() -> c_float {
 #[no_mangle]
 pub extern "C" fn rust_widgets_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
     c_try!({
-        let config = crate::render::SoftwareRenderConfig {
-            aa_samples_per_axis: samples as u8,
-        }
-        .normalized();
+        let config =
+            crate::render::SoftwareRenderConfig { aa_samples_per_axis: samples as u8 }.normalized();
         crate::render::set_default_software_render_config(config);
         crate::render::default_software_render_config().aa_samples_per_axis as c_uint
     })
@@ -769,10 +757,7 @@ mod tests {
         assert_eq!(high, 8);
         assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 8);
         rust_widgets_set_render_aa_samples_per_axis(original);
-        assert_eq!(
-            rust_widgets_get_render_aa_samples_per_axis(),
-            original.clamp(1, 8)
-        );
+        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), original.clamp(1, 8));
     }
     #[test]
     fn embedded_target_fps_abi_roundtrip_clamps_values() {
@@ -784,9 +769,6 @@ mod tests {
         assert_eq!(high, 240);
         assert_eq!(rust_widgets_get_embedded_target_fps(), 240);
         rust_widgets_set_embedded_target_fps(original);
-        assert_eq!(
-            rust_widgets_get_embedded_target_fps(),
-            original.clamp(1, 240)
-        );
+        assert_eq!(rust_widgets_get_embedded_target_fps(), original.clamp(1, 240));
     }
 }

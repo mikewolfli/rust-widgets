@@ -114,8 +114,7 @@ impl TreeTable {
 
     /// Returns selected visible row.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selected_row
-            .filter(|row| *row < self.visible_rows.len())
+        self.selected_row.filter(|row| *row < self.visible_rows.len())
     }
 
     /// Sets fixed row height.
@@ -144,9 +143,7 @@ impl TreeTable {
 
     /// Returns the node path for visible row.
     pub fn row_path(&self, row: usize) -> Option<&[usize]> {
-        self.visible_rows
-            .get(row)
-            .map(|visible| visible.path.as_slice())
+        self.visible_rows.get(row).map(|visible| visible.path.as_slice())
     }
 
     /// Returns whether visible row is expanded.
@@ -189,8 +186,7 @@ impl TreeTable {
             return false;
         };
         if self.expanded_paths.remove(&path) {
-            self.expanded_paths
-                .retain(|expanded| !Self::is_descendant_of(expanded, &path));
+            self.expanded_paths.retain(|expanded| !Self::is_descendant_of(expanded, &path));
             self.rebuild_projection();
             self.base.request_layout();
             self.base.request_redraw();
@@ -222,10 +218,7 @@ impl TreeTable {
     }
 
     fn path_has_children(&self, path: &[usize]) -> bool {
-        self.model
-            .as_ref()
-            .map(|model| model.child_count(path) > 0)
-            .unwrap_or(false)
+        self.model.as_ref().map(|model| model.child_count(path) > 0).unwrap_or(false)
     }
 
     fn rebuild_projection(&mut self) {
@@ -243,9 +236,7 @@ impl TreeTable {
         }
 
         self.visible_rows = next;
-        self.selected_row = self
-            .selected_row
-            .filter(|row| *row < self.visible_rows.len());
+        self.selected_row = self.selected_row.filter(|row| *row < self.visible_rows.len());
         self.projection_changed.emit(self.visible_rows.len());
     }
 
@@ -256,10 +247,7 @@ impl TreeTable {
         path: &mut Vec<usize>,
         depth: usize,
     ) {
-        acc.push(VisibleRow {
-            path: path.clone(),
-            depth,
-        });
+        acc.push(VisibleRow { path: path.clone(), depth });
 
         if !self.expanded_paths.contains(path) {
             return;
@@ -341,11 +329,8 @@ impl Draw for TreeTable {
                 );
 
                 if let Some(text) = self.item(row, col) {
-                    let indent = if col == 0 {
-                        self.row_depth(row).unwrap_or(0) as i32 * 14
-                    } else {
-                        0
-                    };
+                    let indent =
+                        if col == 0 { self.row_depth(row).unwrap_or(0) as i32 * 14 } else { 0 };
                     context.draw_text(
                         Point::new(x + 4 + indent, y + row_h / 2),
                         &text,
@@ -405,11 +390,7 @@ mod tests {
         }
 
         fn data(&self, path: &[usize], column: usize) -> Option<String> {
-            let id = path
-                .iter()
-                .map(|part| part.to_string())
-                .collect::<Vec<_>>()
-                .join("/");
+            let id = path.iter().map(|part| part.to_string()).collect::<Vec<_>>().join("/");
             Some(format!("{}:{}", id, column))
         }
     }

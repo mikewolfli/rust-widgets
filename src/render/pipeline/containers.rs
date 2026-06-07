@@ -57,9 +57,7 @@ pub fn append_tab_widget_visual_commands(layer: &mut SceneLayer, tab_widget: &Ta
             origin: centered_text_origin(tab_rect),
             text: format!("Tab{}", index + 1),
             font: tab_widget.font().cloned().unwrap_or_default(),
-            color: tab_widget
-                .foreground_color()
-                .unwrap_or(Color::rgba(30, 32, 36, 255)),
+            color: tab_widget.foreground_color().unwrap_or(Color::rgba(30, 32, 36, 255)),
         });
     }
 }
@@ -83,26 +81,18 @@ pub fn append_text_edit_visual_commands(layer: &mut SceneLayer, text_edit: &Text
             height: rect.height.saturating_sub(padding as u32 * 2),
         };
         layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: text_rect.x,
-                y: text_rect.y + text_rect.height as i32 / 2,
-            },
+            origin: Point { x: text_rect.x, y: text_rect.y + text_rect.height as i32 / 2 },
             text: text.to_string(),
             font: text_edit.font().cloned().unwrap_or_default(),
-            color: text_edit
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 26, 26, 255)),
+            color: text_edit.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
         });
     }
 }
 /// Append visual commands for a `RichEdit` rich text editor representation.
 #[deprecated(note = "Pipeline routing is unstable. Use RenderContext directly instead.")]
 pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &RichEdit) {
-    let bg_color = if rich_edit.is_read_only() {
-        Color::rgba(245, 245, 245, 255)
-    } else {
-        Color::WHITE
-    };
+    let bg_color =
+        if rich_edit.is_read_only() { Color::rgba(245, 245, 245, 255) } else { Color::WHITE };
     push_widget_fill_and_border(
         layer,
         rich_edit,
@@ -120,15 +110,10 @@ pub fn append_rich_edit_visual_commands(layer: &mut SceneLayer, rich_edit: &Rich
             height: rect.height.saturating_sub(padding as u32 * 2),
         };
         layer.push(RenderCommand::DrawText {
-            origin: Point {
-                x: text_rect.x,
-                y: text_rect.y + text_rect.height as i32 / 2,
-            },
+            origin: Point { x: text_rect.x, y: text_rect.y + text_rect.height as i32 / 2 },
             text: text.to_string(),
             font: rich_edit.font().cloned().unwrap_or_default(),
-            color: rich_edit
-                .foreground_color()
-                .unwrap_or(Color::rgba(26, 26, 26, 255)),
+            color: rich_edit.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
         });
     }
     // Draw selection highlight if present
@@ -164,12 +149,7 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     }
     // Draw header area
     let header_height = 20u32.min(rect.height);
-    let header_rect = Rect {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: header_height,
-    };
+    let header_rect = Rect { x: rect.x, y: rect.y, width: rect.width, height: header_height };
     layer.push(RenderCommand::FillRect {
         rect: header_rect,
         color: Color::rgba(235, 238, 243, 255),
@@ -183,27 +163,17 @@ pub fn append_tree_view_visual_commands(layer: &mut SceneLayer, tree_view: &Tree
     let icon_size = 12u32.min(header_height);
     if icon_size > 0 {
         layer.push(RenderCommand::DrawRectStroke {
-            rect: Rect {
-                x: rect.x + 4,
-                y: rect.y + 4,
-                width: icon_size,
-                height: icon_size,
-            },
+            rect: Rect { x: rect.x + 4, y: rect.y + 4, width: icon_size, height: icon_size },
             color: Color::rgba(100, 100, 100, 255),
             width: 1,
         });
     }
     // Draw placeholder text for tree structure
     layer.push(RenderCommand::DrawText {
-        origin: Point {
-            x: rect.x + icon_size as i32 + 12,
-            y: rect.y + header_height as i32 / 2,
-        },
+        origin: Point { x: rect.x + icon_size as i32 + 12, y: rect.y + header_height as i32 / 2 },
         text: "Tree".to_string(),
         font: tree_view.font().cloned().unwrap_or_default(),
-        color: tree_view
-            .foreground_color()
-            .unwrap_or(Color::rgba(26, 26, 26, 255)),
+        color: tree_view.foreground_color().unwrap_or(Color::rgba(26, 26, 26, 255)),
     });
 }
 /// Append visual commands for a `TableWidget` data grid representation.
@@ -221,12 +191,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
     }
     // Draw header row
     let header_height = 20u32.min(rect.height / 4).max(16);
-    let header_rect = Rect {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: header_height,
-    };
+    let header_rect = Rect { x: rect.x, y: rect.y, width: rect.width, height: header_height };
     layer.push(RenderCommand::FillRect {
         rect: header_rect,
         color: Color::rgba(235, 238, 243, 255),
@@ -243,10 +208,7 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
         let x = rect.x + (i * column_width) as i32;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x, y: rect.y },
-            to: Point {
-                x,
-                y: rect.y + header_height as i32,
-            },
+            to: Point { x, y: rect.y + header_height as i32 },
             color: Color::rgba(200, 205, 215, 255),
             width: 1,
         });
@@ -263,22 +225,14 @@ pub fn append_table_widget_visual_commands(layer: &mut SceneLayer, table_widget:
         // Row background (alternating)
         if row % 2 == 1 {
             layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x: rect.x,
-                    y,
-                    width: rect.width,
-                    height: row_height,
-                },
+                rect: Rect { x: rect.x, y, width: rect.width, height: row_height },
                 color: Color::rgba(250, 250, 252, 255),
             });
         }
         // Row divider
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x: rect.x, y },
-            to: Point {
-                x: rect.x + rect.width as f32 as i32,
-                y,
-            },
+            to: Point { x: rect.x + rect.width as f32 as i32, y },
             color: Color::rgba(230, 232, 238, 255),
             width: 1,
         });
@@ -307,10 +261,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
         let y = rect.y + (i * cell_height) as i32;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x: rect.x, y },
-            to: Point {
-                x: rect.x + rect.width as f32 as i32,
-                y,
-            },
+            to: Point { x: rect.x + rect.width as f32 as i32, y },
             color: Color::rgba(210, 215, 225, 255),
             width: 1,
         });
@@ -320,10 +271,7 @@ pub fn append_grid_widget_visual_commands(layer: &mut SceneLayer, grid_widget: &
         let x = rect.x + (i * cell_width) as i32;
         layer.push(RenderCommand::DrawLineStroke {
             from: Point { x, y: rect.y },
-            to: Point {
-                x,
-                y: rect.y + rect.height as f32 as i32,
-            },
+            to: Point { x, y: rect.y + rect.height as f32 as i32 },
             color: Color::rgba(210, 215, 225, 255),
             width: 1,
         });
@@ -353,16 +301,11 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
         return;
     }
     // Draw chart background
-    layer.push(RenderCommand::FillRect {
-        rect: chart_rect,
-        color: Color::rgba(248, 249, 250, 255),
-    });
+    layer
+        .push(RenderCommand::FillRect { rect: chart_rect, color: Color::rgba(248, 249, 250, 255) });
     // Draw axis lines
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: chart_rect.x,
-            y: chart_rect.y + chart_rect.height as i32,
-        },
+        from: Point { x: chart_rect.x, y: chart_rect.y + chart_rect.height as i32 },
         to: Point {
             x: chart_rect.x + chart_rect.width as i32,
             y: chart_rect.y + chart_rect.height as i32,
@@ -371,14 +314,8 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
         width: 2,
     });
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: chart_rect.x,
-            y: chart_rect.y,
-        },
-        to: Point {
-            x: chart_rect.x,
-            y: chart_rect.y + chart_rect.height as i32,
-        },
+        from: Point { x: chart_rect.x, y: chart_rect.y },
+        to: Point { x: chart_rect.x, y: chart_rect.y + chart_rect.height as i32 },
         color: Color::rgba(100, 100, 100, 255),
         width: 2,
     });
@@ -391,21 +328,11 @@ pub fn append_chart_widget_visual_commands(layer: &mut SceneLayer, chart_widget:
         let x = chart_rect.x + (i * bar_width * 2) as i32 + bar_width as i32 / 2;
         let y = chart_rect.y + chart_rect.height as i32 - bar_height as i32;
         layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x,
-                y,
-                width: bar_width,
-                height: bar_height,
-            },
+            rect: Rect { x, y, width: bar_width, height: bar_height },
             color: Color::rgba(66, 133, 244, 200),
         });
         layer.push(RenderCommand::DrawRectStroke {
-            rect: Rect {
-                x,
-                y,
-                width: bar_width,
-                height: bar_height,
-            },
+            rect: Rect { x, y, width: bar_width, height: bar_height },
             color: Color::rgba(66, 133, 244, 255),
             width: 1,
         });
@@ -429,27 +356,15 @@ pub fn append_dock_panel_visual_commands(layer: &mut SceneLayer, dock_panel: &Do
     let center_y = rect.y + rect.height as f32 as i32 / 2;
     // Vertical center divider
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: center_x,
-            y: rect.y + 4,
-        },
-        to: Point {
-            x: center_x,
-            y: rect.y + rect.height as f32 as i32 - 4,
-        },
+        from: Point { x: center_x, y: rect.y + 4 },
+        to: Point { x: center_x, y: rect.y + rect.height as f32 as i32 - 4 },
         color: Color::rgba(200, 205, 215, 255),
         width: 2,
     });
     // Horizontal center divider
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: rect.x + 4,
-            y: center_y,
-        },
-        to: Point {
-            x: rect.x + rect.width as f32 as i32 - 4,
-            y: center_y,
-        },
+        from: Point { x: rect.x + 4, y: center_y },
+        to: Point { x: rect.x + rect.width as f32 as i32 - 4, y: center_y },
         color: Color::rgba(200, 205, 215, 255),
         width: 2,
     });
@@ -472,25 +387,15 @@ pub fn append_group_box_visual_commands(layer: &mut SceneLayer, group_box: &Grou
     });
     // Fill title background
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: rect.x + 8,
-            y: rect.y,
-            width: 60,
-            height: title_height as u32,
-        },
+        rect: Rect { x: rect.x + 8, y: rect.y, width: 60, height: title_height as u32 },
         color: Color::BACKGROUND,
     });
     // Draw title text
     layer.push(RenderCommand::DrawText {
-        origin: Point {
-            x: rect.x + 12,
-            y: rect.y + title_height / 2,
-        },
+        origin: Point { x: rect.x + 12, y: rect.y + title_height / 2 },
         text: "Group".to_string(),
         font: group_box.font().cloned().unwrap_or_default(),
-        color: group_box
-            .foreground_color()
-            .unwrap_or(Color::rgba(50, 52, 56, 255)),
+        color: group_box.foreground_color().unwrap_or(Color::rgba(50, 52, 56, 255)),
     });
 }
 /// Append visual commands for a `Splitter` resizable divider representation.
@@ -512,14 +417,8 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
         // Horizontal splitter - vertical gripper line
         let center_x = rect.x + rect.width as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
-            from: Point {
-                x: center_x,
-                y: rect.y + 4,
-            },
-            to: Point {
-                x: center_x,
-                y: rect.y + rect.height as f32 as i32 - 4,
-            },
+            from: Point { x: center_x, y: rect.y + 4 },
+            to: Point { x: center_x, y: rect.y + rect.height as f32 as i32 - 4 },
             color: Color::rgba(160, 165, 175, 255),
             width: 2,
         });
@@ -527,14 +426,8 @@ pub fn append_splitter_visual_commands(layer: &mut SceneLayer, splitter: &Splitt
         // Vertical splitter - horizontal gripper line
         let center_y = rect.y + rect.height as f32 as i32 / 2;
         layer.push(RenderCommand::DrawLineStroke {
-            from: Point {
-                x: rect.x + 4,
-                y: center_y,
-            },
-            to: Point {
-                x: rect.x + rect.width as f32 as i32 - 4,
-                y: center_y,
-            },
+            from: Point { x: rect.x + 4, y: center_y },
+            to: Point { x: rect.x + rect.width as f32 as i32 - 4, y: center_y },
             color: Color::rgba(160, 165, 175, 255),
             width: 2,
         });
@@ -562,10 +455,7 @@ pub fn append_mdi_area_visual_commands(layer: &mut SceneLayer, mdi_area: &MdiAre
     };
     if child_rect.width > 0 && child_rect.height > 0 {
         // Child window background
-        layer.push(RenderCommand::FillRect {
-            rect: child_rect,
-            color: Color::WHITE,
-        });
+        layer.push(RenderCommand::FillRect { rect: child_rect, color: Color::WHITE });
         // Child window title bar
         layer.push(RenderCommand::FillRect {
             rect: Rect {
@@ -607,12 +497,7 @@ pub fn append_canvas_visual_commands(layer: &mut SceneLayer, canvas: &Canvas) {
             let x = rect.x + (col * grid_size) as i32 + grid_size as i32 / 2;
             let y = rect.y + (row * grid_size) as i32 + grid_size as i32 / 2;
             layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x,
-                    y,
-                    width: 1,
-                    height: 1,
-                },
+                rect: Rect { x, y, width: 1, height: 1 },
                 color: Color::rgba(220, 225, 235, 255),
             });
         }
@@ -636,54 +521,32 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     let value_area_width = rect.width.saturating_sub(button_width);
     // Draw value text
     let value_text = spin_box.value().to_string();
-    let text_color = spin_box
-        .foreground_color()
-        .unwrap_or(Color::rgba(40, 44, 52, 255));
+    let text_color = spin_box.foreground_color().unwrap_or(Color::rgba(40, 44, 52, 255));
     let padding = 4i32;
     layer.push(RenderCommand::DrawText {
         text: value_text,
-        origin: Point {
-            x: rect.x + padding,
-            y: rect.y + rect.height as f32 as i32 / 2,
-        },
+        origin: Point { x: rect.x + padding, y: rect.y + rect.height as f32 as i32 / 2 },
         font: spin_box.font().cloned().unwrap_or_default(),
         color: text_color,
     });
     // Draw up button (top half of right side)
     let button_x = rect.x + value_area_width as i32;
     layer.push(RenderCommand::FillRect {
-        rect: Rect {
-            x: button_x,
-            y: rect.y,
-            width: button_width,
-            height: rect.height / 2,
-        },
+        rect: Rect { x: button_x, y: rect.y, width: button_width, height: rect.height / 2 },
         color: Color::rgba(240, 242, 245, 255),
     });
     // Draw up arrow
     let arrow_center_y = rect.y + rect.height as f32 as i32 / 4;
     let arrow_color = Color::rgba(80, 84, 92, 255);
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x + button_width as i32 / 2 - 3,
-            y: arrow_center_y + 2,
-        },
-        to: Point {
-            x: button_x + button_width as i32 / 2,
-            y: arrow_center_y - 2,
-        },
+        from: Point { x: button_x + button_width as i32 / 2 - 3, y: arrow_center_y + 2 },
+        to: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y - 2 },
         color: arrow_color,
         width: 1,
     });
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x + button_width as i32 / 2,
-            y: arrow_center_y - 2,
-        },
-        to: Point {
-            x: button_x + button_width as i32 / 2 + 3,
-            y: arrow_center_y + 2,
-        },
+        from: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y - 2 },
+        to: Point { x: button_x + button_width as i32 / 2 + 3, y: arrow_center_y + 2 },
         color: arrow_color,
         width: 1,
     });
@@ -700,51 +563,27 @@ pub fn append_spin_box_visual_commands(layer: &mut SceneLayer, spin_box: &crate:
     // Draw down arrow
     let arrow_center_y2 = rect.y + rect.height as f32 as i32 * 3 / 4;
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x + button_width as i32 / 2 - 3,
-            y: arrow_center_y2 - 2,
-        },
-        to: Point {
-            x: button_x + button_width as i32 / 2,
-            y: arrow_center_y2 + 2,
-        },
+        from: Point { x: button_x + button_width as i32 / 2 - 3, y: arrow_center_y2 - 2 },
+        to: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y2 + 2 },
         color: arrow_color,
         width: 1,
     });
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x + button_width as i32 / 2,
-            y: arrow_center_y2 + 2,
-        },
-        to: Point {
-            x: button_x + button_width as i32 / 2 + 3,
-            y: arrow_center_y2 - 2,
-        },
+        from: Point { x: button_x + button_width as i32 / 2, y: arrow_center_y2 + 2 },
+        to: Point { x: button_x + button_width as i32 / 2 + 3, y: arrow_center_y2 - 2 },
         color: arrow_color,
         width: 1,
     });
     // Button separator lines
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x,
-            y: rect.y,
-        },
-        to: Point {
-            x: button_x,
-            y: rect.y + rect.height as f32 as i32,
-        },
+        from: Point { x: button_x, y: rect.y },
+        to: Point { x: button_x, y: rect.y + rect.height as f32 as i32 },
         color: Color::rgba(160, 168, 180, 255),
         width: 1,
     });
     layer.push(RenderCommand::DrawLineStroke {
-        from: Point {
-            x: button_x,
-            y: rect.y + rect.height as f32 as i32 / 2,
-        },
-        to: Point {
-            x: button_x + button_width as i32,
-            y: rect.y + rect.height as f32 as i32 / 2,
-        },
+        from: Point { x: button_x, y: rect.y + rect.height as f32 as i32 / 2 },
+        to: Point { x: button_x + button_width as i32, y: rect.y + rect.height as f32 as i32 / 2 },
         color: Color::rgba(160, 168, 180, 255),
         width: 1,
     });
@@ -780,12 +619,7 @@ pub fn append_list_view_visual_commands(
         // Draw selection background
         if is_selected {
             layer.push(RenderCommand::FillRect {
-                rect: Rect {
-                    x: rect.x,
-                    y: row_y,
-                    width: rect.width,
-                    height: row_height,
-                },
+                rect: Rect { x: rect.x, y: row_y, width: rect.width, height: row_height },
                 color: selected_bg,
             });
         }
@@ -806,16 +640,9 @@ pub fn append_list_view_visual_commands(
         if let Some(text) = list_view.item(row) {
             layer.push(RenderCommand::DrawText {
                 text,
-                origin: Point {
-                    x: rect.x + padding,
-                    y: row_y + row_height as i32 / 2,
-                },
+                origin: Point { x: rect.x + padding, y: row_y + row_height as i32 / 2 },
                 font: font.clone(),
-                color: if is_selected {
-                    selected_text
-                } else {
-                    text_color
-                },
+                color: if is_selected { selected_text } else { text_color },
             });
         }
     }
@@ -848,19 +675,11 @@ pub fn append_scroll_area_visual_commands(
     // Horizontal scrollbar
     if needs_h_scroll {
         let h_track_y = rect.y + rect.height as f32 as i32 - scrollbar_size as i32;
-        let h_track_width = if needs_v_scroll {
-            rect.width.saturating_sub(scrollbar_size)
-        } else {
-            rect.width
-        };
+        let h_track_width =
+            if needs_v_scroll { rect.width.saturating_sub(scrollbar_size) } else { rect.width };
         // Track
         layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: rect.x,
-                y: h_track_y,
-                width: h_track_width,
-                height: scrollbar_size,
-            },
+            rect: Rect { x: rect.x, y: h_track_y, width: h_track_width, height: scrollbar_size },
             color: Color::rgba(232, 234, 238, 255),
         });
         // Thumb
@@ -886,19 +705,11 @@ pub fn append_scroll_area_visual_commands(
     // Vertical scrollbar
     if needs_v_scroll {
         let v_track_x = rect.x + rect.width as f32 as i32 - scrollbar_size as i32;
-        let v_track_height = if needs_h_scroll {
-            rect.height.saturating_sub(scrollbar_size)
-        } else {
-            rect.height
-        };
+        let v_track_height =
+            if needs_h_scroll { rect.height.saturating_sub(scrollbar_size) } else { rect.height };
         // Track
         layer.push(RenderCommand::FillRect {
-            rect: Rect {
-                x: v_track_x,
-                y: rect.y,
-                width: scrollbar_size,
-                height: v_track_height,
-            },
+            rect: Rect { x: v_track_x, y: rect.y, width: scrollbar_size, height: v_track_height },
             color: Color::rgba(232, 234, 238, 255),
         });
         // Thumb
@@ -946,9 +757,7 @@ impl SoftwareSurface {
     }
     /// Get current software render configuration.
     pub fn render_config(&self) -> SoftwareRenderConfig {
-        SoftwareRenderConfig {
-            aa_samples_per_axis: self.aa_samples_per_axis,
-        }
+        SoftwareRenderConfig { aa_samples_per_axis: self.aa_samples_per_axis }
     }
     /// Apply software render configuration.
     pub fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
@@ -957,9 +766,7 @@ impl SoftwareSurface {
     }
     /// Set anti-aliasing sample grid size per axis for high-sample raster paths.
     pub fn set_aa_samples_per_axis(&mut self, samples: u8) {
-        self.apply_render_config(SoftwareRenderConfig {
-            aa_samples_per_axis: samples,
-        });
+        self.apply_render_config(SoftwareRenderConfig { aa_samples_per_axis: samples });
     }
     /// Get anti-aliasing sample grid size per axis.
     pub fn aa_samples_per_axis(&self) -> u8 {
@@ -1001,12 +808,7 @@ impl SoftwareSurface {
         let descent = (line_height - ascent as f32).max(0.0) as u32;
         let shaped = self.shape_text(text, font);
         let width = shaped.advance().round() as u32;
-        TextMetrics {
-            width,
-            height: line_height.round() as u32,
-            ascent,
-            descent,
-        }
+        TextMetrics { width, height: line_height.round() as u32, ascent, descent }
     }
     /// Shape text into unicode-aware clusters with logical advances.
     pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
@@ -1027,10 +829,7 @@ impl SoftwareSurface {
                     last.text.push(scalar);
                 }
             } else {
-                clusters.push(TextCluster {
-                    text: scalar.to_string(),
-                    advance: 0.0,
-                });
+                clusters.push(TextCluster { text: scalar.to_string(), advance: 0.0 });
             }
         }
         let mut total_advance = 0.0f32;
@@ -1038,10 +837,7 @@ impl SoftwareSurface {
             cluster.advance = estimate_cluster_advance(&cluster.text, font.size, scale);
             total_advance += cluster.advance;
         }
-        ShapedText {
-            clusters,
-            advance: total_advance,
-        }
+        ShapedText { clusters, advance: total_advance }
     }
     /// Fills a rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
@@ -1184,14 +980,7 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(
-                        frame,
-                        size.width,
-                        px as u32,
-                        py as u32,
-                        color,
-                        stroke_coverage,
-                    );
+                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
                 }
             }
         }
@@ -1234,14 +1023,7 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(
-                        frame,
-                        size.width,
-                        px as u32,
-                        py as u32,
-                        color,
-                        stroke_coverage,
-                    );
+                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
                 }
             }
         }
@@ -1432,14 +1214,7 @@ impl SoftwareSurface {
                     sample_grid,
                 );
                 if stroke_coverage > 0.0 {
-                    blend_pixel(
-                        frame,
-                        size.width,
-                        px as u32,
-                        py as u32,
-                        color,
-                        stroke_coverage,
-                    );
+                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
                 }
             }
         }

@@ -271,11 +271,8 @@ impl DockWidget {
         }
         let title_bar = self.title_bar_rect();
         let button_size = 16;
-        let close_button_width = if self.features.dock_widget_closable {
-            button_size + 5
-        } else {
-            0
-        };
+        let close_button_width =
+            if self.features.dock_widget_closable { button_size + 5 } else { 0 };
         Some(Rect::new(
             title_bar.x + title_bar.width as i32 - button_size - 5 - close_button_width,
             title_bar.y + (title_bar.height as i32 - button_size) / 2,

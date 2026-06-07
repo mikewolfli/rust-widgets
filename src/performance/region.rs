@@ -25,12 +25,7 @@ pub struct DirtyRegion {
 }
 impl DirtyRegion {
     pub fn new(rect: Rect) -> Self {
-        Self {
-            id: RegionId::new(),
-            rect,
-            priority: 0,
-            layer: 0,
-        }
+        Self { id: RegionId::new(), rect, priority: 0, layer: 0 }
     }
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
@@ -55,18 +50,10 @@ pub struct DirtyRegionTracker {
 }
 impl DirtyRegionTracker {
     pub fn new() -> Self {
-        Self {
-            regions: Vec::new(),
-            merged: false,
-            max_regions: 100,
-        }
+        Self { regions: Vec::new(), merged: false, max_regions: 100 }
     }
     pub fn with_max_regions(max_regions: usize) -> Self {
-        Self {
-            regions: Vec::new(),
-            merged: false,
-            max_regions,
-        }
+        Self { regions: Vec::new(), merged: false, max_regions }
     }
     pub fn add(&mut self, rect: Rect) -> RegionId {
         let region = DirtyRegion::new(rect);
@@ -112,10 +99,7 @@ impl DirtyRegionTracker {
             return;
         }
         let rects: Vec<Rect> = self.regions.iter().map(|r| r.rect).collect();
-        self.regions = merge_intersecting_rects(&rects)
-            .into_iter()
-            .map(DirtyRegion::new)
-            .collect();
+        self.regions = merge_intersecting_rects(&rects).into_iter().map(DirtyRegion::new).collect();
         self.merged = true;
     }
     pub fn get_bounding_rect(&self) -> Option<Rect> {

@@ -182,8 +182,7 @@ impl FormField {
     }
 
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        self.rect
-            .contains_point(crate::core::Point::from_f32(x as f32, y as f32))
+        self.rect.contains_point(crate::core::Point::from_f32(x as f32, y as f32))
     }
 }
 #[derive(Debug, Clone)]
@@ -231,16 +230,10 @@ impl Form {
         self.fields.iter_mut().find(|f| f.name == name)
     }
     pub fn get_fields_at_point(&self, page: u32, x: i32, y: i32) -> Vec<&FormField> {
-        self.fields
-            .iter()
-            .filter(|f| f.page == page && f.contains_point(x, y))
-            .collect()
+        self.fields.iter().filter(|f| f.page == page && f.contains_point(x, y)).collect()
     }
     pub fn get_all_values(&self) -> HashMap<String, String> {
-        self.fields
-            .iter()
-            .map(|f| (f.name.clone(), f.value.clone()))
-            .collect()
+        self.fields.iter().map(|f| (f.name.clone(), f.value.clone())).collect()
     }
     pub fn set_all_values(&mut self, values: HashMap<String, String>) {
         for (name, value) in values {
@@ -269,19 +262,12 @@ impl Form {
     ///
     /// Only fields on the given page are included.
     pub fn to_pdf_form_fields(&self, page: u32) -> Vec<PdfFormField> {
-        self.fields
-            .iter()
-            .filter(|f| f.page == page)
-            .map(|f| f.to_pdf_form_field())
-            .collect()
+        self.fields.iter().filter(|f| f.page == page).map(|f| f.to_pdf_form_field()).collect()
     }
 
     /// Convert all fields across all pages to `PdfFormField` entries.
     pub fn to_pdf_form_fields_all(&self) -> Vec<(u32, PdfFormField)> {
-        self.fields
-            .iter()
-            .map(|f| (f.page, f.to_pdf_form_field()))
-            .collect()
+        self.fields.iter().map(|f| (f.page, f.to_pdf_form_field())).collect()
     }
 
     pub fn validate(&self) -> Vec<ValidationError> {
@@ -315,10 +301,7 @@ pub struct FormManager {
 }
 impl FormManager {
     pub fn new() -> Self {
-        Self {
-            forms: HashMap::new(),
-            current_form: None,
-        }
+        Self { forms: HashMap::new(), current_form: None }
     }
     pub fn add_form(&mut self, form: Form) {
         let id = form.id.clone();
@@ -340,15 +323,10 @@ impl FormManager {
         self.current_form.as_ref().and_then(|id| self.forms.get(id))
     }
     pub fn get_current_form_mut(&mut self) -> Option<&mut Form> {
-        self.current_form
-            .as_ref()
-            .and_then(|id| self.forms.get_mut(id))
+        self.current_form.as_ref().and_then(|id| self.forms.get_mut(id))
     }
     pub fn get_all_field_values(&self) -> HashMap<String, HashMap<String, String>> {
-        self.forms
-            .iter()
-            .map(|(id, form)| (id.clone(), form.get_all_values()))
-            .collect()
+        self.forms.iter().map(|(id, form)| (id.clone(), form.get_all_values())).collect()
     }
     pub fn clear(&mut self) {
         self.forms.clear();

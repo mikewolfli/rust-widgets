@@ -13,12 +13,7 @@ pub fn rasterize_draw_commands_rgba8(
     if width == 0 || height == 0 {
         return Err("width/height must be > 0".to_string());
     }
-    let framebuffer = PixelRect {
-        x: 0,
-        y: 0,
-        width,
-        height,
-    };
+    let framebuffer = PixelRect { x: 0, y: 0, width, height };
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     for (index, command) in commands.iter().enumerate() {
         match command {
@@ -38,12 +33,7 @@ pub fn rasterize_draw_commands_rgba8(
                 }
                 fill_rect_cpu_rgba8(&mut pixels, width, draw_rect, *color);
             }
-            WgpuDrawCommand::StrokeRect {
-                rect,
-                color,
-                thickness,
-                clip,
-            } => {
+            WgpuDrawCommand::StrokeRect { rect, color, thickness, clip } => {
                 if *thickness == 0 {
                     continue;
                 }
@@ -61,25 +51,14 @@ pub fn rasterize_draw_commands_rgba8(
                     fill_rect_cpu_rgba8(&mut pixels, width, draw_rect, *color);
                 }
             }
-            WgpuDrawCommand::DrawText {
-                rect,
-                text,
-                color,
-                clip,
-            } => {
+            WgpuDrawCommand::DrawText { rect, text, color, clip } => {
                 if rect.width == 0 || rect.height == 0 || text.is_empty() {
                     continue;
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, *clip);
                 draw_text_cpu_rgba8(&mut pixels, width, *rect, text, *color, clip_rect);
             }
-            WgpuDrawCommand::DrawImage {
-                rect,
-                rgba8,
-                image_width,
-                image_height,
-                clip,
-            } => {
+            WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
                 if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {
                     continue;
                 }
@@ -144,30 +123,10 @@ fn fill_rect_cpu_rgba8(pixels: &mut [u8], width: u32, rect: PixelRect, color: Rg
 fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
     let t = thickness.min(rect.width).min(rect.height);
     [
-        PixelRect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: t,
-        },
-        PixelRect {
-            x: rect.x,
-            y: rect.bottom() - t as i32,
-            width: rect.width,
-            height: t,
-        },
-        PixelRect {
-            x: rect.x,
-            y: rect.y,
-            width: t,
-            height: rect.height,
-        },
-        PixelRect {
-            x: rect.right() - t as i32,
-            y: rect.y,
-            width: t,
-            height: rect.height,
-        },
+        PixelRect { x: rect.x, y: rect.y, width: rect.width, height: t },
+        PixelRect { x: rect.x, y: rect.bottom() - t as i32, width: rect.width, height: t },
+        PixelRect { x: rect.x, y: rect.y, width: t, height: rect.height },
+        PixelRect { x: rect.right() - t as i32, y: rect.y, width: t, height: rect.height },
     ]
 }
 fn draw_text_cpu_rgba8(
@@ -195,10 +154,7 @@ fn draw_text_cpu_rgba8(
         let row = grid_index / columns;
         let origin_x = rect.x + col * glyph_w;
         let origin_y = rect.y + row * glyph_h;
-        let glyph = BASIC_FONTS
-            .get(scalar)
-            .or_else(|| BASIC_FONTS.get('?'))
-            .unwrap_or([0; 8]);
+        let glyph = BASIC_FONTS.get(scalar).or_else(|| BASIC_FONTS.get('?')).unwrap_or([0; 8]);
         for (gy, bits) in glyph.iter().enumerate() {
             for gx in 0..8 {
                 if ((bits >> gx) & 1) == 0 {

@@ -87,9 +87,8 @@ impl TerminalView {
         };
 
         self.history_index = next_index;
-        self.input_line = next_index
-            .and_then(|index| self.history.get(index).cloned())
-            .unwrap_or_default();
+        self.input_line =
+            next_index.and_then(|index| self.history.get(index).cloned()).unwrap_or_default();
         self.base.request_redraw();
     }
 }
@@ -171,16 +170,9 @@ mod tests {
         });
 
         assert!(terminal.submit());
-        assert_eq!(
-            terminal.lines().last().map(|s| s.as_str()),
-            Some("> ls -la")
-        );
+        assert_eq!(terminal.lines().last().map(|s| s.as_str()), Some("> ls -la"));
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["ls -la".to_string()]);
     }
 
@@ -210,10 +202,7 @@ mod tests {
         }
 
         assert_eq!(terminal.lines().len(), 200);
-        assert_eq!(
-            terminal.lines().first().map(|s| s.as_str()),
-            Some("line 20")
-        );
+        assert_eq!(terminal.lines().first().map(|s| s.as_str()), Some("line 20"));
     }
 
     #[test]
@@ -253,11 +242,7 @@ mod tests {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
         terminal.set_input_line("command");
         assert!(terminal.submit());
-        assert_eq!(
-            terminal.input_line(),
-            "",
-            "input must be cleared after submit"
-        );
+        assert_eq!(terminal.input_line(), "", "input must be cleared after submit");
     }
 
     #[test]

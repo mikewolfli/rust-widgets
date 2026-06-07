@@ -80,9 +80,7 @@ mod tests {
     #[test]
     fn test_mod_plugins_types_accessible() {
         let mut mgr = PluginManager::new();
-        let id = mgr
-            .register(Box::new(ContentPlugin::new("test", "1.0")))
-            .unwrap();
+        let id = mgr.register(Box::new(ContentPlugin::new("test", "1.0"))).unwrap();
         assert_eq!(id, 1);
         assert!(!mgr.list().is_empty());
 

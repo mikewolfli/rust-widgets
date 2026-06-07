@@ -270,30 +270,18 @@ impl Draw for SpinBox {
         let arrow_size = 4;
         let arrow_size_f = arrow_size as f32;
         context.draw_line(
-            Point::from_f32(
-                down_arrow_x_f - arrow_size_f,
-                down_arrow_y_f - arrow_size_f / 2.0,
-            ),
-            Point::from_f32(
-                down_arrow_x_f + arrow_size_f,
-                down_arrow_y_f - arrow_size_f / 2.0,
-            ),
+            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
-            Point::from_f32(
-                down_arrow_x_f + arrow_size_f,
-                down_arrow_y_f - arrow_size_f / 2.0,
-            ),
+            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(
-                down_arrow_x_f - arrow_size_f,
-                down_arrow_y_f - arrow_size_f / 2.0,
-            ),
+            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         // Up button
@@ -309,30 +297,18 @@ impl Draw for SpinBox {
         let up_arrow_x_f = up_button_x_f + button_width_f / 2.0;
         let up_arrow_y_f = rect_y_f + rect_height_f / 2.0;
         context.draw_line(
-            Point::from_f32(
-                up_arrow_x_f - arrow_size_f,
-                up_arrow_y_f + arrow_size_f / 2.0,
-            ),
-            Point::from_f32(
-                up_arrow_x_f + arrow_size_f,
-                up_arrow_y_f + arrow_size_f / 2.0,
-            ),
+            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
+            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
-            Point::from_f32(
-                up_arrow_x_f + arrow_size_f,
-                up_arrow_y_f + arrow_size_f / 2.0,
-            ),
+            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(
-                up_arrow_x_f - arrow_size_f,
-                up_arrow_y_f + arrow_size_f / 2.0,
-            ),
+            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         // Draw text

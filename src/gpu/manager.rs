@@ -535,13 +535,7 @@ mod tests {
     }
     #[test]
     fn test_operation_mode() {
-        assert!(matches!(
-            GpuOperationMode::Hardware,
-            GpuOperationMode::Hardware
-        ));
-        assert!(matches!(
-            GpuOperationMode::Software,
-            GpuOperationMode::Software
-        ));
+        assert!(matches!(GpuOperationMode::Hardware, GpuOperationMode::Hardware));
+        assert!(matches!(GpuOperationMode::Software, GpuOperationMode::Software));
     }
 }

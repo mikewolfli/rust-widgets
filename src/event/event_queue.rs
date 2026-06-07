@@ -26,11 +26,7 @@ impl EventSender {
         priority: EventPriority,
     ) -> Result<(), String> {
         self.inner
-            .send(EventEnvelope {
-                target: object_id,
-                event,
-                priority,
-            })
+            .send(EventEnvelope { target: object_id, event, priority })
             .map_err(|_| "event queue disconnected".to_string())
     }
     /// Post idle-priority event.
@@ -47,10 +43,7 @@ impl EventQueue {
     /// Create unbounded queue and sender/receiver pair.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self {
-            sender: EventSender { inner: tx },
-            receiver: rx,
-        }
+        Self { sender: EventSender { inner: tx }, receiver: rx }
     }
     /// Returns a cloneable sender handle for posting events.
     pub fn sender(&self) -> EventSender {

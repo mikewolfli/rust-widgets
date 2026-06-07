@@ -105,20 +105,11 @@ impl Draw for CommandLink {
         let text_font = Font::new("Arial", 12.0, false, true);
         let text_x = rect.x + padding.left as i32;
         let text_y = rect.y + padding.top as i32 + 12;
-        context.draw_text(
-            Point::new(text_x, text_y),
-            &self.text,
-            &text_font,
-            current_text_color,
-        );
+        context.draw_text(Point::new(text_x, text_y), &self.text, &text_font, current_text_color);
         // Draw description if present
         if !self.description.is_empty() {
             let desc_font = Font::new("Arial", 10.0, false, false);
-            let desc_color = if !is_enabled {
-                disabled_color
-            } else {
-                Color::GRAY
-            };
+            let desc_color = if !is_enabled { disabled_color } else { Color::GRAY };
             let desc_x = text_x;
             let desc_y = text_y + 16;
             context.draw_text(

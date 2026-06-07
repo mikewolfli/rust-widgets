@@ -24,14 +24,10 @@ pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContr
         RuntimeProfile::Full => get_platform()
             .native_capability_contract()
             .map(CapabilityContract::Native)
-            .unwrap_or(CapabilityContract::Native(
-                fallback_native_capability_contract(),
-            )),
+            .unwrap_or(CapabilityContract::Native(fallback_native_capability_contract())),
         RuntimeProfile::Embedded => get_platform()
             .embedded_capability_contract()
             .map(CapabilityContract::Embedded)
-            .unwrap_or(CapabilityContract::Embedded(
-                fallback_embedded_capability_contract(),
-            )),
+            .unwrap_or(CapabilityContract::Embedded(fallback_embedded_capability_contract())),
     }
 }

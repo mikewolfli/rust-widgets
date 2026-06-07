@@ -65,69 +65,38 @@ fn widget_lifecycle() {
 
     // Test show/hide.
     backend.show_widget(button);
-    assert!(
-        backend.is_widget_visible(button),
-        "Widget should be visible after show"
-    );
+    assert!(backend.is_widget_visible(button), "Widget should be visible after show");
 
     backend.hide_widget(button);
-    assert!(
-        !backend.is_widget_visible(button),
-        "Widget should be hidden after hide"
-    );
+    assert!(!backend.is_widget_visible(button), "Widget should be hidden after hide");
 
     backend.show_widget(button);
-    assert!(
-        backend.is_widget_visible(button),
-        "Widget should be visible after second show"
-    );
+    assert!(backend.is_widget_visible(button), "Widget should be visible after second show");
 
     // Test enable/disable.
     backend.set_widget_enabled(button, false);
-    assert!(
-        !backend.is_widget_enabled(button),
-        "Widget should be disabled"
-    );
+    assert!(!backend.is_widget_enabled(button), "Widget should be disabled");
 
     backend.set_widget_enabled(button, true);
-    assert!(
-        backend.is_widget_enabled(button),
-        "Widget should be enabled"
-    );
+    assert!(backend.is_widget_enabled(button), "Widget should be enabled");
 
     // Test text set/get roundtrip.
     backend.set_widget_text(button, "updated");
-    assert_eq!(
-        backend.get_widget_text(button),
-        "updated",
-        "Widget text should update"
-    );
+    assert_eq!(backend.get_widget_text(button), "updated", "Widget text should update");
 
     // Test geometry update.
     backend.set_widget_geometry(button, 20, 20, 100, 30);
 
     // Test visibility roundtrip on window.
     backend.hide_widget(window);
-    assert!(
-        !backend.is_widget_visible(window),
-        "Window should be hidden"
-    );
+    assert!(!backend.is_widget_visible(window), "Window should be hidden");
     backend.show_widget(window);
-    assert!(
-        backend.is_widget_visible(window),
-        "Window should be visible"
-    );
+    assert!(backend.is_widget_visible(window), "Window should be visible");
 
     // Test IME (default: false).
     // IME defaults to true (BackendState::WidgetRecord default).
-    assert!(
-        backend.is_widget_ime_enabled(button),
-        "IME should be enabled by default"
-    );
-    assert!(
-        backend.set_widget_ime_enabled(button, false),
-        "set_widget_ime_enabled should succeed"
-    );
+    assert!(backend.is_widget_ime_enabled(button), "IME should be enabled by default");
+    assert!(backend.set_widget_ime_enabled(button, false), "set_widget_ime_enabled should succeed");
     assert!(
         !backend.is_widget_ime_enabled(button),
         "IME should be disabled after set_widget_ime_enabled(false)"
@@ -151,28 +120,14 @@ fn clipboard_roundtrip() {
     backend.init();
 
     // Clipboard should start empty.
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "",
-        "Clipboard should be empty initially"
-    );
+    assert_eq!(backend.get_clipboard_text(), "", "Clipboard should be empty initially");
 
     // Set and get roundtrip.
-    assert!(
-        backend.set_clipboard_text("hello harmony"),
-        "Should set clipboard text"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "hello harmony",
-        "Clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("hello harmony"), "Should set clipboard text");
+    assert_eq!(backend.get_clipboard_text(), "hello harmony", "Clipboard text should match");
 
     // Overwrite with new value.
-    assert!(
-        backend.set_clipboard_text("updated clipboard"),
-        "Should overwrite clipboard text"
-    );
+    assert!(backend.set_clipboard_text("updated clipboard"), "Should overwrite clipboard text");
     assert_eq!(
         backend.get_clipboard_text(),
         "updated clipboard",
@@ -180,10 +135,7 @@ fn clipboard_roundtrip() {
     );
 
     // Set empty string.
-    assert!(
-        backend.set_clipboard_text(""),
-        "Should set empty clipboard text"
-    );
+    assert!(backend.set_clipboard_text(""), "Should set empty clipboard text");
     assert_eq!(
         backend.get_clipboard_text(),
         "",
@@ -294,18 +246,12 @@ fn menu_lifecycle() {
     );
 
     // Inject and poll a menu trigger.
-    assert!(
-        backend.inject_menu_trigger(item),
-        "Should inject menu trigger"
-    );
+    assert!(backend.inject_menu_trigger(item), "Should inject menu trigger");
     let triggered = backend.poll_menu_triggered();
     assert_eq!(triggered, Some(item), "Should poll triggered menu item");
 
     // Second poll should be empty.
-    assert!(
-        backend.poll_menu_triggered().is_none(),
-        "No more menu triggers expected"
-    );
+    assert!(backend.poll_menu_triggered().is_none(), "No more menu triggers expected");
 }
 
 #[test]
@@ -317,10 +263,7 @@ fn toolbar_and_statusbar() {
     let toolbar = backend.create_tool_bar(window, 0, 0, 200, 24);
     assert!(toolbar > 0, "ToolBar should be created");
     backend.set_widget_visible(toolbar, true);
-    assert!(
-        backend.is_widget_visible(toolbar),
-        "ToolBar should be visible"
-    );
+    assert!(backend.is_widget_visible(toolbar), "ToolBar should be visible");
 
     let statusbar = backend.create_status_bar(window, "Ready", 0, 96, 200, 24);
     assert!(statusbar > 0, "StatusBar should be created");
@@ -328,10 +271,7 @@ fn toolbar_and_statusbar() {
     backend.set_widget_text(statusbar, "Updated");
     assert_eq!(backend.get_widget_text(statusbar), "Updated");
     backend.set_widget_visible(statusbar, true);
-    assert!(
-        backend.is_widget_visible(statusbar),
-        "StatusBar should be visible"
-    );
+    assert!(backend.is_widget_visible(statusbar), "StatusBar should be visible");
 }
 
 #[test]

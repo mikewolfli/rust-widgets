@@ -135,10 +135,7 @@ impl ShortcutManager {
     }
     /// Finds conflicts between the given shortcut and existing shortcuts.
     pub fn find_conflicts(&self, shortcut: &Shortcut) -> Vec<&ShortcutEntry> {
-        self.entries
-            .values()
-            .filter(|e| e.shortcut.conflicts_with(shortcut))
-            .collect()
+        self.entries.values().filter(|e| e.shortcut.conflicts_with(shortcut)).collect()
     }
 }
 impl Default for ShortcutManager {

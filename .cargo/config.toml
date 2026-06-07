@@ -1,0 +1,5 @@
+[alias]
+check-all = "check --all-features"
+test-all = "test --all-features -q"
+lint = "clippy --all-features --all-targets -- -D warnings"
+fmt-check = "fmt --all -- --check"

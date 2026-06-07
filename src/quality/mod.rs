@@ -134,11 +134,8 @@ mod tests {
             degrade_frame_count: 5,
             upgrade_frame_count: 3,
         };
-        let gpu_capability = GpuCapability {
-            supports_high_quality: true,
-            is_integrated: true,
-            performance_tier: 1,
-        };
+        let gpu_capability =
+            GpuCapability { supports_high_quality: true, is_integrated: true, performance_tier: 1 };
         let mut manager = QualityManager::with_config_and_capability(config, gpu_capability);
         assert_eq!(manager.quality_level(), QualityLevel::Low);
         for _ in 0..3 {
@@ -154,15 +151,9 @@ mod tests {
             performance_tier: 5,
         };
         assert_eq!(high_tier.recommended_initial_quality(), QualityLevel::High);
-        let medium_tier = GpuCapability {
-            supports_high_quality: true,
-            is_integrated: true,
-            performance_tier: 3,
-        };
-        assert_eq!(
-            medium_tier.recommended_initial_quality(),
-            QualityLevel::Medium
-        );
+        let medium_tier =
+            GpuCapability { supports_high_quality: true, is_integrated: true, performance_tier: 3 };
+        assert_eq!(medium_tier.recommended_initial_quality(), QualityLevel::Medium);
         let low_tier = GpuCapability {
             supports_high_quality: false,
             is_integrated: false,

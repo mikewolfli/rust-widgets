@@ -13,18 +13,10 @@ pub struct KeySequence {
 }
 impl KeySequence {
     pub fn new(modifiers: u32, key_code: u32, key_name: impl Into<String>) -> Self {
-        Self {
-            modifiers,
-            key_code,
-            key_name: key_name.into(),
-        }
+        Self { modifiers, key_code, key_name: key_name.into() }
     }
     pub fn empty() -> Self {
-        Self {
-            modifiers: 0,
-            key_code: 0,
-            key_name: String::new(),
-        }
+        Self { modifiers: 0, key_code: 0, key_name: String::new() }
     }
     pub fn modifiers(&self) -> u32 {
         self.modifiers
@@ -218,10 +210,7 @@ impl Draw for KeySequenceEdit {
             Color::from_rgb(0, 0, 0)
         };
         context.draw_text(
-            Point {
-                x: rect.x + 6,
-                y: rect.y + (rect.height as i32 / 2),
-            },
+            Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
             &display,
             &Font::default(),
             text_color,

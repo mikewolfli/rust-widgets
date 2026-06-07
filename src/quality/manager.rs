@@ -44,12 +44,7 @@ impl QualityManager {
             .recommended_initial_quality()
             .clamp(config.min_quality, config.max_quality);
         let frame_monitor = FrameTimeMonitor::new(config.target_frame_rate);
-        Self {
-            current_level: initial_quality,
-            config,
-            frame_monitor,
-            gpu_capability,
-        }
+        Self { current_level: initial_quality, config, frame_monitor, gpu_capability }
     }
     /// Records a frame duration and updates quality level if necessary.
     pub fn finish_frame(&mut self, frame_duration: Duration) {
@@ -125,8 +120,7 @@ impl QualityManager {
     /// Updates the quality configuration.
     pub fn set_config(&mut self, config: QualityConfig) {
         self.config = config.normalized();
-        self.frame_monitor
-            .set_target_frame_rate(self.config.target_frame_rate);
+        self.frame_monitor.set_target_frame_rate(self.config.target_frame_rate);
     }
     /// Returns the GPU capability.
     pub fn gpu_capability(&self) -> &GpuCapability {

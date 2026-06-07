@@ -19,12 +19,7 @@ pub struct BoxLayout {
 impl BoxLayout {
     /// Create a box layout with orientation, spacing and margin.
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
-        Self {
-            orientation,
-            spacing,
-            margin,
-            items: Vec::new(),
-        }
+        Self { orientation, spacing, margin, items: Vec::new() }
     }
     /// Returns layout orientation.
     pub fn orientation(&self) -> Orientation {
@@ -61,21 +56,13 @@ impl BoxLayout {
     }
     /// Sets size constraints for an existing widget item.
     pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
-        if let Some(item) = self
-            .items
-            .iter_mut()
-            .find(|item| item.widget_id == Some(widget_id))
-        {
+        if let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             item.constraints = constraints;
         }
     }
     /// Sets size policy for an existing widget item.
     pub fn set_size_policy(&mut self, widget_id: ObjectId, policy: SizePolicy) {
-        if let Some(item) = self
-            .items
-            .iter_mut()
-            .find(|item| item.widget_id == Some(widget_id))
-        {
+        if let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             item.policy = policy;
         }
     }
@@ -83,12 +70,7 @@ impl BoxLayout {
         if self.items.is_empty() {
             return Vec::new();
         }
-        let total_stretch: u32 = self
-            .items
-            .iter()
-            .map(|item| item.stretch)
-            .sum::<u32>()
-            .max(1);
+        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
         let mut assigned = Vec::with_capacity(self.items.len());
         for item in &self.items {
             let mut major = if item.policy == SizePolicy::Fixed {
@@ -109,11 +91,8 @@ impl BoxLayout {
                 if total_assigned >= primary {
                     break;
                 }
-                let max_allowed = item
-                    .constraints
-                    .max
-                    .unwrap_or(u32::MAX)
-                    .max(item.constraints.min);
+                let max_allowed =
+                    item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
                 if assigned[index] < max_allowed {
                     assigned[index] = assigned[index].saturating_add(1);
                     total_assigned = total_assigned.saturating_add(1);
@@ -197,10 +176,7 @@ impl Layout for BoxLayout {
         self
     }
     fn child_ids(&self) -> Vec<ObjectId> {
-        self.items
-            .iter()
-            .filter_map(|item| item.widget_id)
-            .collect()
+        self.items.iter().filter_map(|item| item.widget_id).collect()
     }
     fn has_child(&self, id: ObjectId) -> bool {
         self.items.iter().any(|item| item.widget_id == Some(id))
@@ -242,12 +218,9 @@ impl Layout for BoxLayout {
                     major,
                     rect.height.saturating_sub(self.margin * 2),
                 ),
-                Orientation::Vertical => Rect::new(
-                    cursor_x,
-                    cursor_y,
-                    rect.width.saturating_sub(self.margin * 2),
-                    major,
-                ),
+                Orientation::Vertical => {
+                    Rect::new(cursor_x, cursor_y, rect.width.saturating_sub(self.margin * 2), major)
+                }
             };
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
@@ -266,9 +239,7 @@ pub struct HBoxLayout {
 }
 impl HBoxLayout {
     pub fn new(spacing: u32, margin: u32) -> Self {
-        Self {
-            inner: BoxLayout::new(Orientation::Horizontal, spacing, margin),
-        }
+        Self { inner: BoxLayout::new(Orientation::Horizontal, spacing, margin) }
     }
     pub fn add_spacer(&mut self, stretch: u32) {
         self.inner.add_spacer(stretch);
@@ -334,9 +305,7 @@ pub struct VBoxLayout {
 }
 impl VBoxLayout {
     pub fn new(spacing: u32, margin: u32) -> Self {
-        Self {
-            inner: BoxLayout::new(Orientation::Vertical, spacing, margin),
-        }
+        Self { inner: BoxLayout::new(Orientation::Vertical, spacing, margin) }
     }
     pub fn add_spacer(&mut self, stretch: u32) {
         self.inner.add_spacer(stretch);

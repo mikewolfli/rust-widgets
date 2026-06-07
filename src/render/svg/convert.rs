@@ -16,10 +16,7 @@ pub fn color_to_rgba(c: &Color) -> String {
 
 /// Format a [`Rect`] as SVG `x=".." y=".." width=".." height=".."` attributes.
 pub fn rect_attrs(rect: &Rect) -> String {
-    format!(
-        r#"x="{}" y="{}" width="{}" height="{}""#,
-        rect.x, rect.y, rect.width, rect.height
-    )
+    format!(r#"x="{}" y="{}" width="{}" height="{}""#, rect.x, rect.y, rect.width, rect.height)
 }
 
 /// Format the start point of a line as SVG `x1=".." y1=".."` attributes.

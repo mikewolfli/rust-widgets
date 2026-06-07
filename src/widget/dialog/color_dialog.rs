@@ -62,12 +62,7 @@ impl ColorDialog {
 
     fn picker_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(
-            rect.x + 10,
-            rect.y + 38,
-            rect.width - 20,
-            rect.height.saturating_sub(120),
-        )
+        Rect::new(rect.x + 10, rect.y + 38, rect.width - 20, rect.height.saturating_sub(120))
     }
 
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
@@ -89,11 +84,7 @@ impl ColorDialog {
         let r = (rx * 255.0).round() as u8;
         let g = ((1.0 - ry) * 255.0).round() as u8;
         let b = ((1.0 - rx) * 255.0).round() as u8;
-        let a = if self.options_alpha {
-            self.current_color.a
-        } else {
-            255
-        };
+        let a = if self.options_alpha { self.current_color.a } else { 255 };
         Some(Color::from_rgba(r, g, b, a))
     }
 
@@ -159,10 +150,7 @@ impl Draw for ColorDialog {
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, 28),
-            Color::from_rgb(0, 120, 215),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &tr!("color_dialog.title"),
@@ -175,21 +163,12 @@ impl Draw for ColorDialog {
         context.draw_rect(picker_rect, Color::from_rgb(100, 100, 100));
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
-        context.fill_rect(
-            Rect::new(rect.x + 10, preview_y as i32, 60, 30),
-            self.current_color,
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 10, preview_y as i32, 60, 30),
-            Color::from_rgb(0, 0, 0),
-        );
+        context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
+        context
+            .draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::from_rgb(0, 0, 0));
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
-            &format!(
-                "{} {}",
-                tr!("color_dialog.current_color"),
-                self.current_color.to_hex_rgba()
-            ),
+            &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
         );
@@ -258,11 +237,7 @@ mod tests {
 
         dialog.set_current_color(Color::from_rgb(1, 2, 3));
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![Color::from_rgb(1, 2, 3)]);
     }
 }

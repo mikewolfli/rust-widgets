@@ -25,10 +25,7 @@ mod tests {
             mime: "text/plain".to_string(),
             payload: b"payload".to_vec(),
         };
-        assert!(DragDropManager::inject_drop_event_with(
-            &stub,
-            event.clone()
-        ));
+        assert!(DragDropManager::inject_drop_event_with(&stub, event.clone()));
         let queued = DragDropManager::poll_drop_event_with(&stub);
         assert!(queued.is_some());
         assert_eq!(queued.unwrap(), event);

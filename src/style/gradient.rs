@@ -13,10 +13,7 @@ pub struct GradientStop {
 }
 impl GradientStop {
     pub fn new(position: f32, color: Color) -> Self {
-        Self {
-            position: position.clamp(0.0, 1.0),
-            color,
-        }
+        Self { position: position.clamp(0.0, 1.0), color }
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -131,28 +128,20 @@ pub struct GradientBuilder {
 }
 impl GradientBuilder {
     pub fn linear(start: Point, end: Point) -> Self {
-        Self {
-            gradient: Gradient::linear(start, end),
-        }
+        Self { gradient: Gradient::linear(start, end) }
     }
     pub fn radial(center: Point, radius: f32) -> Self {
-        Self {
-            gradient: Gradient::radial(center, radius),
-        }
+        Self { gradient: Gradient::radial(center, radius) }
     }
     pub fn conic(center: Point, angle: f32) -> Self {
-        Self {
-            gradient: Gradient::conic(center, angle),
-        }
+        Self { gradient: Gradient::conic(center, angle) }
     }
     pub fn stop(mut self, position: f32, color: Color) -> Self {
         self.gradient.stops.push(GradientStop::new(position, color));
         self
     }
     pub fn build(mut self) -> Gradient {
-        self.gradient
-            .stops
-            .sort_by(|a, b| a.position.total_cmp(&b.position));
+        self.gradient.stops.sort_by(|a, b| a.position.total_cmp(&b.position));
         self.gradient
     }
 }
@@ -170,24 +159,8 @@ mod tests {
     #[test]
     fn test_gradient_interpolation() {
         let gradient = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
-            .add_stop(
-                0.0,
-                Color {
-                    r: 255,
-                    g: 0,
-                    b: 0,
-                    a: 255,
-                },
-            )
-            .add_stop(
-                1.0,
-                Color {
-                    r: 0,
-                    g: 0,
-                    b: 255,
-                    a: 255,
-                },
-            );
+            .add_stop(0.0, Color { r: 255, g: 0, b: 0, a: 255 })
+            .add_stop(1.0, Color { r: 0, g: 0, b: 255, a: 255 });
         let mid_color = gradient.interpolate(0.5);
         assert_eq!(mid_color.r, 127);
         assert_eq!(mid_color.g, 0);

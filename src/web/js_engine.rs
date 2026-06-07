@@ -46,10 +46,8 @@ impl JsValue {
                 format!("[{}]", items.join(", "))
             }
             JsValue::Object(o) => {
-                let items: Vec<String> = o
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k, v.to_string()))
-                    .collect();
+                let items: Vec<String> =
+                    o.iter().map(|(k, v)| format!("{}: {}", k, v.to_string())).collect();
                 format!("{{{}}}", items.join(", "))
             }
             JsValue::Function(name) => format!("[Function: {}]", name),
@@ -92,20 +90,10 @@ pub struct JsError {
 }
 impl JsError {
     pub fn new(message: String) -> Self {
-        Self {
-            message,
-            stack: None,
-            line: None,
-            column: None,
-        }
+        Self { message, stack: None, line: None, column: None }
     }
     pub fn with_location(message: String, line: u32, column: u32) -> Self {
-        Self {
-            message,
-            stack: None,
-            line: Some(line),
-            column: Some(column),
-        }
+        Self { message, stack: None, line: Some(line), column: Some(column) }
     }
 }
 impl std::fmt::Display for JsError {
@@ -146,10 +134,7 @@ impl JsContext {
         global.insert("undefined".to_string(), JsValue::Undefined);
         global.insert("NaN".to_string(), JsValue::Number(f64::NAN));
         global.insert("Infinity".to_string(), JsValue::Number(f64::INFINITY));
-        Self {
-            global,
-            console_messages: Vec::new(),
-        }
+        Self { global, console_messages: Vec::new() }
     }
     pub fn set_global(&mut self, name: &str, value: JsValue) {
         self.global.insert(name.to_string(), value);
@@ -199,30 +184,12 @@ impl SimpleJsEngine {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
         // Built-in functions
-        functions.insert(
-            "parseInt".to_string(),
-            JsValue::Function("parseInt".to_string()),
-        );
-        functions.insert(
-            "parseFloat".to_string(),
-            JsValue::Function("parseFloat".to_string()),
-        );
-        functions.insert(
-            "String".to_string(),
-            JsValue::Function("String".to_string()),
-        );
-        functions.insert(
-            "Number".to_string(),
-            JsValue::Function("Number".to_string()),
-        );
-        functions.insert(
-            "Boolean".to_string(),
-            JsValue::Function("Boolean".to_string()),
-        );
-        Self {
-            variables: HashMap::new(),
-            functions,
-        }
+        functions.insert("parseInt".to_string(), JsValue::Function("parseInt".to_string()));
+        functions.insert("parseFloat".to_string(), JsValue::Function("parseFloat".to_string()));
+        functions.insert("String".to_string(), JsValue::Function("String".to_string()));
+        functions.insert("Number".to_string(), JsValue::Function("Number".to_string()));
+        functions.insert("Boolean".to_string(), JsValue::Function("Boolean".to_string()));
+        Self { variables: HashMap::new(), functions }
     }
     fn parse_value(&self, s: &str) -> JsValue {
         let s = s.trim().trim_end_matches(';');
@@ -250,10 +217,8 @@ impl SimpleJsEngine {
             if inner.is_empty() {
                 return JsValue::Array(Vec::new());
             }
-            let elements: Vec<JsValue> = inner
-                .split(',')
-                .map(|part| self.parse_value(part.trim()))
-                .collect();
+            let elements: Vec<JsValue> =
+                inner.split(',').map(|part| self.parse_value(part.trim())).collect();
             return JsValue::Array(elements);
         }
         if let Ok(n) = s.parse::<f64>() {
@@ -307,9 +272,8 @@ impl SimpleJsEngine {
         if let Some(rest) = stmt.strip_prefix("function ") {
             // function name ( params ) { body }
             let rest = rest.trim();
-            let name_end = rest
-                .find(|c: char| c.is_ascii_whitespace() || c == '(')
-                .unwrap_or(rest.len());
+            let name_end =
+                rest.find(|c: char| c.is_ascii_whitespace() || c == '(').unwrap_or(rest.len());
             let name = rest[..name_end].trim();
             let after_name = rest[name_end..].trim();
             if after_name.starts_with('(') {
@@ -336,11 +300,7 @@ impl SimpleJsEngine {
                         )
                     })?;
                     let body = after_params[1..close].to_string();
-                    let func = JsValue::FunctionDef {
-                        name: name.to_string(),
-                        params,
-                        body,
-                    };
+                    let func = JsValue::FunctionDef { name: name.to_string(), params, body };
                     self.variables.insert(name.to_string(), func.clone());
                     return Ok(func);
                 }
@@ -403,11 +363,9 @@ impl SimpleJsEngine {
             let semi1 = header.find(';');
             let semi2 = semi1.and_then(|s1| header[s1 + 1..].find(';').map(|s2| s1 + 1 + s2));
             let (init_part, cond_part, incr_part) = match (semi1, semi2) {
-                (Some(s1), Some(s2)) => (
-                    header[..s1].trim(),
-                    header[s1 + 1..s2].trim(),
-                    header[s2 + 1..].trim(),
-                ),
+                (Some(s1), Some(s2)) => {
+                    (header[..s1].trim(), header[s1 + 1..s2].trim(), header[s2 + 1..].trim())
+                }
                 _ => {
                     return Err(JsError::with_location(
                         "Invalid 'for' loop syntax".to_string(),
@@ -416,21 +374,10 @@ impl SimpleJsEngine {
                     ))
                 }
             };
-            let init_cond = if !init_part.is_empty() {
-                Some(init_part.to_string())
-            } else {
-                None
-            };
-            let loop_cond = if cond_part.is_empty() {
-                "true".to_string()
-            } else {
-                cond_part.to_string()
-            };
-            let loop_incr = if !incr_part.is_empty() {
-                Some(incr_part.to_string())
-            } else {
-                None
-            };
+            let init_cond = if !init_part.is_empty() { Some(init_part.to_string()) } else { None };
+            let loop_cond =
+                if cond_part.is_empty() { "true".to_string() } else { cond_part.to_string() };
+            let loop_incr = if !incr_part.is_empty() { Some(incr_part.to_string()) } else { None };
             let mut last_val = JsValue::Undefined;
             // Evaluate init once
             if let Some(init) = &init_cond {
@@ -472,11 +419,7 @@ impl SimpleJsEngine {
         {
             if let Some(eq_pos) = stmt.find('=') {
                 // make sure not <=, >=, ==, ===, !=
-                let before = if eq_pos > 0 {
-                    stmt.as_bytes()[eq_pos - 1] as char
-                } else {
-                    ' '
-                };
+                let before = if eq_pos > 0 { stmt.as_bytes()[eq_pos - 1] as char } else { ' ' };
                 if before != '<' && before != '>' && before != '!' && before != '=' {
                     let name = stmt[..eq_pos].trim().to_string();
                     let value_str = stmt[eq_pos + 1..].trim();
@@ -555,17 +498,9 @@ impl JsEngine for SimpleJsEngine {
     ) -> JsResult<JsValue> {
         // User-defined function
         {
-            let candidate = self
-                .functions
-                .get(name)
-                .or_else(|| self.variables.get(name))
-                .and_then(|v| {
-                    if let JsValue::FunctionDef {
-                        ref params,
-                        ref body,
-                        ..
-                    } = v
-                    {
+            let candidate =
+                self.functions.get(name).or_else(|| self.variables.get(name)).and_then(|v| {
+                    if let JsValue::FunctionDef { ref params, ref body, .. } = v {
                         Some((params.clone(), body.clone()))
                     } else {
                         None
@@ -686,10 +621,7 @@ mod tests {
         let mut engine = SimpleJsEngine::new();
         let mut context = JsContext::new();
         let result = engine
-            .evaluate(
-                "var x = 1; if (x > 0) { var y = 10; } else { var y = 20; }",
-                &mut context,
-            )
+            .evaluate("var x = 1; if (x > 0) { var y = 10; } else { var y = 20; }", &mut context)
             .unwrap();
         // y should be set to 10 via assignment path (or default)
         assert!(result.is_truthy() || result == JsValue::Undefined);
@@ -697,10 +629,7 @@ mod tests {
         let mut engine2 = SimpleJsEngine::new();
         let mut context2 = JsContext::new();
         let result2 = engine2
-            .evaluate(
-                "var x = 0; if (x > 0) { var y = 10; } else { var y = 20; }",
-                &mut context2,
-            )
+            .evaluate("var x = 0; if (x > 0) { var y = 10; } else { var y = 20; }", &mut context2)
             .unwrap();
         assert!(result2.is_truthy() || result2 == JsValue::Undefined);
     }
@@ -731,9 +660,7 @@ mod tests {
     fn test_console_log() {
         let mut engine = SimpleJsEngine::new();
         let mut context = JsContext::new();
-        let result = engine
-            .evaluate("console.log('hello')", &mut context)
-            .unwrap();
+        let result = engine.evaluate("console.log('hello')", &mut context).unwrap();
         assert_eq!(result, JsValue::String("hello".to_string()));
     }
 }

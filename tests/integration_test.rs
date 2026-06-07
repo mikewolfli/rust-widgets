@@ -97,10 +97,7 @@ fn test_orientation() {
 
 #[test]
 fn test_event_mouse_press() {
-    let press = Event::MousePress {
-        pos: Point::new(10, 20),
-        button: 0,
-    };
+    let press = Event::MousePress { pos: Point::new(10, 20), button: 0 };
     match press {
         Event::MousePress { pos, button } => {
             assert_eq!(pos.x, 10);
@@ -113,15 +110,9 @@ fn test_event_mouse_press() {
 
 #[test]
 fn test_event_custom() {
-    let custom = Event::Custom {
-        name: "test".into(),
-        payload: vec![1, 2, 3],
-    };
+    let custom = Event::Custom { name: "test".into(), payload: vec![1, 2, 3] };
     match custom {
-        Event::Custom {
-            ref name,
-            ref payload,
-        } => {
+        Event::Custom { ref name, ref payload } => {
             assert_eq!(name, "test");
             assert_eq!(payload, &[1, 2, 3]);
         }
@@ -254,9 +245,7 @@ fn test_app_new() {
 fn test_app_with_config() {
     use rust_widgets::app::{App, AppConfig};
     let app = App::with_config(
-        AppConfig::default()
-            .with_app_name("TestApp")
-            .with_organization("TestOrg"),
+        AppConfig::default().with_app_name("TestApp").with_organization("TestOrg"),
     );
     assert_eq!(app.config().app_name, "TestApp");
     assert_eq!(app.config().organization, "TestOrg");
@@ -372,10 +361,7 @@ fn json_engine_loads_minimal_window() {
     let layout = JsonLoader::load(json).expect("minimal window should load");
     assert!(!layout.is_empty(), "at least one widget registered");
     // The window's id is "main", findable via button() (WindowHandle not exposed as convenience)
-    assert!(
-        layout.id("main").is_some(),
-        "window id should be registered"
-    );
+    assert!(layout.id("main").is_some(), "window id should be registered");
 }
 
 #[test]
@@ -491,9 +477,7 @@ fn json_engine_widget_by_name_typed() {
     use rust_widgets::json::JsonLoader;
     let json = r#"{"window":{"id":"main","title":"Typed","width":400,"height":300,"children":[{"button":{"id":"ok","text":"OK","x":0,"y":0,"width":80,"height":30}}]}}"#;
     let layout = JsonLoader::load(json).expect("should load");
-    let _btn = layout
-        .button("ok")
-        .expect("button should be findable by name");
+    let _btn = layout.button("ok").expect("button should be findable by name");
 }
 
 #[test]
@@ -541,9 +525,7 @@ fn json_engine_convenience_methods() {
     layout.checkbox("cb1").expect("checkbox convenience");
     layout.line_edit("le1").expect("line_edit convenience");
     layout.slider("sl1").expect("slider convenience");
-    layout
-        .progress_bar("pb1")
-        .expect("progress_bar convenience");
+    layout.progress_bar("pb1").expect("progress_bar convenience");
     layout.combo_box("combo1").expect("combo_box convenience");
 }
 
@@ -551,9 +533,7 @@ fn json_engine_convenience_methods() {
 fn test_app_on_startup_and_shutdown_chaining() {
     use rust_widgets::app::App;
     // on_startup/on_shutdown return Self for chaining
-    let _app = App::new()
-        .on_startup(|| { /* no-op */ })
-        .on_shutdown(|| { /* no-op */ });
+    let _app = App::new().on_startup(|| { /* no-op */ }).on_shutdown(|| { /* no-op */ });
     // Chaining succeeds without panicking
 }
 

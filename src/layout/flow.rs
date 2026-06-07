@@ -44,25 +44,16 @@ impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FlowLayout")
             .field("config", &self.config)
-            .field(
-                "children",
-                &format_args!("{} children", self.children.len()),
-            )
+            .field("children", &format_args!("{} children", self.children.len()))
             .finish()
     }
 }
 impl FlowLayout {
     pub fn new() -> Self {
-        Self {
-            config: FlowLayoutConfig::default(),
-            children: Vec::new(),
-        }
+        Self { config: FlowLayoutConfig::default(), children: Vec::new() }
     }
     pub fn with_config(config: FlowLayoutConfig) -> Self {
-        Self {
-            config,
-            children: Vec::new(),
-        }
+        Self { config, children: Vec::new() }
     }
     pub fn add_child(&mut self, child: Box<dyn Widget>) {
         self.children.push(child);
@@ -84,12 +75,8 @@ impl FlowLayout {
         let content_rect = Rect::new(
             available_rect.x + self.config.padding,
             available_rect.y + self.config.padding,
-            available_rect
-                .width
-                .saturating_sub(2 * self.config.padding as u32),
-            available_rect
-                .height
-                .saturating_sub(2 * self.config.padding as u32),
+            available_rect.width.saturating_sub(2 * self.config.padding as u32),
+            available_rect.height.saturating_sub(2 * self.config.padding as u32),
         );
         match self.config.direction {
             FlowDirection::Horizontal => self.layout_horizontal(&content_rect),

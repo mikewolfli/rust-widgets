@@ -100,11 +100,7 @@ pub struct Version {
 impl Version {
     /// Creates a new version.
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
+        Self { major, minor, patch }
     }
     /// Creates version from u32 (major.minor.patch packed).
     pub const fn from_u32(value: u32) -> Self {
@@ -136,25 +132,12 @@ impl Version {
     pub fn parse_str(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
-            return Err(format!(
-                "Invalid version format: '{}'. Expected 'major.minor.patch'",
-                s
-            ));
+            return Err(format!("Invalid version format: '{}'. Expected 'major.minor.patch'", s));
         }
-        let major = parts[0]
-            .parse::<u16>()
-            .map_err(|e| format!("Invalid major version: {}", e))?;
-        let minor = parts[1]
-            .parse::<u16>()
-            .map_err(|e| format!("Invalid minor version: {}", e))?;
-        let patch = parts[2]
-            .parse::<u16>()
-            .map_err(|e| format!("Invalid patch version: {}", e))?;
-        Ok(Self {
-            major,
-            minor,
-            patch,
-        })
+        let major = parts[0].parse::<u16>().map_err(|e| format!("Invalid major version: {}", e))?;
+        let minor = parts[1].parse::<u16>().map_err(|e| format!("Invalid minor version: {}", e))?;
+        let patch = parts[2].parse::<u16>().map_err(|e| format!("Invalid patch version: {}", e))?;
+        Ok(Self { major, minor, patch })
     }
 }
 impl std::str::FromStr for Version {

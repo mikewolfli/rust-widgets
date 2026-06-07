@@ -25,12 +25,7 @@ pub struct TouchPoint {
 }
 impl TouchPoint {
     pub fn new(id: u32, x: i32, y: i32) -> Self {
-        Self {
-            id,
-            position: Point::new(x, y),
-            pressure: 1.0,
-            size: 1.0,
-        }
+        Self { id, position: Point::new(x, y), pressure: 1.0, size: 1.0 }
     }
     pub fn with_pressure(mut self, pressure: f32) -> Self {
         self.pressure = pressure.clamp(0.0, 1.0);

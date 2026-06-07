@@ -124,27 +124,13 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(
-            MacObjc2HandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(
-            MacObjc2HandleKind::ComboBox,
-            "ComboBox",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::ComboBox, "ComboBox", x, y, width, height)
     }
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
@@ -157,10 +143,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         let entry = data.entry(list_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -169,10 +152,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -197,10 +177,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         if let Some(entry) = data.get_mut(&list_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -211,10 +188,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -229,42 +203,28 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         data.get(&list_box).and_then(|entry| entry.current_index)
     }
     fn list_box_item_count(&self, list_box: u64) -> usize {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return 0;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         data.get(&list_box).map_or(0, |entry| entry.items.len())
     }
     fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
         if !matches!(self.kind_of(list_box), Some(MacObjc2HandleKind::ListBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
-        data.get(&list_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         let entry = data.entry(combo_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -273,10 +233,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         if let Some(entry) = data.get_mut(&combo_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -287,10 +244,7 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let mut data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         let entry = match data.get_mut(&combo_box) {
             Some(e) => e,
             None => return false,
@@ -305,33 +259,22 @@ impl Platform for MacOSObjc2Platform {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         data.get(&combo_box).and_then(|entry| entry.current_index)
     }
     fn combo_box_item_count(&self, combo_box: u64) -> usize {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return 0;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
         data.get(&combo_box).map_or(0, |entry| entry.items.len())
     }
     fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
         if !matches!(self.kind_of(combo_box), Some(MacObjc2HandleKind::ComboBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("mac objc2 list data lock poisoned");
-        data.get(&combo_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        let data = self.list_data.lock().expect("mac objc2 list data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
@@ -404,25 +347,14 @@ impl Platform for MacOSObjc2Platform {
         // Shortcut parsing is intentionally deferred until native objc2 menu bridging is finalized.
         let _ = shortcut;
         let mut menus = self.menus.lock().expect("mac objc2 menu lock poisoned");
-        menus
-            .menu_children
-            .entry(parent_menu)
-            .or_default()
-            .push(item_id);
+        menus.menu_children.entry(parent_menu).or_default().push(item_id);
         item_id
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
-        self.menus
-            .lock()
-            .expect("mac objc2 menu lock poisoned")
-            .pending_menu_events
-            .pop_front()
+        self.menus.lock().expect("mac objc2 menu lock poisoned").pending_menu_events.pop_front()
     }
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
-        if !matches!(
-            self.kind_of(menu_item_id),
-            Some(MacObjc2HandleKind::MenuItem)
-        ) {
+        if !matches!(self.kind_of(menu_item_id), Some(MacObjc2HandleKind::MenuItem)) {
             return false;
         }
         // Queue-only bridge preserves deterministic trigger order across test and native paths.
@@ -434,15 +366,10 @@ impl Platform for MacOSObjc2Platform {
         true
     }
     fn poll_widget_triggered(&self) -> Option<u64> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        self.menus
-            .lock()
-            .expect("mac objc2 menu lock poisoned")
-            .pending_widget_events
-            .pop_front()
+        self.menus.lock().expect("mac objc2 menu lock poisoned").pending_widget_events.pop_front()
     }
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
         if self.kind_of(widget_id).is_none() {
@@ -475,10 +402,7 @@ impl Platform for MacOSObjc2Platform {
                 .lock()
                 .expect("mac objc2 menu lock poisoned")
                 .pending_widget_events
-                .push_back(WidgetTriggerEvent {
-                    widget_id,
-                    kind: WidgetTriggerKind::ValueChanged,
-                });
+                .push_back(WidgetTriggerEvent { widget_id, kind: WidgetTriggerKind::ValueChanged });
         }
     }
     fn get_widget_text(&self, widget_id: u64) -> String {
@@ -534,14 +458,7 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = (parent, title, text);
-        self.insert_widget(
-            MacObjc2HandleKind::MessageBox,
-            "MessageBox",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::MessageBox, "MessageBox", x, y, width, height)
     }
     fn create_file_dialog(
         &self,
@@ -552,14 +469,7 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(
-            MacObjc2HandleKind::FileDialog,
-            "FileDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
     fn create_color_dialog(
         &self,
@@ -570,14 +480,7 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(
-            MacObjc2HandleKind::ColorDialog,
-            "ColorDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
     fn create_font_dialog(
         &self,
@@ -588,14 +491,7 @@ impl Platform for MacOSObjc2Platform {
         height: u32,
     ) -> ObjectId {
         let _ = parent;
-        self.insert_widget(
-            MacObjc2HandleKind::FontDialog,
-            "FontDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MacObjc2HandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
     fn create_spin_box(
         &self,

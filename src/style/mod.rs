@@ -21,12 +21,7 @@ pub struct Padding {
 impl Padding {
     /// Creates per-side padding values.
     pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
-        Self {
-            top,
-            right,
-            bottom,
-            left,
-        }
+        Self { top, right, bottom, left }
     }
     /// Creates equal padding on all sides.
     pub const fn all(value: u32) -> Self {
@@ -65,12 +60,7 @@ pub struct Margin {
 impl Margin {
     /// Creates per-side margin values.
     pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
-        Self {
-            top,
-            right,
-            bottom,
-            left,
-        }
+        Self { top, right, bottom, left }
     }
     /// Creates equal margin on all sides.
     pub const fn all(value: u32) -> Self {
@@ -91,12 +81,7 @@ impl Margin {
     }
     /// Returns self as a `Padding` value (identity conversion).
     pub const fn to_padding(&self) -> Padding {
-        Padding {
-            top: self.top,
-            right: self.right,
-            bottom: self.bottom,
-            left: self.left,
-        }
+        Padding { top: self.top, right: self.right, bottom: self.bottom, left: self.left }
     }
 }
 impl Default for Padding {
@@ -131,12 +116,7 @@ pub struct Shadow {
 impl Shadow {
     /// Creates a new default shadow.
     pub fn new() -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            blur: 0,
-            color: Color::BLACK,
-        }
+        Self { x: 0, y: 0, blur: 0, color: Color::BLACK }
     }
     /// Sets the shadow offset.
     pub fn with_offset(mut self, x: i32, y: i32) -> Self {

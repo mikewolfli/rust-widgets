@@ -18,10 +18,7 @@ pub struct TranslationFile {
 #[derive(Debug, Clone)]
 pub enum ReloadEvent {
     /// Translation file was reloaded
-    TranslationReloaded {
-        language: String,
-        timestamp: std::time::SystemTime,
-    },
+    TranslationReloaded { language: String, timestamp: std::time::SystemTime },
     /// Error during reload
     ReloadError { language: String, error: String },
 }

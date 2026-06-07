@@ -22,11 +22,7 @@ impl ThemeManager {
         let current_theme = default.name.clone();
         let mut themes = HashMap::new();
         themes.insert(default.name.clone(), default);
-        Self {
-            themes,
-            current_theme,
-            theme_changed: Signal::new(),
-        }
+        Self { themes, current_theme, theme_changed: Signal::new() }
     }
 
     /// Loads and registers a theme from a JSON file path.
@@ -39,9 +35,7 @@ impl ThemeManager {
 
     /// Serializes the current active theme to a JSON file at the given path.
     pub fn save_theme(&self, path: &str) -> Result<(), String> {
-        let theme = self
-            .current_theme()
-            .ok_or_else(|| "No active theme to save".to_string())?;
+        let theme = self.current_theme().ok_or_else(|| "No active theme to save".to_string())?;
         let json = serde_json::to_string_pretty(theme)
             .map_err(|e| format!("Failed to serialize theme: {}", e))?;
         fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {}", e))?;
@@ -86,12 +80,7 @@ impl ThemeManager {
             return WidgetStyle::default();
         };
         let shadow = if theme.borders.shadow {
-            Some(Shadow {
-                x: 0,
-                y: 2,
-                blur: 6,
-                color: Color::rgba(0, 0, 0, 60),
-            })
+            Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })
         } else {
             None
         };
@@ -101,21 +90,15 @@ impl ThemeManager {
                 Some(Color::rgba(255, 255, 255, 255)),
                 Some(theme.colors.primary),
             ),
-            "label" => (
-                Some(Color::rgba(0, 0, 0, 0)),
-                Some(theme.colors.foreground),
-                None,
-            ),
+            "label" => (Some(Color::rgba(0, 0, 0, 0)), Some(theme.colors.foreground), None),
             "input" | "lineedit" | "textedit" => (
                 Some(Color::rgba(255, 255, 255, 255)),
                 Some(theme.colors.foreground),
                 Some(theme.colors.secondary),
             ),
-            "slider" | "progress" => (
-                Some(theme.colors.accent),
-                Some(Color::rgba(255, 255, 255, 255)),
-                None,
-            ),
+            "slider" | "progress" => {
+                (Some(theme.colors.accent), Some(Color::rgba(255, 255, 255, 255)), None)
+            }
             "panel" | "window" | "dialog" => (
                 Some(theme.colors.background),
                 Some(theme.colors.foreground),
@@ -178,60 +161,15 @@ impl Default for Theme {
         Self {
             name: "default".to_string(),
             colors: Colors {
-                background: Color {
-                    r: 240,
-                    g: 240,
-                    b: 240,
-                    a: 255,
-                },
-                foreground: Color {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 255,
-                },
-                primary: Color {
-                    r: 33,
-                    g: 150,
-                    b: 243,
-                    a: 255,
-                },
-                secondary: Color {
-                    r: 158,
-                    g: 158,
-                    b: 158,
-                    a: 255,
-                },
-                accent: Color {
-                    r: 255,
-                    g: 152,
-                    b: 0,
-                    a: 255,
-                },
-                error: Color {
-                    r: 244,
-                    g: 67,
-                    b: 54,
-                    a: 255,
-                },
-                warning: Color {
-                    r: 255,
-                    g: 193,
-                    b: 7,
-                    a: 255,
-                },
-                success: Color {
-                    r: 76,
-                    g: 175,
-                    b: 80,
-                    a: 255,
-                },
-                disabled: Color {
-                    r: 200,
-                    g: 200,
-                    b: 200,
-                    a: 255,
-                },
+                background: Color { r: 240, g: 240, b: 240, a: 255 },
+                foreground: Color { r: 0, g: 0, b: 0, a: 255 },
+                primary: Color { r: 33, g: 150, b: 243, a: 255 },
+                secondary: Color { r: 158, g: 158, b: 158, a: 255 },
+                accent: Color { r: 255, g: 152, b: 0, a: 255 },
+                error: Color { r: 244, g: 67, b: 54, a: 255 },
+                warning: Color { r: 255, g: 193, b: 7, a: 255 },
+                success: Color { r: 76, g: 175, b: 80, a: 255 },
+                disabled: Color { r: 200, g: 200, b: 200, a: 255 },
                 info: Color::INFO,
             },
             fonts: Fonts {
@@ -269,20 +207,9 @@ impl Default for Theme {
                 headline: Font::bold("Arial", 20.0),
                 display: Font::bold("Arial", 28.0),
             },
-            spacing: Spacing {
-                small: 4,
-                medium: 8,
-                large: 16,
-                extra_large: 24,
-            },
-            borders: Borders {
-                width: 1,
-                radius: 4,
-                shadow: true,
-            },
-            overrides: ThemeOverrides {
-                styles: HashMap::new(),
-            },
+            spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
+            borders: Borders { width: 1, radius: 4, shadow: true },
+            overrides: ThemeOverrides { styles: HashMap::new() },
         }
     }
 }

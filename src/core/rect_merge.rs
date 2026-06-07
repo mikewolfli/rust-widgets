@@ -117,11 +117,8 @@ mod tests {
 
     #[test]
     fn test_merge_intersecting_disjoint() {
-        let rects = vec![
-            Rect::new(0, 0, 10, 10),
-            Rect::new(100, 100, 10, 10),
-            Rect::new(200, 200, 10, 10),
-        ];
+        let rects =
+            vec![Rect::new(0, 0, 10, 10), Rect::new(100, 100, 10, 10), Rect::new(200, 200, 10, 10)];
         let merged = merge_intersecting_rects(&rects);
         assert_eq!(merged.len(), 3);
     }
@@ -139,11 +136,8 @@ mod tests {
 
     #[test]
     fn test_bounding_rect_multiple() {
-        let rects = vec![
-            Rect::new(0, 0, 10, 10),
-            Rect::new(20, 20, 10, 10),
-            Rect::new(100, 100, 50, 50),
-        ];
+        let rects =
+            vec![Rect::new(0, 0, 10, 10), Rect::new(20, 20, 10, 10), Rect::new(100, 100, 50, 50)];
         assert_eq!(bounding_rect(&rects), Some(Rect::new(0, 0, 150, 150)));
     }
 }

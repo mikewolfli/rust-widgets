@@ -32,10 +32,7 @@ pub struct SoftwarePaintBackend {
 impl SoftwarePaintBackend {
     /// Creates a software paint backend with a target size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
-        Self {
-            surface: SoftwareSurface::new(size, dpi_scale),
-            batch_state: BatchState::new(),
-        }
+        Self { surface: SoftwareSurface::new(size, dpi_scale), batch_state: BatchState::new() }
     }
     /// Returns immutable access to the underlying software surface.
     pub fn surface(&self) -> &SoftwareSurface {
@@ -68,96 +65,51 @@ impl PaintBackend for SoftwarePaintBackend {
             RenderCommand::DrawRectStroke { rect, color, width } => {
                 self.surface.draw_rect_with_width(*rect, *color, *width)
             }
-            RenderCommand::FillRoundedRect {
-                rect,
-                radius,
-                color,
-            } => self.surface.fill_rounded_rect(*rect, *radius, *color),
-            RenderCommand::FillRoundedRectAA {
-                rect,
-                radius,
-                color,
-            } => self.surface.fill_rounded_rect_aa(*rect, *radius, *color),
-            RenderCommand::DrawRoundedRectStroke {
-                rect,
-                radius,
-                color,
-                width,
-            } => self
-                .surface
-                .draw_rounded_rect_with_width(*rect, *radius, *color, *width),
-            RenderCommand::DrawRoundedRectStrokeAA {
-                rect,
-                radius,
-                color,
-                width,
-            } => self
-                .surface
-                .draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width),
+            RenderCommand::FillRoundedRect { rect, radius, color } => {
+                self.surface.fill_rounded_rect(*rect, *radius, *color)
+            }
+            RenderCommand::FillRoundedRectAA { rect, radius, color } => {
+                self.surface.fill_rounded_rect_aa(*rect, *radius, *color)
+            }
+            RenderCommand::DrawRoundedRectStroke { rect, radius, color, width } => {
+                self.surface.draw_rounded_rect_with_width(*rect, *radius, *color, *width)
+            }
+            RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
+                self.surface.draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width)
+            }
             RenderCommand::DrawLine { from, to, color } => {
                 self.surface.draw_line(*from, *to, *color)
             }
             RenderCommand::DrawLineAA { from, to, color } => {
                 self.surface.draw_line_aa(*from, *to, *color)
             }
-            RenderCommand::DrawLineStrokeAA {
-                from,
-                to,
-                color,
-                width,
-            } => self
-                .surface
-                .draw_line_aa_with_width(*from, *to, *color, *width),
-            RenderCommand::DrawLineStroke {
-                from,
-                to,
-                color,
-                width,
-            } => self
-                .surface
-                .draw_line_with_width(*from, *to, *color, *width),
-            RenderCommand::FillCircle {
-                center,
-                radius,
-                color,
-            } => self.surface.fill_circle(*center, *radius, *color),
-            RenderCommand::FillCircleAA {
-                center,
-                radius,
-                color,
-            } => self.surface.fill_circle_aa(*center, *radius, *color),
-            RenderCommand::DrawCircle {
-                center,
-                radius,
-                color,
-            } => self.surface.draw_circle(*center, *radius, *color),
-            RenderCommand::DrawCircleStroke {
-                center,
-                radius,
-                color,
-                width,
-            } => self
-                .surface
-                .draw_circle_with_width(*center, *radius, *color, *width),
-            RenderCommand::DrawText {
-                origin,
-                text,
-                font,
-                color,
-            } => self.surface.draw_text(*origin, text, font, *color),
-            RenderCommand::DrawImage {
-                x,
-                y,
-                width,
-                height,
-                data,
-            } => self.surface.draw_image(*x, *y, *width, *height, data),
-            RenderCommand::PushClip {
-                x,
-                y,
-                width,
-                height,
-            } => self.surface.push_clip(*x, *y, *width, *height),
+            RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
+                self.surface.draw_line_aa_with_width(*from, *to, *color, *width)
+            }
+            RenderCommand::DrawLineStroke { from, to, color, width } => {
+                self.surface.draw_line_with_width(*from, *to, *color, *width)
+            }
+            RenderCommand::FillCircle { center, radius, color } => {
+                self.surface.fill_circle(*center, *radius, *color)
+            }
+            RenderCommand::FillCircleAA { center, radius, color } => {
+                self.surface.fill_circle_aa(*center, *radius, *color)
+            }
+            RenderCommand::DrawCircle { center, radius, color } => {
+                self.surface.draw_circle(*center, *radius, *color)
+            }
+            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
+                self.surface.draw_circle_with_width(*center, *radius, *color, *width)
+            }
+            RenderCommand::DrawText { origin, text, font, color } => {
+                self.surface.draw_text(*origin, text, font, *color)
+            }
+            RenderCommand::DrawImage { x, y, width, height, data } => {
+                self.surface.draw_image(*x, *y, *width, *height, data)
+            }
+            RenderCommand::PushClip { x, y, width, height } => {
+                self.surface.push_clip(*x, *y, *width, *height)
+            }
             RenderCommand::PopClip => self.surface.pop_clip(),
         }
     }
@@ -325,12 +277,7 @@ mod tests {
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
         backend.begin_frame(Color::WHITE);
 
-        backend.execute_command(&RenderCommand::PushClip {
-            x: 0,
-            y: 0,
-            width: 5,
-            height: 5,
-        });
+        backend.execute_command(&RenderCommand::PushClip { x: 0, y: 0, width: 5, height: 5 });
         backend.execute_command(&RenderCommand::FillRect {
             rect: Rect::new(0, 0, 10, 10),
             color: Color::RED,
@@ -395,9 +342,7 @@ mod tests {
     #[test]
     fn paint_backend_apply_render_config() {
         let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 2,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 2 };
         backend.apply_render_config(config);
         assert_eq!(backend.render_config().aa_samples_per_axis, 2);
     }
@@ -405,15 +350,11 @@ mod tests {
     #[test]
     fn paint_backend_apply_render_config_clamps_to_normalized_range() {
         let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 99,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 99 };
         backend.apply_render_config(config);
         assert_eq!(backend.render_config().aa_samples_per_axis, 8);
 
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 0,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 0 };
         backend.apply_render_config(config);
         assert_eq!(backend.render_config().aa_samples_per_axis, 1);
     }

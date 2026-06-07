@@ -268,16 +268,8 @@ impl Draw for MediaPlayer {
             .map(|src| src.rsplit('/').next().unwrap_or(src))
             .unwrap_or("No media");
         let state = if self.playing { "Playing" } else { "Paused" };
-        let vol = if self.muted {
-            "Muted".to_string()
-        } else {
-            format!("Vol {}", self.volume)
-        };
-        let fs = if self.fullscreen {
-            "Fullscreen"
-        } else {
-            "Window"
-        };
+        let vol = if self.muted { "Muted".to_string() } else { format!("Vol {}", self.volume) };
+        let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
 
         context.draw_text(
             Point::new(rect.x + 10, rect.y + 18),
@@ -368,18 +360,10 @@ mod tests {
         player.set_volume(65);
         player.pause();
 
-        let playback_events = playback
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let playback_events = playback.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(playback_events, vec![true, false]);
 
-        let volume_events = volume
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let volume_events = volume.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(volume_events, vec![65]);
     }
 
@@ -528,17 +512,9 @@ mod tests {
         player.clear_source();
 
         // set_source emits (false, 0); clear_source also emits (false, 0)
-        let pb = playback_events
-            .lock()
-            .ok()
-            .map(|g| g.clone())
-            .unwrap_or_default();
+        let pb = playback_events.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert!(pb.contains(&false));
-        let pos = position_events
-            .lock()
-            .ok()
-            .map(|g| g.clone())
-            .unwrap_or_default();
+        let pos = position_events.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert!(pos.contains(&0));
     }
 }

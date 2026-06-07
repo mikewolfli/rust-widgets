@@ -60,9 +60,7 @@ impl JsonLoader {
         let mut registry = crate::index::WidgetRegistry::new();
         let mut binding = BoundJsonLayout::new();
 
-        let root = value
-            .as_object()
-            .ok_or_else(|| "JSON root must be an object".to_string())?;
+        let root = value.as_object().ok_or_else(|| "JSON root must be an object".to_string())?;
 
         // The root should have exactly one top-level key (the widget type).
         if root.len() != 1 {
@@ -78,14 +76,7 @@ impl JsonLoader {
                 return Err("JSON root object is empty — expected a widget type key".to_string())
             }
         };
-        Self::instantiate_node(
-            widget_type,
-            widget_value,
-            None,
-            &mut registry,
-            &mut binding,
-            0,
-        )?;
+        Self::instantiate_node(widget_type, widget_value, None, &mut registry, &mut binding, 0)?;
 
         // Run layout diagnostics after all widgets are created.
         LayoutInspector::run_once_logged(&registry);
@@ -137,11 +128,9 @@ impl JsonLoader {
                         if child_obj.len() == 1 {
                             let (child_type, child_val) = child_obj.iter().next().unwrap();
                             if child_type.eq_ignore_ascii_case("spacer") {
-                                let stretch = child_val
-                                    .get("stretch")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(1)
-                                    as u32;
+                                let stretch =
+                                    child_val.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1)
+                                        as u32;
                                 add_spacer_to_layout(stretch, layout_parent, registry);
                                 continue;
                             }
@@ -412,10 +401,7 @@ impl JsonLoader {
         let geometry = Rect::new(0, 0, 100, 100);
         match widget_type.to_lowercase().as_str() {
             "window" => {
-                let title = obj
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Window");
+                let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("Window");
                 Ok(Box::new(Window::new(title.to_string(), geometry)))
             }
             "button" => {
@@ -1026,9 +1012,7 @@ fn apply_size_constraints(widget: &mut dyn Widget, obj: &serde_json::Map<String,
         )));
     }
     if max_w.is_some() || max_h.is_some() {
-        let current = widget
-            .max_size()
-            .unwrap_or(crate::core::Size::new(u32::MAX, u32::MAX));
+        let current = widget.max_size().unwrap_or(crate::core::Size::new(u32::MAX, u32::MAX));
         widget.set_max_size(Some(crate::core::Size::new(
             max_w.unwrap_or(current.width as u64) as u32,
             max_h.unwrap_or(current.height as u64) as u32,
@@ -1079,14 +1063,8 @@ fn apply_style_padding(
 pub fn extract_event_handlers(
     obj: &serde_json::Map<String, Value>,
 ) -> (Option<String>, Option<String>) {
-    let on_click = obj
-        .get("on_click")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_change = obj
-        .get("on_change")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let on_click = obj.get("on_click").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_change = obj.get("on_change").and_then(|v| v.as_str()).map(|s| s.to_string());
     (on_click, on_change)
 }
 
@@ -1104,38 +1082,16 @@ pub type EventHandlerTuple = (
 );
 
 pub fn extract_extended_event_handlers(obj: &serde_json::Map<String, Value>) -> EventHandlerTuple {
-    let on_close = obj
-        .get("on_close")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_double_click = obj
-        .get("on_double_click")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_focus = obj
-        .get("on_focus")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_blur = obj
-        .get("on_blur")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_selection_changed = obj
-        .get("on_selection_changed")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let on_value_changed = obj
-        .get("on_value_changed")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    (
-        on_close,
-        on_double_click,
-        on_focus,
-        on_blur,
-        on_selection_changed,
-        on_value_changed,
-    )
+    let on_close = obj.get("on_close").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_double_click =
+        obj.get("on_double_click").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_focus = obj.get("on_focus").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_blur = obj.get("on_blur").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_selection_changed =
+        obj.get("on_selection_changed").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let on_value_changed =
+        obj.get("on_value_changed").and_then(|v| v.as_str()).map(|s| s.to_string());
+    (on_close, on_double_click, on_focus, on_blur, on_selection_changed, on_value_changed)
 }
 
 /// Infer widget kind from type string.
@@ -1184,10 +1140,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let layout = result.unwrap();
         assert_eq!(layout.len(), 1);
-        assert!(
-            layout.id("main").is_some(),
-            "Expected Some for widget id 'main'"
-        );
+        assert!(layout.id("main").is_some(), "Expected Some for widget id 'main'");
     }
 
     #[test]
@@ -1242,11 +1195,7 @@ mod tests {
         let result = JsonLoader::load(json);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(
-            err.contains("JSON parse error"),
-            "Expected parse error, got: {}",
-            err
-        );
+        assert!(err.contains("JSON parse error"), "Expected parse error, got: {}", err);
     }
 
     #[test]
@@ -1275,11 +1224,7 @@ mod tests {
         let result = JsonLoader::load(json);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(
-            err.contains("one widget type"),
-            "Expected 'one widget type' error, got: {}",
-            err
-        );
+        assert!(err.contains("one widget type"), "Expected 'one widget type' error, got: {}", err);
     }
 
     #[test]
@@ -1301,24 +1246,14 @@ mod tests {
         let result = JsonLoader::load(json);
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let layout = result.unwrap();
-        assert_eq!(
-            layout.len(),
-            0,
-            "Without 'id', no entries should be registered"
-        );
+        assert_eq!(layout.len(), 0, "Without 'id', no entries should be registered");
     }
 
     #[test]
     fn extract_event_handlers_parses_click_and_change() {
         let mut map = serde_json::Map::new();
-        map.insert(
-            "on_click".to_string(),
-            Value::String("handle_click".to_string()),
-        );
-        map.insert(
-            "on_change".to_string(),
-            Value::String("handle_change".to_string()),
-        );
+        map.insert("on_click".to_string(), Value::String("handle_click".to_string()));
+        map.insert("on_change".to_string(), Value::String("handle_change".to_string()));
         let (click, change) = extract_event_handlers(&map);
         assert_eq!(click, Some("handle_click".to_string()));
         assert_eq!(change, Some("handle_change".to_string()));
@@ -1336,20 +1271,11 @@ mod tests {
     fn extract_extended_event_handlers_all_fields() {
         let mut map = serde_json::Map::new();
         map.insert("on_close".to_string(), Value::String("close".to_string()));
-        map.insert(
-            "on_double_click".to_string(),
-            Value::String("dbl".to_string()),
-        );
+        map.insert("on_double_click".to_string(), Value::String("dbl".to_string()));
         map.insert("on_focus".to_string(), Value::String("focus".to_string()));
         map.insert("on_blur".to_string(), Value::String("blur".to_string()));
-        map.insert(
-            "on_selection_changed".to_string(),
-            Value::String("sel".to_string()),
-        );
-        map.insert(
-            "on_value_changed".to_string(),
-            Value::String("val".to_string()),
-        );
+        map.insert("on_selection_changed".to_string(), Value::String("sel".to_string()));
+        map.insert("on_value_changed".to_string(), Value::String("val".to_string()));
         let (close, dbl, focus, blur, sel, val) = extract_extended_event_handlers(&map);
         assert_eq!(close, Some("close".to_string()));
         assert_eq!(dbl, Some("dbl".to_string()));

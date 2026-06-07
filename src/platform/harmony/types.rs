@@ -56,10 +56,7 @@ pub(crate) struct HarmonyRuntimeState {
 }
 impl HarmonyRuntimeState {
     pub(crate) fn new() -> Self {
-        Self {
-            initialized: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }
+        Self { initialized: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 /// Harmony backend platform adapter.

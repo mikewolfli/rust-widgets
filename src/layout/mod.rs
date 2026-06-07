@@ -59,11 +59,7 @@ pub struct LayoutContext {
 }
 impl Default for LayoutContext {
     fn default() -> Self {
-        Self {
-            layout_scale: 1.0,
-            font_scale: 1.0,
-            min_touch_size: Size::new(32, 32),
-        }
+        Self { layout_scale: 1.0, font_scale: 1.0, min_touch_size: Size::new(32, 32) }
     }
 }
 

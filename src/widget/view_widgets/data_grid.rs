@@ -119,18 +119,12 @@ impl DataGrid {
 
     /// Returns source row count.
     pub fn row_count(&self) -> usize {
-        self.data_source
-            .as_ref()
-            .map(|source| source.row_count())
-            .unwrap_or(0)
+        self.data_source.as_ref().map(|source| source.row_count()).unwrap_or(0)
     }
 
     /// Returns source column count.
     pub fn column_count(&self) -> usize {
-        self.data_source
-            .as_ref()
-            .map(|source| source.column_count())
-            .unwrap_or(0)
+        self.data_source.as_ref().map(|source| source.column_count()).unwrap_or(0)
     }
 
     /// Returns current vertical scroll row.
@@ -267,12 +261,7 @@ impl DataGrid {
         let row_end = row_start.saturating_add(row_fetch).min(row_count);
         let col_end = col_start.saturating_add(col_fetch).min(column_count);
 
-        (
-            row_start,
-            row_end.saturating_sub(row_start),
-            col_start,
-            col_end.saturating_sub(col_start),
-        )
+        (row_start, row_end.saturating_sub(row_start), col_start, col_end.saturating_sub(col_start))
     }
 
     /// Fetches visible cells, applying filters and sort rules in window scope.
@@ -347,11 +336,7 @@ impl DataGrid {
                         .unwrap_or("");
                     let order = left.cmp(right);
                     if order != std::cmp::Ordering::Equal {
-                        return if spec.descending {
-                            order.reverse()
-                        } else {
-                            order
-                        };
+                        return if spec.descending { order.reverse() } else { order };
                     }
                 }
                 std::cmp::Ordering::Equal
@@ -511,10 +496,7 @@ mod tests {
         }
 
         fn data(&self, row: usize, column: usize) -> Option<String> {
-            self.data
-                .get(row)
-                .and_then(|line| line.get(column))
-                .cloned()
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
         }
     }
 
@@ -524,9 +506,7 @@ mod tests {
         grid.set_data_source(Arc::new(StaticSource {
             rows: 10,
             cols: 6,
-            data: (0..10)
-                .map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect())
-                .collect(),
+            data: (0..10).map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect()).collect(),
         }));
 
         assert_eq!(grid.visible_window(), (0, 7, 0, 4));
@@ -553,14 +533,8 @@ mod tests {
                 vec!["u4".to_string(), "zoe".to_string()],
             ],
         }));
-        grid.set_filters(vec![ColumnFilter {
-            column: 1,
-            query: "b".to_string(),
-        }]);
-        grid.set_sort_specs(vec![SortSpec {
-            column: 1,
-            descending: true,
-        }]);
+        grid.set_filters(vec![ColumnFilter { column: 1, query: "b".to_string() }]);
+        grid.set_sort_specs(vec![SortSpec { column: 1, descending: true }]);
 
         let rows = grid.fetch_visible_cells();
         assert_eq!(rows.len(), 2);
@@ -629,11 +603,7 @@ mod tests {
         assert_eq!(grid.row_count(), 0);
         assert_eq!(grid.column_count(), 0);
 
-        grid.set_data_source(Arc::new(StaticSource {
-            rows: 5,
-            cols: 4,
-            data: vec![],
-        }));
+        grid.set_data_source(Arc::new(StaticSource { rows: 5, cols: 4, data: vec![] }));
         assert_eq!(grid.row_count(), 5);
         assert_eq!(grid.column_count(), 4);
 
@@ -648,9 +618,7 @@ mod tests {
         grid.set_data_source(Arc::new(StaticSource {
             rows: 10,
             cols: 6,
-            data: (0..10)
-                .map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect())
-                .collect(),
+            data: (0..10).map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect()).collect(),
         }));
 
         grid.set_scroll_row(5);
@@ -669,18 +637,11 @@ mod tests {
     #[test]
     fn clear_data_source_resets_state() {
         let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
-        grid.set_data_source(Arc::new(StaticSource {
-            rows: 5,
-            cols: 3,
-            data: vec![],
-        }));
+        grid.set_data_source(Arc::new(StaticSource { rows: 5, cols: 3, data: vec![] }));
         grid.set_scroll_row(2);
         grid.set_scroll_column(1);
         grid.set_frozen_columns(2);
-        grid.set_sort_specs(vec![SortSpec {
-            column: 0,
-            descending: false,
-        }]);
+        grid.set_sort_specs(vec![SortSpec { column: 0, descending: false }]);
 
         grid.clear_data_source();
         assert!(!grid.has_data_source());
@@ -705,10 +666,7 @@ mod tests {
 
         assert!(grid.sort_specs().is_empty());
 
-        let specs = vec![SortSpec {
-            column: 0,
-            descending: false,
-        }];
+        let specs = vec![SortSpec { column: 0, descending: false }];
         grid.set_sort_specs(specs.clone());
         assert_eq!(grid.sort_specs().len(), 1);
         assert_eq!(grid.sort_specs()[0].column, 0);
@@ -721,10 +679,7 @@ mod tests {
         assert_eq!(rows[2][0], Some("c".to_string()));
 
         // Change sort - should clear cache
-        grid.set_sort_specs(vec![SortSpec {
-            column: 0,
-            descending: true,
-        }]);
+        grid.set_sort_specs(vec![SortSpec { column: 0, descending: true }]);
         let rows2 = grid.fetch_visible_cells();
         assert_eq!(rows2[0][0], Some("c".to_string()));
         assert_eq!(rows2[2][0], Some("a".to_string()));
@@ -749,10 +704,7 @@ mod tests {
 
         assert!(grid.filters().is_empty());
 
-        let filters = vec![ColumnFilter {
-            column: 1,
-            query: "red".to_string(),
-        }];
+        let filters = vec![ColumnFilter { column: 1, query: "red".to_string() }];
         grid.set_filters(filters.clone());
         assert_eq!(grid.filters().len(), 1);
 
@@ -762,10 +714,7 @@ mod tests {
         assert_eq!(rows[1][0], Some("cherry".to_string()));
 
         // Change filter - should recalc
-        grid.set_filters(vec![ColumnFilter {
-            column: 0,
-            query: "b".to_string(),
-        }]);
+        grid.set_filters(vec![ColumnFilter { column: 0, query: "b".to_string() }]);
         let rows2 = grid.fetch_visible_cells();
         assert_eq!(rows2.len(), 1);
         assert_eq!(rows2[0][0], Some("banana".to_string()));
@@ -777,11 +726,7 @@ mod tests {
     #[test]
     fn frozen_columns_set_get() {
         let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
-        grid.set_data_source(Arc::new(StaticSource {
-            rows: 2,
-            cols: 5,
-            data: vec![],
-        }));
+        grid.set_data_source(Arc::new(StaticSource { rows: 2, cols: 5, data: vec![] }));
 
         assert_eq!(grid.frozen_columns(), 0);
 
@@ -799,9 +744,7 @@ mod tests {
         grid.set_data_source(Arc::new(StaticSource {
             rows: 10,
             cols: 6,
-            data: (0..10)
-                .map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect())
-                .collect(),
+            data: (0..10).map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect()).collect(),
         }));
 
         let emitted = Arc::new(Mutex::new(false));
@@ -817,11 +760,7 @@ mod tests {
     #[test]
     fn empty_source_returns_empty_window() {
         let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
-        grid.set_data_source(Arc::new(StaticSource {
-            rows: 0,
-            cols: 0,
-            data: vec![],
-        }));
+        grid.set_data_source(Arc::new(StaticSource { rows: 0, cols: 0, data: vec![] }));
 
         assert_eq!(grid.visible_window(), (0, 0, 0, 0));
         assert!(grid.fetch_visible_cells().is_empty());
@@ -898,11 +837,7 @@ mod tests {
     #[test]
     fn row_height_and_column_width_minimum_clamp() {
         let mut grid = DataGrid::new(Rect::new(0, 0, 800, 600));
-        grid.set_data_source(Arc::new(StaticSource {
-            rows: 3,
-            cols: 3,
-            data: vec![],
-        }));
+        grid.set_data_source(Arc::new(StaticSource { rows: 3, cols: 3, data: vec![] }));
 
         grid.set_row_height(0);
         assert_eq!(grid.row_height(), 1);

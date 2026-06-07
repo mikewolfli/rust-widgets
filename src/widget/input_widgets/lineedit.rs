@@ -116,11 +116,7 @@ impl LineEdit {
         if let Some(start) = self.selection_start {
             let start = start.min(self.text.len());
             let end = self.cursor_position.min(self.text.len());
-            let (start, end) = if start < end {
-                (start, end)
-            } else {
-                (end, start)
-            };
+            let (start, end) = if start < end { (start, end) } else { (end, start) };
             self.text[start..end].to_string()
         } else {
             String::new()
@@ -146,22 +142,14 @@ impl LineEdit {
             if available == 0 {
                 return;
             }
-            let _text = if text.len() > available {
-                &text[..available]
-            } else {
-                text
-            };
+            let _text = if text.len() > available { &text[..available] } else { text };
         }
         // Handle selection
         let mut new_text = self.text.clone();
         if let Some(start) = self.selection_start {
             let start = start.min(new_text.len());
             let end = self.cursor_position.min(new_text.len());
-            let (start, end) = if start < end {
-                (start, end)
-            } else {
-                (end, start)
-            };
+            let (start, end) = if start < end { (start, end) } else { (end, start) };
             new_text.replace_range(start..end, text);
             self.cursor_position = start + text.len();
         } else {
@@ -177,11 +165,7 @@ impl LineEdit {
             // Delete selection
             let start = start.min(self.text.len());
             let end = self.cursor_position.min(self.text.len());
-            let (start, end) = if start < end {
-                (start, end)
-            } else {
-                (end, start)
-            };
+            let (start, end) = if start < end { (start, end) } else { (end, start) };
             let mut new_text = self.text.clone();
             new_text.replace_range(start..end, "");
             self.cursor_position = start;

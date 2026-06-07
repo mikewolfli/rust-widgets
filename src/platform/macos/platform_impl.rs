@@ -117,10 +117,7 @@ impl Platform for MacOSPlatform {
                 NSButton::alloc(nil),
                 Self::make_rect(x, y, width, height),
             );
-            log::info!(
-                "[rust_widgets] MacOSPlatform::create_button: button created {:?}",
-                button
-            );
+            log::info!("[rust_widgets] MacOSPlatform::create_button: button created {:?}", button);
             NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
             NSButton::setBezelStyle_(button, NSBezelStyle::NSRoundedBezelStyle);
             // Set button type to momentary push button
@@ -144,20 +141,14 @@ impl Platform for MacOSPlatform {
                 height,
                 button as usize,
             );
-            log::info!(
-                "[rust_widgets] create_button: created button with id {}",
-                id
-            );
+            log::info!("[rust_widgets] create_button: created button with id {}", id);
             // Set up button click handler using NSButton methods
             let target = shared_button_target();
             log::error!("[rust_widgets] create_button: setting target {:?}", target);
             NSButton::setTarget_(button, target);
             log::error!("[rust_widgets] create_button: setting action");
             let action_sel = sel!(onButtonClicked:);
-            log::debug!(
-                "[rust_widgets] create_button: action selector = {:?}",
-                action_sel
-            );
+            log::debug!("[rust_widgets] create_button: action selector = {:?}", action_sel);
             NSButton::setAction_(button, action_sel);
             // Test the button action
             let _: () = msg_send![button, performClick: nil];
@@ -904,9 +895,7 @@ impl Platform for MacOSPlatform {
                 _ => return 0,
             };
             let _: () = msg_send![container, setAutoenablesItems: NO];
-            let item_id = self
-                .state
-                .create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
+            let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
             let (key, modifier_mask) = parse_shortcut(shortcut);
             let item: id = msg_send![class!(NSMenuItem), alloc];
             let item: id = msg_send![
@@ -926,13 +915,7 @@ impl Platform for MacOSPlatform {
             self.handles
                 .lock()
                 .expect("macos handle lock poisoned")
-                .insert(
-                    item_id,
-                    CocoaHandle {
-                        ptr: item as usize,
-                        kind: HandleKind::MenuItem,
-                    },
-                );
+                .insert(item_id, CocoaHandle { ptr: item as usize, kind: HandleKind::MenuItem });
             item_id
         }
     }
@@ -1157,9 +1140,7 @@ impl Platform for MacOSPlatform {
             None
         });
         // Fall back to state on ObjC failure
-        result
-            .unwrap_or(None)
-            .unwrap_or_else(|| self.state.accessibility_name(widget_id))
+        result.unwrap_or(None).unwrap_or_else(|| self.state.accessibility_name(widget_id))
     }
     fn set_clipboard_text(&self, text: &str) -> bool {
         // Try real NSPasteboard integration first
@@ -1196,9 +1177,7 @@ impl Platform for MacOSPlatform {
             Some(CStr::from_ptr(c_str).to_string_lossy().into_owned())
         });
         // Fall back to state on ObjC failure
-        result
-            .unwrap_or(None)
-            .unwrap_or_else(|| self.state.clipboard_text())
+        result.unwrap_or(None).unwrap_or_else(|| self.state.clipboard_text())
     }
     fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
         // If no native handle exists, fall back to state immediately.
@@ -1257,10 +1236,7 @@ impl Platform for MacOSPlatform {
         if let Ok(mut events) = widget_events().lock() {
             let len = events.len();
             if len > 0 {
-                log::debug!(
-                    "[rust_widgets] poll_widget_trigger_event: queue has {} events",
-                    len
-                );
+                log::debug!("[rust_widgets] poll_widget_trigger_event: queue has {} events", len);
             }
             if let Some(event) = events.pop() {
                 log::debug!(
@@ -1286,8 +1262,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::MessageBox, title, x, y, width, height)
+        self.state.create_widget(HandleKind::MessageBox, title, x, y, width, height)
     }
     fn create_file_dialog(
         &self,
@@ -1297,8 +1272,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::FileDialog, "file_dialog", x, y, width, height)
+        self.state.create_widget(HandleKind::FileDialog, "file_dialog", x, y, width, height)
     }
     fn create_color_dialog(
         &self,
@@ -1308,8 +1282,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::ColorDialog, "color_dialog", x, y, width, height)
+        self.state.create_widget(HandleKind::ColorDialog, "color_dialog", x, y, width, height)
     }
     fn create_font_dialog(
         &self,
@@ -1319,8 +1292,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::FontDialog, "font_dialog", x, y, width, height)
+        self.state.create_widget(HandleKind::FontDialog, "font_dialog", x, y, width, height)
     }
     fn create_spin_box(
         &self,
@@ -1330,8 +1302,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::SpinBox, "spin_box", x, y, width, height)
+        self.state.create_widget(HandleKind::SpinBox, "spin_box", x, y, width, height)
     }
     fn create_list_view(
         &self,
@@ -1341,8 +1312,7 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::ListView, "list_view", x, y, width, height)
+        self.state.create_widget(HandleKind::ListView, "list_view", x, y, width, height)
     }
     fn create_scroll_area(
         &self,
@@ -1352,7 +1322,6 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state
-            .create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
+        self.state.create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
     }
 }

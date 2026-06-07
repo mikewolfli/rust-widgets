@@ -10,9 +10,5 @@ fn main() {
     let window_svg = rust_widgets::widget::svg::render_to_svg(&mut window);
     let button_svg = rust_widgets::widget::svg::render_to_svg(&mut button);
 
-    println!(
-        "demo_main: window_svg={} button_svg={}",
-        window_svg.len(),
-        button_svg.len()
-    );
+    println!("demo_main: window_svg={} button_svg={}", window_svg.len(), button_svg.len());
 }

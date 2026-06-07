@@ -29,9 +29,7 @@ pub struct ChartLayout {
 impl ChartLayout {
     /// Create a new `ChartLayout` that will manage the given chart widget.
     pub fn new(chart_id: ObjectId) -> Self {
-        Self {
-            chart_id: Some(chart_id),
-        }
+        Self { chart_id: Some(chart_id) }
     }
 }
 

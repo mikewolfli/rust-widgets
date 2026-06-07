@@ -48,10 +48,7 @@ pub struct AllocationOptions {
 }
 impl Default for AllocationOptions {
     fn default() -> Self {
-        Self {
-            alignment: 8,
-            zeroed: false,
-        }
+        Self { alignment: 8, zeroed: false }
     }
 }
 pub struct ArenaAllocator {
@@ -67,11 +64,7 @@ impl ArenaAllocator {
         // properly aligned pointer or abort on OOM.
         let ptr = unsafe { alloc(layout) };
         let buffer = NonNull::new(ptr).expect("Allocation failed");
-        Self {
-            buffer,
-            layout,
-            offset: 0,
-        }
+        Self { buffer, layout, offset: 0 }
     }
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
         let size = std::mem::size_of::<T>();
@@ -123,11 +116,7 @@ pub struct StackAllocator {
 }
 impl StackAllocator {
     pub fn new(capacity: usize) -> Self {
-        Self {
-            buffer: vec![0u8; capacity],
-            offset: 0,
-            marks: Vec::new(),
-        }
+        Self { buffer: vec![0u8; capacity], offset: 0, marks: Vec::new() }
     }
     pub fn allocate(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         let aligned_offset = (self.offset + align - 1) & !(align - 1);
@@ -277,9 +266,6 @@ mod tests {
         assert_eq!(MemoryPressure::from_usage(60, 100), MemoryPressure::Low);
         assert_eq!(MemoryPressure::from_usage(80, 100), MemoryPressure::Medium);
         assert_eq!(MemoryPressure::from_usage(90, 100), MemoryPressure::High);
-        assert_eq!(
-            MemoryPressure::from_usage(98, 100),
-            MemoryPressure::Critical
-        );
+        assert_eq!(MemoryPressure::from_usage(98, 100), MemoryPressure::Critical);
     }
 }

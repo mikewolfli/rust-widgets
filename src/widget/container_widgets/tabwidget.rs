@@ -57,13 +57,7 @@ pub enum TabShape {
 impl Tab {
     /// Creates a new tab.
     pub fn new(title: String) -> Self {
-        Self {
-            title,
-            icon: None,
-            tooltip: String::new(),
-            enabled: true,
-            widget: None,
-        }
+        Self { title, icon: None, tooltip: String::new(), enabled: true, widget: None }
     }
     /// Returns title.
     pub fn title(&self) -> &str {
@@ -279,21 +273,15 @@ impl TabWidget {
         let rect = self.geometry();
         let tab_height = 24;
         match self.tab_position {
-            TabPosition::North => Rect::new(
-                rect.x,
-                rect.y + tab_height,
-                rect.width,
-                rect.height - tab_height as u32,
-            ),
+            TabPosition::North => {
+                Rect::new(rect.x, rect.y + tab_height, rect.width, rect.height - tab_height as u32)
+            }
             TabPosition::South => {
                 Rect::new(rect.x, rect.y, rect.width, rect.height - tab_height as u32)
             }
-            TabPosition::West => Rect::new(
-                rect.x + tab_height,
-                rect.y,
-                rect.width - tab_height as u32,
-                rect.height,
-            ),
+            TabPosition::West => {
+                Rect::new(rect.x + tab_height, rect.y, rect.width - tab_height as u32, rect.height)
+            }
             TabPosition::East => {
                 Rect::new(rect.x, rect.y, rect.width - tab_height as u32, rect.height)
             }

@@ -204,8 +204,7 @@ impl MdiArea {
                 if !self.subwindows.is_empty() {
                     let new_index = index.min(self.subwindows.len() - 1);
                     self.active_subwindow = Some(new_index);
-                    self.subwindow_activated
-                        .emit(self.subwindows[new_index].widget);
+                    self.subwindow_activated.emit(self.subwindows[new_index].widget);
                 }
             } else if let Some(active_index) = self.active_subwindow {
                 if active_index > index {
@@ -220,8 +219,7 @@ impl MdiArea {
     }
     /// Returns active sub-window.
     pub fn active_sub_window(&self) -> Option<ObjectId> {
-        self.active_subwindow
-            .and_then(|index| self.subwindows.get(index).map(|sw| sw.widget))
+        self.active_subwindow.and_then(|index| self.subwindows.get(index).map(|sw| sw.widget))
     }
     /// Sets active sub-window.
     pub fn set_active_sub_window(&mut self, widget: ObjectId) {
@@ -304,11 +302,7 @@ impl MdiArea {
     /// Arranges minimized sub-windows.
     pub fn arrange_icons(&mut self) {
         let area_rect = self.geometry();
-        let mut minimized: Vec<_> = self
-            .subwindows
-            .iter_mut()
-            .filter(|sw| sw.minimized)
-            .collect();
+        let mut minimized: Vec<_> = self.subwindows.iter_mut().filter(|sw| sw.minimized).collect();
         let count = minimized.len();
         if count == 0 {
             return;
@@ -346,11 +340,7 @@ impl MdiArea {
             return;
         }
         let current = self.active_subwindow.unwrap_or(0);
-        let prev = if current == 0 {
-            self.subwindows.len() - 1
-        } else {
-            current - 1
-        };
+        let prev = if current == 0 { self.subwindows.len() - 1 } else { current - 1 };
         self.set_active_sub_window(self.subwindows[prev].widget);
     }
     /// Returns sub-window at position.
@@ -477,20 +467,12 @@ impl Draw for MdiArea {
                 Color::from_rgb(180, 180, 180)
             };
             context.fill_rect(
-                Rect::new(
-                    frame_rect.x,
-                    frame_rect.y,
-                    frame_rect.width,
-                    title_bar_height as u32,
-                ),
+                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
                 title_bar_color,
             );
             // Draw title text
-            let text_color = if is_active {
-                Color::from_rgb(255, 255, 255)
-            } else {
-                Color::from_rgb(0, 0, 0)
-            };
+            let text_color =
+                if is_active { Color::from_rgb(255, 255, 255) } else { Color::from_rgb(0, 0, 0) };
             context.draw_text(
                 Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
                 &subwindow.title,

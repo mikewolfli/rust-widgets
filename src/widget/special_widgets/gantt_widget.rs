@@ -27,13 +27,7 @@ impl GanttTask {
     ) -> Self {
         let s = start;
         let e = end.max(s + 1);
-        Self {
-            id: id.into(),
-            label: label.into(),
-            start: s,
-            end: e,
-            progress: progress.min(100),
-        }
+        Self { id: id.into(), label: label.into(), start: s, end: e, progress: progress.min(100) }
     }
 }
 
@@ -97,10 +91,7 @@ impl GanttWidget {
         let span = (self.viewport_end - self.viewport_start).max(1) as f32;
         let center = (self.viewport_start + self.viewport_end) as f32 / 2.0;
         let half = (span / factor / 2.0).max(1.0);
-        self.set_viewport(
-            (center - half).floor() as i64,
-            (center + half).ceil() as i64,
-        );
+        self.set_viewport((center - half).floor() as i64, (center + half).ceil() as i64);
     }
 
     /// Select task by index.
@@ -283,11 +274,7 @@ mod tests {
         assert!(gantt.select_index(1));
         assert_eq!(gantt.selected_id(), Some("t2"));
 
-        let got = selected
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["t2".to_string()]);
     }
 

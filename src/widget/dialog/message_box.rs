@@ -258,10 +258,8 @@ impl Draw for MessageBox {
             Color::from_rgb(160, 160, 160),
         );
         // Title bar
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, 28u32),
-            Color::from_rgb(0, 120, 215),
-        );
+        context
+            .fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), Color::from_rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
@@ -279,11 +277,7 @@ impl Draw for MessageBox {
             );
         }
         // Message text
-        let text_x = if self.icon == MessageBoxIcon::NoIcon {
-            rect.x + 12
-        } else {
-            rect.x + 60
-        };
+        let text_x = if self.icon == MessageBoxIcon::NoIcon { rect.x + 12 } else { rect.x + 60 };
         context.draw_text(
             Point::new(text_x, rect.y + 60),
             &self.text,
@@ -303,11 +297,8 @@ impl Draw for MessageBox {
             } else {
                 Color::from_rgb(225, 225, 225)
             };
-            let fg = if is_default {
-                Color::from_rgb(255, 255, 255)
-            } else {
-                Color::from_rgb(0, 0, 0)
-            };
+            let fg =
+                if is_default { Color::from_rgb(255, 255, 255) } else { Color::from_rgb(0, 0, 0) };
             context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), bg);
             context.draw_rect(
                 Rect::from_f32(btn_x, btn_y, btn_w, btn_h),

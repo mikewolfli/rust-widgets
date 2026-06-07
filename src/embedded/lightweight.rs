@@ -55,10 +55,7 @@ pub struct LightweightWidget<W: Widget> {
 }
 impl<W: Widget> LightweightWidget<W> {
     pub fn new(widget: W) -> Self {
-        Self {
-            inner: widget,
-            config: LightweightConfig::new(),
-        }
+        Self { inner: widget, config: LightweightConfig::new() }
     }
     pub fn with_config(mut self, config: LightweightConfig) -> Self {
         self.config = config;
@@ -82,11 +79,7 @@ pub struct LightweightWidgetFactory {
 }
 impl LightweightWidgetFactory {
     pub fn new() -> Self {
-        Self {
-            config: LightweightConfig::minimal(),
-            widget_count: 0,
-            max_widgets: 100,
-        }
+        Self { config: LightweightConfig::minimal(), widget_count: 0, max_widgets: 100 }
     }
     pub fn with_config(mut self, config: LightweightConfig) -> Self {
         self.config = config;
@@ -180,18 +173,12 @@ impl<T> WidgetPool<T> {
     {
         if let Some(index) = self.in_use.iter().position(|&used| !used) {
             self.in_use[index] = true;
-            Some(PoolHandle {
-                index,
-                pool: self as *mut Self,
-            })
+            Some(PoolHandle { index, pool: self as *mut Self })
         } else if self.available.len() < self.max_size {
             let index = self.available.len();
             self.available.push(factory());
             self.in_use.push(true);
-            Some(PoolHandle {
-                index,
-                pool: self as *mut Self,
-            })
+            Some(PoolHandle { index, pool: self as *mut Self })
         } else {
             None
         }

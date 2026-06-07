@@ -53,10 +53,7 @@ pub struct RibbonGroup {
 impl RibbonGroup {
     /// Creates a new ribbon group with the given title.
     pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            items: Vec::new(),
-        }
+        Self { title: title.into(), items: Vec::new() }
     }
 
     /// Returns the group title.
@@ -343,8 +340,7 @@ impl RibbonBar {
         group_index: usize,
         item_index: usize,
     ) -> Option<bool> {
-        self.item_ref(tab_index, group_index, item_index)
-            .map(|item| item.is_enabled())
+        self.item_ref(tab_index, group_index, item_index).map(|item| item.is_enabled())
     }
 
     /// Sets the checked state of an item.
@@ -369,8 +365,7 @@ impl RibbonBar {
         group_index: usize,
         item_index: usize,
     ) -> Option<bool> {
-        self.item_ref(tab_index, group_index, item_index)
-            .map(|item| item.is_checked())
+        self.item_ref(tab_index, group_index, item_index).map(|item| item.is_checked())
     }
 
     fn item_mut(
@@ -379,11 +374,7 @@ impl RibbonBar {
         group_index: usize,
         item_index: usize,
     ) -> Option<&mut RibbonItem> {
-        self.groups
-            .get_mut(tab_index)?
-            .get_mut(group_index)?
-            .items_mut()
-            .get_mut(item_index)
+        self.groups.get_mut(tab_index)?.get_mut(group_index)?.items_mut().get_mut(item_index)
     }
 
     pub fn item_ref(
@@ -392,11 +383,7 @@ impl RibbonBar {
         group_index: usize,
         item_index: usize,
     ) -> Option<&RibbonItem> {
-        self.groups
-            .get(tab_index)?
-            .get(group_index)?
-            .items()
-            .get(item_index)
+        self.groups.get(tab_index)?.get(group_index)?.items().get(item_index)
     }
 
     // ── Tab selection ──────────────────────────────────────────────────────
@@ -493,12 +480,7 @@ impl RibbonBar {
         let g = self.geometry();
         let x = g.x + g.width as i32 - MINIMIZE_BUTTON_SIZE - MINIMIZE_MARGIN;
         let y = g.y + (TAB_HEIGHT - MINIMIZE_BUTTON_SIZE) / 2;
-        Rect::new(
-            x,
-            y,
-            MINIMIZE_BUTTON_SIZE as u32,
-            MINIMIZE_BUTTON_SIZE as u32,
-        )
+        Rect::new(x, y, MINIMIZE_BUTTON_SIZE as u32, MINIMIZE_BUTTON_SIZE as u32)
     }
 
     /// Computes group rectangles for the current tab's content panel.
@@ -615,18 +597,10 @@ impl RibbonBar {
 
         let mut result = Vec::new();
         // Separate large and small items
-        let large_items: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| it.is_large())
-            .map(|(i, _)| i)
-            .collect();
-        let small_items: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| !it.is_large())
-            .map(|(i, _)| i)
-            .collect();
+        let large_items: Vec<usize> =
+            items.iter().enumerate().filter(|(_, it)| it.is_large()).map(|(i, _)| i).collect();
+        let small_items: Vec<usize> =
+            items.iter().enumerate().filter(|(_, it)| !it.is_large()).map(|(i, _)| i).collect();
 
         if large_items.is_empty() && small_items.is_empty() {
             return Vec::new();
@@ -729,12 +703,8 @@ impl RibbonBar {
         // Bottom edge of current tab blends into panel
         if is_current {
             // Overdraw bottom border so it merges with the panel
-            let bottom = Rect::new(
-                tab_rect.x,
-                tab_rect.y + tab_rect.height as i32 - 1,
-                tab_rect.width,
-                2,
-            );
+            let bottom =
+                Rect::new(tab_rect.x, tab_rect.y + tab_rect.height as i32 - 1, tab_rect.width, 2);
             context.fill_rect(bottom, bg);
         } else {
             context.draw_rect(tab_rect, border);
@@ -771,12 +741,7 @@ impl RibbonBar {
         // ── Panel background (gradient-like: light gray top, white body) ──
         let top_strip = Rect::new(panel.x, panel.y, panel.width, 3);
         context.fill_rect(top_strip, Color::from_rgb(235, 235, 240));
-        let body = Rect::new(
-            panel.x,
-            panel.y + 3,
-            panel.width,
-            panel.height.saturating_sub(3),
-        );
+        let body = Rect::new(panel.x, panel.y + 3, panel.width, panel.height.saturating_sub(3));
         context.fill_rect(body, Color::from_rgb(252, 252, 252));
 
         // Panel border

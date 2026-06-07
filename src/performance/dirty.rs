@@ -8,10 +8,7 @@ pub struct WidgetDirtyState {
 }
 impl WidgetDirtyState {
     pub fn new() -> Self {
-        Self {
-            dirty_widgets: HashSet::new(),
-            dirty_rects: HashMap::new(),
-        }
+        Self { dirty_widgets: HashSet::new(), dirty_rects: HashMap::new() }
     }
     pub fn mark_dirty(&mut self, id: ObjectId, rect: Rect) {
         self.dirty_widgets.insert(id);

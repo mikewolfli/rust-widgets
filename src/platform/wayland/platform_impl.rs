@@ -82,16 +82,12 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn init(&self) {
-        self.runtime
-            .initialized
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.runtime.initialized.store(true, std::sync::atomic::Ordering::SeqCst);
         log::info!("[wayland] Platform initialized (state-only backend).");
     }
 
     fn run(&self) {
-        self.runtime
-            .running
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.runtime.running.store(true, std::sync::atomic::Ordering::SeqCst);
         // Check environment to provide diagnostics about Wayland session state.
         let wayland_display =
             std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| String::from("wayland-0"));
@@ -109,9 +105,7 @@ impl Platform for WaylandPlatform {
     }
 
     fn quit(&self) {
-        self.runtime
-            .running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.runtime.running.store(false, std::sync::atomic::Ordering::SeqCst);
         log::info!("[wayland] Platform quit.");
     }
 
@@ -208,14 +202,7 @@ impl Platform for WaylandPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            WaylandHandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(WaylandHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
 
     fn create_combo_box(
@@ -325,14 +312,7 @@ impl Platform for WaylandPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            WaylandHandleKind::FileDialog,
-            "FileDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(WaylandHandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
 
     fn create_color_dialog(
@@ -343,14 +323,7 @@ impl Platform for WaylandPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            WaylandHandleKind::ColorDialog,
-            "ColorDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(WaylandHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
 
     fn create_font_dialog(
@@ -361,14 +334,7 @@ impl Platform for WaylandPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            WaylandHandleKind::FontDialog,
-            "FontDialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(WaylandHandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
 
     fn create_spin_box(
@@ -401,14 +367,7 @@ impl Platform for WaylandPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            WaylandHandleKind::ScrollArea,
-            "ScrollArea",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(WaylandHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
     }
 
     // -----------------------------------------------------------------------
@@ -487,9 +446,7 @@ impl Platform for WaylandPlatform {
             return false;
         }
         if let Ok(mut menus) = self.menus.lock() {
-            menus
-                .pending_widget_events
-                .push_back(WidgetTriggerEvent { widget_id, kind });
+            menus.pending_widget_events.push_back(WidgetTriggerEvent { widget_id, kind });
             true
         } else {
             log::error!("[wayland] inject_widget_trigger_event: mutex poisoned");
@@ -664,10 +621,7 @@ impl Platform for WaylandPlatform {
 
     fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
         match self.list_data.lock() {
-            Ok(data) => data
-                .get(&combo_box)
-                .map(|list| list.items.len())
-                .unwrap_or(0),
+            Ok(data) => data.get(&combo_box).map(|list| list.items.len()).unwrap_or(0),
             Err(_) => {
                 log::error!("[wayland] combo_box_item_count: mutex poisoned");
                 0
@@ -677,9 +631,7 @@ impl Platform for WaylandPlatform {
 
     fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
         match self.list_data.lock() {
-            Ok(data) => data
-                .get(&combo_box)
-                .and_then(|list| list.items.get(index).cloned()),
+            Ok(data) => data.get(&combo_box).and_then(|list| list.items.get(index).cloned()),
             Err(_) => {
                 log::error!("[wayland] combo_box_item_text: mutex poisoned");
                 None
@@ -794,10 +746,7 @@ impl Platform for WaylandPlatform {
 
     fn list_box_item_count(&self, list_box: ObjectId) -> usize {
         match self.list_data.lock() {
-            Ok(data) => data
-                .get(&list_box)
-                .map(|list| list.items.len())
-                .unwrap_or(0),
+            Ok(data) => data.get(&list_box).map(|list| list.items.len()).unwrap_or(0),
             Err(_) => {
                 log::error!("[wayland] list_box_item_count: mutex poisoned");
                 0
@@ -807,9 +756,7 @@ impl Platform for WaylandPlatform {
 
     fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
         match self.list_data.lock() {
-            Ok(data) => data
-                .get(&list_box)
-                .and_then(|list| list.items.get(index).cloned()),
+            Ok(data) => data.get(&list_box).and_then(|list| list.items.get(index).cloned()),
             Err(_) => {
                 log::error!("[wayland] list_box_item_text: mutex poisoned");
                 None
@@ -844,20 +791,12 @@ impl WaylandPlatform {
         let _registry = display.get_registry(&qh, ());
 
         // 3. One roundtrip to receive global announcements (wl_compositor, etc.)
-        event_queue
-            .roundtrip(&mut WaylandRegistryState {
-                compositor: None,
-                shell: None,
-            })
-            .ok()?;
+        event_queue.roundtrip(&mut WaylandRegistryState { compositor: None, shell: None }).ok()?;
 
         // 4. Register the window in state and return its ID.
         //    Full wl_surface creation requires binding wl_compositor from globals
         //    and implementing Dispatch for all relevant protocols.
-        log::info!(
-            "[wayland] Connected to display; registered native-capable window '{}'",
-            title
-        );
+        log::info!("[wayland] Connected to display; registered native-capable window '{}'", title);
 
         let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
         log::info!("[wayland] Window {} registered with state backend", id);
@@ -886,12 +825,7 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
         _qh: &wl_client::QueueHandle<WaylandRegistryState>,
     ) {
         use wl_client::protocol::wl_registry::Event;
-        if let Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
+        if let Event::Global { name, interface, version } = event {
             log::debug!(
                 "[wayland] Registry global: interface='{}', version={}",
                 interface,

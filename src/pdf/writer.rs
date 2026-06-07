@@ -20,9 +20,7 @@ pub struct PdfWriter {
 impl PdfWriter {
     /// Create a new PDF writer
     pub fn new() -> Self {
-        Self {
-            backend_name: "pdf-minimal-v1",
-        }
+        Self { backend_name: "pdf-minimal-v1" }
     }
     /// Create a new document
     pub fn create_document(&self, page_size: Size) -> Box<dyn PdfDocument> {
@@ -51,10 +49,7 @@ impl Default for PdfWriter {
 
 pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Error> {
     if doc.pages.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            "document must contain at least one page",
-        ));
+        return Err(Error::new(ErrorKind::InvalidInput, "document must contain at least one page"));
     }
     let mut objects: Vec<String> = Vec::new();
     // Track all annotation/hyperlink/form-field objects across all pages so we can
@@ -69,10 +64,8 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     for font in &doc.fonts {
         let font_obj_id = if font.embedded_data.is_empty() {
             let id = (objects.len() + 1) as u32;
-            objects.push(format!(
-                "<< /Type /Font /Subtype /Type1 /BaseFont /{} >>",
-                font.base_font
-            ));
+            objects
+                .push(format!("<< /Type /Font /Subtype /Type1 /BaseFont /{} >>", font.base_font));
             id
         } else {
             let file_obj_id = (objects.len() + 1) as u32;
@@ -135,11 +128,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
             );
         }
         let stream_text = String::from_utf8_lossy(&stream);
-        objects.push(format!(
-            "<< /Length {} >>\nstream\n{}\nendstream",
-            stream.len(),
-            stream_text
-        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{}\nendstream", stream.len(), stream_text));
         let page_form_fields = page.form_fields();
         let mut page_form_field_ids = Vec::new();
         for field in page_form_fields {
@@ -150,9 +139,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
             all_widget_object_ids.push((field_obj_id, index));
         }
         // --- Annotation objects for this page ---
-        let page_annotations = doc
-            .annotation_manager
-            .get_page_annotations((index + 1) as u32);
+        let page_annotations = doc.annotation_manager.get_page_annotations((index + 1) as u32);
         let mut page_annotation_ids = Vec::new();
         for annotation in &page_annotations {
             let annot_obj_id = (objects.len() + 1) as u32;
@@ -173,11 +160,8 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         let annots_entry = if all_annot_ids.is_empty() {
             String::new()
         } else {
-            let refs = all_annot_ids
-                .iter()
-                .map(|id| format!("{id} 0 R"))
-                .collect::<Vec<_>>()
-                .join(" ");
+            let refs =
+                all_annot_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
             format!(" /Annots [{}]", refs)
         };
         let page_obj_id = (objects.len() + 1) as u32;
@@ -203,11 +187,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         pdf_escape_literal(&doc.metadata.producer),
         security_entries,
     ));
-    let kids = page_object_ids
-        .iter()
-        .map(|id| format!("{id} 0 R"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let kids = page_object_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
     let acroform_obj_id = if all_form_field_object_ids.is_empty() {
         None
     } else {
@@ -221,18 +201,11 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         Some(id)
     };
     objects[0] = if let Some(acroform_id) = acroform_obj_id {
-        format!(
-            "<< /Type /Catalog /Pages 2 0 R /AcroForm {} 0 R >>",
-            acroform_id
-        )
+        format!("<< /Type /Catalog /Pages 2 0 R /AcroForm {} 0 R >>", acroform_id)
     } else {
         "<< /Type /Catalog /Pages 2 0 R >>".to_string()
     };
-    objects[1] = format!(
-        "<< /Type /Pages /Count {} /Kids [{}] >>",
-        page_object_ids.len(),
-        kids
-    );
+    objects[1] = format!("<< /Type /Pages /Count {} /Kids [{}] >>", page_object_ids.len(), kids);
     let mut out = Vec::new();
     out.extend_from_slice(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
     let mut offsets: Vec<usize> = Vec::new();
@@ -270,10 +243,7 @@ pub(crate) fn serialize_pdf_annotation(annotation: &Annotation) -> String {
     let mut dict = format!("<< /Type /Annot /Subtype /{} /Rect [{}]", subtype, rect);
     // Contents (optional)
     if !annotation.contents.is_empty() {
-        dict.push_str(&format!(
-            " /Contents ({})",
-            pdf_escape_literal(&annotation.contents)
-        ));
+        dict.push_str(&format!(" /Contents ({})", pdf_escape_literal(&annotation.contents)));
     }
     // Author (optional)
     if !annotation.author.is_empty() {
@@ -288,10 +258,7 @@ pub(crate) fn serialize_pdf_annotation(annotation: &Annotation) -> String {
     }
     // Modification date (optional)
     if !annotation.modification_date.is_empty() {
-        dict.push_str(&format!(
-            " /M ({})",
-            pdf_escape_literal(&annotation.modification_date)
-        ));
+        dict.push_str(&format!(" /M ({})", pdf_escape_literal(&annotation.modification_date)));
     }
     // Flags (optional, default 0)
     let flags = encode_annotation_flags(annotation.flags);
@@ -400,27 +367,17 @@ pub(crate) fn serialize_pdf_hyperlink(link: &PdfHyperlink) -> String {
         link.border.border_width,
     ));
     if let Some(ref dash) = link.border.dash_pattern {
-        let dash_str = dash
-            .iter()
-            .map(|v| format!("{:.1}", v))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let dash_str = dash.iter().map(|v| format!("{:.1}", v)).collect::<Vec<_>>().join(" ");
         dict.push_str(&format!(" /D [{}]", dash_str));
     }
     dict.push(']');
     // Highlight mode
-    dict.push_str(&format!(
-        " /H /{}",
-        highlight_mode_name(link.highlight_mode)
-    ));
+    dict.push_str(&format!(" /H /{}", highlight_mode_name(link.highlight_mode)));
     // Action
     dict.push_str(&format!(" /A {}", serialize_link_action(&link.action)));
     // Tooltip (optional)
     if !link.tooltip.is_empty() {
-        dict.push_str(&format!(
-            " /Contents ({})",
-            pdf_escape_literal(&link.tooltip)
-        ));
+        dict.push_str(&format!(" /Contents ({})", pdf_escape_literal(&link.tooltip)));
     }
     dict.push_str(" >>");
     dict
@@ -440,34 +397,19 @@ fn highlight_mode_name(mode: crate::pdf::hyperlink::HighlightMode) -> &'static s
 fn serialize_link_action(action: &HyperlinkLinkAction) -> String {
     match action {
         HyperlinkLinkAction::GoToPage { page, x, y } => {
-            format!(
-                "<< /Type /Action /S /GoTo /D [{} 0 R /XYZ {} {} null] >>",
-                page, x, y
-            )
+            format!("<< /Type /Action /S /GoTo /D [{} 0 R /XYZ {} {} null] >>", page, x, y)
         }
         HyperlinkLinkAction::GoToNamedDestination(name) => {
-            format!(
-                "<< /Type /Action /S /GoTo /D ({}) >>",
-                pdf_escape_literal(name)
-            )
+            format!("<< /Type /Action /S /GoTo /D ({}) >>", pdf_escape_literal(name))
         }
         HyperlinkLinkAction::Uri(uri) => {
-            format!(
-                "<< /Type /Action /S /URI /URI ({}) >>",
-                pdf_escape_literal(uri)
-            )
+            format!("<< /Type /Action /S /URI /URI ({}) >>", pdf_escape_literal(uri))
         }
         HyperlinkLinkAction::LaunchFile(path) => {
-            format!(
-                "<< /Type /Action /S /Launch /F ({}) >>",
-                pdf_escape_literal(path)
-            )
+            format!("<< /Type /Action /S /Launch /F ({}) >>", pdf_escape_literal(path))
         }
         HyperlinkLinkAction::JavaScript(script) => {
-            format!(
-                "<< /Type /Action /S /JavaScript /JS ({}) >>",
-                pdf_escape_literal(script)
-            )
+            format!("<< /Type /Action /S /JavaScript /JS ({}) >>", pdf_escape_literal(script))
         }
         HyperlinkLinkAction::NamedAction(named) => {
             let name_str = match named {
@@ -573,9 +515,7 @@ pub(crate) fn append_page_number_footer(
     pagination: &PdfPagination,
 ) {
     let current = pagination.start_at.saturating_add(page_index as u32);
-    let total = pagination
-        .start_at
-        .saturating_add(page_count.saturating_sub(1) as u32);
+    let total = pagination.start_at.saturating_add(page_count.saturating_sub(1) as u32);
     let label = format!("{} {}/{}", pagination.prefix, current, total);
     let escaped = pdf_escape_literal(&label);
     let x = (page_size.width as f32 - pagination.right_margin).max(12.0);
@@ -606,9 +546,7 @@ pub(crate) fn pdf_form_field_name(field: &PdfFormField) -> &str {
 }
 
 pub(crate) fn pdf_escape_literal(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
+    text.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)")
 }
 
 pub(crate) fn sanitize_pdf_font_name(name: &str) -> String {
@@ -618,13 +556,7 @@ pub(crate) fn sanitize_pdf_font_name(name: &str) -> String {
     }
     trimmed
         .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '-' })
         .collect()
 }
 
@@ -675,11 +607,7 @@ mod tests {
             "l2".to_string(),
             1,
             Rect::new(10, 10, 100, 20),
-            HyperlinkAction::GoToPage {
-                page: 3,
-                x: 0.0,
-                y: 0.0,
-            },
+            HyperlinkAction::GoToPage { page: 3, x: 0.0, y: 0.0 },
         );
         let s = serialize_pdf_hyperlink(&link);
         assert!(s.contains("/S /GoTo /D [3 0 R /XYZ 0 0 null]"));

@@ -46,12 +46,7 @@ pub fn compute_cartesian_layout(
     }
 }
 pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
-    let axis_color = Color {
-        r: 90,
-        g: 90,
-        b: 90,
-        a: 255,
-    };
+    let axis_color = Color { r: 90, g: 90, b: 90, a: 255 };
     context.draw_line(
         Point::from_f32(layout.plot_x, layout.plot_y + layout.plot_h),
         Point::from_f32(layout.plot_x + layout.plot_w, layout.plot_y + layout.plot_h),
@@ -74,24 +69,9 @@ pub fn draw_y_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color {
-        r: 150,
-        g: 150,
-        b: 150,
-        a: 255,
-    };
-    let label_color = Color {
-        r: 80,
-        g: 80,
-        b: 80,
-        a: 255,
-    };
-    let grid_color = Color {
-        r: 210,
-        g: 210,
-        b: 210,
-        a: 255,
-    };
+    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
+    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
+    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
@@ -127,24 +107,9 @@ pub fn draw_x_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color {
-        r: 150,
-        g: 150,
-        b: 150,
-        a: 255,
-    };
-    let label_color = Color {
-        r: 80,
-        g: 80,
-        b: 80,
-        a: 255,
-    };
-    let grid_color = Color {
-        r: 210,
-        g: 210,
-        b: 210,
-        a: 255,
-    };
+    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
+    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
+    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
@@ -195,12 +160,7 @@ pub fn draw_legend(
             &truncate_legend_label(&item.name, max_label_chars),
             Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             11.0,
-            Color {
-                r: 40,
-                g: 40,
-                b: 40,
-                a: 255,
-            },
+            Color { r: 40, g: 40, b: 40, a: 255 },
         );
         cursor_y += 18.0;
     }
@@ -210,12 +170,7 @@ pub fn draw_legend(
             &format!("+{hidden} more"),
             Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             10.0,
-            Color {
-                r: 90,
-                g: 90,
-                b: 90,
-                a: 255,
-            },
+            Color { r: 90, g: 90, b: 90, a: 255 },
         );
     }
 }
@@ -282,25 +237,12 @@ impl Chart for LineChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(
-            rect,
-            Color {
-                r: 230,
-                g: 230,
-                b: 230,
-                a: 255,
-            },
-        );
+        context.draw_rect(rect, Color { r: 230, g: 230, b: 230, a: 255 });
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color {
-                r: 20,
-                g: 20,
-                b: 20,
-                a: 255,
-            },
+            Color { r: 20, g: 20, b: 20, a: 255 },
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -328,22 +270,8 @@ impl Chart for LineChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-        draw_x_ticks(
-            context,
-            &layout,
-            min_x,
-            max_x,
-            self.x_tick_count,
-            self.show_grid,
-        );
-        draw_y_ticks(
-            context,
-            &layout,
-            min_y,
-            max_y,
-            self.y_tick_count,
-            self.show_grid,
-        );
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -352,12 +280,7 @@ impl Chart for LineChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -365,12 +288,7 @@ impl Chart for LineChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         for series in &visible_series {
@@ -458,25 +376,12 @@ impl Chart for BarChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(
-            rect,
-            Color {
-                r: 240,
-                g: 240,
-                b: 240,
-                a: 255,
-            },
-        );
+        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color {
-                r: 20,
-                g: 20,
-                b: 20,
-                a: 255,
-            },
+            Color { r: 20, g: 20, b: 20, a: 255 },
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -506,22 +411,8 @@ impl Chart for BarChart {
             return;
         }
         let span_x = (max_x - min_x).max(1.0);
-        draw_x_ticks(
-            context,
-            &layout,
-            min_x,
-            max_x,
-            self.x_tick_count,
-            self.show_grid,
-        );
-        draw_y_ticks(
-            context,
-            &layout,
-            0.0,
-            max_y,
-            self.y_tick_count,
-            self.show_grid,
-        );
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, 0.0, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -530,12 +421,7 @@ impl Chart for BarChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -543,12 +429,7 @@ impl Chart for BarChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         let point_slots = points_per_series.max(1) * visible_series.len();
@@ -579,62 +460,19 @@ pub struct PieChart {
 impl PieChart {
     /// Create a new pie chart
     pub fn new() -> Self {
-        Self {
-            title: String::new(),
-            series: Vec::new(),
-        }
+        Self { title: String::new(), series: Vec::new() }
     }
     /// Return a color from a preset palette based on index.
     fn palette_color(index: usize) -> Color {
         const PALETTE: &[Color] = &[
-            Color {
-                r: 255,
-                g: 99,
-                b: 132,
-                a: 255,
-            }, // rose
-            Color {
-                r: 54,
-                g: 162,
-                b: 235,
-                a: 255,
-            }, // blue
-            Color {
-                r: 255,
-                g: 206,
-                b: 86,
-                a: 255,
-            }, // yellow
-            Color {
-                r: 75,
-                g: 192,
-                b: 192,
-                a: 255,
-            }, // teal
-            Color {
-                r: 153,
-                g: 102,
-                b: 255,
-                a: 255,
-            }, // purple
-            Color {
-                r: 255,
-                g: 159,
-                b: 64,
-                a: 255,
-            }, // orange
-            Color {
-                r: 46,
-                g: 204,
-                b: 113,
-                a: 255,
-            }, // green
-            Color {
-                r: 231,
-                g: 76,
-                b: 60,
-                a: 255,
-            }, // red
+            Color { r: 255, g: 99, b: 132, a: 255 },  // rose
+            Color { r: 54, g: 162, b: 235, a: 255 },  // blue
+            Color { r: 255, g: 206, b: 86, a: 255 },  // yellow
+            Color { r: 75, g: 192, b: 192, a: 255 },  // teal
+            Color { r: 153, g: 102, b: 255, a: 255 }, // purple
+            Color { r: 255, g: 159, b: 64, a: 255 },  // orange
+            Color { r: 46, g: 204, b: 113, a: 255 },  // green
+            Color { r: 231, g: 76, b: 60, a: 255 },   // red
         ];
         PALETTE[index % PALETTE.len()]
     }
@@ -675,26 +513,14 @@ impl Chart for PieChart {
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color {
-                r: 20,
-                g: 20,
-                b: 20,
-                a: 255,
-            },
+            Color { r: 20, g: 20, b: 20, a: 255 },
         );
-        let center = Point {
-            x: rect.x + rect.width as i32 / 2,
-            y: rect.y + rect.height as i32 / 2,
-        };
+        let center =
+            Point { x: rect.x + rect.width as i32 / 2, y: rect.y + rect.height as i32 / 2 };
         let radius = (rect.width.min(rect.height) as f64 / 2.5) as u32;
         // Compute total sum across all visible series
-        let total: f64 = self
-            .series
-            .iter()
-            .filter(|s| s.visible)
-            .flat_map(|s| &s.data)
-            .map(|d| d.y)
-            .sum();
+        let total: f64 =
+            self.series.iter().filter(|s| s.visible).flat_map(|s| &s.data).map(|d| d.y).sum();
         if total <= 0.0 {
             return;
         }
@@ -719,10 +545,7 @@ impl Chart for PieChart {
                 let steps = (sweep.abs().ceil() as u32).clamp(3, 90);
                 let mut vertices = Vec::with_capacity((steps + 2) as usize);
                 // Center point
-                vertices.push(Point {
-                    x: cx as i32,
-                    y: cy as i32,
-                });
+                vertices.push(Point { x: cx as i32, y: cy as i32 });
                 // Arc boundary points
                 for i in 0..=steps {
                     let angle = start_angle + sweep * (i as f64 / steps as f64);
@@ -805,25 +628,12 @@ impl Chart for ScatterChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(
-            rect,
-            Color {
-                r: 240,
-                g: 240,
-                b: 240,
-                a: 255,
-            },
-        );
+        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color {
-                r: 20,
-                g: 20,
-                b: 20,
-                a: 255,
-            },
+            Color { r: 20, g: 20, b: 20, a: 255 },
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -851,22 +661,8 @@ impl Chart for ScatterChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-        draw_x_ticks(
-            context,
-            &layout,
-            min_x,
-            max_x,
-            self.x_tick_count,
-            self.show_grid,
-        );
-        draw_y_ticks(
-            context,
-            &layout,
-            min_y,
-            max_y,
-            self.y_tick_count,
-            self.show_grid,
-        );
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -875,12 +671,7 @@ impl Chart for ScatterChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -888,12 +679,7 @@ impl Chart for ScatterChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         for series in &visible_series {
@@ -902,10 +688,7 @@ impl Chart for ScatterChart {
                 let y = layout.plot_y + layout.plot_h
                     - (((point.y - min_y) / span_y) as f32) * layout.plot_h;
                 context.draw_circle(
-                    Point {
-                        x: x as i32,
-                        y: y as i32,
-                    },
+                    Point { x: x as i32, y: y as i32 },
                     self.point_radius,
                     series.color,
                 );
@@ -981,25 +764,12 @@ impl Chart for AreaChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(
-            rect,
-            Color {
-                r: 240,
-                g: 240,
-                b: 240,
-                a: 255,
-            },
-        );
+        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color {
-                r: 20,
-                g: 20,
-                b: 20,
-                a: 255,
-            },
+            Color { r: 20, g: 20, b: 20, a: 255 },
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -1027,22 +797,8 @@ impl Chart for AreaChart {
         }
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-        draw_x_ticks(
-            context,
-            &layout,
-            min_x,
-            max_x,
-            self.x_tick_count,
-            self.show_grid,
-        );
-        draw_y_ticks(
-            context,
-            &layout,
-            min_y,
-            max_y,
-            self.y_tick_count,
-            self.show_grid,
-        );
+        draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -1051,12 +807,7 @@ impl Chart for AreaChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -1064,12 +815,7 @@ impl Chart for AreaChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color {
-                    r: 40,
-                    g: 40,
-                    b: 40,
-                    a: 255,
-                },
+                Color { r: 40, g: 40, b: 40, a: 255 },
             );
         }
         let baseline = layout.plot_y + layout.plot_h;
@@ -1082,11 +828,7 @@ impl Chart for AreaChart {
             // Determine effective y-values for this series (stacked or raw)
             let effective_y: Vec<f64> = if self.stacked {
                 // Ensure accumulator is sized to match this series
-                if accum
-                    .as_ref()
-                    .map(|a| a.len() != series.data.len())
-                    .unwrap_or(true)
-                {
+                if accum.as_ref().map(|a| a.len() != series.data.len()).unwrap_or(true) {
                     accum = Some(vec![0.0_f64; series.data.len()]);
                 }
                 let acc = accum.as_mut().unwrap();

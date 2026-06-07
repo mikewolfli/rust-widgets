@@ -87,10 +87,7 @@ impl Draw for FontDialog {
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, 28),
-            Color::from_rgb(0, 120, 215),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &tr!("dialog.font.select_font"),
@@ -101,11 +98,8 @@ impl Draw for FontDialog {
         let list_y = rect.y + 38;
         let list_h = rect.height.saturating_sub(120);
         // Family, Style, Size columns
-        let col_labels = [
-            tr!("dialog.font.font_family"),
-            tr!("dialog.font.style"),
-            tr!("dialog.font.size"),
-        ];
+        let col_labels =
+            [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
         for (i, label) in col_labels.iter().enumerate() {
             let col_x = rect.x as f32 + 4.0 + i as f32 * (col_w as f32 + 4.0);
             context.draw_text(
@@ -126,14 +120,8 @@ impl Draw for FontDialog {
         // Preview area
         let prev_y = list_y + list_h as i32 + 8;
         let bw = rect.width.saturating_sub(8);
-        context.fill_rect(
-            Rect::new(rect.x + 4, prev_y, bw, 36),
-            Color::from_rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 4, prev_y, bw, 36),
-            Color::from_rgb(150, 150, 150),
-        );
+        context.fill_rect(Rect::new(rect.x + 4, prev_y, bw, 36), Color::from_rgb(255, 255, 255));
+        context.draw_rect(Rect::new(rect.x + 4, prev_y, bw, 36), Color::from_rgb(150, 150, 150));
         context.draw_text(
             Point::new(rect.x + 10, prev_y + 18),
             "AaBbYyZz 0123",

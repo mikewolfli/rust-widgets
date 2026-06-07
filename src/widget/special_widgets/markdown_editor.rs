@@ -99,10 +99,7 @@ impl MarkdownEditor {
 
     /// Returns heading count.
     pub fn heading_count(&self) -> usize {
-        self.text
-            .lines()
-            .filter(|line| line.trim_start().starts_with('#'))
-            .count()
+        self.text.lines().filter(|line| line.trim_start().starts_with('#')).count()
     }
 
     /// Returns current line index.
@@ -191,17 +188,9 @@ impl Draw for MarkdownEditor {
             } else {
                 Color::from_rgb(59, 72, 92)
             };
-            let rendered = if self.preview_mode {
-                line.trim_start_matches('#').trim_start()
-            } else {
-                line
-            };
-            context.draw_text(
-                Point::new(rect.x + 12, y),
-                rendered,
-                &Font::default(),
-                color,
-            );
+            let rendered =
+                if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
+            context.draw_text(Point::new(rect.x + 12, y), rendered, &Font::default(), color);
         }
     }
 }
@@ -235,11 +224,7 @@ mod tests {
         editor.toggle_preview_mode();
         editor.toggle_preview_mode();
 
-        let got = states
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = states.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![true, false]);
     }
 

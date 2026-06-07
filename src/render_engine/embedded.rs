@@ -27,11 +27,7 @@ struct EmbeddedTask {
 
 impl EmbeddedTask {
     fn new(id: u64, label: String, action: EmbeddedTaskFn) -> Self {
-        Self {
-            id,
-            label,
-            action: Some(action),
-        }
+        Self { id, label, action: Some(action) }
     }
 
     fn run(mut self, frame_index: u64) {
@@ -86,9 +82,7 @@ impl EmbeddedEngineShared {
     }
 
     fn lock_state(&self) -> MutexGuard<'_, EmbeddedRuntimeState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn set_target_fps(&self, fps: u32) -> u32 {
@@ -174,14 +168,7 @@ impl EmbeddedEngineShared {
         let mut state = self.lock_state();
         state.windows.insert(
             window_id,
-            EmbeddedWindowRecord {
-                id: window_id,
-                title: title.to_string(),
-                x,
-                y,
-                width,
-                height,
-            },
+            EmbeddedWindowRecord { id: window_id, title: title.to_string(), x, y, width, height },
         );
         window_id
     }
@@ -218,9 +205,7 @@ impl EmbeddedEngineShared {
     {
         let task_id = self.next_task_id.fetch_add(1, Ordering::SeqCst);
         let mut state = self.lock_state();
-        state
-            .pending_tasks
-            .push_back(EmbeddedTask::new(task_id, label, Box::new(action)));
+        state.pending_tasks.push_back(EmbeddedTask::new(task_id, label, Box::new(action)));
         drop(state);
         self.wake_signal.notify_all();
         task_id
@@ -297,9 +282,7 @@ pub struct EmbeddedEngineStats {
 
 pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
-    SHARED
-        .get_or_init(|| Arc::new(EmbeddedEngineShared::new()))
-        .clone()
+    SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()
 }
 
 /// Set embedded engine target FPS. Returns the applied clamped FPS value.
@@ -331,10 +314,7 @@ mod tests {
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]

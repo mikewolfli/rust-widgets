@@ -21,11 +21,7 @@ impl fmt::Debug for ActionManager {
 impl ActionManager {
     /// Creates an empty action manager.
     pub fn new() -> Self {
-        Self {
-            actions: HashMap::new(),
-            shortcut_to_action: HashMap::new(),
-            bindings: Vec::new(),
-        }
+        Self { actions: HashMap::new(), shortcut_to_action: HashMap::new(), bindings: Vec::new() }
     }
     /// Registers a new action and returns false if the id already exists.
     pub fn register_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> bool {
@@ -62,8 +58,7 @@ impl ActionManager {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
-        self.shortcut_to_action
-            .insert(normalize_shortcut(&shortcut.into()), action_id);
+        self.shortcut_to_action.insert(normalize_shortcut(&shortcut.into()), action_id);
         true
     }
     /// Binds a `Shortcut` type to an existing action id. Bridges `shortcut` module with `action`.
@@ -76,8 +71,7 @@ impl ActionManager {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
-        self.shortcut_to_action
-            .insert(shortcut.to_string().to_lowercase(), action_id);
+        self.shortcut_to_action.insert(shortcut.to_string().to_lowercase(), action_id);
         true
     }
     /// Resolves and triggers an action by shortcut string.
@@ -85,17 +79,11 @@ impl ActionManager {
         let Some(action_id) = self.shortcut_to_action.get(&normalize_shortcut(shortcut)) else {
             return false;
         };
-        self.actions
-            .get_mut(action_id)
-            .map(|action| action.trigger())
-            .unwrap_or(false)
+        self.actions.get_mut(action_id).map(|action| action.trigger()).unwrap_or(false)
     }
     /// Triggers an action directly by id.
     pub fn trigger_action(&mut self, action_id: &str) -> bool {
-        self.actions
-            .get_mut(action_id)
-            .map(|action| action.trigger())
-            .unwrap_or(false)
+        self.actions.get_mut(action_id).map(|action| action.trigger()).unwrap_or(false)
     }
     /// Binds an action to a menu host.
     pub fn bind_action_to_menu(&mut self, action_id: impl Into<String>, menu_id: ObjectId) -> bool {
@@ -119,20 +107,13 @@ impl ActionManager {
     }
     /// Returns all bindings associated with a host object id.
     pub fn bindings_for_host(&self, host_id: ObjectId) -> Vec<&ActionBinding> {
-        self.bindings
-            .iter()
-            .filter(|binding| binding.host_id == host_id)
-            .collect()
+        self.bindings.iter().filter(|binding| binding.host_id == host_id).collect()
     }
     fn bind_action(&mut self, action_id: String, host_id: ObjectId, kind: ActionHostKind) -> bool {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
-        self.bindings.push(ActionBinding {
-            action_id,
-            host_id,
-            kind,
-        });
+        self.bindings.push(ActionBinding { action_id, host_id, kind });
         true
     }
 }

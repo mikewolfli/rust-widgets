@@ -21,10 +21,7 @@ impl CustomPaintControlBackend {
         }
     }
     fn alloc_widget_id(&self) -> ObjectId {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let widget_id = state.next_widget_id;
         state.next_widget_id = state.next_widget_id.saturating_add(1);
         widget_id
@@ -44,17 +41,12 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -78,17 +70,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -112,17 +99,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -146,17 +128,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, true); // LineEdit enables IME by default
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -180,17 +157,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -214,17 +186,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -240,16 +207,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Slider".to_string());
+        state.accessibility_names.insert(widget_id, "Slider".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -272,16 +234,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ProgressBar".to_string());
+        state.accessibility_names.insert(widget_id, "ProgressBar".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -304,16 +261,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ComboBox".to_string());
+        state.accessibility_names.insert(widget_id, "ComboBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -336,16 +288,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ListBox".to_string());
+        state.accessibility_names.insert(widget_id, "ListBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -361,16 +308,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Panel".to_string());
+        state.accessibility_names.insert(widget_id, "Panel".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -393,16 +335,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "MenuBar".to_string());
+        state.accessibility_names.insert(widget_id, "MenuBar".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -426,17 +363,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -460,17 +392,12 @@ impl ControlBackend for CustomPaintControlBackend {
         _shortcut: Option<&str>,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -493,16 +420,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ToolBar".to_string());
+        state.accessibility_names.insert(widget_id, "ToolBar".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -526,17 +448,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -558,10 +475,7 @@ impl ControlBackend for CustomPaintControlBackend {
             .pop_front()
     }
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.menu_trigger_queue.push_back(menu_item_id);
         true
     }
@@ -573,13 +487,8 @@ impl ControlBackend for CustomPaintControlBackend {
             .pop_front()
     }
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state
-            .widget_trigger_queue
-            .push_back(WidgetTriggerEvent { widget_id, kind });
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.widget_trigger_queue.push_back(WidgetTriggerEvent { widget_id, kind });
         true
     }
     fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
@@ -631,10 +540,7 @@ impl ControlBackend for CustomPaintControlBackend {
             .unwrap_or(false)
     }
     fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // Validate the widget exists and read all fields from the getter
         let _has_props = state.widget_property(widget_id).map(|p| {
             let _ = (p.parent, p.widget_kind, p.x, p.y, p.width, p.height);
@@ -690,17 +596,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -725,17 +626,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -759,17 +655,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -793,17 +684,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -827,17 +713,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -861,17 +742,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -895,17 +771,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, true); // TextEdit enables IME by default
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -929,17 +800,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, true); // RichEdit enables IME by default
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -962,17 +828,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, "0".to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, true); // SpinBox enables IME by default
-        state
-            .accessibility_names
-            .insert(widget_id, "SpinBox".to_string());
+        state.accessibility_names.insert(widget_id, "SpinBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -995,16 +856,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ListView".to_string());
+        state.accessibility_names.insert(widget_id, "ListView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1027,16 +883,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "TreeView".to_string());
+        state.accessibility_names.insert(widget_id, "TreeView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1059,16 +910,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ScrollBar".to_string());
+        state.accessibility_names.insert(widget_id, "ScrollBar".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1091,16 +937,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ScrollArea".to_string());
+        state.accessibility_names.insert(widget_id, "ScrollArea".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1123,16 +964,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "DockPanel".to_string());
+        state.accessibility_names.insert(widget_id, "DockPanel".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1156,17 +992,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1189,16 +1020,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "TabWidget".to_string());
+        state.accessibility_names.insert(widget_id, "TabWidget".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1221,16 +1047,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Splitter".to_string());
+        state.accessibility_names.insert(widget_id, "Splitter".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1253,16 +1074,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "StackWidget".to_string());
+        state.accessibility_names.insert(widget_id, "StackWidget".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1285,16 +1101,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "MdiArea".to_string());
+        state.accessibility_names.insert(widget_id, "MdiArea".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1310,16 +1121,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_canvas(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Canvas".to_string());
+        state.accessibility_names.insert(widget_id, "Canvas".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1335,16 +1141,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_table(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Table".to_string());
+        state.accessibility_names.insert(widget_id, "Table".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1360,16 +1161,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_grid(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Grid".to_string());
+        state.accessibility_names.insert(widget_id, "Grid".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1385,16 +1181,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Chart".to_string());
+        state.accessibility_names.insert(widget_id, "Chart".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1418,17 +1209,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1451,16 +1237,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "CheckListBox".to_string());
+        state.accessibility_names.insert(widget_id, "CheckListBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1483,17 +1264,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, "0.0".to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, true);
-        state
-            .accessibility_names
-            .insert(widget_id, "DoubleSpinBox".to_string());
+        state.accessibility_names.insert(widget_id, "DoubleSpinBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1509,16 +1285,11 @@ impl ControlBackend for CustomPaintControlBackend {
     }
     fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Dial".to_string());
+        state.accessibility_names.insert(widget_id, "Dial".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1542,17 +1313,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1575,16 +1341,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "DatePicker".to_string());
+        state.accessibility_names.insert(widget_id, "DatePicker".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1607,16 +1368,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "TimePicker".to_string());
+        state.accessibility_names.insert(widget_id, "TimePicker".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1639,16 +1395,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "DateTimePicker".to_string());
+        state.accessibility_names.insert(widget_id, "DateTimePicker".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1672,17 +1423,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1706,16 +1452,11 @@ impl ControlBackend for CustomPaintControlBackend {
     ) -> ObjectId {
         log::warn!("shallow implementation: DataView maps to virtualized data-view host");
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "DataView".to_string());
+        state.accessibility_names.insert(widget_id, "DataView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1739,16 +1480,11 @@ impl ControlBackend for CustomPaintControlBackend {
     ) -> ObjectId {
         log::warn!("shallow implementation: PropertyGrid is an alias for TreeView");
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "PropertyGrid".to_string());
+        state.accessibility_names.insert(widget_id, "PropertyGrid".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1771,16 +1507,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Toolbox".to_string());
+        state.accessibility_names.insert(widget_id, "Toolbox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1805,17 +1536,12 @@ impl ControlBackend for CustomPaintControlBackend {
     ) -> ObjectId {
         log::warn!("shallow implementation: CollapsiblePane is an alias for Panel");
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1839,17 +1565,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, title.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, title.to_string());
+        state.accessibility_names.insert(widget_id, title.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1872,16 +1593,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebView".to_string());
+        state.accessibility_names.insert(widget_id, "WebView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1904,16 +1620,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ActivityIndicator".to_string());
+        state.accessibility_names.insert(widget_id, "ActivityIndicator".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1936,16 +1647,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "Calendar".to_string());
+        state.accessibility_names.insert(widget_id, "Calendar".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -1969,16 +1675,11 @@ impl ControlBackend for CustomPaintControlBackend {
     ) -> ObjectId {
         log::warn!("shallow implementation: ColumnView is an alias for TreeView");
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ColumnView".to_string());
+        state.accessibility_names.insert(widget_id, "ColumnView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2002,16 +1703,11 @@ impl ControlBackend for CustomPaintControlBackend {
     ) -> ObjectId {
         log::warn!("shallow implementation: UndoView is an alias for ListView");
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "UndoView".to_string());
+        state.accessibility_names.insert(widget_id, "UndoView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2035,17 +1731,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2068,17 +1759,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, "0".to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "LCDNumber".to_string());
+        state.accessibility_names.insert(widget_id, "LCDNumber".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2101,16 +1787,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "FontComboBox".to_string());
+        state.accessibility_names.insert(widget_id, "FontComboBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2133,16 +1814,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineView".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineView".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2165,16 +1841,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEnginePage".to_string());
+        state.accessibility_names.insert(widget_id, "WebEnginePage".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2197,16 +1868,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineSettings".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineSettings".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2229,16 +1895,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineDownloadItem".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineDownloadItem".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2261,16 +1922,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineCookieStore".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineCookieStore".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2293,16 +1949,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineWebChannel".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineWebChannel".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2325,16 +1976,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineFindTextResult".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineFindTextResult".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2357,16 +2003,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineNotification".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineNotification".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2389,16 +2030,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineScriptDialog".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineScriptDialog".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2421,16 +2057,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "WebEngineContextMenuRequest".to_string());
+        state.accessibility_names.insert(widget_id, "WebEngineContextMenuRequest".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2454,17 +2085,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2488,17 +2114,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2521,16 +2142,11 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, "ToolBox".to_string());
+        state.accessibility_names.insert(widget_id, "ToolBox".to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2554,17 +2170,12 @@ impl ControlBackend for CustomPaintControlBackend {
         height: u32,
     ) -> ObjectId {
         let widget_id = self.alloc_widget_id();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.texts.insert(widget_id, text.to_string());
         state.enabled.insert(widget_id, true);
         state.visible.insert(widget_id, true);
         state.ime_enabled.insert(widget_id, false);
-        state
-            .accessibility_names
-            .insert(widget_id, text.to_string());
+        state.accessibility_names.insert(widget_id, text.to_string());
         state.widget_properties.insert(
             widget_id,
             CustomWidgetProperties {
@@ -2687,18 +2298,8 @@ mod tests {
         let id1 = backend.create_window("A", 0, 0, 100, 100);
         let id2 = backend.create_window("B", 0, 0, 100, 100);
         let id3 = backend.create_button(0, "C", 0, 0, 50, 20);
-        assert!(
-            id1 < id2,
-            "first alloc id ({}) must be < second ({})",
-            id1,
-            id2
-        );
-        assert!(
-            id2 < id3,
-            "second alloc id ({}) must be < third ({})",
-            id2,
-            id3
-        );
+        assert!(id1 < id2, "first alloc id ({}) must be < second ({})", id1, id2);
+        assert!(id2 < id3, "second alloc id ({}) must be < third ({})", id2, id3);
     }
 
     #[test]

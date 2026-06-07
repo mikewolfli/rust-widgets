@@ -681,8 +681,7 @@ pub trait ControlBackend: Send + Sync {
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool;
     /// Poll next widget id trigger if available.
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     /// Poll next typed widget trigger event.
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent>;
@@ -1672,18 +1671,9 @@ mod tests {
     #[test]
     fn create_widget_default_with_various_kinds() {
         let backend = TestBackend;
-        assert_eq!(
-            ControlBackend::create_widget(&backend, "button", 0, "", 0, 0, 50, 30),
-            0,
-        );
-        assert_eq!(
-            ControlBackend::create_widget(&backend, "label", 1, "Hello", 5, 5, 80, 20),
-            0,
-        );
-        assert_eq!(
-            ControlBackend::create_widget(&backend, "window", 0, "Main", 0, 0, 800, 600),
-            0,
-        );
+        assert_eq!(ControlBackend::create_widget(&backend, "button", 0, "", 0, 0, 50, 30), 0,);
+        assert_eq!(ControlBackend::create_widget(&backend, "label", 1, "Hello", 5, 5, 80, 20), 0,);
+        assert_eq!(ControlBackend::create_widget(&backend, "window", 0, "Main", 0, 0, 800, 600), 0,);
     }
 
     #[test]

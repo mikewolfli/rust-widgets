@@ -64,10 +64,7 @@ pub struct WidgetRegistry {
 impl WidgetRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            by_kind: HashMap::new(),
-        }
+        Self { entries: HashMap::new(), by_kind: HashMap::new() }
     }
 
     /// Register (or update) a widget entry.
@@ -107,10 +104,7 @@ impl WidgetRegistry {
 
     /// Return all entries whose parent matches the given [`ObjectId`].
     pub fn children_of(&self, parent_id: ObjectId) -> Vec<&WidgetEntry> {
-        self.entries
-            .values()
-            .filter(|entry| entry.parent == Some(parent_id))
-            .collect()
+        self.entries.values().filter(|entry| entry.parent == Some(parent_id)).collect()
     }
 
     /// Serialize the registry to a JSON file at `path`.

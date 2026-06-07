@@ -339,11 +339,7 @@ impl GpuStagingBufferPool {
             slot_count: self.config.ring_slots,
             current_slot: self.current_slot,
             current_frame: self.current_frame,
-            fallback_used: self
-                .fallback_pool
-                .as_ref()
-                .map(|p| p.available())
-                .unwrap_or(0),
+            fallback_used: self.fallback_pool.as_ref().map(|p| p.available()).unwrap_or(0),
         }
     }
     /// Waits for a slot to be available (CPU fence)
@@ -403,11 +399,7 @@ struct GpuPendingUpload {
 impl GpuUploadBatcher {
     /// Creates a new upload batcher
     pub fn new(config: StagingBufferPoolConfig) -> Self {
-        Self {
-            config,
-            pending_uploads: Vec::new(),
-            current_batch_size: 0,
-        }
+        Self { config, pending_uploads: Vec::new(), current_batch_size: 0 }
     }
     /// Adds an upload to the batch
     pub fn add_upload(&mut self, data: Vec<u8>, destination_offset: usize) -> bool {
@@ -424,10 +416,7 @@ impl GpuUploadBatcher {
                 return true;
             }
         }
-        self.pending_uploads.push(GpuPendingUpload {
-            data,
-            destination_offset,
-        });
+        self.pending_uploads.push(GpuPendingUpload { data, destination_offset });
         self.current_batch_size += size;
         true
     }
@@ -453,11 +442,8 @@ impl GpuUploadBatcher {
     }
     /// Clears the batch and returns all pending uploads
     pub fn flush(&mut self) -> Vec<(Vec<u8>, usize)> {
-        let uploads = self
-            .pending_uploads
-            .drain(..)
-            .map(|u| (u.data, u.destination_offset))
-            .collect();
+        let uploads =
+            self.pending_uploads.drain(..).map(|u| (u.data, u.destination_offset)).collect();
         self.current_batch_size = 0;
         uploads
     }
@@ -474,10 +460,7 @@ pub struct GpuBufferPoolMonitor {
 impl GpuBufferPoolMonitor {
     /// Creates a new monitor
     pub fn new(max_history: usize) -> Self {
-        Self {
-            stats_history: Vec::with_capacity(max_history),
-            max_history,
-        }
+        Self { stats_history: Vec::with_capacity(max_history), max_history }
     }
     /// Records a stats sample
     pub fn record(&mut self, stats: GpuBufferPoolStats) {
@@ -491,11 +474,8 @@ impl GpuBufferPoolMonitor {
         if self.stats_history.is_empty() {
             return 0.0;
         }
-        let total: f32 = self
-            .stats_history
-            .iter()
-            .map(|s| s.used_size as f32 / s.total_size as f32)
-            .sum();
+        let total: f32 =
+            self.stats_history.iter().map(|s| s.used_size as f32 / s.total_size as f32).sum();
         total / self.stats_history.len() as f32
     }
     /// Returns true if the pool is under memory pressure
@@ -505,9 +485,7 @@ impl GpuBufferPoolMonitor {
         }
         // Check if recent utilization is consistently high
         let recent: Vec<_> = self.stats_history.iter().rev().take(3).collect();
-        recent
-            .iter()
-            .all(|s| s.used_size as f32 / s.total_size as f32 > 0.8)
+        recent.iter().all(|s| s.used_size as f32 / s.total_size as f32 > 0.8)
     }
     /// Returns true if the pool is underutilized
     pub fn is_underutilized(&self) -> bool {
@@ -549,11 +527,7 @@ pub mod integration {
             GpuMemoryProfile::Integrated => 1024 * 1024,
             GpuMemoryProfile::Cpu => 256 * 1024,
         };
-        BufferPool::new(
-            buffer_size,
-            profile.ring_buffer_slots(),
-            profile.ring_buffer_slots() * 2,
-        )
+        BufferPool::new(buffer_size, profile.ring_buffer_slots(), profile.ring_buffer_slots() * 2)
     }
 }
 #[cfg(test)]
@@ -635,10 +609,7 @@ mod tests {
             GpuMemoryProfile::from_device_type(GpuDeviceType::IntegratedGpu),
             GpuMemoryProfile::Integrated
         );
-        assert_eq!(
-            GpuMemoryProfile::from_device_type(GpuDeviceType::Cpu),
-            GpuMemoryProfile::Cpu
-        );
+        assert_eq!(GpuMemoryProfile::from_device_type(GpuDeviceType::Cpu), GpuMemoryProfile::Cpu);
     }
     #[test]
     fn test_integration_config() {

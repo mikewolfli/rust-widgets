@@ -206,8 +206,7 @@ impl WebViewCore {
         self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
         self.update_navigation_state();
-        self.browser_history
-            .add_entry(self.url.clone(), self.title.clone());
+        self.browser_history.add_entry(self.url.clone(), self.title.clone());
         self.base.request_redraw();
     }
 
@@ -345,15 +344,12 @@ impl WebViewCore {
 
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
         if !self.settings.javascript_enabled {
-            return Err(super::js_engine::JsError::new(
-                "JavaScript is disabled".to_string(),
-            ));
+            return Err(super::js_engine::JsError::new("JavaScript is disabled".to_string()));
         }
         let result = self.js_engine.evaluate(script, &mut self.js_context)?;
         for msg in self.js_context.console_messages() {
             let level = format!("{:?}", msg.level);
-            self.console_message
-                .emit((level, msg.line, msg.message.clone()));
+            self.console_message.emit((level, msg.line, msg.message.clone()));
         }
         Ok(result)
     }
@@ -381,8 +377,7 @@ impl WebViewCore {
     }
 
     fn update_navigation_state(&self) {
-        self.navigation_state_changed
-            .emit((self.can_go_back(), self.can_go_forward()));
+        self.navigation_state_changed.emit((self.can_go_back(), self.can_go_forward()));
     }
 
     /// Handle common key events for navigation.
@@ -693,10 +688,7 @@ mod tests {
         core.set_javascript_enabled(false);
         let result = core.evaluate_javascript("var x = 1;");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("JavaScript is disabled"));
+        assert!(result.unwrap_err().message.contains("JavaScript is disabled"));
     }
 
     #[test]
@@ -859,12 +851,8 @@ mod tests {
 
     #[test]
     fn test_web_view_core_signals_are_initialized() {
-        let core = WebViewCore::new(
-            WidgetKind::WebView,
-            Rect::new(0, 0, 800, 600),
-            "signals_test",
-            "",
-        );
+        let core =
+            WebViewCore::new(WidgetKind::WebView, Rect::new(0, 0, 800, 600), "signals_test", "");
         // Signals should exist and be ready to connect
         let _ = &core.loading_started;
         let _ = &core.loading_finished;

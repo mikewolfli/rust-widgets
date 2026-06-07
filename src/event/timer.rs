@@ -35,10 +35,7 @@ pub struct TimerManager {
 impl TimerManager {
     /// Create a timer manager bound to an event sender.
     pub fn new(sender: EventSender) -> Self {
-        let state = Arc::new(Mutex::new(TimerState {
-            timers: HashMap::new(),
-            running: true,
-        }));
+        let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
 
         let worker_state = Arc::clone(&state);
         let worker_sender = sender;
@@ -83,10 +80,7 @@ impl TimerManager {
             thread::sleep(Duration::from_millis(2));
         });
 
-        Self {
-            state,
-            thread_handle: Some(thread_handle),
-        }
+        Self { state, thread_handle: Some(thread_handle) }
     }
 
     /// Start or replace a timer for `(target, id)`.
@@ -101,11 +95,7 @@ impl TimerManager {
             return Err("timer interval must be > 0".to_string());
         }
 
-        let entry = TimerEntry {
-            interval,
-            repeating,
-            next_fire: Instant::now() + interval,
-        };
+        let entry = TimerEntry { interval, repeating, next_fire: Instant::now() + interval };
 
         let mut guard = self.state.lock().unwrap_or_else(recover_lock);
         guard.timers.insert((target, id), entry);
@@ -122,9 +112,7 @@ impl TimerManager {
     pub fn stop_timers_for_target(&self, target: ObjectId) -> usize {
         let mut guard = self.state.lock().unwrap_or_else(recover_lock);
         let before = guard.timers.len();
-        guard
-            .timers
-            .retain(|(timer_target, _), _| *timer_target != target);
+        guard.timers.retain(|(timer_target, _), _| *timer_target != target);
         before.saturating_sub(guard.timers.len())
     }
 

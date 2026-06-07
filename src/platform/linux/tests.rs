@@ -7,10 +7,7 @@ use crate::platform::linux::LinuxPlatform;
 use crate::platform::Platform;
 
 #[test]
-#[cfg_attr(
-    feature = "gtk-native",
-    ignore = "gtk requires main-thread test execution"
-)]
+#[cfg_attr(feature = "gtk-native", ignore = "gtk requires main-thread test execution")]
 fn platform_creates_and_runs() {
     let backend = LinuxPlatform::new();
     backend.init();
@@ -49,10 +46,7 @@ fn platform_creates_and_runs() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "gtk-native",
-    ignore = "gtk requires main-thread test execution"
-)]
+#[cfg_attr(feature = "gtk-native", ignore = "gtk requires main-thread test execution")]
 fn widget_lifecycle() {
     let backend = LinuxPlatform::new();
     backend.init();
@@ -69,29 +63,17 @@ fn widget_lifecycle() {
 
     // Show/hide roundtrip.
     backend.show_widget(button);
-    assert!(
-        backend.is_widget_visible(button),
-        "Button should be visible after show"
-    );
+    assert!(backend.is_widget_visible(button), "Button should be visible after show");
 
     backend.hide_widget(button);
-    assert!(
-        !backend.is_widget_visible(button),
-        "Button should be hidden after hide"
-    );
+    assert!(!backend.is_widget_visible(button), "Button should be hidden after hide");
 
     // Enable/disable roundtrip.
     backend.set_widget_enabled(button, false);
-    assert!(
-        !backend.is_widget_enabled(button),
-        "Button should be disabled"
-    );
+    assert!(!backend.is_widget_enabled(button), "Button should be disabled");
 
     backend.set_widget_enabled(button, true);
-    assert!(
-        backend.is_widget_enabled(button),
-        "Button should be enabled"
-    );
+    assert!(backend.is_widget_enabled(button), "Button should be enabled");
 
     // Geometry update.
     backend.set_widget_geometry(button, 20, 20, 120, 32);
@@ -101,23 +83,14 @@ fn widget_lifecycle() {
     assert_eq!(backend.get_widget_text(window), "UpdatedTitle");
 
     backend.show_widget(window);
-    assert!(
-        backend.is_widget_visible(window),
-        "Window should be visible"
-    );
+    assert!(backend.is_widget_visible(window), "Window should be visible");
 
     backend.hide_widget(window);
-    assert!(
-        !backend.is_widget_visible(window),
-        "Window should be hidden"
-    );
+    assert!(!backend.is_widget_visible(window), "Window should be hidden");
 }
 
 #[test]
-#[cfg_attr(
-    feature = "gtk-native",
-    ignore = "gtk requires main-thread test execution"
-)]
+#[cfg_attr(feature = "gtk-native", ignore = "gtk requires main-thread test execution")]
 fn clipboard_roundtrip() {
     let backend = LinuxPlatform::new();
     backend.init();
@@ -126,32 +99,14 @@ fn clipboard_roundtrip() {
     let _window = backend.create_window("ClipTest", 0, 0, 200, 120);
 
     // Clipboard set/get roundtrip.
-    assert!(
-        backend.set_clipboard_text("linux_clip_test"),
-        "Should set clipboard text"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "linux_clip_test",
-        "Clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("linux_clip_test"), "Should set clipboard text");
+    assert_eq!(backend.get_clipboard_text(), "linux_clip_test", "Clipboard text should match");
 
     // Overwrite with new content.
-    assert!(
-        backend.set_clipboard_text("updated_clip"),
-        "Should overwrite clipboard"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "updated_clip",
-        "Updated clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("updated_clip"), "Should overwrite clipboard");
+    assert_eq!(backend.get_clipboard_text(), "updated_clip", "Updated clipboard text should match");
 
     // Empty string.
     assert!(backend.set_clipboard_text(""), "Should set empty clipboard");
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "",
-        "Empty clipboard should match"
-    );
+    assert_eq!(backend.get_clipboard_text(), "", "Empty clipboard should match");
 }

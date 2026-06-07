@@ -202,10 +202,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(ms) = val.trim().parse::<f64>() {
                 return Some(Duration::from_secs_f64(ms / 1000.0));
             }
-            log::warn!(
-                "[performance] RUST_WIDGETS_GPU_TIME_MS value '{}' is not a valid f64",
-                val
-            );
+            log::warn!("[performance] RUST_WIDGETS_GPU_TIME_MS value '{}' is not a valid f64", val);
         }
         log::debug!(
             "[performance] measure_gpu_time: no GPU query backend available (strategy={:?})",
@@ -226,10 +223,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(v) = val.trim().parse::<f32>() {
                 return v.clamp(0.0, 1.0);
             }
-            log::warn!(
-                "[performance] RUST_WIDGETS_MEM_UTIL value '{}' is not a valid f32",
-                val
-            );
+            log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{}' is not a valid f32", val);
         }
         // 2. Linux: /proc/self/status
         #[cfg(target_os = "linux")]
@@ -239,19 +233,9 @@ impl AdaptivePerformanceMonitor {
                 let mut vmsize_kb: u64 = 0;
                 for line in status.lines() {
                     if let Some(rest) = line.strip_prefix("VmRSS:") {
-                        vmrss_kb = rest
-                            .trim()
-                            .trim_end_matches("kB")
-                            .trim()
-                            .parse()
-                            .unwrap_or(0);
+                        vmrss_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
                     } else if let Some(rest) = line.strip_prefix("VmSize:") {
-                        vmsize_kb = rest
-                            .trim()
-                            .trim_end_matches("kB")
-                            .trim()
-                            .parse()
-                            .unwrap_or(0);
+                        vmsize_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
                     }
                 }
                 if vmsize_kb > 0 {
@@ -267,9 +251,8 @@ impl AdaptivePerformanceMonitor {
         #[cfg(target_os = "macos")]
         {
             let pid = std::process::id().to_string();
-            if let Ok(output) = std::process::Command::new("ps")
-                .args(["-o", "rss=", "-p", &pid])
-                .output()
+            if let Ok(output) =
+                std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid]).output()
             {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -297,10 +280,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(v) = val.trim().parse::<f32>() {
                 return v.clamp(0.0, 1.0);
             }
-            log::warn!(
-                "[performance] RUST_WIDGETS_CPU_UTIL value '{}' is not a valid f32",
-                val
-            );
+            log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{}' is not a valid f32", val);
         }
         // 2. Linux: /proc/self/status → Threads:
         #[cfg(target_os = "linux")]
@@ -554,10 +534,7 @@ impl PerformanceTrap {
     }
     /// Returns true if this trap suggests restarting
     pub fn suggests_restart(&self) -> bool {
-        matches!(
-            self,
-            Self::BrowserForcedIntegratedGpu | Self::CpuOverload { .. }
-        )
+        matches!(self, Self::BrowserForcedIntegratedGpu | Self::CpuOverload { .. })
     }
 }
 #[cfg(test)]
@@ -599,10 +576,7 @@ mod tests {
     }
     #[test]
     fn test_trap_messages() {
-        let trap = PerformanceTrap::LowFrameRate {
-            current_fps: 15.0,
-            threshold: 30.0,
-        };
+        let trap = PerformanceTrap::LowFrameRate { current_fps: 15.0, threshold: 30.0 };
         let msg = trap.message();
         assert!(msg.contains("15.0"));
         assert!(msg.contains("30.0"));

@@ -1344,3 +1344,64 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 - R9（代码质量债务）完成率：**75%**
 
 - BLUE10 总体完成率（按 R1-R9 等权）：**57.8%**
+
+---
+
+## 第十三轮执行回写（2026-06-07）
+
+### 本轮目标（门禁回归 + 配置缺口闭环）
+
+- 对照 BLUE10 当前基线做多轮深度复核，先确认核心门禁真实状态，再修复新增阻断。
+- 推进 R4 剩余低成本高收益项（根目录组织、工具配置、VS Code 推荐配置）。
+
+### 本轮实际完成项
+
+1. 门禁回归修复（R3/R9 交叉）：
+  - 文件：`src/platform/macos_objc2/types.rs`
+  - 变更：为 `MacOSObjc2Platform` 增加 `Default` 实现，修复 `clippy -D warnings` 下的 `new_without_default` 阻断。
+
+2. R4.6 配置文件补齐：
+  - 新增：`rustfmt.toml`
+  - 新增：`clippy.toml`
+
+3. R4.7 Cargo 开发别名补齐：
+  - 新增：`.cargo/config.toml`
+  - 包含高频别名：`check-all`、`test-all`、`lint`、`fmt-check`。
+
+4. R4.9 / R4.10 编辑器配置增强：
+  - 更新：`.vscode/settings.json`
+    - `rust-analyzer.check.command = "clippy"`
+    - `rust-analyzer.cargo.allFeatures = true`
+    - `editor.formatOnSave = true`
+    - `files.exclude["**/target"] = true`
+  - 新增：`.vscode/extensions.json`
+    - 推荐 `rust-analyzer`、`CodeLLDB`、`Even Better TOML`、`crates`。
+
+5. R4.3 / R4.4 / R4.5 根目录组织修复：
+  - 新增：`CHANGELOG.md`（根目录工具入口，指向规范主文件 `docs/reports/CHANGELOG.md`）
+  - 删除：`blue9.md`（根目录重复副本；规范位置已在 `docs/plans/blue9.md`）
+  - 删除：`libtypes.rlib`（预编译产物，已由 `.gitignore` 规则覆盖）
+
+### 证据（不虚标）
+
+1. `cargo check --all`：通过（`Finished dev profile [unoptimized + debuginfo]`）。
+2. `cargo test --all-features -q`：通过（`1711 passed; 0 failed; 3 ignored`）。
+3. `cargo clippy --all-features --all-targets -- -D warnings`：首次发现并修复 1 个阻断后复跑通过。
+4. `cargo fmt --all -- --check`：通过。
+5. `./tools/check_abi.sh`：通过（header declarations=76，ABI version=7）。
+6. `./tools/check_profiles.sh`：通过。
+7. `./tools/check_event_model_signal_first.sh`：通过。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）完成率：**99%**
+- R2（平台能力对齐）完成率：**62%**
+- R3（测试与门禁基建）完成率：**70%**（本轮完成门禁回归修复）
+- R4（配置与文档圆满化）完成率：**78%**（本轮完成 R4.3/R4.4/R4.5/R4.6/R4.7/R4.9/R4.10）
+- R5（渲染管线增强）完成率：**55%**
+- R6（动画与样式集成）完成率：**30%**
+- R7（无障碍）完成率：**5%**
+- R8（事件与运行时）完成率：**64%**
+- R9（代码质量债务）完成率：**76%**（本轮新增 clippy 阻断清理）
+
+- BLUE10 总体完成率（按 R1-R9 等权）：**59.9%**

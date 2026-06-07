@@ -26,9 +26,7 @@ fn test_i18n_manager_with_translations() {
         }
     }"#;
     fs::write(&file_path, json).unwrap();
-    manager
-        .load_translations(file_path.to_str().unwrap())
-        .unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
     manager.set_language("en");
     assert_eq!(manager.translate("hello"), "Hello World");
 }
@@ -51,24 +49,14 @@ fn test_i18n_manager_reload_translation() {
             let mut map = HashMap::new();
             map.insert(
                 "hello".to_string(),
-                Translation {
-                    context: None,
-                    message: "Hello".to_string(),
-                    plural: None,
-                },
+                Translation { context: None, message: "Hello".to_string(), plural: None },
             );
             map
         },
     };
-    fs::write(
-        &file_path,
-        serde_json::to_string(&translation_file).unwrap(),
-    )
-    .unwrap();
+    fs::write(&file_path, serde_json::to_string(&translation_file).unwrap()).unwrap();
     let mut manager = I18nManager::new();
-    manager
-        .load_translations(file_path.to_str().unwrap())
-        .unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
     assert_eq!(manager.translate("hello"), "Hello");
     let updated_file = TranslationFile {
         language: "en".to_string(),
@@ -76,11 +64,7 @@ fn test_i18n_manager_reload_translation() {
             let mut map = HashMap::new();
             map.insert(
                 "hello".to_string(),
-                Translation {
-                    context: None,
-                    message: "Hello Updated".to_string(),
-                    plural: None,
-                },
+                Translation { context: None, message: "Hello Updated".to_string(), plural: None },
             );
             map
         },
@@ -100,26 +84,16 @@ fn test_i18n_manager_check_and_reload() {
             let mut map = HashMap::new();
             map.insert(
                 "test".to_string(),
-                Translation {
-                    context: None,
-                    message: "Test".to_string(),
-                    plural: None,
-                },
+                Translation { context: None, message: "Test".to_string(), plural: None },
             );
             map
         },
     };
-    fs::write(
-        &file_path,
-        serde_json::to_string(&translation_file).unwrap(),
-    )
-    .unwrap();
+    fs::write(&file_path, serde_json::to_string(&translation_file).unwrap()).unwrap();
     let (sender, _receiver) = unbounded();
     let mut manager = I18nManager::new();
     manager.enable_hot_reload(sender);
-    manager
-        .load_translations(file_path.to_str().unwrap())
-        .unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
     assert_eq!(manager.translate("test"), "Test");
     std::thread::sleep(std::time::Duration::from_millis(100));
     let updated_file = TranslationFile {
@@ -128,11 +102,7 @@ fn test_i18n_manager_check_and_reload() {
             let mut map = HashMap::new();
             map.insert(
                 "test".to_string(),
-                Translation {
-                    context: None,
-                    message: "Test Updated".to_string(),
-                    plural: None,
-                },
+                Translation { context: None, message: "Test Updated".to_string(), plural: None },
             );
             map
         },
@@ -150,10 +120,7 @@ fn test_init_options() {
         diagnostics: true,
     };
     assert_eq!(options.language, "zh");
-    assert_eq!(
-        options.preload_dir,
-        Some("/path/to/translations".to_string())
-    );
+    assert_eq!(options.preload_dir, Some("/path/to/translations".to_string()));
     assert!(options.diagnostics);
 }
 #[test]

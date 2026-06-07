@@ -7,10 +7,7 @@ pub struct MenuConfigManager {
 impl MenuConfigManager {
     /// Creates a new configuration manager.
     pub fn new() -> Self {
-        Self {
-            config: MenuConfig::new(),
-            auto_adjust: true,
-        }
+        Self { config: MenuConfig::new(), auto_adjust: true }
     }
     /// Gets the current configuration.
     pub fn config(&self) -> &MenuConfig {

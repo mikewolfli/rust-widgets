@@ -58,20 +58,14 @@ pub struct KeyboardNotch {
 
 impl Default for KeyboardNotch {
     fn default() -> Self {
-        Self {
-            height: 0,
-            animation_ms: 300,
-        }
+        Self { height: 0, animation_ms: 300 }
     }
 }
 
 impl KeyboardNotch {
     /// Create a notch with the given overlay height and default 300 ms animation.
     pub const fn new(height: u32) -> Self {
-        Self {
-            height,
-            animation_ms: 300,
-        }
+        Self { height, animation_ms: 300 }
     }
 
     /// Returns `true` when the notch is non-zero (keyboard is visible).

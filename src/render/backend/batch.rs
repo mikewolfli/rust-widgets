@@ -43,38 +43,15 @@ pub enum BatchCommand {
     /// Fill a rectangle with a solid colour.
     FillRect { rect: Rect, color: Color },
     /// Stroke a rectangular border.
-    StrokeRect {
-        rect: Rect,
-        color: Color,
-        width: f32,
-    },
+    StrokeRect { rect: Rect, color: Color, width: f32 },
     /// Draw a line between two points.
-    DrawLine {
-        from: Point,
-        to: Point,
-        color: Color,
-        width: f32,
-    },
+    DrawLine { from: Point, to: Point, color: Color, width: f32 },
     /// Draw an image identified by its resource id.
-    DrawImage {
-        rect: Rect,
-        image_id: ObjectId,
-        opacity: f32,
-    },
+    DrawImage { rect: Rect, image_id: ObjectId, opacity: f32 },
     /// Draw a clipped region of an image.
-    DrawImageSubrect {
-        dest: Rect,
-        source: Rect,
-        image_id: ObjectId,
-        opacity: f32,
-    },
+    DrawImageSubrect { dest: Rect, source: Rect, image_id: ObjectId, opacity: f32 },
     /// Draw text at the given position.
-    DrawText {
-        position: Point,
-        text: String,
-        color: Color,
-        font_size: f32,
-    },
+    DrawText { position: Point, text: String, color: Color, font_size: f32 },
     /// Push a clipping rectangle – subsequent commands are clipped.
     PushClip { rect: Rect },
     /// Pop the most recent clipping rectangle.
@@ -148,12 +125,7 @@ pub(crate) struct BatchState {
 impl BatchState {
     /// Creates a fresh, empty batch state.
     pub(crate) fn new() -> Self {
-        Self {
-            next_id: 0,
-            current_batch: None,
-            batches: HashMap::new(),
-            images: HashMap::new(),
-        }
+        Self { next_id: 0, current_batch: None, batches: HashMap::new(), images: HashMap::new() }
     }
 
     /// Begin recording a new batch. Returns the batch id.
@@ -227,34 +199,22 @@ impl BatchState {
     /// data looked up from the cache).
     fn translate_command(cmd: &BatchCommand, images: &HashMap<ObjectId, Vec<u8>>) -> RenderCommand {
         match cmd {
-            BatchCommand::FillRect { rect, color } => RenderCommand::FillRect {
-                rect: *rect,
-                color: *color,
-            },
+            BatchCommand::FillRect { rect, color } => {
+                RenderCommand::FillRect { rect: *rect, color: *color }
+            }
 
-            BatchCommand::StrokeRect { rect, color, width } => RenderCommand::DrawRectStroke {
-                rect: *rect,
-                color: *color,
-                width: *width as u32,
-            },
+            BatchCommand::StrokeRect { rect, color, width } => {
+                RenderCommand::DrawRectStroke { rect: *rect, color: *color, width: *width as u32 }
+            }
 
-            BatchCommand::DrawLine {
-                from,
-                to,
-                color,
-                width,
-            } => RenderCommand::DrawLineStroke {
+            BatchCommand::DrawLine { from, to, color, width } => RenderCommand::DrawLineStroke {
                 from: *from,
                 to: *to,
                 color: *color,
                 width: *width as u32,
             },
 
-            BatchCommand::DrawImage {
-                rect,
-                image_id,
-                opacity: _opacity,
-            } => {
+            BatchCommand::DrawImage { rect, image_id, opacity: _opacity } => {
                 let data = images.get(image_id).cloned().unwrap_or_default();
                 RenderCommand::DrawImage {
                     x: rect.x,
@@ -281,12 +241,7 @@ impl BatchState {
                 }
             }
 
-            BatchCommand::DrawText {
-                position,
-                text,
-                color,
-                font_size,
-            } => {
+            BatchCommand::DrawText { position, text, color, font_size } => {
                 let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, *font_size);
                 RenderCommand::DrawText {
                     origin: *position,
@@ -311,10 +266,7 @@ impl BatchState {
             // higher layer (e.g. transform stack in the scene).
             BatchCommand::Translate { .. } | BatchCommand::SetOpacity { .. } => {
                 // Emit a no-op placeholder that does nothing.
-                RenderCommand::FillRect {
-                    rect: Rect::new(0, 0, 0, 0),
-                    color: Color::TRANSPARENT,
-                }
+                RenderCommand::FillRect { rect: Rect::new(0, 0, 0, 0), color: Color::TRANSPARENT }
             }
         }
     }
@@ -391,10 +343,7 @@ mod tests {
 
     #[test]
     fn batch_command_fill_rect_roundtrip() {
-        let cmd = BatchCommand::FillRect {
-            rect: Rect::new(10, 20, 100, 200),
-            color: Color::RED,
-        };
+        let cmd = BatchCommand::FillRect { rect: Rect::new(10, 20, 100, 200), color: Color::RED };
         match cmd {
             BatchCommand::FillRect { rect, color } => {
                 assert_eq!(rect, Rect::new(10, 20, 100, 200));
@@ -425,19 +374,9 @@ mod tests {
     fn batch_command_draw_line_roundtrip() {
         let from = Point::new(0, 0);
         let to = Point::new(100, 100);
-        let cmd = BatchCommand::DrawLine {
-            from,
-            to,
-            color: Color::BLUE,
-            width: 3.0,
-        };
+        let cmd = BatchCommand::DrawLine { from, to, color: Color::BLUE, width: 3.0 };
         match cmd {
-            BatchCommand::DrawLine {
-                from: f,
-                to: t,
-                color,
-                width,
-            } => {
+            BatchCommand::DrawLine { from: f, to: t, color, width } => {
                 assert_eq!(f, from);
                 assert_eq!(t, to);
                 assert_eq!(color, Color::BLUE);
@@ -449,17 +388,10 @@ mod tests {
 
     #[test]
     fn batch_command_draw_image_roundtrip() {
-        let cmd = BatchCommand::DrawImage {
-            rect: Rect::new(0, 0, 32, 32),
-            image_id: 1u64,
-            opacity: 0.8,
-        };
+        let cmd =
+            BatchCommand::DrawImage { rect: Rect::new(0, 0, 32, 32), image_id: 1u64, opacity: 0.8 };
         match cmd {
-            BatchCommand::DrawImage {
-                rect,
-                image_id,
-                opacity,
-            } => {
+            BatchCommand::DrawImage { rect, image_id, opacity } => {
                 assert_eq!(rect, Rect::new(0, 0, 32, 32));
                 assert_eq!(image_id, 1u64);
                 assert!((opacity - 0.8).abs() < 1e-6);
@@ -477,12 +409,7 @@ mod tests {
             opacity: 0.5,
         };
         match cmd {
-            BatchCommand::DrawImageSubrect {
-                dest,
-                source,
-                image_id,
-                opacity,
-            } => {
+            BatchCommand::DrawImageSubrect { dest, source, image_id, opacity } => {
                 assert_eq!(dest, Rect::new(10, 10, 64, 64));
                 assert_eq!(source, Rect::new(0, 0, 32, 32));
                 assert_eq!(image_id, 2u64);
@@ -501,12 +428,7 @@ mod tests {
             font_size: 16.0,
         };
         match cmd {
-            BatchCommand::DrawText {
-                position,
-                text,
-                color,
-                font_size,
-            } => {
+            BatchCommand::DrawText { position, text, color, font_size } => {
                 assert_eq!(position, Point::new(15, 30));
                 assert_eq!(text, "Hello");
                 assert_eq!(color, Color::WHITE);
@@ -518,9 +440,7 @@ mod tests {
 
     #[test]
     fn batch_command_push_clip_roundtrip() {
-        let cmd = BatchCommand::PushClip {
-            rect: Rect::new(0, 0, 800, 600),
-        };
+        let cmd = BatchCommand::PushClip { rect: Rect::new(0, 0, 800, 600) };
         match cmd {
             BatchCommand::PushClip { rect } => {
                 assert_eq!(rect, Rect::new(0, 0, 800, 600));
@@ -590,10 +510,7 @@ mod tests {
     fn batch_state_record_commands() {
         let mut state = BatchState::new();
         let id = state.begin_batch();
-        state.record(BatchCommand::FillRect {
-            rect: Rect::new(0, 0, 50, 50),
-            color: Color::RED,
-        });
+        state.record(BatchCommand::FillRect { rect: Rect::new(0, 0, 50, 50), color: Color::RED });
         state.record(BatchCommand::PopClip);
         state.end_batch();
 
@@ -661,10 +578,7 @@ mod tests {
         let size = crate::core::Size::new(100, 100);
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
         let id = backend.begin_batch();
-        backend.record(BatchCommand::FillRect {
-            rect: Rect::new(0, 0, 10, 10),
-            color: Color::RED,
-        });
+        backend.record(BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED });
         backend.end_batch();
         assert!(backend.contains_batch(id));
     }
@@ -688,10 +602,7 @@ mod tests {
         backend.begin_frame(Color::WHITE);
 
         let id = backend.begin_batch();
-        backend.record(BatchCommand::FillRect {
-            rect: Rect::new(5, 5, 10, 10),
-            color: Color::RED,
-        });
+        backend.record(BatchCommand::FillRect { rect: Rect::new(5, 5, 10, 10), color: Color::RED });
         backend.end_batch();
 
         backend.replay(id);

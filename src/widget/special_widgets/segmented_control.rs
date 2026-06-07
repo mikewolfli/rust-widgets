@@ -18,10 +18,7 @@ pub struct SegmentItem {
 impl SegmentItem {
     /// Creates one segment item.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-        }
+        Self { id: id.into(), label: label.into() }
     }
 }
 
@@ -63,8 +60,7 @@ impl SegmentedControl {
 
     /// Returns selected segment index.
     pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-            .filter(|index| *index < self.items.len())
+        self.selected_index.filter(|index| *index < self.items.len())
     }
 
     /// Returns selected segment id.
@@ -271,11 +267,7 @@ mod tests {
         });
 
         let _ = control.set_selected_index(2);
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["history".to_string()]);
     }
 

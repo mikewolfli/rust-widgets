@@ -22,47 +22,33 @@ fn global_last_auto_render_backend() -> &'static Mutex<AutoRenderBackend> {
     LAST_BACKEND.get_or_init(|| Mutex::new(AutoRenderBackend::CpuSoftware))
 }
 fn set_last_auto_render_backend(backend: AutoRenderBackend) {
-    *global_last_auto_render_backend()
-        .lock()
-        .expect("auto render backend lock poisoned") = backend;
+    *global_last_auto_render_backend().lock().expect("auto render backend lock poisoned") = backend;
 }
 /// Returns last backend selected by `RenderScene::compose_to_config_auto`.
 pub fn last_auto_render_backend() -> AutoRenderBackend {
-    *global_last_auto_render_backend()
-        .lock()
-        .expect("auto render backend lock poisoned")
+    *global_last_auto_render_backend().lock().expect("auto render backend lock poisoned")
 }
 #[cfg(feature = "quality-management")]
 /// Returns the current rendering quality level.
 pub fn current_quality_level() -> crate::quality::QualityLevel {
-    global_quality_manager()
-        .lock()
-        .expect("quality manager lock poisoned")
-        .quality_level()
+    global_quality_manager().lock().expect("quality manager lock poisoned").quality_level()
 }
 #[cfg(feature = "quality-management")]
 /// Sets the rendering quality level manually.
 pub fn set_quality_level(level: crate::quality::QualityLevel) {
-    let mut quality_manager = global_quality_manager()
-        .lock()
-        .expect("quality manager lock poisoned");
+    let mut quality_manager =
+        global_quality_manager().lock().expect("quality manager lock poisoned");
     quality_manager.set_quality_level(level);
 }
 #[cfg(feature = "quality-management")]
 /// Returns the current frame rate.
 pub fn current_fps() -> f32 {
-    global_quality_manager()
-        .lock()
-        .expect("quality manager lock poisoned")
-        .current_fps()
+    global_quality_manager().lock().expect("quality manager lock poisoned").current_fps()
 }
 #[cfg(feature = "quality-management")]
 /// Returns the average frame time in seconds.
 pub fn average_frame_time() -> f32 {
-    global_quality_manager()
-        .lock()
-        .expect("quality manager lock poisoned")
-        .average_frame_time()
+    global_quality_manager().lock().expect("quality manager lock poisoned").average_frame_time()
 }
 /// One scene layer that stores ordered draw commands.
 #[derive(Debug, Clone)]
@@ -73,10 +59,7 @@ pub struct SceneLayer {
 impl SceneLayer {
     /// Creates an empty layer with the provided z-index.
     pub fn new(z_index: i32) -> Self {
-        Self {
-            z_index,
-            commands: Vec::new(),
-        }
+        Self { z_index, commands: Vec::new() }
     }
     /// Returns layer z-index.
     pub fn z_index(&self) -> i32 {
@@ -244,9 +227,8 @@ fn compose_scene_to_surface_wgpu(
     let frame_duration = start_time.elapsed();
     #[cfg(feature = "quality-management")]
     {
-        let mut quality_manager = global_quality_manager()
-            .lock()
-            .expect("quality manager lock poisoned");
+        let mut quality_manager =
+            global_quality_manager().lock().expect("quality manager lock poisoned");
         quality_manager.finish_frame(frame_duration);
     }
     Ok(())
@@ -289,10 +271,7 @@ mod tests {
         let mut layer = SceneLayer::new(1);
         assert!(layer.commands().is_empty());
 
-        let cmd = RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 100, 100),
-            color: Color::RED,
-        };
+        let cmd = RenderCommand::FillRect { rect: Rect::new(0, 0, 100, 100), color: Color::RED };
         layer.push(cmd.clone());
         assert_eq!(layer.commands().len(), 1);
 
@@ -305,14 +284,8 @@ mod tests {
         assert_eq!(layer.commands().len(), 2);
 
         // Verify insertion order
-        assert!(matches!(
-            layer.commands()[0],
-            RenderCommand::FillRect { .. }
-        ));
-        assert!(matches!(
-            layer.commands()[1],
-            RenderCommand::DrawLine { .. }
-        ));
+        assert!(matches!(layer.commands()[0], RenderCommand::FillRect { .. }));
+        assert!(matches!(layer.commands()[1], RenderCommand::DrawLine { .. }));
     }
 
     #[test]
@@ -406,18 +379,14 @@ mod tests {
 
         // Layer with z=1 draws red region (higher z = on top)
         let mut layer_high = SceneLayer::new(1);
-        layer_high.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 25, 25),
-            color: Color::RED,
-        });
+        layer_high
+            .push(RenderCommand::FillRect { rect: Rect::new(0, 0, 25, 25), color: Color::RED });
         scene.add_layer(layer_high);
 
         // Layer with z=0 draws larger blue region (lower z = drawn first)
         let mut layer_low = SceneLayer::new(0);
-        layer_low.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 50, 50),
-            color: Color::BLUE,
-        });
+        layer_low
+            .push(RenderCommand::FillRect { rect: Rect::new(0, 0, 50, 50), color: Color::BLUE });
         scene.add_layer(layer_low);
 
         scene.compose_with_backend(&mut backend, Color::BLACK);
@@ -438,9 +407,7 @@ mod tests {
 
         let original = backend.render_config();
 
-        let custom = SoftwareRenderConfig {
-            aa_samples_per_axis: 1,
-        };
+        let custom = SoftwareRenderConfig { aa_samples_per_axis: 1 };
         scene.compose_with_backend_config(&mut backend, Color::BLACK, Some(custom));
 
         // Config should be restored after compose
@@ -478,9 +445,7 @@ mod tests {
     fn compose_to_config_with_custom_config() {
         let scene = RenderScene::new();
         let mut surface = SoftwareSurface::new(Size::new(10, 10), 1.0);
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 2,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 2 };
         scene.compose_to_config(&mut surface, Color::BLACK, Some(config));
         let rgba = surface.frame_rgba();
         assert!(!rgba.is_empty());
@@ -514,9 +479,7 @@ mod tests {
     fn compose_to_config_auto_with_config() {
         let scene = RenderScene::new();
         let mut surface = SoftwareSurface::new(Size::new(5, 5), 1.0);
-        let config = SoftwareRenderConfig {
-            aa_samples_per_axis: 8,
-        };
+        let config = SoftwareRenderConfig { aa_samples_per_axis: 8 };
         let backend = scene.compose_to_config_auto(&mut surface, Color::WHITE, Some(config));
         assert!(
             backend == AutoRenderBackend::CpuSoftware || backend == AutoRenderBackend::GpuWgpu,
@@ -549,18 +512,12 @@ mod tests {
 
         // z=1 draws red over whole surface (on top after sort)
         let mut top = SceneLayer::new(1);
-        top.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 20, 20),
-            color: Color::RED,
-        });
+        top.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 20, 20), color: Color::RED });
         scene.add_layer(top);
 
         // z=-1 draws blue over whole surface (lower priority, drawn first)
         let mut bottom = SceneLayer::new(-1);
-        bottom.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 20, 20),
-            color: Color::BLUE,
-        });
+        bottom.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 20, 20), color: Color::BLUE });
         scene.add_layer(bottom);
 
         // Sorted: z=-1 first (blue), then z=1 (red) -> red wins
@@ -579,17 +536,11 @@ mod tests {
 
         // Both layers have same z=0, so insertion order determines draw order
         let mut first = SceneLayer::new(0);
-        first.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 10, 10),
-            color: Color::RED,
-        });
+        first.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED });
         scene.add_layer(first);
 
         let mut second = SceneLayer::new(0);
-        second.push(RenderCommand::FillRect {
-            rect: Rect::new(0, 0, 10, 10),
-            color: Color::GREEN,
-        });
+        second.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::GREEN });
         scene.add_layer(second);
 
         scene.compose_with_backend(&mut backend, Color::BLACK);

@@ -24,9 +24,7 @@ pub fn is_fixed_dpi() -> bool {
 }
 /// Calculate scale factor based on DPI
 pub fn scale_factor() -> f32 {
-    get_fixed_dpi()
-        .map(|dpi| dpi as f32 / BASE_DPI as f32)
-        .unwrap_or(1.0)
+    get_fixed_dpi().map(|dpi| dpi as f32 / BASE_DPI as f32).unwrap_or(1.0)
 }
 /// Scale a value by the current DPI factor
 pub fn scale(value: i32) -> i32 {
@@ -56,10 +54,7 @@ pub struct DpiScaler {
 }
 impl DpiScaler {
     pub fn new(dpi: u32) -> Self {
-        Self {
-            dpi,
-            base_dpi: BASE_DPI,
-        }
+        Self { dpi, base_dpi: BASE_DPI }
     }
     pub fn with_base_dpi(mut self, base: u32) -> Self {
         self.base_dpi = base;

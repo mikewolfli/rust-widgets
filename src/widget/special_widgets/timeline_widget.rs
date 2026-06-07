@@ -23,12 +23,7 @@ impl TimelineItem {
     /// Creates a timeline item.
     pub fn new(id: impl Into<String>, label: impl Into<String>, start: i64, end: i64) -> Self {
         let normalized_end = end.max(start);
-        Self {
-            id: id.into(),
-            label: label.into(),
-            start,
-            end: normalized_end,
-        }
+        Self { id: id.into(), label: label.into(), start, end: normalized_end }
     }
 }
 
@@ -76,8 +71,7 @@ impl TimelineWidget {
 
     /// Returns selected item index.
     pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-            .filter(|index| *index < self.items.len())
+        self.selected_index.filter(|index| *index < self.items.len())
     }
 
     /// Returns selected item id.
@@ -319,11 +313,7 @@ mod tests {
         assert!(timeline.select_index(1));
         assert_eq!(timeline.selected_id(), Some("b"));
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["b".to_string()]);
     }
 

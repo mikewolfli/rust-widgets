@@ -111,10 +111,7 @@ impl Draw for RadioButton {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw radio button
         let rect = self.geometry();
-        let center = Point::new(
-            rect.x + rect.width as i32 / 2,
-            rect.y + rect.height as i32 / 2,
-        );
+        let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
         let radius = rect.height.min(rect.width) / 4;
         // Draw outer circle
         context.draw_circle(center, radius, Color::from_rgb(100u8, 100, 100));
@@ -125,12 +122,7 @@ impl Draw for RadioButton {
         }
         // Draw text label
         let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
-        context.draw_text(
-            text_pos,
-            &self.text,
-            &Font::default(),
-            Color::from_rgb(60u8, 60, 60),
-        );
+        context.draw_text(text_pos, &self.text, &Font::default(), Color::from_rgb(60u8, 60, 60));
     }
 }
 
@@ -150,11 +142,7 @@ mod tests {
         let rb = RadioButton::new(rect);
         assert!(!rb.is_checked(), "new radio button should be unchecked");
         assert_eq!(rb.text(), "", "new radio button text should be empty");
-        assert_eq!(
-            rb.group_id(),
-            None,
-            "new radio button should have no group_id"
-        );
+        assert_eq!(rb.group_id(), None, "new radio button should have no group_id");
         assert_eq!(rb.geometry(), rect, "geometry should match");
     }
 
@@ -256,18 +244,10 @@ mod tests {
         }
         // First set to true -> should fire
         rb.set_checked(true);
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "should fire once on true"
-        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "should fire once on true");
         // Set to true again (noop) -> should NOT fire
         rb.set_checked(true);
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "should NOT fire on noop"
-        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "should NOT fire on noop");
     }
 
     // -----------------------------------------------------------------------
@@ -427,10 +407,7 @@ mod tests {
         let mut peers: Vec<&mut RadioButton> = vec![&mut rb0, &mut rb1];
         RadioButton::select_in_group(&mut peers, 1);
         drop(peers);
-        assert!(
-            !rb0.is_checked(),
-            "previously checked peer 0 should be deselected"
-        );
+        assert!(!rb0.is_checked(), "previously checked peer 0 should be deselected");
         assert!(rb1.is_checked(), "peer 1 should be selected");
     }
 
@@ -458,10 +435,7 @@ mod tests {
         assert!(!rb_a0.is_checked(), "group A peer 0 should be deselected");
         assert!(rb_a1.is_checked(), "group A peer 1 should be selected");
         assert!(rb_b0.is_checked(), "group B peer 0 should remain checked");
-        assert!(
-            !rb_b1.is_checked(),
-            "group B peer 1 should remain unchecked"
-        );
+        assert!(!rb_b1.is_checked(), "group B peer 1 should remain unchecked");
     }
 
     #[test]

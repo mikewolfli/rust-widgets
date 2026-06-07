@@ -54,10 +54,7 @@ pub(crate) fn glyph_bitmap(ch: char) -> [u8; 8] {
     if let Some(bitmap) = BASIC_FONTS.get(ch.to_ascii_lowercase()) {
         return bitmap;
     }
-    [
-        0b11111111, 0b10000001, 0b10111101, 0b10100101, 0b10111101, 0b10000001, 0b11111111,
-        0b00000000,
-    ]
+    [0b11111111, 0b10000001, 0b10111101, 0b10100101, 0b10111101, 0b10000001, 0b11111111, 0b00000000]
 }
 pub(crate) fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
@@ -234,12 +231,7 @@ pub(crate) fn line_stroke_coverage_grid(
     (coverage_sum / total as f32).clamp(0.0, 1.0)
 }
 pub(crate) fn cluster_ends_with_zwj(cluster: &TextCluster) -> bool {
-    cluster
-        .text
-        .chars()
-        .last()
-        .map(|ch| ch == '\u{200D}')
-        .unwrap_or(false)
+    cluster.text.chars().last().map(|ch| ch == '\u{200D}').unwrap_or(false)
 }
 pub(crate) fn is_combining_mark(ch: char) -> bool {
     matches!(
@@ -285,12 +277,7 @@ pub(crate) fn inset_rect(rect: Rect, inset: i32) -> Rect {
     let y = rect.y + inset;
     let width = (rect.width as i32 - inset * 2).max(0) as u32;
     let height = (rect.height as i32 - inset * 2).max(0) as u32;
-    Rect {
-        x,
-        y,
-        width,
-        height,
-    }
+    Rect { x, y, width, height }
 }
 pub(crate) fn point_in_rounded_rect_f32(px: f32, py: f32, rect: Rect, radius: u32) -> bool {
     if rect.width == 0 || rect.height == 0 {

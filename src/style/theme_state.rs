@@ -67,8 +67,7 @@ impl StateTheme {
         self
     }
     pub fn with_property(mut self, key: &str, value: &str) -> Self {
-        self.custom_properties
-            .insert(key.to_string(), value.to_string());
+        self.custom_properties.insert(key.to_string(), value.to_string());
         self
     }
 }
@@ -247,9 +246,6 @@ mod tests {
             *fired_clone.borrow_mut() = true;
         });
         manager.set_mode(ThemeMode::Dark);
-        assert!(
-            *fired.borrow(),
-            "callback should have been invoked on mode change"
-        );
+        assert!(*fired.borrow(), "callback should have been invoked on mode change");
     }
 }

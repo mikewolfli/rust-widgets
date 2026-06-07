@@ -133,12 +133,7 @@ impl Draw for Window {
         let title_font = Font::new("Arial", 12.0, false, false);
         let title_x = rect.x + 10;
         let title_y = rect.y + title_bar_height as i32 / 2;
-        context.draw_text(
-            Point::new(title_x, title_y),
-            &self.title,
-            &title_font,
-            title_text_color,
-        );
+        context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, title_text_color);
         // Draw window border
         if border_width > 0 {
             context.draw_rect_stroke(rect, border_color, border_width);
@@ -184,10 +179,7 @@ impl Draw for Window {
         let minimize_y = minimize_button_rect.y + minimize_button_rect.height as i32 / 2;
         context.draw_line(
             Point::new(minimize_button_rect.x + 2, minimize_y),
-            Point::new(
-                minimize_button_rect.x + minimize_button_rect.width as i32 - 2,
-                minimize_y,
-            ),
+            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2, minimize_y),
             Color::WHITE,
         );
         // Draw maximize button

@@ -9,9 +9,7 @@ pub struct Canvas {
 impl Canvas {
     /// Creates a new canvas widget.
     pub fn new(geometry: Rect) -> Self {
-        Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "Canvas"),
-        }
+        Self { base: BaseWidget::new(WidgetKind::Canvas, geometry, "Canvas") }
     }
 }
 impl Widget for Canvas {

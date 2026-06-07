@@ -64,8 +64,7 @@ impl Hyperlink {
         self
     }
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        self.rect
-            .contains_point(crate::core::Point::from_f32(x as f32, y as f32))
+        self.rect.contains_point(crate::core::Point::from_f32(x as f32, y as f32))
     }
 }
 #[derive(Debug, Clone)]
@@ -103,13 +102,7 @@ pub struct NamedDestination {
 }
 impl NamedDestination {
     pub fn new(name: String, page: u32, x: f32, y: f32) -> Self {
-        Self {
-            name,
-            page,
-            x,
-            y,
-            zoom: 0.0,
-        }
+        Self { name, page, x, y, zoom: 0.0 }
     }
     pub fn with_zoom(mut self, zoom: f32) -> Self {
         self.zoom = zoom;
@@ -150,9 +143,7 @@ impl HyperlinkManager {
     }
     pub fn get_link_at_point(&self, page: u32, x: i32, y: i32) -> Option<&Hyperlink> {
         self.page_links.get(&page).and_then(|ids| {
-            ids.iter()
-                .filter_map(|id| self.links.get(id))
-                .find(|link| link.contains_point(x, y))
+            ids.iter().filter_map(|id| self.links.get(id)).find(|link| link.contains_point(x, y))
         })
     }
     pub fn get_page_links(&self, page: u32) -> Vec<&Hyperlink> {
@@ -162,8 +153,7 @@ impl HyperlinkManager {
             .unwrap_or_default()
     }
     pub fn add_named_destination(&mut self, destination: NamedDestination) {
-        self.named_destinations
-            .insert(destination.name.clone(), destination);
+        self.named_destinations.insert(destination.name.clone(), destination);
     }
     pub fn get_named_destination(&self, name: &str) -> Option<&NamedDestination> {
         self.named_destinations.get(name)
@@ -211,11 +201,7 @@ mod tests {
             "link-1".to_string(),
             1,
             Rect::new(100, 100, 200, 50),
-            LinkAction::GoToPage {
-                page: 2,
-                x: 0.0,
-                y: 0.0,
-            },
+            LinkAction::GoToPage { page: 2, x: 0.0, y: 0.0 },
         );
         manager.add_link(link);
         assert_eq!(manager.link_count(), 1);

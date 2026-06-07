@@ -15,11 +15,7 @@ struct SignalInner<T: Clone + Send + 'static> {
 }
 impl<T: Clone + Send + 'static> SignalInner<T> {
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
-        self.slots
-            .write()
-            .expect("signal lock poisoned")
-            .remove(&handle)
-            .is_some()
+        self.slots.write().expect("signal lock poisoned").remove(&handle).is_some()
     }
 }
 /// Owner scope that automatically disconnects tracked signal connections on drop.
@@ -33,10 +29,7 @@ impl ConnectionScope {
         Self::default()
     }
     fn track(&self, disconnector: Box<dyn FnOnce() + Send + 'static>) {
-        self.disconnectors
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(disconnector);
+        self.disconnectors.lock().unwrap_or_else(|e| e.into_inner()).push(disconnector);
     }
 }
 impl Drop for ConnectionScope {
@@ -55,11 +48,7 @@ pub struct Signal<T: Clone + Send + 'static> {
 impl<T: Clone + Send + 'static> Signal<T> {
     /// Create an empty signal.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(SignalInner {
-                slots: RwLock::new(HashMap::new()),
-            }),
-        }
+        Self { inner: Arc::new(SignalInner { slots: RwLock::new(HashMap::new()) }) }
     }
     /// Connect a slot and return its connection handle.
     pub fn connect<F>(&self, slot: F) -> ConnectionHandle
@@ -71,13 +60,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .slots
             .write()
             .expect("signal lock poisoned")
-            .insert(
-                handle,
-                SlotEntry {
-                    callback: Box::new(slot),
-                    once: false,
-                },
-            );
+            .insert(handle, SlotEntry { callback: Box::new(slot), once: false });
         handle
     }
     /// Connect a slot that is invoked once and then disconnected automatically.
@@ -90,13 +73,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .slots
             .write()
             .expect("signal lock poisoned")
-            .insert(
-                handle,
-                SlotEntry {
-                    callback: Box::new(slot),
-                    once: true,
-                },
-            );
+            .insert(handle, SlotEntry { callback: Box::new(slot), once: true });
         handle
     }
     /// Connect a slot bound to a connection scope. It disconnects when the scope is dropped.
@@ -123,11 +100,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     }
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
-        self.inner
-            .slots
-            .write()
-            .expect("signal lock poisoned")
-            .clear();
+        self.inner.slots.write().expect("signal lock poisoned").clear();
     }
     /// Emit a cloned value to all connected slots.
     ///

@@ -77,9 +77,7 @@ impl Platform for LinuxPlatform {
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
             native.content_fixed.insert(id, fixed.clone());
-            native
-                .widgets
-                .insert(id, window.clone().upcast::<gtk::Widget>());
+            native.widgets.insert(id, window.clone().upcast::<gtk::Widget>());
         }
         id
     }
@@ -96,11 +94,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::Button, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let button = gtk::Button::with_label(text);
@@ -108,14 +102,9 @@ impl Platform for LinuxPlatform {
             let menus = Arc::clone(&self.menus);
             button.connect_clicked(move |_| {
                 // Normalize native button activation to typed trigger event.
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::Clicked,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::Clicked },
+                );
             });
             let widget = button.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -139,11 +128,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::CheckBox, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let checkbox = gtk::CheckButton::with_label(text);
@@ -151,14 +136,9 @@ impl Platform for LinuxPlatform {
             let menus = Arc::clone(&self.menus);
             checkbox.connect_toggled(move |_| {
                 // Normalize checkbox toggles to click-like activation trigger.
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::Clicked,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::Clicked },
+                );
             });
             let widget = checkbox.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -182,11 +162,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::LineEdit, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let entry = gtk::Entry::new();
@@ -195,14 +171,9 @@ impl Platform for LinuxPlatform {
             let menus = Arc::clone(&self.menus);
             entry.connect_changed(move |_| {
                 // Normalize text changes to value-changed trigger.
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::ValueChanged,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::ValueChanged },
+                );
             });
             let widget = entry.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -226,11 +197,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::Label, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let label = gtk::Label::new(Some(text));
@@ -257,25 +224,16 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::RadioButton, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let radio = gtk::RadioButton::with_label(text);
             radio.set_size_request(width as i32, height as i32);
             let menus = Arc::clone(&self.menus);
             radio.connect_toggled(move |_| {
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::Clicked,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::Clicked },
+                );
             });
             let widget = radio.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -291,11 +249,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::Slider, "Slider", x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let slider = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
@@ -303,14 +257,9 @@ impl Platform for LinuxPlatform {
             slider.set_draw_value(false);
             let menus = Arc::clone(&self.menus);
             slider.connect_value_changed(move |_| {
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::ValueChanged,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::ValueChanged },
+                );
             });
             let widget = slider.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -325,19 +274,9 @@ impl Platform for LinuxPlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        let id = self.insert_widget(
-            LinuxHandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        );
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        let id =
+            self.insert_widget(LinuxHandleKind::ProgressBar, "ProgressBar", x, y, width, height);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let progress = gtk::ProgressBar::new();
@@ -356,35 +295,20 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::ComboBox, "ComboBox", x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         self.list_data
             .lock()
             .expect("linux list data lock poisoned")
-            .insert(
-                id,
-                ListData {
-                    items: Vec::new(),
-                    current_index: None,
-                },
-            );
+            .insert(id, ListData { items: Vec::new(), current_index: None });
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let combo = gtk::ComboBoxText::new();
             combo.set_size_request(width as i32, height as i32);
             let menus = Arc::clone(&self.menus);
             combo.connect_changed(move |_| {
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::SelectionChanged,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::SelectionChanged },
+                );
             });
             let widget = combo.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -400,35 +324,20 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::ListBox, "ListBox", x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         self.list_data
             .lock()
             .expect("linux list data lock poisoned")
-            .insert(
-                id,
-                ListData {
-                    items: Vec::new(),
-                    current_index: None,
-                },
-            );
+            .insert(id, ListData { items: Vec::new(), current_index: None });
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let list = gtk::ListBox::new();
             list.set_size_request(width as i32, height as i32);
             let menus = Arc::clone(&self.menus);
             list.connect_row_selected(move |_, _| {
-                menus
-                    .lock()
-                    .expect("linux menu lock poisoned")
-                    .pending_widget_events
-                    .push_back(WidgetTriggerEvent {
-                        widget_id: id,
-                        kind: WidgetTriggerKind::SelectionChanged,
-                    });
+                menus.lock().expect("linux menu lock poisoned").pending_widget_events.push_back(
+                    WidgetTriggerEvent { widget_id: id, kind: WidgetTriggerKind::SelectionChanged },
+                );
             });
             let widget = list.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -443,10 +352,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         let entry = data.entry(list_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -455,10 +361,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -480,10 +383,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         if let Some(entry) = data.get_mut(&list_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -494,10 +394,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         let entry = match data.get_mut(&list_box) {
             Some(e) => e,
             None => return false,
@@ -512,42 +409,28 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
         data.get(&list_box).and_then(|entry| entry.current_index)
     }
     fn list_box_item_count(&self, list_box: u64) -> usize {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return 0;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
         data.get(&list_box).map_or(0, |entry| entry.items.len())
     }
     fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
         if !matches!(self.kind_of(list_box), Some(LinuxHandleKind::ListBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
-        data.get(&list_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         let entry = data.entry(combo_box).or_default();
         entry.items.push(text.to_string());
         true
@@ -556,10 +439,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         if let Some(entry) = data.get_mut(&combo_box) {
             entry.items.clear();
             entry.current_index = None;
@@ -570,10 +450,7 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return false;
         }
-        let mut data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let mut data = self.list_data.lock().expect("linux list data lock poisoned");
         let entry = match data.get_mut(&combo_box) {
             Some(e) => e,
             None => return false,
@@ -588,44 +465,29 @@ impl Platform for LinuxPlatform {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
         data.get(&combo_box).and_then(|entry| entry.current_index)
     }
     fn combo_box_item_count(&self, combo_box: u64) -> usize {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return 0;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
         data.get(&combo_box).map_or(0, |entry| entry.items.len())
     }
     fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
         if !matches!(self.kind_of(combo_box), Some(LinuxHandleKind::ComboBox)) {
             return None;
         }
-        let data = self
-            .list_data
-            .lock()
-            .expect("linux list data lock poisoned");
-        data.get(&combo_box)
-            .and_then(|entry| entry.items.get(index))
-            .cloned()
+        let data = self.list_data.lock().expect("linux list data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.items.get(index)).cloned()
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::Panel, "Panel", x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let panel = gtk::Frame::new(None::<&str>);
@@ -657,10 +519,7 @@ impl Platform for LinuxPlatform {
         id
     }
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if !matches!(
-            self.kind_of(parent),
-            Some(LinuxHandleKind::MenuBar | LinuxHandleKind::Menu)
-        ) {
+        if !matches!(self.kind_of(parent), Some(LinuxHandleKind::MenuBar | LinuxHandleKind::Menu)) {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::Menu, text, x, y, width, height);
@@ -682,9 +541,7 @@ impl Platform for LinuxPlatform {
             } else if let Some(parent_menu) = native.menus.get(&parent) {
                 parent_menu.append(&menu_item);
             }
-            native
-                .widgets
-                .insert(id, menu_item.clone().upcast::<gtk::Widget>());
+            native.widgets.insert(id, menu_item.clone().upcast::<gtk::Widget>());
             native.menus.insert(id, menu);
             let _ = (x, y, width, height);
         }
@@ -695,11 +552,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::ToolBar, "ToolBar", x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -726,11 +579,7 @@ impl Platform for LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::StatusBar, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .widget_parent
-            .insert(id, parent);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let label = gtk::Label::new(Some(text));
@@ -757,10 +606,9 @@ impl Platform for LinuxPlatform {
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             {
                 let native = self.native.lock_guard();
-                if let (Some(root), Some(bar)) = (
-                    native.root_boxes.get(&window),
-                    native.menu_bars.get(&menu_bar),
-                ) {
+                if let (Some(root), Some(bar)) =
+                    (native.root_boxes.get(&window), native.menu_bars.get(&menu_bar))
+                {
                     root.pack_start(bar, false, false, 0);
                     root.reorder_child(bar, 0);
                     bar.show_all();
@@ -779,11 +627,7 @@ impl Platform for LinuxPlatform {
         // Capture menu_children push first, then drop menus lock before acquiring native lock.
         {
             let mut menus = self.menus.lock().expect("linux menu lock poisoned");
-            menus
-                .menu_children
-                .entry(parent_menu)
-                .or_default()
-                .push(item_id);
+            menus.menu_children.entry(parent_menu).or_default().push(item_id);
         }
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
@@ -801,18 +645,12 @@ impl Platform for LinuxPlatform {
             if let Some(parent) = native.menus.get(&parent_menu) {
                 parent.append(&menu_item);
             }
-            native
-                .widgets
-                .insert(item_id, menu_item.clone().upcast::<gtk::Widget>());
+            native.widgets.insert(item_id, menu_item.clone().upcast::<gtk::Widget>());
         }
         item_id
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .pending_menu_events
-            .pop_front()
+        self.menus.lock().expect("linux menu lock poisoned").pending_menu_events.pop_front()
     }
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
         // Keep injected events type-safe: only known menu items are accepted.
@@ -827,15 +665,10 @@ impl Platform for LinuxPlatform {
         true
     }
     fn poll_widget_triggered(&self) -> Option<u64> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        self.menus
-            .lock()
-            .expect("linux menu lock poisoned")
-            .pending_widget_events
-            .pop_front()
+        self.menus.lock().expect("linux menu lock poisoned").pending_widget_events.pop_front()
     }
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
         // Keep injected events deterministic: only known widget ids are accepted.
@@ -930,10 +763,7 @@ impl Platform for LinuxPlatform {
                 .lock()
                 .expect("linux menu lock poisoned")
                 .pending_widget_events
-                .push_back(WidgetTriggerEvent {
-                    widget_id,
-                    kind: WidgetTriggerKind::ValueChanged,
-                });
+                .push_back(WidgetTriggerEvent { widget_id, kind: WidgetTriggerKind::ValueChanged });
         }
     }
     fn get_widget_text(&self, widget_id: u64) -> String {
@@ -1020,34 +850,13 @@ impl Platform for LinuxPlatform {
         self.insert_widget(LinuxHandleKind::MessageBox, _text, x, y, width, height)
     }
     fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            LinuxHandleKind::FileDialog,
-            "FileDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(LinuxHandleKind::FileDialog, "FileDialog", _x, _y, width, height)
     }
     fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            LinuxHandleKind::ColorDialog,
-            "ColorDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(LinuxHandleKind::ColorDialog, "ColorDialog", _x, _y, width, height)
     }
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            LinuxHandleKind::FontDialog,
-            "FontDialog",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(LinuxHandleKind::FontDialog, "FontDialog", _x, _y, width, height)
     }
     fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(LinuxHandleKind::SpinBox, "SpinBox", _x, _y, width, height)
@@ -1056,13 +865,6 @@ impl Platform for LinuxPlatform {
         self.insert_widget(LinuxHandleKind::ListView, "ListView", _x, _y, width, height)
     }
     fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(
-            LinuxHandleKind::ScrollArea,
-            "ScrollArea",
-            _x,
-            _y,
-            width,
-            height,
-        )
+        self.insert_widget(LinuxHandleKind::ScrollArea, "ScrollArea", _x, _y, width, height)
     }
 }

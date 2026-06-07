@@ -100,10 +100,7 @@ pub(crate) struct WaylandRuntimeState {
 
 impl WaylandRuntimeState {
     pub(crate) fn new() -> Self {
-        Self {
-            initialized: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }
+        Self { initialized: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 

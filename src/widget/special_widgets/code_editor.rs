@@ -78,8 +78,7 @@ impl CodeEditor {
         self.cursor_line = self.line_count().saturating_sub(1);
         self.cursor_column = self.current_line_len();
         self.text_changed.emit(self.text.clone());
-        self.cursor_moved
-            .emit((self.cursor_line, self.cursor_column));
+        self.cursor_moved.emit((self.cursor_line, self.cursor_column));
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -110,11 +109,7 @@ impl CodeEditor {
     }
 
     fn current_line_len(&self) -> usize {
-        self.text
-            .lines()
-            .nth(self.cursor_line)
-            .map(|line| line.chars().count())
-            .unwrap_or(0)
+        self.text.lines().nth(self.cursor_line).map(|line| line.chars().count()).unwrap_or(0)
     }
 
     fn move_cursor_line(&mut self, delta: isize) {
@@ -129,8 +124,7 @@ impl CodeEditor {
         if next != self.cursor_line {
             self.cursor_line = next;
             self.cursor_column = self.cursor_column.min(self.current_line_len());
-            self.cursor_moved
-                .emit((self.cursor_line, self.cursor_column));
+            self.cursor_moved.emit((self.cursor_line, self.cursor_column));
             self.base.request_redraw();
         }
     }
@@ -140,8 +134,7 @@ impl CodeEditor {
         let next = (self.cursor_column as isize + delta).clamp(0, len as isize) as usize;
         if next != self.cursor_column {
             self.cursor_column = next;
-            self.cursor_moved
-                .emit((self.cursor_line, self.cursor_column));
+            self.cursor_moved.emit((self.cursor_line, self.cursor_column));
             self.base.request_redraw();
         }
     }
@@ -225,15 +218,8 @@ impl Draw for CodeEditor {
         }
 
         context.draw_text(
-            Point::new(
-                rect.x + rect.width as i32 - 130,
-                rect.y + rect.height as i32 - 10,
-            ),
-            &format!(
-                "Ln {}, Col {}",
-                self.cursor_line + 1,
-                self.cursor_column + 1
-            ),
+            Point::new(rect.x + rect.width as i32 - 130, rect.y + rect.height as i32 - 10),
+            &format!("Ln {}, Col {}", self.cursor_line + 1, self.cursor_column + 1),
             &Font::default(),
             Color::from_rgb(88, 102, 124),
         );
@@ -282,11 +268,7 @@ mod tests {
 
         editor.set_text("abc");
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["abc".to_string()]);
     }
 
@@ -342,11 +324,7 @@ mod tests {
         // Second set with same value should be no-op
         editor.set_text("hello");
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got.len(), 1, "duplicate set_text must not emit");
     }
 
@@ -405,11 +383,7 @@ mod tests {
         editor.handle_event(&Event::key_press(38, 0));
         assert_eq!(editor.cursor().0, 1);
 
-        let positions = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let positions = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert!(!positions.is_empty(), "cursor_moved must have been emitted");
     }
 
@@ -428,11 +402,7 @@ mod tests {
         editor.append_line("appended");
         editor.set_text("replaced");
 
-        let got = emitted
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got.len(), 3);
         assert_eq!(got[0], "initial");
         assert_eq!(got[2], "replaced");

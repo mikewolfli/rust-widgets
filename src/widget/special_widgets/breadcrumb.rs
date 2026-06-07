@@ -18,10 +18,7 @@ pub struct BreadcrumbSegment {
 impl BreadcrumbSegment {
     /// Creates a breadcrumb segment.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-        }
+        Self { id: id.into(), label: label.into() }
     }
 }
 
@@ -52,11 +49,8 @@ impl Breadcrumb {
     /// Replaces full segment path.
     pub fn set_segments(&mut self, segments: Vec<BreadcrumbSegment>) {
         self.segments = segments;
-        self.selected_index = if self.segments.is_empty() {
-            None
-        } else {
-            Some(self.segments.len() - 1)
-        };
+        self.selected_index =
+            if self.segments.is_empty() { None } else { Some(self.segments.len() - 1) };
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -84,8 +78,7 @@ impl Breadcrumb {
 
     /// Returns selected segment index.
     pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-            .filter(|index| *index < self.segments.len())
+        self.selected_index.filter(|index| *index < self.segments.len())
     }
 
     /// Sets selected segment.
@@ -281,11 +274,7 @@ mod tests {
         assert_eq!(breadcrumb.selected_index(), Some(1));
         breadcrumb.handle_event(&Event::key_press(13, 0));
 
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["project".to_string()]);
     }
 
@@ -329,10 +318,8 @@ mod tests {
     #[test]
     fn clear_segments_resets() {
         let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 600));
-        breadcrumb.set_segments(vec![
-            BreadcrumbSegment::new("a", "A"),
-            BreadcrumbSegment::new("b", "B"),
-        ]);
+        breadcrumb
+            .set_segments(vec![BreadcrumbSegment::new("a", "A"), BreadcrumbSegment::new("b", "B")]);
         assert_eq!(breadcrumb.segments().len(), 2);
 
         breadcrumb.clear_segments();

@@ -10,11 +10,7 @@ pub struct NavigationEntry {
 }
 impl Default for NavigationEntry {
     fn default() -> Self {
-        Self {
-            url: "about:blank".to_string(),
-            title: "Blank Page".to_string(),
-            timestamp: 0,
-        }
+        Self { url: "about:blank".to_string(), title: "Blank Page".to_string(), timestamp: 0 }
     }
 }
 /// Session-based navigation history (back/forward stack).
@@ -31,11 +27,7 @@ impl Default for NavigationHistory {
 }
 impl NavigationHistory {
     pub fn new(max_size: usize) -> Self {
-        Self {
-            entries: VecDeque::with_capacity(max_size),
-            current_index: None,
-            max_size,
-        }
+        Self { entries: VecDeque::with_capacity(max_size), current_index: None, max_size }
     }
     pub fn push(&mut self, entry: NavigationEntry) {
         if let Some(idx) = self.current_index {
@@ -59,8 +51,7 @@ impl NavigationHistory {
         self.current_index.is_some_and(|idx| idx > 0)
     }
     pub fn can_go_forward(&self) -> bool {
-        self.current_index
-            .is_some_and(|idx| idx < self.entries.len() - 1)
+        self.current_index.is_some_and(|idx| idx < self.entries.len() - 1)
     }
     pub fn go_back(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_back() {
@@ -113,11 +104,7 @@ pub struct WebResource {
 }
 impl WebResource {
     pub fn new(url: String, mime_type: String, data: Vec<u8>) -> Self {
-        Self {
-            url,
-            mime_type,
-            data,
-        }
+        Self { url, mime_type, data }
     }
     pub fn from_text(url: &str, text: &str) -> Self {
         Self {

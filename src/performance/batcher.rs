@@ -9,11 +9,7 @@ pub struct UpdateBatcher {
 }
 impl UpdateBatcher {
     pub fn new(batch_timeout_ms: u64) -> Self {
-        Self {
-            pending_updates: Vec::new(),
-            batch_timeout_ms,
-            last_batch: None,
-        }
+        Self { pending_updates: Vec::new(), batch_timeout_ms, last_batch: None }
     }
     pub fn add(&mut self, rect: Rect) {
         self.pending_updates.push(rect);

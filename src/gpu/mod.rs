@@ -71,11 +71,7 @@ pub fn subsystem_summary() -> String {
     summary.push_str("====================\n\n");
     summary.push_str(&format!(
         "GPU support: {}\n",
-        if is_gpu_available() {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        if is_gpu_available() { "enabled" } else { "disabled" }
     ));
     summary.push_str("\nSupported features:\n");
     summary.push_str("  - Automatic GPU adapter selection\n");

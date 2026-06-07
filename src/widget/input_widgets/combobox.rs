@@ -115,10 +115,7 @@ impl ComboBox {
     }
     /// Returns current text.
     pub fn current_text(&self) -> String {
-        self.current_index
-            .and_then(|idx| self.items.get(idx))
-            .cloned()
-            .unwrap_or_default()
+        self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default()
     }
     /// Sets current text (for editable combo boxes).
     pub fn set_current_text(&mut self, text: String) {
@@ -182,14 +179,7 @@ impl Widget for ComboBox {
 
     fn size_hint(&self) -> Size {
         // Find widest item
-        let max_w = self
-            .items()
-            .iter()
-            .map(|s| s.len() as u32)
-            .max()
-            .unwrap_or(8)
-            * 8
-            + 30; // + dropdown arrow
+        let max_w = self.items().iter().map(|s| s.len() as u32).max().unwrap_or(8) * 8 + 30; // + dropdown arrow
         Size::new(max_w.max(80), 24)
     }
 }
@@ -276,17 +266,11 @@ impl Draw for ComboBox {
         );
         context.draw_line(
             Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(
-                arrow_x_f + arrow_size_f / 2.0,
-                arrow_y_f + arrow_size_f / 2.0,
-            ),
+            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
         context.draw_line(
-            Point::from_f32(
-                arrow_x_f + arrow_size_f / 2.0,
-                arrow_y_f + arrow_size_f / 2.0,
-            ),
+            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
             Color::from_rgb(100, 100, 100),
         );
@@ -414,11 +398,7 @@ mod tests {
     #[test]
     fn combobox_find_text() {
         let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
-        cb.add_items(vec![
-            "Apple".to_string(),
-            "Banana".to_string(),
-            "Cherry".to_string(),
-        ]);
+        cb.add_items(vec!["Apple".to_string(), "Banana".to_string(), "Cherry".to_string()]);
         assert_eq!(cb.find_text("Banana"), Some(1));
         assert_eq!(cb.find_text("Missing"), None);
     }

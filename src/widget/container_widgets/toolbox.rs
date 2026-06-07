@@ -28,13 +28,7 @@ pub struct ToolBoxItem {
 impl ToolBoxItem {
     /// Creates a new tool box item.
     pub fn new(text: String) -> Self {
-        Self {
-            text,
-            icon: None,
-            tooltip: String::new(),
-            enabled: true,
-            widget: None,
-        }
+        Self { text, icon: None, tooltip: String::new(), enabled: true, widget: None }
     }
     /// Returns text.
     pub fn text(&self) -> &str {
@@ -143,9 +137,7 @@ impl ToolBox {
     }
     /// Returns current item widget.
     pub fn current_widget(&self) -> Option<ObjectId> {
-        self.items
-            .get(self.current_index)
-            .and_then(|item| item.widget)
+        self.items.get(self.current_index).and_then(|item| item.widget)
     }
     /// Returns item at index.
     pub fn item(&self, index: usize) -> Option<&ToolBoxItem> {
@@ -272,22 +264,12 @@ impl Draw for ToolBox {
         let content_rect = self.content_rect();
         // Draw content background
         context.fill_rect(
-            Rect::new(
-                content_rect.x,
-                content_rect.y,
-                content_rect.width,
-                content_rect.height,
-            ),
+            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
             Color::from_rgb(255, 255, 255),
         );
         // Draw content border
         context.draw_rect(
-            Rect::new(
-                content_rect.x,
-                content_rect.y,
-                content_rect.width,
-                content_rect.height,
-            ),
+            Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
             Color::from_rgb(200, 200, 200),
         );
         // Draw items
@@ -322,11 +304,8 @@ impl Draw for ToolBox {
                 );
                 // Draw icon if available
                 let icon_size = 16;
-                let text_x = if item.icon.is_some() {
-                    item_rect.x + icon_size + 5
-                } else {
-                    item_rect.x + 5
-                };
+                let text_x =
+                    if item.icon.is_some() { item_rect.x + icon_size + 5 } else { item_rect.x + 5 };
                 if item.icon.is_some() {
                     // NOTE: Full icon rendering requires draw_image() on RenderContext
                     // For now, draw a placeholder gray square

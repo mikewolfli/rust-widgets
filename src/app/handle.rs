@@ -417,47 +417,23 @@ macro_rules! impl_handle {
 impl_handle!(ButtonHandle, "Type-safe handle for a Button widget.");
 impl_handle!(LabelHandle, "Type-safe handle for a Label widget.");
 impl_handle!(CheckBoxHandle, "Type-safe handle for a CheckBox widget.");
-impl_handle!(
-    RadioButtonHandle,
-    "Type-safe handle for a RadioButton widget."
-);
+impl_handle!(RadioButtonHandle, "Type-safe handle for a RadioButton widget.");
 impl_handle!(LineEditHandle, "Type-safe handle for a LineEdit widget.");
 impl_handle!(ComboBoxHandle, "Type-safe handle for a ComboBox widget.");
 impl_handle!(ListBoxHandle, "Type-safe handle for a ListBox widget.");
 impl_handle!(SliderHandle, "Type-safe handle for a Slider widget.");
-impl_handle!(
-    ProgressBarHandle,
-    "Type-safe handle for a ProgressBar widget."
-);
+impl_handle!(ProgressBarHandle, "Type-safe handle for a ProgressBar widget.");
 impl_handle!(PanelHandle, "Type-safe handle for a Panel widget.");
 impl_handle!(SpinBoxHandle, "Type-safe handle for a SpinBox widget.");
 impl_handle!(ListViewHandle, "Type-safe handle for a ListView widget.");
-impl_handle!(
-    ScrollAreaHandle,
-    "Type-safe handle for a ScrollArea widget."
-);
-impl_handle!(
-    TextEditHandle,
-    "Type-safe handle for a TextEdit (multi-line text) widget."
-);
+impl_handle!(ScrollAreaHandle, "Type-safe handle for a ScrollArea widget.");
+impl_handle!(TextEditHandle, "Type-safe handle for a TextEdit (multi-line text) widget.");
 impl_handle!(ScrollBarHandle, "Type-safe handle for a ScrollBar widget.");
-impl_handle!(
-    TabWidgetHandle,
-    "Type-safe handle for a TabWidget (tab container) widget."
-);
-impl_handle!(
-    GridWidgetHandle,
-    "Type-safe handle for a GridWidget (grid layout) widget."
-);
+impl_handle!(TabWidgetHandle, "Type-safe handle for a TabWidget (tab container) widget.");
+impl_handle!(GridWidgetHandle, "Type-safe handle for a GridWidget (grid layout) widget.");
 impl_handle!(FrameHandle, "Type-safe handle for a Frame widget.");
-impl_handle!(
-    DialogHandle,
-    "Type-safe handle for a generic Dialog widget."
-);
-impl_handle!(
-    WebViewHandle,
-    "Type-safe handle for a WebView (web content) widget."
-);
+impl_handle!(DialogHandle, "Type-safe handle for a generic Dialog widget.");
+impl_handle!(WebViewHandle, "Type-safe handle for a WebView (web content) widget.");
 
 // ═══════════════════════════════════════════════════════════════
 // MessageBoxHandle – custom, NOT from macro
@@ -607,13 +583,7 @@ struct SliderState {
 
 impl Default for SliderState {
     fn default() -> Self {
-        Self {
-            value: 50,
-            min: 0,
-            max: 100,
-            step: 1,
-            orientation: Orientation::Horizontal,
-        }
+        Self { value: 50, min: 0, max: 100, step: 1, orientation: Orientation::Horizontal }
     }
 }
 
@@ -634,12 +604,7 @@ impl SliderHandle {
 
     /// Return the current slider value.
     pub fn value(&self) -> i32 {
-        SLIDER_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.value)
-                .unwrap_or(50)
-        })
+        SLIDER_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(50))
     }
 
     /// Set the slider range (min/max). The current value is clamped.
@@ -656,20 +621,15 @@ impl SliderHandle {
     /// Set the slider step increment.
     pub fn set_step(&self, step: i32) {
         SLIDER_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .step = step;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
     }
 
     /// Set the slider orientation.
     pub fn set_orientation(&self, orientation: Orientation) {
         SLIDER_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .orientation = orientation;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).orientation =
+                orientation;
         });
     }
 }
@@ -688,12 +648,7 @@ struct ProgressBarState {
 
 impl Default for ProgressBarState {
     fn default() -> Self {
-        Self {
-            value: 0,
-            min: 0,
-            max: 100,
-            indeterminate: false,
-        }
+        Self { value: 0, min: 0, max: 100, indeterminate: false }
     }
 }
 
@@ -714,12 +669,8 @@ impl ProgressBarHandle {
 
     /// Return the current progress value.
     pub fn value(&self) -> u32 {
-        PROGRESS_BAR_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.value)
-                .unwrap_or(0)
-        })
+        PROGRESS_BAR_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(0))
     }
 
     /// Set the minimum value.
@@ -745,10 +696,8 @@ impl ProgressBarHandle {
     /// Set whether the progress bar is in indeterminate mode.
     pub fn set_indeterminate(&self, indeterminate: bool) {
         PROGRESS_BAR_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .indeterminate = indeterminate;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).indeterminate =
+                indeterminate;
         });
     }
 }
@@ -766,11 +715,7 @@ struct CheckBoxState {
 
 impl Default for CheckBoxState {
     fn default() -> Self {
-        Self {
-            checked: false,
-            tristate: false,
-            check_state: CheckState::Unchecked,
-        }
+        Self { checked: false, tristate: false, check_state: CheckState::Unchecked }
     }
 }
 
@@ -782,12 +727,8 @@ thread_local! {
 impl CheckBoxHandle {
     /// Return whether the check-box is checked (non-tristate mode).
     pub fn is_checked(&self) -> bool {
-        CHECKBOX_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.checked)
-                .unwrap_or(false)
-        })
+        CHECKBOX_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.checked).unwrap_or(false))
     }
 
     /// Set the check-box to checked or unchecked.
@@ -797,11 +738,8 @@ impl CheckBoxHandle {
             let state = map.entry(self.raw_id()).or_default();
             state.checked = checked;
             if !state.tristate {
-                state.check_state = if checked {
-                    CheckState::Checked
-                } else {
-                    CheckState::Unchecked
-                };
+                state.check_state =
+                    if checked { CheckState::Checked } else { CheckState::Unchecked };
             }
         });
     }
@@ -809,20 +747,15 @@ impl CheckBoxHandle {
     /// Enable/disable tri-state mode.
     pub fn set_tristate(&self, tristate: bool) {
         CHECKBOX_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .tristate = tristate;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).tristate =
+                tristate;
         });
     }
 
     /// Return the current check state of a tri-state check-box.
     pub fn check_state(&self) -> CheckState {
         CHECKBOX_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.check_state)
-                .unwrap_or(CheckState::Unchecked)
+            map.borrow().get(&self.raw_id()).map(|s| s.check_state).unwrap_or(CheckState::Unchecked)
         })
     }
 }
@@ -845,12 +778,8 @@ thread_local! {
 impl RadioButtonHandle {
     /// Return whether this radio button is currently selected.
     pub fn is_selected(&self) -> bool {
-        RADIO_BUTTON_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.selected)
-                .unwrap_or(false)
-        })
+        RADIO_BUTTON_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.selected).unwrap_or(false))
     }
 
     /// Select this radio button and deselect all others in the same group.
@@ -879,10 +808,8 @@ impl RadioButtonHandle {
     /// Radio buttons in the same group are mutually exclusive.
     pub fn set_group(&self, group: &str) {
         RADIO_BUTTON_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .group = group.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).group =
+                group.to_owned();
         });
     }
 }
@@ -925,30 +852,23 @@ impl LineEditHandle {
     /// Set the placeholder text shown when the field is empty.
     pub fn set_placeholder(&self, text: &str) {
         LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .placeholder = text.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).placeholder =
+                text.to_owned();
         });
     }
 
     /// Set whether the line-edit is read-only.
     pub fn set_read_only(&self, read_only: bool) {
         LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .read_only = read_only;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
+                read_only;
         });
     }
 
     /// Set the maximum number of characters allowed.
     pub fn set_max_length(&self, len: u32) {
         LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .max_length = len;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length = len;
         });
     }
 
@@ -960,10 +880,7 @@ impl LineEditHandle {
     /// Set the echo mode (Normal / Password / NoEcho).
     pub fn set_echo_mode(&self, mode: EchoMode) {
         LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .echo_mode = mode;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode = mode;
         });
     }
 
@@ -1022,9 +939,7 @@ impl ScrollAreaHandle {
     pub fn scroll_position(&self) -> (i32, i32) {
         SCROLL_AREA_STATES.with(|map| {
             let map = map.borrow();
-            map.get(&self.raw_id())
-                .map(|s| (s.scroll_x, s.scroll_y))
-                .unwrap_or((0, 0))
+            map.get(&self.raw_id()).map(|s| (s.scroll_x, s.scroll_y)).unwrap_or((0, 0))
         })
     }
 
@@ -1051,10 +966,7 @@ impl ScrollAreaHandle {
     /// Scroll to the top of the content.
     pub fn scroll_to_top(&self) {
         SCROLL_AREA_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .scroll_y = 0;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).scroll_y = 0;
         });
     }
 }
@@ -1100,40 +1012,28 @@ impl ListViewHandle {
     pub fn set_model(&self, model: Box<dyn ListModel>) {
         let model: Rc<dyn ListModel> = Rc::from(model);
         LIST_VIEW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .model = Some(model);
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).model =
+                Some(model);
         });
     }
 
     /// Return the currently selected row, if any.
     pub fn selected_row(&self) -> Option<usize> {
-        LIST_VIEW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .and_then(|s| s.selected_row)
-        })
+        LIST_VIEW_STATES.with(|map| map.borrow().get(&self.raw_id()).and_then(|s| s.selected_row))
     }
 
     /// Set the selection mode.
     pub fn set_selection_mode(&self, mode: SelectionMode) {
         LIST_VIEW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .selection_mode = mode;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).selection_mode =
+                mode;
         });
     }
 
     /// Return the current model, if one is set.
     /// Returns `None` if no model has been assigned.
     pub fn model(&self) -> Option<Rc<dyn ListModel>> {
-        LIST_VIEW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .and_then(|s| s.model.clone())
-        })
+        LIST_VIEW_STATES.with(|map| map.borrow().get(&self.raw_id()).and_then(|s| s.model.clone()))
     }
 }
 
@@ -1153,14 +1053,7 @@ struct SpinBoxState {
 
 impl Default for SpinBoxState {
     fn default() -> Self {
-        Self {
-            value: 0,
-            min: 0,
-            max: 100,
-            step: 1,
-            prefix: String::new(),
-            suffix: String::new(),
-        }
+        Self { value: 0, min: 0, max: 100, step: 1, prefix: String::new(), suffix: String::new() }
     }
 }
 
@@ -1181,12 +1074,7 @@ impl SpinBoxHandle {
 
     /// Return the current spin-box value.
     pub fn value(&self) -> i32 {
-        SPINBOX_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.value)
-                .unwrap_or(0)
-        })
+        SPINBOX_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(0))
     }
 
     /// Set the spin-box range. The current value is clamped.
@@ -1203,30 +1091,23 @@ impl SpinBoxHandle {
     /// Set the prefix text displayed before the value.
     pub fn set_prefix(&self, prefix: &str) {
         SPINBOX_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .prefix = prefix.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).prefix =
+                prefix.to_owned();
         });
     }
 
     /// Set the suffix text displayed after the value.
     pub fn set_suffix(&self, suffix: &str) {
         SPINBOX_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .suffix = suffix.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).suffix =
+                suffix.to_owned();
         });
     }
 
     /// Set the spin-box step increment.
     pub fn set_step(&self, step: i32) {
         SPINBOX_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .step = step;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
     }
 }
@@ -1260,10 +1141,8 @@ impl PanelHandle {
     /// Set the panel title text.
     pub fn set_title(&self, title: &str) {
         PANEL_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .title = title.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).title =
+                title.to_owned();
         });
         crate::set_widget_text(self.raw_id(), title);
     }
@@ -1297,10 +1176,7 @@ impl std::fmt::Debug for WindowState {
             .field("fullscreen", &self.fullscreen)
             .field("resizable", &self.resizable)
             .field("decorated", &self.decorated)
-            .field(
-                "close_callback",
-                &self.close_callback.as_ref().map(|_| "<fn>"),
-            )
+            .field("close_callback", &self.close_callback.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -1335,10 +1211,8 @@ impl WindowHandle {
     /// Set the window icon from a file path.
     pub fn set_icon(&self, path: &str) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .icon = path.to_owned();
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).icon =
+                path.to_owned();
         });
     }
 
@@ -1355,110 +1229,78 @@ impl WindowHandle {
     /// Maximize or restore the window.
     pub fn set_maximized(&self, maximized: bool) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .maximized = maximized;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).maximized =
+                maximized;
         });
     }
 
     /// Return whether the window is maximized.
     pub fn is_maximized(&self) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.maximized)
-                .unwrap_or(false)
-        })
+        WINDOW_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.maximized).unwrap_or(false))
     }
 
     /// Minimize or restore the window.
     pub fn set_minimized(&self, minimized: bool) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .minimized = minimized;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).minimized =
+                minimized;
         });
     }
 
     /// Return whether the window is minimized.
     pub fn is_minimized(&self) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.minimized)
-                .unwrap_or(false)
-        })
+        WINDOW_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.minimized).unwrap_or(false))
     }
 
     /// Set fullscreen mode.
     pub fn set_fullscreen(&self, fullscreen: bool) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .fullscreen = fullscreen;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).fullscreen =
+                fullscreen;
         });
     }
 
     /// Return whether the window is fullscreen.
     pub fn is_fullscreen(&self) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.fullscreen)
-                .unwrap_or(false)
-        })
+        WINDOW_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.fullscreen).unwrap_or(false))
     }
 
     /// Set whether the window is resizable.
     pub fn set_resizable(&self, resizable: bool) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .resizable = resizable;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).resizable =
+                resizable;
         });
     }
 
     /// Return whether the window is resizable.
     pub fn is_resizable(&self) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.resizable)
-                .unwrap_or(true)
-        })
+        WINDOW_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.resizable).unwrap_or(true))
     }
 
     /// Set whether the window has window decorations (title bar, borders).
     pub fn set_decorated(&self, decorated: bool) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .decorated = decorated;
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).decorated =
+                decorated;
         });
     }
 
     /// Is the window decorated?
     pub fn is_decorated(&self) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.decorated)
-                .unwrap_or(true)
-        })
+        WINDOW_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.decorated).unwrap_or(true))
     }
 
     /// Register a callback invoked when the window is about to close.
     pub fn on_close(&self, callback: ClickCallback) {
         WINDOW_STATES.with(|map| {
-            map.borrow_mut()
-                .entry(self.raw_id())
-                .or_insert_with(Default::default)
-                .close_callback = Some(callback);
+            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).close_callback =
+                Some(callback);
         });
     }
 

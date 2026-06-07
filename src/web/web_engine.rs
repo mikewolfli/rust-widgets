@@ -256,11 +256,7 @@ mod tests {
     #[test]
     fn test_web_engine_view_load_data() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
-        engine.load_data(
-            b"binary content",
-            "application/octet-stream",
-            "https://data.url",
-        );
+        engine.load_data(b"binary content", "application/octet-stream", "https://data.url");
         assert_eq!(engine.url(), "https://data.url");
         assert_eq!(engine.title(), "Data: application/octet-stream");
         assert_eq!(engine.content(), "binary content");
@@ -280,10 +276,7 @@ mod tests {
         engine.set_javascript_enabled(false);
         let result = engine.evaluate_javascript("1 + 1");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("JavaScript is disabled"));
+        assert!(result.unwrap_err().message.contains("JavaScript is disabled"));
     }
 
     #[test]

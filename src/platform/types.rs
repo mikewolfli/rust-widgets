@@ -142,9 +142,7 @@ pub trait Platform: Send + Sync {
     /// Native capability contract published by desktop-capable runtimes.
     fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
         if matches!(self.family(), PlatformFamily::Desktop) {
-            Some(NativeCapabilityContract::from_platform_caps(
-                self.capabilities(),
-            ))
+            Some(NativeCapabilityContract::from_platform_caps(self.capabilities()))
         } else {
             None
         }

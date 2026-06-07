@@ -25,10 +25,7 @@ fn recover_lock<T>(
 /// Returns the current timestamp in milliseconds since UNIX epoch.
 #[cfg(feature = "touch")]
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 /// Main event loop for processing events.
@@ -150,8 +147,7 @@ impl EventLoop {
         interval: Duration,
         repeating: bool,
     ) -> Result<(), String> {
-        self.timer_manager
-            .start_timer(target, timer_id, interval, repeating)
+        self.timer_manager.start_timer(target, timer_id, interval, repeating)
     }
 
     /// Stop one timer by target and id.

@@ -181,10 +181,7 @@ impl Draw for FileDialog {
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, 28),
-            Color::from_rgb(0, 120, 215),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,

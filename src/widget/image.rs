@@ -28,22 +28,12 @@ pub struct Image {
 impl Image {
     /// Creates an empty image.
     pub fn new() -> Self {
-        Self {
-            data: Vec::new(),
-            format: ImageFormat::Unknown,
-            width: 0,
-            height: 0,
-        }
+        Self { data: Vec::new(), format: ImageFormat::Unknown, width: 0, height: 0 }
     }
 
     /// Creates an image from raw RGBA data.
     pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
-        Self {
-            data,
-            format: ImageFormat::Rgba8,
-            width,
-            height,
-        }
+        Self { data, format: ImageFormat::Rgba8, width, height }
     }
 
     /// Returns the image width in pixels.

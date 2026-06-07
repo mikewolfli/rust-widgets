@@ -8,11 +8,7 @@ pub struct ProfileEntry {
 }
 impl Default for ProfileEntry {
     fn default() -> Self {
-        Self {
-            start: Instant::now(),
-            duration: Duration::ZERO,
-            call_count: 0,
-        }
+        Self { start: Instant::now(), duration: Duration::ZERO, call_count: 0 }
     }
 }
 pub struct Profiler {
@@ -22,11 +18,7 @@ pub struct Profiler {
 }
 impl Profiler {
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            current: None,
-            enabled: true,
-        }
+        Self { entries: HashMap::new(), current: None, enabled: true }
     }
     pub fn enable(&mut self) {
         self.enabled = true;
@@ -111,10 +103,7 @@ impl Profiler {
             })
             .collect();
         entries.sort_by_key(|b| std::cmp::Reverse(b.total_duration));
-        ProfileReport {
-            entries,
-            total_duration: self.get_total_duration(),
-        }
+        ProfileReport { entries, total_duration: self.get_total_duration() }
     }
 }
 impl Default for Profiler {
@@ -201,18 +190,10 @@ impl FrameProfiler {
         1_000_000_000.0 / avg.as_nanos() as f32
     }
     pub fn min_frame_time(&self) -> Duration {
-        self.frame_times
-            .iter()
-            .min()
-            .copied()
-            .unwrap_or(Duration::ZERO)
+        self.frame_times.iter().min().copied().unwrap_or(Duration::ZERO)
     }
     pub fn max_frame_time(&self) -> Duration {
-        self.frame_times
-            .iter()
-            .max()
-            .copied()
-            .unwrap_or(Duration::ZERO)
+        self.frame_times.iter().max().copied().unwrap_or(Duration::ZERO)
     }
     pub fn frame_count(&self) -> usize {
         self.frame_times.len()
@@ -237,11 +218,7 @@ pub struct PerformanceMonitor {
 }
 impl PerformanceMonitor {
     pub fn new() -> Self {
-        Self {
-            profiler: Profiler::new(),
-            frame_profiler: FrameProfiler::new(60),
-            enabled: true,
-        }
+        Self { profiler: Profiler::new(), frame_profiler: FrameProfiler::new(60), enabled: true }
     }
     pub fn profiler(&self) -> &Profiler {
         &self.profiler

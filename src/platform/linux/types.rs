@@ -59,10 +59,7 @@ pub(crate) struct LinuxRuntimeState {
 }
 impl LinuxRuntimeState {
     pub(crate) fn new() -> Self {
-        Self {
-            initialized: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }
+        Self { initialized: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 /// Linux desktop platform adapter.

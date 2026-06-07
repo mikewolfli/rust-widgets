@@ -136,10 +136,8 @@ pub(crate) fn enqueue_control_notify_event(
         // for cross-platform event parity.
         if widget_kind == WindowsHandleKind::ComboBox && kind == WidgetTriggerKind::SelectionChanged
         {
-            events.push_back(WidgetTriggerEvent {
-                widget_id,
-                kind: WidgetTriggerKind::ValueChanged,
-            });
+            events
+                .push_back(WidgetTriggerEvent { widget_id, kind: WidgetTriggerKind::ValueChanged });
         }
         return true;
     }

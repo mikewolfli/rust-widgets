@@ -265,10 +265,7 @@ impl EventHandler for ScrollArea {
         }
         // Handle scroll events (mouse wheel + touch swipe)
         match event {
-            Event::Wheel {
-                delta,
-                modifiers: _,
-            } => {
+            Event::Wheel { delta, modifiers: _ } => {
                 // Scroll the content using clamped content coordinates.
                 self.set_scroll_position(
                     self.scroll_position.0 + delta.x * 20,
@@ -276,11 +273,7 @@ impl EventHandler for ScrollArea {
                 );
             }
             #[cfg(feature = "touch")]
-            Event::Swipe {
-                start,
-                end,
-                velocity: _,
-            } => {
+            Event::Swipe { start, end, velocity: _ } => {
                 // Map swipe to scroll
                 let dx = end.x - start.x;
                 let dy = end.y - start.y;
@@ -329,21 +322,11 @@ impl Draw for ScrollArea {
             let scroll_bar_height = 16;
             let scroll_bar_y = rect.y as f32 + rect.height as f32 - scroll_bar_height as f32;
             context.fill_rect(
-                Rect::new(
-                    rect.x,
-                    scroll_bar_y as i32,
-                    rect.width,
-                    scroll_bar_height as u32,
-                ),
+                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height as u32),
                 Color::from_rgb(240, 240, 240),
             );
             context.draw_rect(
-                Rect::new(
-                    rect.x,
-                    scroll_bar_y as i32,
-                    rect.width,
-                    scroll_bar_height as u32,
-                ),
+                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height as u32),
                 Color::from_rgb(200, 200, 200),
             );
             // Draw scroll bar thumb
@@ -352,12 +335,7 @@ impl Draw for ScrollArea {
                 + ((rect.width - thumb_width) as i32)
                     * (self.viewport.x / self.viewport.width.max(1) as i32);
             context.fill_rect(
-                Rect::new(
-                    thumb_x,
-                    scroll_bar_y as i32,
-                    thumb_width,
-                    scroll_bar_height as u32,
-                ),
+                Rect::new(thumb_x, scroll_bar_y as i32, thumb_width, scroll_bar_height as u32),
                 Color::from_rgb(180, 180, 180),
             );
         }
@@ -366,21 +344,11 @@ impl Draw for ScrollArea {
             let scroll_bar_width = 16;
             let scroll_bar_x = rect.x as f32 + rect.width as f32 - scroll_bar_width as f32;
             context.fill_rect(
-                Rect::new(
-                    scroll_bar_x as i32,
-                    rect.y,
-                    scroll_bar_width as u32,
-                    rect.height,
-                ),
+                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width as u32, rect.height),
                 Color::from_rgb(240, 240, 240),
             );
             context.draw_rect(
-                Rect::new(
-                    scroll_bar_x as i32,
-                    rect.y,
-                    scroll_bar_width as u32,
-                    rect.height,
-                ),
+                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width as u32, rect.height),
                 Color::from_rgb(200, 200, 200),
             );
             // Draw scroll bar thumb
@@ -389,12 +357,7 @@ impl Draw for ScrollArea {
                 + ((rect.height - thumb_height) as i32)
                     * (self.viewport.y / self.viewport.height.max(1) as i32);
             context.fill_rect(
-                Rect::new(
-                    scroll_bar_x as i32,
-                    thumb_y,
-                    scroll_bar_width as u32,
-                    thumb_height,
-                ),
+                Rect::new(scroll_bar_x as i32, thumb_y, scroll_bar_width as u32, thumb_height),
                 Color::from_rgb(180, 180, 180),
             );
         }
@@ -404,12 +367,7 @@ impl Draw for ScrollArea {
             let corner_x = rect.x as f32 + rect.width as f32 - corner_size as f32;
             let corner_y = rect.y as f32 + rect.height as f32 - corner_size as f32;
             context.fill_rect(
-                Rect::new(
-                    corner_x as i32,
-                    corner_y as i32,
-                    corner_size as u32,
-                    corner_size as u32,
-                ),
+                Rect::new(corner_x as i32, corner_y as i32, corner_size as u32, corner_size as u32),
                 Color::from_rgb(240, 240, 240),
             );
         }

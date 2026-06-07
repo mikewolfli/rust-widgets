@@ -46,18 +46,12 @@ pub struct TouchEventTranslator {
 impl TouchEventTranslator {
     /// Creates a new translator with translation enabled.
     pub fn new() -> Self {
-        Self {
-            active_touches: HashMap::new(),
-            enabled: true,
-        }
+        Self { active_touches: HashMap::new(), enabled: true }
     }
 
     /// Creates a disabled translator (passthrough, no synthesis).
     pub fn disabled() -> Self {
-        Self {
-            active_touches: HashMap::new(),
-            enabled: false,
-        }
+        Self { active_touches: HashMap::new(), enabled: false }
     }
 
     /// Enable or disable translation.
@@ -82,10 +76,7 @@ impl TouchEventTranslator {
         match *event {
             Event::TouchBegin { pos, touch_id } => {
                 self.active_touches.insert(touch_id, (pos.x, pos.y));
-                vec![
-                    Event::MousePress { pos, button: 0 },
-                    Event::MouseEnter { pos },
-                ]
+                vec![Event::MousePress { pos, button: 0 }, Event::MouseEnter { pos }]
             }
             Event::TouchMove { pos, touch_id } => {
                 if let std::collections::hash_map::Entry::Occupied(mut e) =
@@ -99,10 +90,7 @@ impl TouchEventTranslator {
             }
             Event::TouchEnd { pos, touch_id } => {
                 self.active_touches.remove(&touch_id);
-                vec![
-                    Event::MouseRelease { pos, button: 0 },
-                    Event::MouseLeave { pos },
-                ]
+                vec![Event::MouseRelease { pos, button: 0 }, Event::MouseLeave { pos }]
             }
             _ => Vec::new(),
         }
@@ -127,10 +115,7 @@ mod tests {
     #[test]
     fn touch_begin_generates_mouse_press_and_enter() {
         let mut t = TouchEventTranslator::new();
-        let ev = Event::TouchBegin {
-            pos: Point::new(10, 20),
-            touch_id: 1,
-        };
+        let ev = Event::TouchBegin { pos: Point::new(10, 20), touch_id: 1 };
         let result = t.translate(&ev);
         assert_eq!(result.len(), 2);
         assert!(matches!(result[0], Event::MousePress { .. }));
@@ -141,14 +126,8 @@ mod tests {
     #[test]
     fn touch_move_generates_mouse_move() {
         let mut t = TouchEventTranslator::new();
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(0, 0),
-            touch_id: 1,
-        });
-        let ev = Event::TouchMove {
-            pos: Point::new(10, 20),
-            touch_id: 1,
-        };
+        t.translate(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 });
+        let ev = Event::TouchMove { pos: Point::new(10, 20), touch_id: 1 };
         let result = t.translate(&ev);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], Event::MouseMove { .. }));
@@ -157,14 +136,8 @@ mod tests {
     #[test]
     fn touch_end_generates_mouse_release_and_leave() {
         let mut t = TouchEventTranslator::new();
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(0, 0),
-            touch_id: 1,
-        });
-        let ev = Event::TouchEnd {
-            pos: Point::new(10, 20),
-            touch_id: 1,
-        };
+        t.translate(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 });
+        let ev = Event::TouchEnd { pos: Point::new(10, 20), touch_id: 1 };
         let result = t.translate(&ev);
         assert_eq!(result.len(), 2);
         assert!(matches!(result[0], Event::MouseRelease { .. }));
@@ -175,10 +148,7 @@ mod tests {
     #[test]
     fn unknown_touch_id_ignored() {
         let mut t = TouchEventTranslator::new();
-        let ev = Event::TouchMove {
-            pos: Point::new(10, 20),
-            touch_id: 999,
-        };
+        let ev = Event::TouchMove { pos: Point::new(10, 20), touch_id: 999 };
         let result = t.translate(&ev);
         assert!(result.is_empty());
     }
@@ -186,10 +156,7 @@ mod tests {
     #[test]
     fn disabled_translator_produces_no_events() {
         let mut t = TouchEventTranslator::disabled();
-        let ev = Event::TouchBegin {
-            pos: Point::new(10, 20),
-            touch_id: 1,
-        };
+        let ev = Event::TouchBegin { pos: Point::new(10, 20), touch_id: 1 };
         let result = t.translate(&ev);
         assert!(result.is_empty());
     }
@@ -197,10 +164,7 @@ mod tests {
     #[test]
     fn non_touch_events_produce_no_translation() {
         let mut t = TouchEventTranslator::new();
-        let ev = Event::MousePress {
-            pos: Point::new(10, 20),
-            button: 0,
-        };
+        let ev = Event::MousePress { pos: Point::new(10, 20), button: 0 };
         let result = t.translate(&ev);
         assert!(result.is_empty());
     }
@@ -208,14 +172,8 @@ mod tests {
     #[test]
     fn clear_removes_all_tracked_touches() {
         let mut t = TouchEventTranslator::new();
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(0, 0),
-            touch_id: 1,
-        });
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(0, 0),
-            touch_id: 2,
-        });
+        t.translate(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 });
+        t.translate(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 2 });
         assert_eq!(t.active_touch_count(), 2);
         t.clear();
         assert_eq!(t.active_touch_count(), 0);
@@ -224,26 +182,14 @@ mod tests {
     #[test]
     fn multiple_touches_tracked_independently() {
         let mut t = TouchEventTranslator::new();
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(10, 20),
-            touch_id: 1,
-        });
-        t.translate(&Event::TouchBegin {
-            pos: Point::new(30, 40),
-            touch_id: 2,
-        });
+        t.translate(&Event::TouchBegin { pos: Point::new(10, 20), touch_id: 1 });
+        t.translate(&Event::TouchBegin { pos: Point::new(30, 40), touch_id: 2 });
         assert_eq!(t.active_touch_count(), 2);
 
-        let r1 = t.translate(&Event::TouchMove {
-            pos: Point::new(15, 25),
-            touch_id: 1,
-        });
+        let r1 = t.translate(&Event::TouchMove { pos: Point::new(15, 25), touch_id: 1 });
         assert_eq!(r1.len(), 1);
 
-        let r2 = t.translate(&Event::TouchEnd {
-            pos: Point::new(35, 45),
-            touch_id: 2,
-        });
+        let r2 = t.translate(&Event::TouchEnd { pos: Point::new(35, 45), touch_id: 2 });
         assert_eq!(r2.len(), 2);
         assert_eq!(t.active_touch_count(), 1);
     }

@@ -18,10 +18,7 @@ fn consistency_typed_widget_trigger_roundtrip() {
     assert!(platform.inject_widget_trigger_event(button, WidgetTriggerKind::Clicked));
     assert_eq!(
         platform.poll_widget_trigger_event(),
-        Some(WidgetTriggerEvent {
-            widget_id: button,
-            kind: WidgetTriggerKind::Clicked,
-        })
+        Some(WidgetTriggerEvent { widget_id: button, kind: WidgetTriggerKind::Clicked })
     );
 }
 #[test]
@@ -42,10 +39,7 @@ fn consistency_list_box_data_path_roundtrip() {
     assert!(platform.list_box_add_item(list_box, "A"));
     assert!(platform.list_box_add_item(list_box, "B"));
     assert_eq!(platform.list_box_item_count(list_box), 2);
-    assert_eq!(
-        platform.list_box_item_text(list_box, 1).as_deref(),
-        Some("B")
-    );
+    assert_eq!(platform.list_box_item_text(list_box, 1).as_deref(), Some("B"));
     assert!(platform.list_box_set_current_index(list_box, 1));
     assert_eq!(platform.list_box_current_index(list_box), Some(1));
     assert!(platform.list_box_remove_item(list_box, 0));
@@ -69,10 +63,7 @@ fn consistency_combo_box_data_and_event_path_roundtrip() {
     assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
     assert_eq!(
         platform.poll_widget_trigger_event(),
-        Some(WidgetTriggerEvent {
-            widget_id: combo,
-            kind: WidgetTriggerKind::SelectionChanged,
-        })
+        Some(WidgetTriggerEvent { widget_id: combo, kind: WidgetTriggerKind::SelectionChanged })
     );
     assert!(platform.combo_box_clear_items(combo));
     assert_eq!(platform.combo_box_item_count(combo), 0);
@@ -112,10 +103,7 @@ fn embedded_profile_host_controls_are_explicitly_unsupported() {
     assert_eq!(platform.create_menu(window, "File", 0, 0, 80, 24), 0);
     assert_eq!(platform.menu_add_item(window, "Open", None), 0);
     assert_eq!(platform.create_tool_bar(window, 0, 24, 200, 24), 0);
-    assert_eq!(
-        platform.create_status_bar(window, "ready", 0, 96, 200, 24),
-        0
-    );
+    assert_eq!(platform.create_status_bar(window, "ready", 0, 96, 200, 24), 0);
     assert!(!platform.attach_menu_bar_to_window(window, menu_bar));
     assert!(!platform.inject_menu_trigger(1));
 }
@@ -134,10 +122,7 @@ fn embedded_profile_combo_list_state_event_data_roundtrip() {
     assert!(platform.inject_widget_trigger_event(combo, WidgetTriggerKind::SelectionChanged));
     assert_eq!(
         platform.poll_widget_trigger_event(),
-        Some(WidgetTriggerEvent {
-            widget_id: combo,
-            kind: WidgetTriggerKind::SelectionChanged,
-        })
+        Some(WidgetTriggerEvent { widget_id: combo, kind: WidgetTriggerKind::SelectionChanged })
     );
     let list = platform.create_list_box(window, 0, 30, 120, 80);
     assert_ne!(list, 0);
@@ -150,9 +135,6 @@ fn embedded_profile_combo_list_state_event_data_roundtrip() {
     assert!(platform.inject_widget_trigger_event(list, WidgetTriggerKind::SelectionChanged));
     assert_eq!(
         platform.poll_widget_trigger_event(),
-        Some(WidgetTriggerEvent {
-            widget_id: list,
-            kind: WidgetTriggerKind::SelectionChanged,
-        })
+        Some(WidgetTriggerEvent { widget_id: list, kind: WidgetTriggerKind::SelectionChanged })
     );
 }

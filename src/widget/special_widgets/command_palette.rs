@@ -22,12 +22,7 @@ pub struct CommandEntry {
 impl CommandEntry {
     /// Creates a command entry with id and title.
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            title: title.into(),
-            category: String::new(),
-            keywords: Vec::new(),
-        }
+        Self { id: id.into(), title: title.into(), category: String::new(), keywords: Vec::new() }
     }
 
     /// Sets command category.
@@ -114,8 +109,7 @@ impl CommandPalette {
 
     /// Returns highlighted command position in filtered list.
     pub fn highlighted_index(&self) -> Option<usize> {
-        self.highlighted_index
-            .filter(|idx| *idx < self.filtered_indices.len())
+        self.highlighted_index.filter(|idx| *idx < self.filtered_indices.len())
     }
 
     /// Sets row height.
@@ -191,11 +185,8 @@ impl CommandPalette {
         let title = entry.title.to_lowercase();
         let id = entry.id.to_lowercase();
         let category = entry.category.to_lowercase();
-        let keywords = entry
-            .keywords
-            .iter()
-            .map(|keyword| keyword.to_lowercase())
-            .collect::<Vec<_>>();
+        let keywords =
+            entry.keywords.iter().map(|keyword| keyword.to_lowercase()).collect::<Vec<_>>();
 
         if title.starts_with(query) {
             return Some(120);
@@ -363,17 +354,11 @@ mod tests {
         assert_eq!(palette.filtered_count(), 3);
         palette.set_query("save");
         assert_eq!(palette.filtered_count(), 1);
-        assert_eq!(
-            palette.filtered_entry(0).map(|entry| entry.id.as_str()),
-            Some("file.save")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|entry| entry.id.as_str()), Some("file.save"));
 
         palette.set_query("file");
         assert_eq!(palette.filtered_count(), 2);
-        assert_eq!(
-            palette.filtered_entry(0).map(|entry| entry.id.as_str()),
-            Some("file.open")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|entry| entry.id.as_str()), Some("file.open"));
     }
 
     #[test]
@@ -393,11 +378,7 @@ mod tests {
         assert_eq!(palette.highlighted_index(), Some(1));
         palette.handle_event(&Event::key_press(13, 0));
 
-        let got = activated
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
+        let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["file.save".to_string()]);
     }
 
@@ -473,10 +454,7 @@ mod tests {
 
         palette.set_query("open");
         assert_eq!(palette.filtered_count(), 2);
-        assert_eq!(
-            palette.filtered_entry(0).map(|e| e.id.as_str()),
-            Some("openFile")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|e| e.id.as_str()), Some("openFile"));
 
         palette.set_query("OPEN");
         assert_eq!(palette.filtered_count(), 2);
@@ -501,26 +479,17 @@ mod tests {
         // Match category
         palette.set_query("file");
         assert_eq!(palette.filtered_count(), 1);
-        assert_eq!(
-            palette.filtered_entry(0).map(|e| e.id.as_str()),
-            Some("file.open")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|e| e.id.as_str()), Some("file.open"));
 
         // Match keyword
         palette.set_query("load");
         assert_eq!(palette.filtered_count(), 1);
-        assert_eq!(
-            palette.filtered_entry(0).map(|e| e.id.as_str()),
-            Some("file.open")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|e| e.id.as_str()), Some("file.open"));
 
         // Match keyword on second entry
         palette.set_query("search");
         assert_eq!(palette.filtered_count(), 1);
-        assert_eq!(
-            palette.filtered_entry(0).map(|e| e.id.as_str()),
-            Some("edit.find")
-        );
+        assert_eq!(palette.filtered_entry(0).map(|e| e.id.as_str()), Some("edit.find"));
 
         // No match
         palette.set_query("nonexistent");

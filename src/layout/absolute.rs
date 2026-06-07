@@ -11,13 +11,7 @@ pub struct AbsolutePosition {
 }
 impl AbsolutePosition {
     pub fn new(x: i32, y: i32) -> Self {
-        Self {
-            x,
-            y,
-            width: None,
-            height: None,
-            anchor: Anchor::TopLeft,
-        }
+        Self { x, y, width: None, height: None, anchor: Anchor::TopLeft }
     }
     pub fn with_size(mut self, width: u32, height: u32) -> Self {
         self.width = Some(width);
@@ -173,9 +167,7 @@ pub struct AbsoluteLayout {
 }
 impl AbsoluteLayout {
     pub fn new() -> Self {
-        Self {
-            children: Vec::new(),
-        }
+        Self { children: Vec::new() }
     }
     pub fn add_child(&mut self, child: Box<dyn Widget>, position: AbsolutePosition) {
         self.children.push((child, position, None));
@@ -251,9 +243,7 @@ impl AbsoluteLayout {
         self.children.get(index).map(|(_, pos, _)| pos)
     }
     pub fn get_constraint(&self, index: usize) -> Option<&Constraint> {
-        self.children
-            .get(index)
-            .and_then(|(_, _, cons)| cons.as_ref())
+        self.children.get(index).and_then(|(_, _, cons)| cons.as_ref())
     }
 }
 impl Default for AbsoluteLayout {
@@ -295,9 +285,8 @@ mod tests {
     use super::*;
     #[test]
     fn test_absolute_position() {
-        let pos = AbsolutePosition::new(100, 100)
-            .with_size(50, 50)
-            .with_anchor_only(Anchor::Center);
+        let pos =
+            AbsolutePosition::new(100, 100).with_size(50, 50).with_anchor_only(Anchor::Center);
         let rect = pos.to_rect(Size::new(200, 200), Size::new(50, 50));
         assert_eq!(rect.x, 75);
         assert_eq!(rect.y, 75);

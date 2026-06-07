@@ -99,12 +99,7 @@ impl PieMenu {
     /// Creates a new `PieMenu` centered at `center` with the given outer `radius`.
     pub fn new(center: Point, radius: f32) -> Self {
         let size = (radius * 2.0) as u32;
-        let geometry = Rect::new(
-            center.x - radius as i32,
-            center.y - radius as i32,
-            size,
-            size,
-        );
+        let geometry = Rect::new(center.x - radius as i32, center.y - radius as i32, size, size);
         let inner_radius = radius * 0.35;
         Self {
             base: BaseWidget::new(WidgetKind::PieMenu, geometry, "PieMenu"),
@@ -373,22 +368,14 @@ impl PieMenu {
         }
 
         // Side edges
-        let inner_start = Point::from_f32(
-            cx + inner_r * angle_start.cos(),
-            cy + inner_r * angle_start.sin(),
-        );
-        let outer_start = Point::from_f32(
-            cx + outer_r * angle_start.cos(),
-            cy + outer_r * angle_start.sin(),
-        );
-        let inner_end = Point::from_f32(
-            cx + inner_r * angle_end.cos(),
-            cy + inner_r * angle_end.sin(),
-        );
-        let outer_end = Point::from_f32(
-            cx + outer_r * angle_end.cos(),
-            cy + outer_r * angle_end.sin(),
-        );
+        let inner_start =
+            Point::from_f32(cx + inner_r * angle_start.cos(), cy + inner_r * angle_start.sin());
+        let outer_start =
+            Point::from_f32(cx + outer_r * angle_start.cos(), cy + outer_r * angle_start.sin());
+        let inner_end =
+            Point::from_f32(cx + inner_r * angle_end.cos(), cy + inner_r * angle_end.sin());
+        let outer_end =
+            Point::from_f32(cx + outer_r * angle_end.cos(), cy + outer_r * angle_end.sin());
         context.draw_line_stroke(inner_start, outer_start, color, 1);
         context.draw_line_stroke(inner_end, outer_end, color, 1);
     }
@@ -533,17 +520,11 @@ impl Draw for PieMenu {
             let lx = cx + label_r * mid_angle.cos();
             let ly = cy + label_r * mid_angle.sin();
 
-            let label_text = if item.icon_text().is_empty() {
-                item.text()
-            } else {
-                item.icon_text()
-            };
+            let label_text =
+                if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
 
-            let text_color = if self.hovered_index == Some(i) {
-                Color::WHITE
-            } else {
-                self.text_color
-            };
+            let text_color =
+                if self.hovered_index == Some(i) { Color::WHITE } else { self.text_color };
             context.draw_text(Point::from_f32(lx, ly), label_text, &font, text_color);
         }
 

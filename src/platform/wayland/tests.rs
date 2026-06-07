@@ -62,29 +62,17 @@ fn widget_lifecycle() {
 
     // Show/hide roundtrip.
     backend.show_widget(button);
-    assert!(
-        backend.is_widget_visible(button),
-        "Button should be visible after show"
-    );
+    assert!(backend.is_widget_visible(button), "Button should be visible after show");
 
     backend.hide_widget(button);
-    assert!(
-        !backend.is_widget_visible(button),
-        "Button should be hidden after hide"
-    );
+    assert!(!backend.is_widget_visible(button), "Button should be hidden after hide");
 
     // Enable/disable roundtrip.
     backend.set_widget_enabled(button, false);
-    assert!(
-        !backend.is_widget_enabled(button),
-        "Button should be disabled"
-    );
+    assert!(!backend.is_widget_enabled(button), "Button should be disabled");
 
     backend.set_widget_enabled(button, true);
-    assert!(
-        backend.is_widget_enabled(button),
-        "Button should be enabled"
-    );
+    assert!(backend.is_widget_enabled(button), "Button should be enabled");
 
     // Geometry update.
     backend.set_widget_geometry(button, 20, 20, 120, 32);
@@ -94,16 +82,10 @@ fn widget_lifecycle() {
     assert_eq!(backend.get_widget_text(window), "UpdatedTitle");
 
     backend.show_widget(window);
-    assert!(
-        backend.is_widget_visible(window),
-        "Window should be visible"
-    );
+    assert!(backend.is_widget_visible(window), "Window should be visible");
 
     backend.hide_widget(window);
-    assert!(
-        !backend.is_widget_visible(window),
-        "Window should be hidden"
-    );
+    assert!(!backend.is_widget_visible(window), "Window should be hidden");
 }
 
 #[test]
@@ -115,34 +97,16 @@ fn clipboard_roundtrip() {
     let _window = backend.create_window("ClipTest", 0, 0, 200, 120);
 
     // Clipboard set/get roundtrip.
-    assert!(
-        backend.set_clipboard_text("wayland_clip_test"),
-        "Should set clipboard text"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "wayland_clip_test",
-        "Clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("wayland_clip_test"), "Should set clipboard text");
+    assert_eq!(backend.get_clipboard_text(), "wayland_clip_test", "Clipboard text should match");
 
     // Overwrite with new content.
-    assert!(
-        backend.set_clipboard_text("updated_clip"),
-        "Should overwrite clipboard"
-    );
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "updated_clip",
-        "Updated clipboard text should match"
-    );
+    assert!(backend.set_clipboard_text("updated_clip"), "Should overwrite clipboard");
+    assert_eq!(backend.get_clipboard_text(), "updated_clip", "Updated clipboard text should match");
 
     // Empty string.
     assert!(backend.set_clipboard_text(""), "Should set empty clipboard");
-    assert_eq!(
-        backend.get_clipboard_text(),
-        "",
-        "Empty clipboard should match"
-    );
+    assert_eq!(backend.get_clipboard_text(), "", "Empty clipboard should match");
 }
 
 #[test]
@@ -155,41 +119,20 @@ fn combo_box_data_methods() {
     assert!(combo > 0, "ComboBox should be created");
 
     // Add items.
-    assert!(
-        backend.combo_box_add_item(combo, "Item A"),
-        "Should add Item A"
-    );
-    assert!(
-        backend.combo_box_add_item(combo, "Item B"),
-        "Should add Item B"
-    );
-    assert!(
-        backend.combo_box_add_item(combo, "Item C"),
-        "Should add Item C"
-    );
+    assert!(backend.combo_box_add_item(combo, "Item A"), "Should add Item A");
+    assert!(backend.combo_box_add_item(combo, "Item B"), "Should add Item B");
+    assert!(backend.combo_box_add_item(combo, "Item C"), "Should add Item C");
 
     assert_eq!(backend.combo_box_item_count(combo), 3);
 
     // Item text retrieval.
-    assert_eq!(
-        backend.combo_box_item_text(combo, 0),
-        Some("Item A".to_string())
-    );
-    assert_eq!(
-        backend.combo_box_item_text(combo, 1),
-        Some("Item B".to_string())
-    );
-    assert_eq!(
-        backend.combo_box_item_text(combo, 2),
-        Some("Item C".to_string())
-    );
+    assert_eq!(backend.combo_box_item_text(combo, 0), Some("Item A".to_string()));
+    assert_eq!(backend.combo_box_item_text(combo, 1), Some("Item B".to_string()));
+    assert_eq!(backend.combo_box_item_text(combo, 2), Some("Item C".to_string()));
     assert_eq!(backend.combo_box_item_text(combo, 5), None);
 
     // Set and get current index.
-    assert!(
-        backend.combo_box_set_current_index(combo, 1),
-        "Should set index 1"
-    );
+    assert!(backend.combo_box_set_current_index(combo, 1), "Should set index 1");
     assert_eq!(backend.combo_box_current_index(combo), Some(1));
 
     // Clear items.
@@ -208,52 +151,25 @@ fn list_box_data_methods() {
     assert!(list_box > 0, "ListBox should be created");
 
     // Add items.
-    assert!(
-        backend.list_box_add_item(list_box, "Item 1"),
-        "Should add Item 1"
-    );
-    assert!(
-        backend.list_box_add_item(list_box, "Item 2"),
-        "Should add Item 2"
-    );
-    assert!(
-        backend.list_box_add_item(list_box, "Item 3"),
-        "Should add Item 3"
-    );
+    assert!(backend.list_box_add_item(list_box, "Item 1"), "Should add Item 1");
+    assert!(backend.list_box_add_item(list_box, "Item 2"), "Should add Item 2");
+    assert!(backend.list_box_add_item(list_box, "Item 3"), "Should add Item 3");
 
     assert_eq!(backend.list_box_item_count(list_box), 3);
 
     // Item text retrieval.
-    assert_eq!(
-        backend.list_box_item_text(list_box, 0),
-        Some("Item 1".to_string())
-    );
-    assert_eq!(
-        backend.list_box_item_text(list_box, 1),
-        Some("Item 2".to_string())
-    );
-    assert_eq!(
-        backend.list_box_item_text(list_box, 2),
-        Some("Item 3".to_string())
-    );
+    assert_eq!(backend.list_box_item_text(list_box, 0), Some("Item 1".to_string()));
+    assert_eq!(backend.list_box_item_text(list_box, 1), Some("Item 2".to_string()));
+    assert_eq!(backend.list_box_item_text(list_box, 2), Some("Item 3".to_string()));
 
     // Set and get current index.
-    assert!(
-        backend.list_box_set_current_index(list_box, 1),
-        "Should set index 1"
-    );
+    assert!(backend.list_box_set_current_index(list_box, 1), "Should set index 1");
     assert_eq!(backend.list_box_current_index(list_box), Some(1));
 
     // Remove item at index 0 — remaining: [Item 2, Item 3], current should shift.
-    assert!(
-        backend.list_box_remove_item(list_box, 0),
-        "Should remove Item 1"
-    );
+    assert!(backend.list_box_remove_item(list_box, 0), "Should remove Item 1");
     assert_eq!(backend.list_box_item_count(list_box), 2);
-    assert_eq!(
-        backend.list_box_item_text(list_box, 0),
-        Some("Item 2".to_string())
-    );
+    assert_eq!(backend.list_box_item_text(list_box, 0), Some("Item 2".to_string()));
     // Current index adjusts from 1 to 0 after removal.
     assert_eq!(
         backend.list_box_current_index(list_box),
@@ -294,26 +210,12 @@ fn menu_system() {
     );
 
     // Inject and poll menu trigger.
-    assert!(
-        backend.inject_menu_trigger(open_item),
-        "Should inject menu trigger"
-    );
-    assert_eq!(
-        backend.poll_menu_triggered(),
-        Some(open_item),
-        "Should poll open item"
-    );
+    assert!(backend.inject_menu_trigger(open_item), "Should inject menu trigger");
+    assert_eq!(backend.poll_menu_triggered(), Some(open_item), "Should poll open item");
 
     // Second trigger.
-    assert!(
-        backend.inject_menu_trigger(quit_item),
-        "Should inject quit trigger"
-    );
-    assert_eq!(
-        backend.poll_menu_triggered(),
-        Some(quit_item),
-        "Should poll quit item"
-    );
+    assert!(backend.inject_menu_trigger(quit_item), "Should inject quit trigger");
+    assert_eq!(backend.poll_menu_triggered(), Some(quit_item), "Should poll quit item");
 }
 
 #[test]
@@ -334,11 +236,7 @@ fn widget_trigger_events() {
     let event = backend.poll_widget_trigger_event();
     assert!(event.is_some(), "Should poll trigger event");
     assert_eq!(event.unwrap().widget_id, button);
-    assert_eq!(
-        event.unwrap().kind,
-        WidgetTriggerKind::Clicked,
-        "Should match Clicked kind"
-    );
+    assert_eq!(event.unwrap().kind, WidgetTriggerKind::Clicked, "Should match Clicked kind");
 }
 
 #[test]
@@ -381,10 +279,7 @@ fn drag_and_drop() {
     let source = backend.create_button(window, "Drag", 10, 10, 80, 24);
 
     // Begin drag from source.
-    assert!(
-        backend.begin_drag(source, "text/plain", b"drag payload"),
-        "Should begin drag"
-    );
+    assert!(backend.begin_drag(source, "text/plain", b"drag payload"), "Should begin drag");
 
     // Poll drop event.
     let drop = backend.poll_drop_event();
@@ -404,23 +299,11 @@ fn ime_and_accessibility() {
     let line_edit = backend.create_line_edit(window, "input", 10, 10, 160, 24);
 
     // IME roundtrip.
-    assert!(
-        backend.set_widget_ime_enabled(line_edit, true),
-        "Should enable IME"
-    );
-    assert!(
-        backend.is_widget_ime_enabled(line_edit),
-        "IME should be enabled"
-    );
+    assert!(backend.set_widget_ime_enabled(line_edit, true), "Should enable IME");
+    assert!(backend.is_widget_ime_enabled(line_edit), "IME should be enabled");
 
-    assert!(
-        backend.set_widget_ime_enabled(line_edit, false),
-        "Should disable IME"
-    );
-    assert!(
-        !backend.is_widget_ime_enabled(line_edit),
-        "IME should be disabled"
-    );
+    assert!(backend.set_widget_ime_enabled(line_edit, false), "Should disable IME");
+    assert!(!backend.is_widget_ime_enabled(line_edit), "IME should be disabled");
 
     // Accessibility name roundtrip.
     assert!(

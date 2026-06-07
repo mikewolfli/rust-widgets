@@ -8,17 +8,11 @@ pub struct MenuConfigDialog {
 impl MenuConfigDialog {
     /// Creates a new configuration dialog.
     pub fn new(config: MenuConfig) -> Self {
-        Self {
-            config,
-            persistence: ConfigPersistence::new(),
-        }
+        Self { config, persistence: ConfigPersistence::new() }
     }
     /// Creates a dialog with custom persistence.
     pub fn with_persistence(config: MenuConfig, persistence: ConfigPersistence) -> Self {
-        Self {
-            config,
-            persistence,
-        }
+        Self { config, persistence }
     }
     /// Gets the current configuration.
     pub fn config(&self) -> &MenuConfig {

@@ -106,8 +106,7 @@ impl WebView {
             // For now, we'll just simulate it
             self.can_go_back = false;
             self.can_go_forward = true;
-            self.navigation_state_changed
-                .emit((self.can_go_back, self.can_go_forward));
+            self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
         }
     }
     pub fn go_forward(&mut self) {
@@ -116,8 +115,7 @@ impl WebView {
             // For now, we'll just simulate it
             self.can_go_back = true;
             self.can_go_forward = false;
-            self.navigation_state_changed
-                .emit((self.can_go_back, self.can_go_forward));
+            self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
         }
     }
     pub fn reload(&mut self) {

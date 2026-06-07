@@ -79,11 +79,7 @@ impl WgpuRenderer {
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rust_widgets_wgpu_offscreen_texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -111,11 +107,7 @@ impl WgpuRenderer {
                 bytes_per_row: Some(unpadded_bytes_per_row),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rust_widgets_wgpu_readback_buffer"),
@@ -123,11 +115,9 @@ impl WgpuRenderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rust_widgets_wgpu_encoder"),
-            });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("rust_widgets_wgpu_encoder"),
+        });
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
                 texture: &texture,
@@ -143,11 +133,7 @@ impl WgpuRenderer {
                     rows_per_image: Some(height),
                 },
             },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
         let buffer_slice = output_buffer.slice(..);
@@ -159,9 +145,8 @@ impl WgpuRenderer {
             },
         );
         self.device.poll(wgpu::Maintain::Wait);
-        let map_result = receiver
-            .recv()
-            .map_err(|_| "wgpu map_async callback channel closed".to_string())?;
+        let map_result =
+            receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
         map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
         let mapped = buffer_slice.get_mapped_range();
         let mut pixels = vec![0u8; (width * height * bytes_per_pixel) as usize];

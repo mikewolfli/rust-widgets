@@ -75,32 +75,26 @@ where
         height: u32,
     ) -> ObjectId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .insert(
-                id,
-                WidgetRecord {
-                    kind,
-                    text: text.to_string(),
-                    visible: true,
-                    enabled: true,
-                    ime_enabled: true,
-                    accessibility_name: text.to_string(),
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            );
+        self.widgets.lock().expect("backend state widget lock poisoned").insert(
+            id,
+            WidgetRecord {
+                kind,
+                text: text.to_string(),
+                visible: true,
+                enabled: true,
+                ime_enabled: true,
+                accessibility_name: text.to_string(),
+                x,
+                y,
+                width,
+                height,
+            },
+        );
         id
     }
     /// Return `true` when widget exists.
     pub fn contains_widget(&self, widget_id: ObjectId) -> bool {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .contains_key(&widget_id)
+        self.widgets.lock().expect("backend state widget lock poisoned").contains_key(&widget_id)
     }
     /// Return kind for an existing widget.
     pub fn kind_of(&self, widget_id: ObjectId) -> Option<K> {
@@ -116,11 +110,8 @@ where
     }
     /// Set visibility for a widget.
     pub fn set_visible(&self, widget_id: ObjectId, visible: bool) {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.visible = visible;
         }
@@ -136,11 +127,8 @@ where
     }
     /// Set enabled state for a widget.
     pub fn set_enabled(&self, widget_id: ObjectId, enabled: bool) {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.enabled = enabled;
         }
@@ -156,11 +144,8 @@ where
     }
     /// Set geometry for a widget.
     pub fn set_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.x = x;
             widget.y = y;
@@ -170,11 +155,8 @@ where
     }
     /// Set text for a widget.
     pub fn set_text(&self, widget_id: ObjectId, text: &str) -> bool {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.text = text.to_string();
             return true;
@@ -192,11 +174,8 @@ where
     }
     /// Set IME enabled state for a widget.
     pub fn set_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.ime_enabled = enabled;
             return true;
@@ -214,11 +193,8 @@ where
     }
     /// Set accessibility label for a widget.
     pub fn set_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
-        if let Some(widget) = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get_mut(&widget_id)
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
         {
             widget.accessibility_name = name.to_string();
             return true;
@@ -242,18 +218,12 @@ where
     /// Push menu trigger event.
     /// Reserved for menu system integration (not yet wired to platform backends).
     pub fn push_menu_event(&self, item_id: ObjectId) {
-        self.menu_events
-            .lock()
-            .expect("backend state menu lock poisoned")
-            .push_back(item_id);
+        self.menu_events.lock().expect("backend state menu lock poisoned").push_back(item_id);
     }
     /// Pop menu trigger event.
     /// Reserved for menu system integration (paired with push_menu_event).
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
-        self.menu_events
-            .lock()
-            .expect("backend state menu lock poisoned")
-            .pop_front()
+        self.menu_events.lock().expect("backend state menu lock poisoned").pop_front()
     }
     /// Push typed widget trigger event.
     /// Reserved for event system integration (not yet wired to platform backends).
@@ -265,58 +235,41 @@ where
     }
     /// Pop typed widget trigger event.
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
-        self.widget_events
-            .lock()
-            .expect("backend state widget-event lock poisoned")
-            .pop_front()
+        self.widget_events.lock().expect("backend state widget-event lock poisoned").pop_front()
     }
     /// Set clipboard text.
     pub fn set_clipboard_text(&self, text: &str) -> bool {
-        *self
-            .clipboard_text
-            .lock()
-            .expect("backend state clipboard lock poisoned") = text.to_string();
+        *self.clipboard_text.lock().expect("backend state clipboard lock poisoned") =
+            text.to_string();
         true
     }
     /// Get clipboard text.
     pub fn clipboard_text(&self) -> String {
-        self.clipboard_text
-            .lock()
-            .expect("backend state clipboard lock poisoned")
-            .clone()
+        self.clipboard_text.lock().expect("backend state clipboard lock poisoned").clone()
     }
     /// Begin drag event for existing source widget.
     pub fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         if !self.contains_widget(source_widget_id) {
             return false;
         }
-        self.drop_events
-            .lock()
-            .expect("backend state drop lock poisoned")
-            .push_back(DropEvent {
-                source_widget_id,
-                target_widget_id: source_widget_id,
-                mime: mime.to_string(),
-                payload: payload.to_vec(),
-            });
+        self.drop_events.lock().expect("backend state drop lock poisoned").push_back(DropEvent {
+            source_widget_id,
+            target_widget_id: source_widget_id,
+            mime: mime.to_string(),
+            payload: payload.to_vec(),
+        });
         true
     }
     /// Pop one drop event.
     pub fn pop_drop_event(&self) -> Option<DropEvent> {
-        self.drop_events
-            .lock()
-            .expect("backend state drop lock poisoned")
-            .pop_front()
+        self.drop_events.lock().expect("backend state drop lock poisoned").pop_front()
     }
     /// Inject drop event when target widget exists.
     pub fn inject_drop_event(&self, event: DropEvent) -> bool {
         if !self.contains_widget(event.target_widget_id) {
             return false;
         }
-        self.drop_events
-            .lock()
-            .expect("backend state drop lock poisoned")
-            .push_back(event);
+        self.drop_events.lock().expect("backend state drop lock poisoned").push_back(event);
         true
     }
 

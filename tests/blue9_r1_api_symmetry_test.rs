@@ -75,9 +75,7 @@ fn list_view_model_query_api_is_symmetric() {
     assert!(!view.has_model());
     assert!(view.model_ref().is_none());
 
-    let model: Arc<dyn ListModel> = Arc::new(TestListModel {
-        rows: vec!["a".into(), "b".into()],
-    });
+    let model: Arc<dyn ListModel> = Arc::new(TestListModel { rows: vec!["a".into(), "b".into()] });
     view.set_model(model);
 
     assert!(view.has_model());
@@ -91,9 +89,8 @@ fn tree_view_model_query_api_is_symmetric() {
     assert!(!view.has_model());
     assert!(view.model_ref().is_none());
 
-    let model: Arc<dyn TreeModel> = Arc::new(TestTreeModel {
-        nodes: vec!["root".into(), "child".into()],
-    });
+    let model: Arc<dyn TreeModel> =
+        Arc::new(TestTreeModel { nodes: vec!["root".into(), "child".into()] });
     view.set_model(model);
 
     assert!(view.has_model());
@@ -112,9 +109,8 @@ fn table_widget_query_api_covers_model_delegate_and_size_overrides() {
     assert_eq!(table.column_width(0), None);
     assert_eq!(table.row_height(0), None);
 
-    let model: Arc<dyn TableModel> = Arc::new(TestTableModel {
-        data: vec![vec!["r0c0".into(), "r0c1".into()]],
-    });
+    let model: Arc<dyn TableModel> =
+        Arc::new(TestTableModel { data: vec![vec!["r0c0".into(), "r0c1".into()]] });
     table.set_model(model);
     assert!(table.has_model());
     assert!(table.model_ref().is_some());

@@ -84,18 +84,12 @@ impl GestureEngine {
             Box::new(PinchGesture::new()),
             Box::new(RotateGesture::new()),
         ];
-        Self {
-            recognizers,
-            last_timestamp_ms: 0,
-        }
+        Self { recognizers, last_timestamp_ms: 0 }
     }
 
     /// Create an engine with a custom recognizer list.
     pub fn with_recognizers(recognizers: Vec<Box<dyn GestureRecognizer>>) -> Self {
-        Self {
-            recognizers,
-            last_timestamp_ms: 0,
-        }
+        Self { recognizers, last_timestamp_ms: 0 }
     }
 
     /// Feed an event through the recognizer chain.
@@ -156,11 +150,7 @@ pub struct TapGesture {
 
 impl TapGesture {
     pub fn new() -> Self {
-        Self {
-            start_pos: None,
-            start_time: None,
-            touch_id: None,
-        }
+        Self { start_pos: None, start_time: None, touch_id: None }
     }
 }
 
@@ -230,11 +220,7 @@ pub struct DoubleTapGesture {
 
 impl DoubleTapGesture {
     pub fn new() -> Self {
-        Self {
-            first_tap_pos: None,
-            first_tap_time: None,
-            waiting_for_second: false,
-        }
+        Self { first_tap_pos: None, first_tap_time: None, waiting_for_second: false }
     }
 }
 
@@ -297,12 +283,7 @@ pub struct LongPressGesture {
 
 impl LongPressGesture {
     pub fn new() -> Self {
-        Self {
-            start_pos: None,
-            start_time: None,
-            touch_id: None,
-            fired: false,
-        }
+        Self { start_pos: None, start_time: None, touch_id: None, fired: false }
     }
 }
 
@@ -385,13 +366,7 @@ pub struct SwipeGesture {
 
 impl SwipeGesture {
     pub fn new() -> Self {
-        Self {
-            start_pos: None,
-            start_time: None,
-            last_pos: None,
-            last_time: None,
-            touch_id: None,
-        }
+        Self { start_pos: None, start_time: None, last_pos: None, last_time: None, touch_id: None }
     }
 }
 
@@ -431,11 +406,7 @@ impl GestureRecognizer for SwipeGesture {
                 let velocity = if dt > 0 { total_dist / dt as f32 } else { 0.0 };
 
                 if velocity >= SWIPE_MIN_VELOCITY {
-                    let result = Event::Swipe {
-                        start,
-                        end: *pos,
-                        velocity,
-                    };
+                    let result = Event::Swipe { start, end: *pos, velocity };
                     self.reset();
                     return Some(result);
                 }
@@ -488,11 +459,7 @@ pub struct PanGesture {
 
 impl PanGesture {
     pub fn new() -> Self {
-        Self {
-            active: false,
-            touch_id: None,
-            last_pos: None,
-        }
+        Self { active: false, touch_id: None, last_pos: None }
     }
 }
 
@@ -514,11 +481,7 @@ impl GestureRecognizer for PanGesture {
                     Point::new(0, 0)
                 };
                 self.last_pos = Some(*pos);
-                Some(Event::Drag {
-                    pos: *pos,
-                    touch_id: *touch_id,
-                    delta,
-                })
+                Some(Event::Drag { pos: *pos, touch_id: *touch_id, delta })
             }
             Event::TouchEnd { pos: _, touch_id } if Some(*touch_id) == self.touch_id => {
                 self.reset();
@@ -602,11 +565,7 @@ impl GestureRecognizer for LongPressDragGesture {
                         Point::new(0, 0)
                     };
                     self.last_pos = Some(*pos);
-                    return Some(Event::Drag {
-                        pos: *pos,
-                        touch_id: *touch_id,
-                        delta,
-                    });
+                    return Some(Event::Drag { pos: *pos, touch_id: *touch_id, delta });
                 }
                 if self.long_press_fired {
                     // First move after long press — enter drag mode
@@ -617,11 +576,7 @@ impl GestureRecognizer for LongPressDragGesture {
                     } else {
                         Point::new(0, 0)
                     };
-                    return Some(Event::Drag {
-                        pos: *pos,
-                        touch_id: *touch_id,
-                        delta,
-                    });
+                    return Some(Event::Drag { pos: *pos, touch_id: *touch_id, delta });
                 }
                 // Before long press fired — check if movement exceeds threshold
                 if let Some(start) = self.start_pos {
@@ -699,12 +654,7 @@ pub struct FlingGesture {
 
 impl FlingGesture {
     pub fn new() -> Self {
-        Self {
-            start_pos: None,
-            start_time: None,
-            touch_id: None,
-            samples: Vec::new(),
-        }
+        Self { start_pos: None, start_time: None, touch_id: None, samples: Vec::new() }
     }
 
     fn compute_velocity(&self) -> Option<Point> {
@@ -720,10 +670,7 @@ impl FlingGesture {
         let dt = last.1.saturating_sub(first.1).max(1) as f32;
         let dx = (last.0.x - first.0.x) as f32;
         let dy = (last.0.y - first.0.y) as f32;
-        Some(Point::new(
-            (dx / dt * 1000.0) as i32,
-            (dy / dt * 1000.0) as i32,
-        ))
+        Some(Point::new((dx / dt * 1000.0) as i32, (dy / dt * 1000.0) as i32))
     }
 }
 
@@ -811,9 +758,7 @@ pub struct TwoFingerTapGesture {
 
 impl TwoFingerTapGesture {
     pub fn new() -> Self {
-        Self {
-            touches: Vec::new(),
-        }
+        Self { touches: Vec::new() }
     }
 }
 
@@ -901,12 +846,7 @@ pub struct TwoFingerSwipeGesture {
 
 impl TwoFingerSwipeGesture {
     pub fn new() -> Self {
-        Self {
-            touches: Vec::new(),
-            centroid_start: None,
-            last_centroid: None,
-            start_time: None,
-        }
+        Self { touches: Vec::new(), centroid_start: None, last_centroid: None, start_time: None }
     }
 
     fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
@@ -915,10 +855,7 @@ impl TwoFingerSwipeGesture {
         }
         let sum_x: i32 = touches.iter().map(|(p, _)| p.x).sum();
         let sum_y: i32 = touches.iter().map(|(p, _)| p.y).sum();
-        Some(Point::new(
-            sum_x / touches.len() as i32,
-            sum_y / touches.len() as i32,
-        ))
+        Some(Point::new(sum_x / touches.len() as i32, sum_y / touches.len() as i32))
     }
 }
 
@@ -958,9 +895,8 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                         let dx = (end.x - start.x).abs();
                         let dy = (end.y - start.y).abs();
                         let dist = ((dx * dx + dy * dy) as f32).sqrt();
-                        let elapsed = now_ms
-                            .saturating_sub(self.start_time.unwrap_or(now_ms))
-                            .max(1) as f32;
+                        let elapsed =
+                            now_ms.saturating_sub(self.start_time.unwrap_or(now_ms)).max(1) as f32;
                         let velocity = dist / elapsed;
                         if dist >= 30.0 && velocity >= 0.5 {
                             Some(Event::TwoFingerSwipe {
@@ -1017,10 +953,7 @@ pub struct PinchGesture {
 
 impl PinchGesture {
     pub fn new() -> Self {
-        Self {
-            touches: Vec::with_capacity(2),
-            initial_distance: None,
-        }
+        Self { touches: Vec::with_capacity(2), initial_distance: None }
     }
 }
 
@@ -1029,10 +962,7 @@ impl GestureRecognizer for PinchGesture {
         match event {
             Event::TouchBegin { pos, touch_id } => {
                 if self.touches.len() < 2 {
-                    self.touches.push(PinchTouch {
-                        pos: *pos,
-                        id: *touch_id,
-                    });
+                    self.touches.push(PinchTouch { pos: *pos, id: *touch_id });
                     if self.touches.len() == 2 {
                         self.initial_distance =
                             Some(distance(self.touches[0].pos, self.touches[1].pos));
@@ -1097,10 +1027,7 @@ pub struct RotateGesture {
 
 impl RotateGesture {
     pub fn new() -> Self {
-        Self {
-            touches: Vec::with_capacity(2),
-            previous_angle: None,
-        }
+        Self { touches: Vec::with_capacity(2), previous_angle: None }
     }
 
     fn angle_between(a: Point, b: Point) -> f32 {
@@ -1115,15 +1042,10 @@ impl GestureRecognizer for RotateGesture {
         match event {
             Event::TouchBegin { pos, touch_id } => {
                 if self.touches.len() < 2 {
-                    self.touches.push(PinchTouch {
-                        pos: *pos,
-                        id: *touch_id,
-                    });
+                    self.touches.push(PinchTouch { pos: *pos, id: *touch_id });
                     if self.touches.len() == 2 {
-                        self.previous_angle = Some(Self::angle_between(
-                            self.touches[0].pos,
-                            self.touches[1].pos,
-                        ));
+                        self.previous_angle =
+                            Some(Self::angle_between(self.touches[0].pos, self.touches[1].pos));
                     }
                 }
                 None

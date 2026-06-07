@@ -15,11 +15,7 @@ impl I18nFileWatcher {
     /// Create a new file watcher
     pub fn new() -> Self {
         let (reload_sender, reload_receiver) = unbounded();
-        Self {
-            watcher: None,
-            reload_sender,
-            reload_receiver,
-        }
+        Self { watcher: None, reload_sender, reload_receiver }
     }
     /// Start watching a directory for translation file changes
     pub fn watch_directory(&mut self, dir: &Path) -> Result<(), String> {
@@ -77,10 +73,7 @@ impl I18nFileWatcher {
     /// Check if hot reload is enabled
     pub fn is_hot_reload_enabled() -> bool {
         let guard = get_manager();
-        guard
-            .as_ref()
-            .map(|m| m.is_hot_reload_enabled())
-            .unwrap_or(false)
+        guard.as_ref().map(|m| m.is_hot_reload_enabled()).unwrap_or(false)
     }
 }
 impl Default for I18nFileWatcher {
@@ -98,9 +91,7 @@ pub fn init_with_hot_reload(
     let mut file_watcher = I18nFileWatcher::new();
     if let Some(dir) = watch_dir {
         if let Err(e) = file_watcher.watch_directory(dir) {
-            report
-                .errors
-                .push(format!("Failed to setup file watcher: {}", e));
+            report.errors.push(format!("Failed to setup file watcher: {}", e));
         } else {
             file_watcher.enable_hot_reload();
             if diagnostics {

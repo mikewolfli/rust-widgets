@@ -152,10 +152,7 @@ impl Draw for ProgressDialog {
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             Color::from_rgb(160, 160, 160),
         );
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, 28),
-            Color::from_rgb(0, 120, 215),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
@@ -173,14 +170,10 @@ impl Draw for ProgressDialog {
         let bar_y = rect.y + 62;
         let bar_w = rect.width.saturating_sub(20);
         let bar_h: u32 = 20;
-        context.fill_rect(
-            Rect::new(rect.x + 10, bar_y, bar_w, bar_h),
-            Color::from_rgb(220, 220, 220),
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 10, bar_y, bar_w, bar_h),
-            Color::from_rgb(150, 150, 150),
-        );
+        context
+            .fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::from_rgb(220, 220, 220));
+        context
+            .draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::from_rgb(150, 150, 150));
         let fill_w = (bar_w as f32 * self.progress_fraction()) as i32;
         if fill_w > 0 {
             context.fill_rect(

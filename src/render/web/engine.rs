@@ -19,9 +19,7 @@ pub struct WebEngine {
 impl WebEngine {
     /// Create a new `WebEngine` with the given geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self {
-            inner: WebEngineViewEnhanced::new(geometry),
-        }
+        Self { inner: WebEngineViewEnhanced::new(geometry) }
     }
 
     /// Access the inner widget by reference.

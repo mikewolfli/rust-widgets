@@ -145,15 +145,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::LineEdit,
-            text,
-            x,
-            y,
-            width,
-            height,
-        )
+        self.create_child_widget(parent, MobileHandleKind::LineEdit, text, x, y, width, height)
     }
     fn create_label(
         &self,
@@ -175,15 +167,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::CheckBox,
-            text,
-            x,
-            y,
-            width,
-            height,
-        )
+        self.create_child_widget(parent, MobileHandleKind::CheckBox, text, x, y, width, height)
     }
     fn create_radio_button(
         &self,
@@ -194,26 +178,10 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::RadioButton,
-            text,
-            x,
-            y,
-            width,
-            height,
-        )
+        self.create_child_widget(parent, MobileHandleKind::RadioButton, text, x, y, width, height)
     }
     fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::Slider,
-            "Slider",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.create_child_widget(parent, MobileHandleKind::Slider, "Slider", x, y, width, height)
     }
     fn create_progress_bar(
         &self,
@@ -251,11 +219,7 @@ impl Platform for AndroidMobilePlatform {
             height,
         );
         if id != 0 {
-            self.combo_items
-                .lock()
-                .expect("mobile combo lock poisoned")
-                .entry(id)
-                .or_default();
+            self.combo_items.lock().expect("mobile combo lock poisoned").entry(id).or_default();
             self.combo_current_index
                 .lock()
                 .expect("mobile combo index lock poisoned")
@@ -282,11 +246,7 @@ impl Platform for AndroidMobilePlatform {
             height,
         );
         if id != 0 {
-            self.list_items
-                .lock()
-                .expect("mobile list lock poisoned")
-                .entry(id)
-                .or_default();
+            self.list_items.lock().expect("mobile list lock poisoned").entry(id).or_default();
             self.list_current_index
                 .lock()
                 .expect("mobile list index lock poisoned")
@@ -320,10 +280,7 @@ impl Platform for AndroidMobilePlatform {
         }
         vec.remove(index);
         drop(items);
-        let mut current = self
-            .list_current_index
-            .lock()
-            .expect("mobile list index lock poisoned");
+        let mut current = self.list_current_index.lock().expect("mobile list index lock poisoned");
         if let Some(sel) = current.get_mut(&list_box) {
             *sel = match *sel {
                 Some(i) if i == index => None,
@@ -468,15 +425,7 @@ impl Platform for AndroidMobilePlatform {
             .and_then(|items| items.get(index).cloned())
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::Panel,
-            "Panel",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.create_child_widget(parent, MobileHandleKind::Panel, "Panel", x, y, width, height)
     }
     fn create_menu_bar(
         &self,
@@ -500,10 +449,8 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        if !matches!(
-            self.kind_of(parent),
-            Some(MobileHandleKind::MenuBar | MobileHandleKind::Menu)
-        ) {
+        if !matches!(self.kind_of(parent), Some(MobileHandleKind::MenuBar | MobileHandleKind::Menu))
+        {
             return 0;
         }
         let id = self.insert_widget(MobileHandleKind::Menu, text, x, y, width, height);
@@ -613,8 +560,7 @@ impl Platform for AndroidMobilePlatform {
         true
     }
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
-        self.poll_widget_trigger_event()
-            .map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.state.pop_widget_event()
@@ -623,8 +569,7 @@ impl Platform for AndroidMobilePlatform {
         if !self.state.contains_widget(widget_id) {
             return false;
         }
-        self.state
-            .push_widget_event(WidgetTriggerEvent { widget_id, kind });
+        self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
     fn create_message_box(
@@ -657,14 +602,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(
-            MobileHandleKind::Window,
-            "color_dialog",
-            x,
-            y,
-            width,
-            height,
-        )
+        self.insert_widget(MobileHandleKind::Window, "color_dialog", x, y, width, height)
     }
     fn create_font_dialog(
         &self,
@@ -739,8 +677,7 @@ impl MobilePlatformExtension for AndroidMobilePlatform {
         if native_handle == 0 {
             return false;
         }
-        self.attached_native_view
-            .store(native_handle, Ordering::SeqCst);
+        self.attached_native_view.store(native_handle, Ordering::SeqCst);
         true
     }
 }
@@ -765,19 +702,10 @@ mod tests {
         assert_ne!(label, 0);
         assert_ne!(checkbox, 0);
         assert_ne!(slider, 0);
-        assert_eq!(
-            platform.state.kind_of(line_edit),
-            Some(MobileHandleKind::LineEdit)
-        );
+        assert_eq!(platform.state.kind_of(line_edit), Some(MobileHandleKind::LineEdit));
         assert_eq!(platform.state.kind_of(label), Some(MobileHandleKind::Label));
-        assert_eq!(
-            platform.state.kind_of(checkbox),
-            Some(MobileHandleKind::CheckBox)
-        );
-        assert_eq!(
-            platform.state.kind_of(slider),
-            Some(MobileHandleKind::Slider)
-        );
+        assert_eq!(platform.state.kind_of(checkbox), Some(MobileHandleKind::CheckBox));
+        assert_eq!(platform.state.kind_of(slider), Some(MobileHandleKind::Slider));
     }
     #[test]
     fn mobile_backend_routes_trigger_events_for_extended_controls() {
@@ -787,12 +715,8 @@ mod tests {
         let checkbox = platform.create_checkbox(window, "", 10, 40, 120, 24);
         assert!(platform.inject_widget_trigger_event(line_edit, WidgetTriggerKind::ValueChanged));
         assert!(platform.inject_widget_trigger_event(checkbox, WidgetTriggerKind::Clicked));
-        let first = platform
-            .poll_widget_trigger_event()
-            .expect("first event should exist");
-        let second = platform
-            .poll_widget_trigger_event()
-            .expect("second event should exist");
+        let first = platform.poll_widget_trigger_event().expect("first event should exist");
+        let second = platform.poll_widget_trigger_event().expect("second event should exist");
         assert_eq!(first.widget_id, line_edit);
         assert_eq!(first.kind, WidgetTriggerKind::ValueChanged);
         assert_eq!(second.widget_id, checkbox);
@@ -828,14 +752,8 @@ mod tests {
         assert!(platform.combo_box_add_item(combo, "One"));
         assert!(platform.combo_box_add_item(combo, "Two"));
         assert_eq!(platform.combo_box_item_count(combo), 2);
-        assert_eq!(
-            platform.combo_box_item_text(combo, 0).as_deref(),
-            Some("One")
-        );
-        assert_eq!(
-            platform.combo_box_item_text(combo, 1).as_deref(),
-            Some("Two")
-        );
+        assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("One"));
+        assert_eq!(platform.combo_box_item_text(combo, 1).as_deref(), Some("Two"));
 
         assert!(platform.combo_box_set_current_index(combo, 1));
         assert_eq!(platform.combo_box_current_index(combo), Some(1));

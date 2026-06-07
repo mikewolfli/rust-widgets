@@ -39,9 +39,7 @@ impl Default for SimpleRegistry {
 impl SimpleRegistry {
     /// Creates a new empty registry.
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
+        Self { entries: HashMap::new() }
     }
 
     /// Register a widget's draw and event handler by ObjectId.
