@@ -158,7 +158,7 @@ impl crate::event::EventHandler for ToggleButton {
                 }
                 self.set_pressed(false);
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

@@ -274,7 +274,7 @@ impl EventHandler for CommandPalette {
                 8 => self.backspace_query(),
                 key => self.append_query_char(key),
             },
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

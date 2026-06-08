@@ -220,7 +220,7 @@ pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
             _ if !token.is_empty() => {
                 key = token;
             }
-            _ => {}
+            _ => { /* Other keys are not relevant */ }
         }
     }
     if !key.is_empty() && modifiers == 0 {

@@ -5,8 +5,12 @@
 //! widget information to screen readers and other assistive technologies.
 
 pub mod macos;
-// pub mod windows;  // TODO: R7.3
-// pub mod linux;    // TODO: R7.4
+
+#[cfg(target_os = "windows")]
+pub mod windows;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;

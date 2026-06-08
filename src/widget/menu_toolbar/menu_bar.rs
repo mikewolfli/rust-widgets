@@ -156,7 +156,7 @@ impl EventHandler for MenuBar {
             Event::KeyPress { key, .. } if *key == 27 => {
                 self.active_index = None;
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

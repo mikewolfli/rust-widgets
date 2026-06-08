@@ -201,7 +201,7 @@ impl crate::event::EventHandler for Splitter {
                     self.pane_layout_changed.emit(self.layout.ratios().to_vec());
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
         // Forward events to panes
         if self.base.is_enabled() {

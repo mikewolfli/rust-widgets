@@ -338,7 +338,7 @@ impl EventHandler for DockWidget {
                 let rect = self.geometry();
                 self.set_geometry(Rect::new(pos.x, pos.y, rect.width, rect.height));
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
         // Forward events to widget via registry
         if let Some(widget_id) = self.widget {

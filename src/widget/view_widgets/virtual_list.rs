@@ -348,7 +348,7 @@ impl crate::event::EventHandler for VirtualList {
                     self.scroll_by_rows(-lines);
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

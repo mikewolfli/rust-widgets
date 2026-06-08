@@ -395,7 +395,7 @@ impl WebViewCore {
             82 if modifiers == 1 => {
                 self.reload();
             }
-            _ => {}
+            _ => { /* Other keys are not relevant */ }
         }
     }
 }

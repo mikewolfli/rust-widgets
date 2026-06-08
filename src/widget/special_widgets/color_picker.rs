@@ -244,8 +244,10 @@ impl EventHandler for ColorPicker {
                     self.value = self.value.saturating_sub(2);
                     self.sync_color_from_hsva();
                 }
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

@@ -248,13 +248,14 @@ impl EventHandler for Calendar {
                         // Home
                         self.show_today();
                     }
-                    _ => {}
+                    _ => { /* Other keys are not relevant */ }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
+
 impl Draw for Calendar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();

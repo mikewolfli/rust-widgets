@@ -156,7 +156,7 @@ impl EventHandler for FontComboBox {
                 self.set_current_index(next);
                 self.activated.emit(next);
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

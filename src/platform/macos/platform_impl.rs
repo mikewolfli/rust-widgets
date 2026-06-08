@@ -475,6 +475,7 @@ impl Platform for MacOSPlatform {
                         }
                     }
                     HandleKind::Window => {}
+                    // Other handle types need no special handling
                     _ => {}
                 }
             }
@@ -666,6 +667,7 @@ impl Platform for MacOSPlatform {
                     Some(sel) if sel > index => {
                         selection.insert(list_box, Some(sel - 1));
                     }
+                    // No adjustment needed for this case
                     _ => {}
                 }
             }
@@ -1083,6 +1085,7 @@ impl Platform for MacOSPlatform {
                     HandleKind::Menu | HandleKind::MenuItem => {
                         let _: () = msg_send![Self::as_id(handle), setEnabled: if enabled { YES } else { NO }];
                     }
+                    // Other handle types need no special handling
                     _ => {}
                 }
             }

@@ -221,14 +221,14 @@ impl Animation {
             AnimationDirection::Normal => eased_progress,
             AnimationDirection::Reverse => 1.0 - eased_progress,
             AnimationDirection::Alternate => {
-                if self.current_iteration % 2 == 0 {
+                if self.current_iteration.is_multiple_of(2) {
                     eased_progress
                 } else {
                     1.0 - eased_progress
                 }
             }
             AnimationDirection::AlternateReverse => {
-                if self.current_iteration % 2 == 0 {
+                if self.current_iteration.is_multiple_of(2) {
                     1.0 - eased_progress
                 } else {
                     eased_progress
@@ -602,7 +602,7 @@ impl ParallelAnimation {
 
     /// Returns true if all child animations have completed.
     pub fn is_completed(&self, driver: &AnimationDriver) -> bool {
-        self.ids.iter().all(|id| driver.get_progress(*id).map_or(true, |p| p >= 1.0))
+        self.ids.iter().all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true))
     }
 
     /// Returns the number of child animations.
@@ -662,7 +662,7 @@ impl SequentialAnimation {
                 true
             }
             Some(id) => {
-                if driver.get_progress(id).map_or(true, |p| p >= 1.0) {
+                if driver.get_progress(id).map(|p| p >= 1.0).unwrap_or(true) {
                     // Current animation done, move to next
                     self.current_index += 1;
                     self.current_id = None;
@@ -843,5 +843,62 @@ mod tests {
         let running = seq.advance(&mut driver, |_, _| {});
         assert!(running);
         driver.advance();
+    }
+
+    /// All easing functions should clamp to 0.0 for t < 0 and 1.0 for t > 1.
+    #[test]
+    fn test_easing_functions_clamp_range() {
+        let variants = [
+            EasingFunction::Linear,
+            EasingFunction::EaseIn,
+            EasingFunction::EaseOut,
+            EasingFunction::EaseInOut,
+            EasingFunction::BounceIn,
+            EasingFunction::BounceOut,
+            EasingFunction::ElasticIn,
+            EasingFunction::ElasticOut,
+            EasingFunction::BackIn,
+            EasingFunction::BackOut,
+        ];
+        for variant in &variants {
+            let below = variant.apply(-0.5);
+            assert!(
+                (below - 0.0).abs() < 1e-6,
+                "{:?}.apply(-0.5) expected 0.0, got {}",
+                variant,
+                below
+            );
+            let above = variant.apply(1.5);
+            assert!(
+                (above - 1.0).abs() < 1e-6,
+                "{:?}.apply(1.5) expected 1.0, got {}",
+                variant,
+                above
+            );
+        }
+    }
+
+    #[test]
+    fn test_animation_driver_empty_advance() {
+        let mut driver = AnimationDriver::new();
+        // Advance on an empty driver should return 0 (no active animations).
+        assert_eq!(driver.advance(), 0);
+    }
+
+    #[test]
+    fn test_parallel_empty_is_completed() {
+        let driver = AnimationDriver::new();
+        let group = ParallelAnimation::new();
+        // An empty parallel group should be considered completed.
+        assert!(group.is_completed(&driver));
+    }
+
+    #[test]
+    fn test_sequential_empty_stops_immediately() {
+        let mut driver = AnimationDriver::new();
+        let mut seq = SequentialAnimation::new();
+        // An empty sequence should return false from advance() immediately.
+        assert!(!seq.advance(&mut driver, |_, _| {}));
+        assert_eq!(seq.advance(&mut driver, |_, _| {}), false);
     }
 }

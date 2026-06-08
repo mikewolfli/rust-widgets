@@ -27,9 +27,31 @@ pub enum GpuType {
 }
 impl GpuType {
     /// Detects the primary GPU type from system
+    #[cfg(feature = "gpu-wgpu")]
     pub fn detect_primary() -> Option<Self> {
-        // In a real implementation, this would query system GPU info
-        // For now, return None to trigger auto-detection
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })) {
+                Ok(a) => a,
+                Err(_) => return None,
+            };
+        let info = adapter.get_info();
+        Some(GpuType::from(GpuDeviceType::from(info.device_type)))
+    }
+
+    /// Detects the primary GPU type from system (no-wgpu fallback)
+    #[cfg(not(feature = "gpu-wgpu"))]
+    pub fn detect_primary() -> Option<Self> {
         None
     }
     /// Returns a human-readable description
@@ -257,8 +279,14 @@ impl AdapterSelector {
     /// Enumerates all available adapters with wgpu
     #[cfg(feature = "gpu-wgpu")]
     pub async fn enumerate_adapters(&self) -> Vec<AdapterInfo> {
-        let instance = wgpu::Instance::default();
-        let adapters = instance.enumerate_adapters(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         adapters
             .into_iter()
             .map(|adapter| {
@@ -271,14 +299,20 @@ impl AdapterSelector {
     #[cfg(feature = "gpu-wgpu")]
     pub async fn select_adapter_with_fallback(
         &self,
-        compatible_surface: Option<&wgpu::Surface>,
+        compatible_surface: Option<&wgpu::Surface<'static>>,
     ) -> Result<AdapterInfo, AdapterSelectionError> {
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
         // Try to get adapter based on strategy
         let adapter = match self.strategy {
             AdapterSelectionStrategy::PreferPerformance | AdapterSelectionStrategy::Auto => {
                 // Try discrete GPU first
-                if let Some(adapter) = instance
+                if let Ok(adapter) = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::HighPerformance,
                         compatible_surface,
@@ -297,18 +331,26 @@ impl AdapterSelector {
                 }
                 // Fallback to any available adapter
                 if self.allow_fallback {
-                    instance
-                        .request_adapter(&wgpu::RequestAdapterOptions {
-                            power_preference: wgpu::PowerPreference::LowPower,
-                            compatible_surface,
-                            force_fallback_adapter: false,
-                        })
-                        .await
+                    Some(
+                        match instance
+                            .request_adapter(&wgpu::RequestAdapterOptions {
+                                power_preference: wgpu::PowerPreference::LowPower,
+                                compatible_surface,
+                                force_fallback_adapter: false,
+                            })
+                            .await
+                        {
+                            Ok(adapter) => adapter,
+                            Err(e) => {
+                                return Err(AdapterSelectionError::RequestFailed(e.to_string()))
+                            }
+                        },
+                    )
                 } else {
                     None
                 }
             }
-            AdapterSelectionStrategy::PreferPowerEfficiency => {
+            AdapterSelectionStrategy::PreferPowerEfficiency => Some(
                 instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
@@ -316,40 +358,37 @@ impl AdapterSelector {
                         force_fallback_adapter: false,
                     })
                     .await
-            }
+                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,
+            ),
             AdapterSelectionStrategy::ForceDiscrete => {
-                let adapter = instance
+                let a = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::HighPerformance,
                         compatible_surface,
                         force_fallback_adapter: false,
                     })
-                    .await;
-                if let Some(ref a) = adapter {
-                    let info = a.get_info();
-                    if info.device_type != wgpu::DeviceType::DiscreteGpu {
-                        return Err(AdapterSelectionError::DiscreteGpuNotFound);
-                    }
+                    .await
+                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
+                if a.get_info().device_type != wgpu::DeviceType::DiscreteGpu {
+                    return Err(AdapterSelectionError::DiscreteGpuNotFound);
                 }
-                adapter
+                Some(a)
             }
             AdapterSelectionStrategy::ForceIntegrated => {
-                let adapter = instance
+                let a = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
                         compatible_surface,
                         force_fallback_adapter: false,
                     })
-                    .await;
-                if let Some(ref a) = adapter {
-                    let info = a.get_info();
-                    if info.device_type != wgpu::DeviceType::IntegratedGpu {
-                        return Err(AdapterSelectionError::IntegratedGpuNotFound);
-                    }
+                    .await
+                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
+                if a.get_info().device_type != wgpu::DeviceType::IntegratedGpu {
+                    return Err(AdapterSelectionError::IntegratedGpuNotFound);
                 }
-                adapter
+                Some(a)
             }
-            AdapterSelectionStrategy::ForceCpu => {
+            AdapterSelectionStrategy::ForceCpu => Some(
                 instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
@@ -357,7 +396,8 @@ impl AdapterSelector {
                         force_fallback_adapter: true,
                     })
                     .await
-            }
+                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,
+            ),
         };
         match adapter {
             Some(adapter) => {

@@ -375,7 +375,7 @@ impl crate::event::EventHandler for ListView {
                     }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

@@ -143,7 +143,7 @@ impl EventHandler for KeySequenceEdit {
                 self.key_sequence_changed.emit(seq);
                 self.stop_recording();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -215,5 +215,341 @@ impl Draw for KeySequenceEdit {
             &Font::default(),
             text_color,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+    use crate::event::Event;
+    use crate::widget::svg::render_to_svg;
+    use std::sync::{Arc, Mutex};
+
+    // ── 1. Creating default widget ──────────────────────────────────
+
+    #[test]
+    fn test_default_creation() {
+        let mut kse = KeySequenceEdit::new(Rect::new(10, 20, 150, 30));
+
+        assert_eq!(kse.kind(), WidgetKind::LineEdit);
+        assert_eq!(kse.geometry(), Rect::new(10, 20, 150, 30));
+        assert!(kse.key_sequence().is_empty());
+        assert!(!kse.is_recording());
+        assert!(kse.is_visible());
+        assert!(kse.is_enabled());
+        assert_eq!(kse.key_sequence().key_code(), 0);
+        assert_eq!(kse.key_sequence().modifiers(), 0);
+        assert!(kse.key_sequence().key_name().is_empty());
+    }
+
+    // ── 2. Setting/getting key sequence ─────────────────────────────
+
+    #[test]
+    fn test_set_and_get_key_sequence() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let seq = KeySequence::new(0x01, 67, "C"); // Ctrl+C
+        kse.set_key_sequence(seq.clone());
+
+        assert_eq!(kse.key_sequence(), &seq);
+        assert_eq!(kse.key_sequence().modifiers(), 0x01);
+        assert_eq!(kse.key_sequence().key_code(), 67);
+        assert_eq!(kse.key_sequence().key_name(), "C");
+        assert_eq!(kse.key_sequence().to_display_string(), "Ctrl+C");
+        assert!(!kse.key_sequence().is_empty());
+    }
+
+    // ── 3. Recording mode ───────────────────────────────────────────
+
+    #[test]
+    fn test_recording_mode() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        assert!(!kse.is_recording());
+
+        kse.start_recording();
+        assert!(kse.is_recording());
+
+        kse.stop_recording();
+        assert!(!kse.is_recording());
+    }
+
+    // ── 4. Clear sequence ──────────────────────────────────────────
+
+    #[test]
+    fn test_clear_sequence() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let seq = KeySequence::new(0x04, 83, "S"); // Shift+S
+        kse.set_key_sequence(seq);
+        assert!(!kse.key_sequence().is_empty());
+
+        kse.clear();
+        assert!(kse.key_sequence().is_empty());
+        assert_eq!(kse.key_sequence().key_code(), 0);
+    }
+
+    // ── 5. Signal accessor (sequence_changed) ──────────────────────
+
+    #[test]
+    fn test_sequence_changed_signal() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let captured = Arc::new(Mutex::new(None::<KeySequence>));
+        kse.key_sequence_changed.connect({
+            let captured = Arc::clone(&captured);
+            move |val: Arc<KeySequence>| {
+                *captured.lock().unwrap() = Some(val.as_ref().clone());
+            }
+        });
+
+        let seq = KeySequence::new(0x01, 65, "A");
+        kse.set_key_sequence(seq.clone());
+
+        let got = captured.lock().unwrap().take();
+        assert_eq!(got, Some(seq));
+    }
+
+    // ── 6. editing_finished signal ──────────────────────────────────
+
+    #[test]
+    fn test_editing_finished_signal() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let fired = Arc::new(Mutex::new(false));
+        kse.editing_finished.connect({
+            let fired = Arc::clone(&fired);
+            move || {
+                *fired.lock().unwrap() = true;
+            }
+        });
+
+        kse.start_recording();
+        kse.stop_recording();
+        assert!(*fired.lock().unwrap());
+    }
+
+    // ── 7. Minimum/maximum sequence length ──────────────────────────
+
+    #[test]
+    fn test_sequence_length() {
+        // KeySequence supports arbitrary key_names, including multi-char
+        let seq1 = KeySequence::new(0, 65, "A");
+        assert_eq!(seq1.key_name(), "A");
+
+        let seq2 = KeySequence::new(0x04 | 0x01, 90, "Z");
+        assert_eq!(seq2.to_display_string(), "Ctrl+Shift+Z");
+        assert!(seq2.modifiers() & 0x01 != 0);
+        assert!(seq2.modifiers() & 0x04 != 0);
+
+        // Empty sequence has length 0
+        let empty = KeySequence::empty();
+        assert_eq!(empty.to_display_string(), "");
+    }
+
+    // ── 8. Allowed modifier keys ───────────────────────────────────
+
+    #[test]
+    fn test_allowed_modifier_keys() {
+        // Test all four modifier flags in display
+
+        let ctrl = KeySequence::new(0x01, 65, "A");
+        assert_eq!(ctrl.to_display_string(), "Ctrl+A");
+
+        let alt = KeySequence::new(0x02, 65, "A");
+        assert_eq!(alt.to_display_string(), "Alt+A");
+
+        let shift = KeySequence::new(0x04, 65, "A");
+        assert_eq!(shift.to_display_string(), "Shift+A");
+
+        let meta = KeySequence::new(0x08, 65, "A");
+        assert_eq!(meta.to_display_string(), "Meta+A");
+
+        // Combined modifiers
+        let combos = KeySequence::new(0x01 | 0x02 | 0x04 | 0x08, 88, "X");
+        let display = combos.to_display_string();
+        assert!(display.contains("Ctrl"));
+        assert!(display.contains("Shift"));
+        assert!(display.contains("Alt"));
+        assert!(display.contains("Meta"));
+        assert!(display.contains("X"));
+    }
+
+    // ── 9. Mouse/keyboard interaction ───────────────────────────────
+
+    #[test]
+    fn test_mouse_press_starts_recording() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        assert!(!kse.is_recording());
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        assert!(kse.is_recording());
+    }
+
+    #[test]
+    fn test_keypress_during_recording_captures_sequence() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        kse.start_recording();
+        assert!(kse.is_recording());
+
+        // Press 'A' (key code 65) with Ctrl modifier
+        kse.handle_event(&Event::KeyPress { key: 65, modifiers: 0x01 });
+
+        // Recording stops, sequence captured
+        assert!(!kse.is_recording());
+        assert_eq!(kse.key_sequence().key_code(), 65);
+        assert_eq!(kse.key_sequence().modifiers(), 0x01);
+        assert_eq!(kse.key_sequence().key_name(), "A");
+    }
+
+    #[test]
+    fn test_escape_during_recording_clears_without_saving() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let seq = KeySequence::new(0x04, 83, "S");
+        kse.set_key_sequence(seq);
+
+        kse.start_recording();
+        // Escape key (27) during recording aborts
+        kse.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+
+        assert!(!kse.is_recording());
+        // Original sequence should be preserved (escape doesn't clear it)
+        assert_eq!(kse.key_sequence().key_name(), "S");
+    }
+
+    #[test]
+    fn test_focus_lost_stops_recording() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        kse.start_recording();
+        assert!(kse.is_recording());
+
+        kse.handle_event(&Event::FocusLost);
+        assert!(!kse.is_recording());
+    }
+
+    #[test]
+    fn test_modifier_only_keys_ignored_during_recording() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        kse.start_recording();
+
+        // Shift (16), Ctrl (17), Alt (18) are ignored
+        kse.handle_event(&Event::KeyPress { key: 16, modifiers: 0x04 });
+        assert!(kse.is_recording()); // Still recording
+
+        kse.handle_event(&Event::KeyPress { key: 17, modifiers: 0x01 });
+        assert!(kse.is_recording()); // Still recording
+
+        kse.handle_event(&Event::KeyPress { key: 18, modifiers: 0x02 });
+        assert!(kse.is_recording()); // Still recording
+    }
+
+    // ── 10. Geometry delegation ────────────────────────────────────
+
+    #[test]
+    fn test_geometry_delegation() {
+        let mut kse = KeySequenceEdit::new(Rect::new(10, 20, 150, 30));
+
+        assert_eq!(kse.geometry(), Rect::new(10, 20, 150, 30));
+
+        kse.set_geometry(Rect::new(0, 0, 200, 32));
+        assert_eq!(kse.geometry(), Rect::new(0, 0, 200, 32));
+        assert_eq!(kse.rect(), Rect::new(0, 0, 200, 32));
+        assert_eq!(kse.position(), Point::new(0, 0));
+        assert_eq!(kse.size(), crate::core::Size::new(200, 32));
+    }
+
+    // ── 11. Widget ID and kind ─────────────────────────────────────
+
+    #[test]
+    fn test_widget_id_and_kind() {
+        let kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        assert_eq!(kse.kind(), WidgetKind::LineEdit);
+        assert_ne!(kse.id(), 0);
+
+        let kse2 = KeySequenceEdit::new(Rect::new(0, 0, 100, 20));
+        assert_ne!(kse.id(), kse2.id());
+    }
+
+    // ── 12. SVG output ─────────────────────────────────────────────
+
+    #[test]
+    fn test_svg_output() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        let svg = render_to_svg(&mut kse);
+
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("width=\"150\""));
+        assert!(svg.contains("height=\"30\""));
+
+        // With sequence set, it should render differently
+        let mut kse2 = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        kse2.set_key_sequence(KeySequence::new(0x01, 67, "C"));
+        let svg2 = render_to_svg(&mut kse2);
+        assert!(svg2.starts_with("<svg"));
+    }
+
+    // ── 13. Disabled state blocking ────────────────────────────────
+
+    #[test]
+    fn test_disabled_state_blocks_recording() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+
+        kse.set_enabled(false);
+        assert!(!kse.is_enabled());
+
+        // Mouse press should not start recording when disabled
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        assert!(!kse.is_recording());
+
+        // Re-enable and verify it works
+        kse.set_enabled(true);
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        assert!(kse.is_recording());
+    }
+
+    // ── 14. KeySequence to_display_string formatting ───────────────
+
+    #[test]
+    fn test_key_sequence_display_formatting() {
+        // No modifiers, just a key
+        let seq = KeySequence::new(0, 65, "A");
+        assert_eq!(seq.to_string(), "A");
+
+        // Empty sequence
+        let empty = KeySequence::empty();
+        assert_eq!(empty.to_string(), "");
+
+        // Named keys
+        let enter = KeySequence::new(0, 13, "Return");
+        assert_eq!(enter.to_string(), "Return");
+
+        let f5 = KeySequence::new(0, 117, "F5");
+        assert_eq!(f5.to_string(), "F5");
+    }
+
+    // ── 15. KeySequence setters ────────────────────────────────────
+
+    #[test]
+    fn test_key_sequence_mutators() {
+        let mut seq = KeySequence::empty();
+        assert!(seq.is_empty());
+
+        seq.set_modifiers(0x01);
+        assert_eq!(seq.modifiers(), 0x01);
+
+        seq.set_key_code(90);
+        assert_eq!(seq.key_code(), 90);
+
+        seq.set_key_name("Z");
+        assert_eq!(seq.key_name(), "Z");
+        assert!(!seq.is_empty());
     }
 }

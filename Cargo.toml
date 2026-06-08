@@ -9,7 +9,7 @@ categories = ["gui", "rendering", "graphics"]
 readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
-rust-version = "1.75"
+rust-version = "1.87"
 
 [lints.rust]
 unexpected_cfgs = "allow"
@@ -44,10 +44,13 @@ gpu-wgpu = ["wgpu"]
 quality-management = []
 mobile-api = []
 gtk-native = ["dep:gtk"]
-wayland-native = []
+wayland-native = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-cursor"]
 controls-native = []
 objc2-macos = ["dep:objc2-foundation"]
 controls-custom = []
+
+# ── Android JNI bridge (optional, creates real native views on Android) ──
+android-jni = ["dep:jni"]
 
 # ── Optional content modules ──
 print = []
@@ -58,6 +61,8 @@ advanced-widgets = []
 # ── Unstable / experimental features ──
 unstable-pipeline-routing = []
 unstable-special-widgets = []
+
+linux-a11y = ["zbus"]
 
 # ── Meta-feature: everything that can coexist ──
 # NOTE: device-class features (desktop/tablet/mobile/embedded) are
@@ -93,8 +98,9 @@ cocoa = "0.24"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["staging"], optional = true }
+wayland-protocols = { version = "0.32", features = ["staging", "client"], optional = true }
 wayland-cursor = { version = "0.31", optional = true }
+zbus = { version = "5", optional = true }
 
 [target.'cfg(target_os = "harmony")'.dependencies]
 # HarmonyOS support is in early evaluation stage. Custom FFI bindings
@@ -102,7 +108,12 @@ wayland-cursor = { version = "0.31", optional = true }
 # This section is reserved for future implementation.
 
 [dependencies.wgpu]
-version = "0.16"
+version = "29.0.3"
+optional = true
+
+[dependencies.jni]
+version = "0.21"
+features = ["invocation"]
 optional = true
 
 [dev-dependencies]

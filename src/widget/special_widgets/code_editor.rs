@@ -163,7 +163,7 @@ impl EventHandler for CodeEditor {
                 39 => self.move_cursor_column(1),
                 38 => self.move_cursor_line(-1),
                 40 => self.move_cursor_line(1),
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             }
         }
     }

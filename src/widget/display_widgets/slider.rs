@@ -345,10 +345,10 @@ impl EventHandler for Slider {
                         // End
                         self.trigger_action(SliderAction::SliderToMaximum);
                     }
-                    _ => {}
+                    _ => { /* Other keys are not relevant */ }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -1028,5 +1028,60 @@ mod tests {
         s.base.handle_event(&Event::mouse_move(10, 5));
         // One emission from the event handler.
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── 12. Edge cases ─────────────────────────────────────────────────
+    #[test]
+    fn test_slider_negative_range() {
+        // Set range with min > max — should clamp max to min
+        let mut s = make_slider();
+        s.set_range(50, -50);
+        assert_eq!(s.minimum(), 50);
+        assert_eq!(s.maximum(), 50, "max should be clamped to min when max < min");
+        // Value should be reclamped to valid range
+        assert_eq!(s.value(), 50);
+
+        // Setting minimum above maximum directly — max follows
+        let mut s2 = make_slider();
+        s2.set_minimum(200);
+        assert_eq!(s2.minimum(), 200);
+        assert_eq!(s2.maximum(), 200, "max should be raised to match min");
+
+        // Setting maximum below minimum directly — min follows
+        let mut s3 = make_slider();
+        s3.set_maximum(-100);
+        assert_eq!(s3.maximum(), -100);
+        assert_eq!(s3.minimum(), -100, "min should be lowered to match max");
+    }
+
+    #[test]
+    fn test_slider_step_larger_than_range() {
+        let mut s = make_slider();
+        // Range is 0–100, set step to 200 (> range width)
+        s.set_single_step(200);
+        assert_eq!(s.single_step(), 200);
+
+        // From value=5, step sub should clamp to minimum
+        s.set_value(5);
+        s.trigger_action(SliderAction::SliderSingleStepSub);
+        // 5 - 200 = -195, clamped to 0
+        assert_eq!(s.value(), 0, "step sub should clamp to minimum when step > range");
+
+        // From value=50, step add should clamp to maximum
+        s.set_value(50);
+        s.trigger_action(SliderAction::SliderSingleStepAdd);
+        // 50 + 200 = 250, clamped to 100
+        assert_eq!(s.value(), 100, "step add should clamp to maximum when step > range");
+
+        // Narrow range (0–1) with step=5
+        let mut s2 = make_slider();
+        s2.set_range(0, 1);
+        s2.set_single_step(5);
+        s2.trigger_action(SliderAction::SliderSingleStepSub);
+        assert_eq!(s2.value(), 0);
+
+        s2.set_value(1);
+        s2.trigger_action(SliderAction::SliderSingleStepAdd);
+        assert_eq!(s2.value(), 1);
     }
 }

@@ -243,7 +243,7 @@ impl EventHandler for BaseWidget {
             Event::KeyUp((key, modifiers)) => {
                 self.key_up.emit((*key, *modifiers));
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

@@ -221,12 +221,14 @@ impl EventHandler for SpinBox {
                         // Escape
                         self.editing_finished.emit();
                     }
+                    // Unknown key; ignore
                     _ => {}
                 }
             }
             Event::FocusLost => {
                 self.editing_finished.emit();
             }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

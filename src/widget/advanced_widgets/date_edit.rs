@@ -175,7 +175,7 @@ impl EventHandler for DateEdit {
             match *key {
                 38 => self.step_up(),   // Up arrow
                 40 => self.step_down(), // Down arrow
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             }
         }
     }

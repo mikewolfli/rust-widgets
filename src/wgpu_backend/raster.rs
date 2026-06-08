@@ -150,12 +150,14 @@ pub fn rasterize_draw_commands_rgba8(
                 draw_arc_cpu_rgba8(
                     &mut pixels,
                     width,
-                    *center,
-                    *r,
-                    *start_angle,
-                    *end_angle,
-                    *color,
-                    *filled,
+                    &ArcParams {
+                        center: *center,
+                        radius: *r,
+                        start_angle: *start_angle,
+                        end_angle: *end_angle,
+                        color: *color,
+                        filled: *filled,
+                    },
                     clip_rect,
                 );
             }
@@ -563,34 +565,44 @@ fn draw_circle_cpu_rgba8(
         }
     }
 }
-#[allow(clippy::too_many_arguments)]
+/// Arc drawing parameters for `draw_arc_cpu_rgba8`.
+pub(crate) struct ArcParams {
+    /// Center of the arc.
+    pub center: (i32, i32),
+    /// Radius of the arc.
+    pub radius: u32,
+    /// Start angle in radians.
+    pub start_angle: f32,
+    /// End angle in radians.
+    pub end_angle: f32,
+    /// Fill color.
+    pub color: Rgba8,
+    /// Whether the arc is filled (vs stroked).
+    pub filled: bool,
+}
+
 fn draw_arc_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
-    center: (i32, i32),
-    radius: u32,
-    start_angle: f32,
-    end_angle: f32,
-    color: Rgba8,
-    filled: bool,
+    arc: &ArcParams,
     clip_rect: Option<PixelRect>,
 ) {
     let clip_rect = match clip_rect {
         Some(value) => value,
         None => return,
     };
-    let r = radius as i32;
+    let r = arc.radius as i32;
     let r2 = r * r;
-    let x_start = clip_rect.x.max(center.0 - r);
-    let y_start = clip_rect.y.max(center.1 - r);
-    let x_end = clip_rect.right().min(center.0 + r + 1);
-    let y_end = clip_rect.bottom().min(center.1 + r + 1);
-    let (sa, ea) = if (start_angle - end_angle).abs() < 0.001 {
+    let x_start = clip_rect.x.max(arc.center.0 - r);
+    let y_start = clip_rect.y.max(arc.center.1 - r);
+    let x_end = clip_rect.right().min(arc.center.0 + r + 1);
+    let y_end = clip_rect.bottom().min(arc.center.1 + r + 1);
+    let (sa, ea) = if (arc.start_angle - arc.end_angle).abs() < 0.001 {
         // Full circle
         (0.0, std::f32::consts::TAU)
     } else {
-        let sa = start_angle.rem_euclid(std::f32::consts::TAU);
-        let mut ea = end_angle.rem_euclid(std::f32::consts::TAU);
+        let sa = arc.start_angle.rem_euclid(std::f32::consts::TAU);
+        let mut ea = arc.end_angle.rem_euclid(std::f32::consts::TAU);
         // Normalise to a [sa, sa+TAU) range so ea > sa
         if ea <= sa {
             ea += std::f32::consts::TAU;
@@ -600,10 +612,10 @@ fn draw_arc_cpu_rgba8(
     let is_full_circle = (ea - sa) >= std::f32::consts::TAU - 0.001;
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let dx = x - center.0;
-            let dy = y - center.1;
+            let dx = x - arc.center.0;
+            let dy = y - arc.center.1;
             let d2 = dx * dx + dy * dy;
-            let inside_circle = if filled {
+            let inside_circle = if arc.filled {
                 d2 <= r2
             } else {
                 let outer_r2 = (r + 1) * (r + 1);
@@ -621,7 +633,7 @@ fn draw_arc_cpu_rgba8(
                     continue;
                 }
             }
-            set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, arc.color);
         }
     }
 }

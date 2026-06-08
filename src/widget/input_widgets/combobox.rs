@@ -229,9 +229,11 @@ impl EventHandler for ComboBox {
                             self.activated.emit(current);
                         }
                     }
+                    // Unknown key; ignore
                     _ => {}
                 }
             }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

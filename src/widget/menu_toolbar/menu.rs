@@ -312,7 +312,7 @@ impl EventHandler for Menu {
                     }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

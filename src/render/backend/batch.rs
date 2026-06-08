@@ -35,6 +35,26 @@ impl From<u64> for BatchId {
     }
 }
 
+/// Errors that can occur during batch recording operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchError {
+    /// Attempted to record a command without an open batch.
+    /// Call `begin_batch()` first.
+    NoActiveBatch,
+}
+
+impl std::fmt::Display for BatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BatchError::NoActiveBatch => {
+                write!(f, "called record() without an open batch; call begin_batch() first")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BatchError {}
+
 /// A single draw command that can be recorded into a batch.
 ///
 /// Each variant describes a primitive operation the renderer can replay.
@@ -67,14 +87,15 @@ pub enum BatchCommand {
 /// # Usage
 ///
 /// ```ignore
-/// fn render(batcher: &mut impl BatchRenderer) {
+/// fn render(batcher: &mut impl BatchRenderer) -> Result<(), BatchError> {
 ///     let batch_id = batcher.begin_batch();
 ///     batcher.record(BatchCommand::FillRect {
 ///         rect: Rect::new(0, 0, 100, 100),
 ///         color: Color::rgb(255, 0, 0),
-///     });
+///     })?;
 ///     batcher.end_batch();
 ///     batcher.replay(batch_id);
+///     Ok(())
 /// }
 /// ```
 pub trait BatchRenderer {
@@ -85,7 +106,7 @@ pub trait BatchRenderer {
     fn end_batch(&mut self);
 
     /// Record a single command into the currently open batch.
-    fn record(&mut self, cmd: BatchCommand);
+    fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError>;
 
     /// Replay a previously recorded batch by its id.
     fn replay(&mut self, id: BatchId);
@@ -144,17 +165,17 @@ impl BatchState {
 
     /// Record a single command into the currently open batch.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if there is no open batch (i.e. `begin_batch` has not been
-    /// called, or `end_batch` has already been called).
-    pub(crate) fn record(&mut self, cmd: BatchCommand) {
-        let id = self
-            .current_batch
-            .expect("called record() without an open batch; call begin_batch() first");
+    /// Returns `Err(BatchError::NoActiveBatch)` if there is no open batch
+    /// (i.e. `begin_batch` has not been called, or `end_batch` has already
+    /// been called).
+    pub(crate) fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError> {
+        let id = self.current_batch.ok_or(BatchError::NoActiveBatch)?;
         if let Some(cmds) = self.batches.get_mut(&id) {
             cmds.push(cmd);
         }
+        Ok(())
     }
 
     /// Replay a previously recorded batch by its id.
@@ -282,7 +303,7 @@ impl BatchRenderer for SoftwarePaintBackend {
         self.batch_state.end_batch()
     }
 
-    fn record(&mut self, cmd: BatchCommand) {
+    fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError> {
         self.batch_state.record(cmd)
     }
 
@@ -511,8 +532,10 @@ mod tests {
     fn batch_state_record_commands() {
         let mut state = BatchState::new();
         let id = state.begin_batch();
-        state.record(BatchCommand::FillRect { rect: Rect::new(0, 0, 50, 50), color: Color::RED });
-        state.record(BatchCommand::PopClip);
+        state
+            .record(BatchCommand::FillRect { rect: Rect::new(0, 0, 50, 50), color: Color::RED })
+            .unwrap();
+        state.record(BatchCommand::PopClip).unwrap();
         state.end_batch();
 
         let cmds = state.batches.get(&id).unwrap();
@@ -522,10 +545,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "called record() without an open batch")]
-    fn batch_state_record_without_begin_panics() {
+    fn batch_state_record_without_begin_returns_error() {
         let mut state = BatchState::new();
-        state.record(BatchCommand::PopClip);
+        let result = state.record(BatchCommand::PopClip);
+        assert_eq!(result, Err(BatchError::NoActiveBatch));
     }
 
     #[test]
@@ -561,8 +584,8 @@ mod tests {
     fn batch_state_translate_command_skip_translate_and_set_opacity() {
         let mut state = BatchState::new();
         let id = state.begin_batch();
-        state.record(BatchCommand::Translate { dx: 5.0, dy: 5.0 });
-        state.record(BatchCommand::SetOpacity { opacity: 0.5 });
+        state.record(BatchCommand::Translate { dx: 5.0, dy: 5.0 }).unwrap();
+        state.record(BatchCommand::SetOpacity { opacity: 0.5 }).unwrap();
         state.end_batch();
 
         // Translate/SetOpacity emit a zero-size FillRect during replay
@@ -579,7 +602,9 @@ mod tests {
         let size = crate::core::Size::new(100, 100);
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
         let id = backend.begin_batch();
-        backend.record(BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED });
+        backend
+            .record(BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED })
+            .unwrap();
         backend.end_batch();
         assert!(backend.contains_batch(id));
     }
@@ -603,7 +628,9 @@ mod tests {
         backend.begin_frame(Color::WHITE);
 
         let id = backend.begin_batch();
-        backend.record(BatchCommand::FillRect { rect: Rect::new(5, 5, 10, 10), color: Color::RED });
+        backend
+            .record(BatchCommand::FillRect { rect: Rect::new(5, 5, 10, 10), color: Color::RED })
+            .unwrap();
         backend.end_batch();
 
         backend.replay(id);
@@ -625,12 +652,14 @@ mod tests {
         let size = crate::core::Size::new(10, 10);
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
         let id = backend.begin_batch();
-        backend.record(BatchCommand::DrawLine {
-            from: Point::new(0, 0),
-            to: Point::new(10, 10),
-            color: Color::RED,
-            width: 1.0,
-        });
+        backend
+            .record(BatchCommand::DrawLine {
+                from: Point::new(0, 0),
+                to: Point::new(10, 10),
+                color: Color::RED,
+                width: 1.0,
+            })
+            .unwrap();
         backend.end_batch();
 
         assert!(backend.contains_batch(id));

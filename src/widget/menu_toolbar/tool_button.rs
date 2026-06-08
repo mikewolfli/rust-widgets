@@ -144,7 +144,7 @@ impl EventHandler for ToolButton {
             Event::KeyPress { key: 13, .. } | Event::KeyPress { key: 32, .. } => {
                 self.click();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -198,6 +198,7 @@ impl Draw for ToolButton {
             &Font::default(),
             fg,
         );
+
         if has_popup {
             context.draw_text(
                 Point::from_f32(
@@ -209,5 +210,290 @@ impl Draw for ToolButton {
                 fg,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolButton, ToolButtonPopupMode, ToolButtonStyle};
+    use crate::core::{Color, Point, Rect, Size};
+    use crate::event::Event;
+    use crate::event::EventHandler;
+    use crate::render::svg::SvgPaintBackend;
+    use crate::render::PaintBackend;
+    use crate::render::RenderContext;
+    use crate::widget::{Draw, Widget, WidgetKind};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn rect() -> Rect {
+        Rect::new(10, 20, 100, 30)
+    }
+
+    // ── 1. Creating default ToolButton ──
+    #[test]
+    fn tool_button_default_creation() {
+        let btn = ToolButton::new("Open", rect());
+        assert_eq!(btn.text(), "Open");
+        assert!(btn.icon().is_none());
+        assert!(!btn.is_checkable());
+        assert!(!btn.is_checked());
+        assert!(btn.is_enabled());
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+        assert_eq!(btn.button_style(), ToolButtonStyle::IconOnly);
+        assert!(!btn.auto_raise());
+        assert_eq!(btn.geometry(), rect());
+    }
+
+    // ── 2. Setting/getting text ──
+    #[test]
+    fn tool_button_set_get_text() {
+        let mut btn = ToolButton::new("Old", rect());
+        btn.set_text("New Label");
+        assert_eq!(btn.text(), "New Label");
+    }
+
+    // ── 3. Setting/getting icon ──
+    #[test]
+    fn tool_button_set_get_icon() {
+        let mut btn = ToolButton::new("Open", rect());
+        assert!(btn.icon().is_none());
+        btn.set_icon(Some(PathBuf::from("icons/open.png")));
+        assert_eq!(btn.icon(), Some(PathBuf::from("icons/open.png").as_path()));
+        btn.set_icon(None);
+        assert!(btn.icon().is_none());
+    }
+
+    // ── 4. Enabled/disabled state ──
+    #[test]
+    fn tool_button_enabled_disabled_state() {
+        let mut btn = ToolButton::new("X", rect());
+        assert!(btn.is_enabled());
+        btn.set_enabled(false);
+        assert!(!btn.is_enabled());
+        btn.set_enabled(true);
+        assert!(btn.is_enabled());
+    }
+
+    // ── 5. Button style configuration ──
+    #[test]
+    fn tool_button_button_style_configuration() {
+        let mut btn = ToolButton::new("Btn", rect());
+        assert_eq!(btn.button_style(), ToolButtonStyle::IconOnly);
+
+        btn.set_button_style(ToolButtonStyle::TextOnly);
+        assert_eq!(btn.button_style(), ToolButtonStyle::TextOnly);
+
+        btn.set_button_style(ToolButtonStyle::TextBesideIcon);
+        assert_eq!(btn.button_style(), ToolButtonStyle::TextBesideIcon);
+
+        btn.set_button_style(ToolButtonStyle::TextUnderIcon);
+        assert_eq!(btn.button_style(), ToolButtonStyle::TextUnderIcon);
+
+        btn.set_button_style(ToolButtonStyle::FollowStyle);
+        assert_eq!(btn.button_style(), ToolButtonStyle::FollowStyle);
+    }
+
+    // ── 6. Popup mode (for menu buttons) ──
+    #[test]
+    fn tool_button_popup_mode() {
+        let mut btn = ToolButton::new("Menu", rect());
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+
+        btn.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::InstantPopup);
+
+        btn.set_popup_mode(ToolButtonPopupMode::MenuButtonPopup);
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::MenuButtonPopup);
+
+        btn.set_popup_mode(ToolButtonPopupMode::DelayedPopup);
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+    }
+
+    // ── 7. Signal accessor (clicked) ──
+    #[test]
+    fn tool_button_clicked_signal() {
+        let mut btn = ToolButton::new("Btn", rect());
+        let clicked_count = Arc::new(AtomicUsize::new(0));
+        let c = clicked_count.clone();
+        btn.clicked.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        btn.click();
+        assert_eq!(clicked_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn tool_button_toggled_signal() {
+        let mut btn = ToolButton::new("Tog", rect());
+        btn.set_checkable(true);
+        let last = Arc::new(AtomicBool::new(false));
+        let l = last.clone();
+        btn.toggled.connect(move |v| {
+            l.store(*v, Ordering::SeqCst);
+        });
+        btn.set_checked(true);
+        assert!(last.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tool_button_triggered_signal() {
+        let mut btn = ToolButton::new("Trg", rect());
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        btn.triggered.connect(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        btn.click();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── 8. Mouse click triggers signal ──
+    #[test]
+    fn tool_button_mouse_click_triggers_signal() {
+        let mut btn = ToolButton::new("Btn", rect());
+        let clicked = Arc::new(AtomicBool::new(false));
+        let c = clicked.clone();
+        btn.clicked.connect(move |_| {
+            c.store(true, Ordering::SeqCst);
+        });
+        // Press then release
+        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
+        assert!(clicked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tool_button_keyboard_enter_triggers() {
+        let mut btn = ToolButton::new("Btn", rect());
+        let clicked = Arc::new(AtomicBool::new(false));
+        let c = clicked.clone();
+        btn.clicked.connect(move |_| {
+            c.store(true, Ordering::SeqCst);
+        });
+        // Enter (key 13) and Space (key 32) trigger
+        btn.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(clicked.load(Ordering::SeqCst));
+    }
+
+    // ── 9. Geometry delegation ──
+    #[test]
+    fn tool_button_geometry_delegation() {
+        let mut btn = ToolButton::new("X", rect());
+        assert_eq!(btn.geometry(), rect());
+        let new_rect = Rect::new(0, 0, 200, 50);
+        btn.set_geometry(new_rect);
+        assert_eq!(btn.geometry(), new_rect);
+    }
+
+    // ── 10. Widget ID and kind ──
+    #[test]
+    fn tool_button_widget_id_and_kind() {
+        let btn = ToolButton::new("A", rect());
+        assert_eq!(btn.kind(), WidgetKind::ToolButton);
+        let btn2 = ToolButton::new("B", rect());
+        assert_ne!(btn.id(), btn2.id());
+    }
+
+    // ── 11. SVG output ──
+    #[test]
+    fn tool_button_svg_output() {
+        let mut btn = ToolButton::new("Btn", rect());
+        let mut svg = SvgPaintBackend::new(Size::new(200, 60));
+        svg.begin_frame(Color::WHITE);
+        let mut rc = RenderContext::new(&mut svg);
+        btn.draw(&mut rc);
+        svg.end_frame();
+        let output = svg.finish();
+        assert!(output.contains("<svg"), "SVG output should contain svg tag");
+        // Should contain a rect (fill) for the background
+        assert!(
+            output.contains("rect") || output.contains("text"),
+            "ToolButton SVG should contain visual elements"
+        );
+    }
+
+    #[test]
+    fn tool_button_svg_disabled_draw() {
+        let mut btn = ToolButton::new("Disabled", rect());
+        btn.set_enabled(false);
+        let mut svg = SvgPaintBackend::new(Size::new(200, 60));
+        svg.begin_frame(Color::WHITE);
+        let mut rc = RenderContext::new(&mut svg);
+        btn.draw(&mut rc);
+        svg.end_frame();
+        let output = svg.finish();
+        assert!(output.contains("<svg"));
+    }
+
+    // ── 12. Disabled state blocks events ──
+    #[test]
+    fn tool_button_disabled_state_blocks_events() {
+        let mut btn = ToolButton::new("X", rect());
+        btn.set_enabled(false);
+        let clicked = Arc::new(AtomicBool::new(false));
+        let c = clicked.clone();
+        btn.clicked.connect(move |_| {
+            c.store(true, Ordering::SeqCst);
+        });
+        // Mouse press+release should be blocked
+        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
+        assert!(
+            !clicked.load(Ordering::SeqCst),
+            "Disabled button should not emit clicked on mouse events"
+        );
+    }
+
+    #[test]
+    fn tool_button_disabled_blocks_keyboard() {
+        let mut btn = ToolButton::new("X", rect());
+        btn.set_enabled(false);
+        let clicked = Arc::new(AtomicBool::new(false));
+        let c = clicked.clone();
+        btn.clicked.connect(move |_| {
+            c.store(true, Ordering::SeqCst);
+        });
+        // Keyboard Enter should be blocked
+        btn.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(
+            !clicked.load(Ordering::SeqCst),
+            "Disabled button should not emit clicked on key events"
+        );
+    }
+
+    // ── 13. Checkable toggle ──
+    #[test]
+    fn tool_button_checkable_toggle() {
+        let mut btn = ToolButton::new("Tog", rect());
+        btn.set_checkable(true);
+        assert!(!btn.is_checked());
+        btn.click();
+        assert!(btn.is_checked());
+        btn.click();
+        assert!(!btn.is_checked());
+    }
+
+    // ── 14. Non-checkable click does not change checked ──
+    #[test]
+    fn tool_button_non_checkable_ignores_checked() {
+        let mut btn = ToolButton::new("X", rect());
+        assert!(!btn.is_checkable());
+        btn.click();
+        // Non-checkable: click() calls set_checked which checks checkable
+        // Since checkable is false, the click won't toggle
+        assert!(!btn.is_checked(), "Non-checkable button should not toggle via click");
+    }
+
+    // ── 15. Auto raise ──
+    #[test]
+    fn tool_button_auto_raise() {
+        let mut btn = ToolButton::new("X", rect());
+        assert!(!btn.auto_raise());
+        btn.set_auto_raise(true);
+        assert!(btn.auto_raise());
+        btn.set_auto_raise(false);
+        assert!(!btn.auto_raise());
     }
 }

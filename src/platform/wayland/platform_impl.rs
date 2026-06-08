@@ -20,6 +20,9 @@ use crate::platform::wayland::types::{ListData, WaylandHandleKind, WaylandPlatfo
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 use wayland_client as wl_client;
 
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+use wayland_protocols as wl_protocols;
+
 // ---------------------------------------------------------------------------
 // Platform trait implementation
 // ---------------------------------------------------------------------------
@@ -98,10 +101,15 @@ impl Platform for WaylandPlatform {
             xdg_session,
             wayland_display
         );
-        log::info!("[wayland] State-only backend active (no native protocol dispatch).");
-        // TODO: Enter Wayland event loop dispatch (wl_display_dispatch) when native
-        // wayland-client integration is wired. For now, the state-only backend simply
-        // marks itself as running and returns.
+
+        // Wait until quit is requested.
+        // Actual Wayland event dispatch is handled by the EventLoop thread
+        // via the native pump registered with `set_native_pump()`.
+        // This avoids both the EventLoop thread and the run() thread competing
+        // for dispatch on the same event queue.
+        while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
     }
 
     fn quit(&self) {
@@ -771,7 +779,19 @@ impl Platform for WaylandPlatform {
 
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 impl WaylandPlatform {
-    /// Attempt to create a native Wayland wl_surface for this window.
+    /// Dispatch pending native Wayland events.
+    ///
+    /// Intended to be called from an `EventLoop` native pump callback
+    /// on each iteration so that Wayland protocol events are dispatched
+    /// without a separate blocking `run()` loop.
+    pub(crate) fn dispatch_native_events(&self) {
+        let mut guard = self.native_session.lock().unwrap();
+        if let Some(ref mut session) = *guard {
+            let _ = session.event_queue.dispatch_pending(&mut session.state);
+        }
+    }
+
+    /// Attempt to create a native Wayland xdg_toplevel for this window.
     /// Returns `Some(id)` on success, or `None` to fall back to state-only.
     fn try_create_native_window(
         &self,
@@ -781,22 +801,68 @@ impl WaylandPlatform {
         width: u32,
         height: u32,
     ) -> Option<ObjectId> {
-        // 1. Connect to the Wayland display server
-        let conn = wl_client::Connection::connect_to_env().ok()?;
-        let display = conn.display();
+        // Helper: connect to Wayland display and discover globals.
+        // Returns `Some(WaylandSession)` on success or `None` on failure.
+        fn connect_wayland() -> Option<WaylandSession> {
+            let conn = wl_client::Connection::connect_to_env()
+                .inspect_err(|e| {
+                    log::error!("[wayland] Failed to connect to Wayland display: {}", e)
+                })
+                .ok()?;
+            let display = conn.display();
+            let mut event_queue = conn.new_event_queue();
+            let qh = event_queue.handle();
+            let _registry = display.get_registry(&qh, ());
 
-        // 2. Create event queue and discover globals via registry roundtrip
-        let mut event_queue = conn.new_event_queue();
-        let qh = event_queue.handle();
-        let _registry = display.get_registry(&qh, ());
+            let mut state = WaylandSessionState { compositor: None, xdg_wm_base: None };
+            event_queue
+                .roundtrip(&mut state)
+                .inspect_err(|e| log::error!("[wayland] Registry roundtrip failed: {}", e))
+                .ok()?;
 
-        // 3. One roundtrip to receive global announcements (wl_compositor, etc.)
-        event_queue.roundtrip(&mut WaylandRegistryState { compositor: None, shell: None }).ok()?;
+            if state.compositor.is_none() {
+                log::error!("[wayland] wl_compositor global not available");
+                return None;
+            }
+            if state.xdg_wm_base.is_none() {
+                log::error!("[wayland] xdg_wm_base global not available");
+                return None;
+            }
 
-        // 4. Register the window in state and return its ID.
-        //    Full wl_surface creation requires binding wl_compositor from globals
-        //    and implementing Dispatch for all relevant protocols.
-        log::info!("[wayland] Connected to display; registered native-capable window '{}'", title);
+            log::info!("[wayland] Connected to display; compositor and xdg_wm_base bound.");
+            Some(WaylandSession { conn, event_queue, state })
+        }
+
+        // Obtain or create the persistent Wayland session.
+        let mut guard = self.native_session.lock().unwrap();
+        if guard.is_none() {
+            *guard = connect_wayland();
+        }
+        let session = guard.as_mut()?;
+
+        // 5. Create wl_surface, xdg_surface, and xdg_toplevel
+        let compositor = session.state.compositor.as_ref()?;
+        let xdg_wm_base = session.state.xdg_wm_base.as_ref()?;
+        let qh = session.event_queue.handle();
+
+        let surface = compositor.create_surface(&qh, ());
+        let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg_surface.get_toplevel(&qh, ());
+
+        // 6. Set window properties
+        toplevel.set_title(title.to_string());
+        toplevel.set_app_id("rust_widgets".to_string());
+        if width > 0 && height > 0 {
+            toplevel.set_min_size(width as i32, height as i32);
+        }
+
+        // 7. Commit the surface to make the compositor aware of it
+        surface.commit();
+
+        // 8. Roundtrip to process the xdg_surface.configure event
+        session.event_queue.roundtrip(&mut session.state).ok()?;
+
+        log::info!("[wayland] Created xdg_toplevel '{}' ({}x{})", title, width, height);
 
         let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
         log::info!("[wayland] Window {} registered with state backend", id);
@@ -805,24 +871,60 @@ impl WaylandPlatform {
     }
 }
 
-/// Minimal dispatch state used during Wayland global discovery.
+// ---------------------------------------------------------------------------
+// Wayland session state & dispatch implementations
+// ---------------------------------------------------------------------------
+
+/// Dispatch state for the Wayland session.
+/// Holds the global proxies obtained from the registry.
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-struct WaylandRegistryState {
-    compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
-    shell: Option<wl_client::protocol::wl_shell::WlShell>,
+pub(crate) struct WaylandSessionState {
+    pub(crate) compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
+    pub(crate) xdg_wm_base: Option<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase>,
 }
 
+/// A persistent Wayland session containing the connection, event queue,
+/// and proxy state. Stored inside `WaylandPlatform.native_session`.
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
-    for WaylandRegistryState
-{
+pub(crate) struct WaylandSession {
+    /// The Wayland connection. Must stay alive while `event_queue` is in use.
+    #[allow(dead_code)]
+    pub(crate) conn: wl_client::Connection,
+    pub(crate) event_queue: wl_client::EventQueue<WaylandSessionState>,
+    pub(crate) state: WaylandSessionState,
+}
+
+// ---------------------------------------------------------------------------
+// EventLoop native pump integration
+// ---------------------------------------------------------------------------
+
+/// Create a native platform event pump for the Wayland backend.
+///
+/// Returns a closure suitable for `EventLoop::set_native_pump()`.
+/// When called, it looks up the global `WaylandPlatform` singleton and
+/// dispatches pending Wayland events through `dispatch_pending()`.
+///
+/// Returns `None` if the active platform is not Wayland.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+pub fn create_event_loop_pump() -> Option<Box<dyn Fn() + Send + Sync>> {
+    let platform = crate::platform::runtime::get_platform();
+    let wayland = platform.as_any().downcast_ref::<WaylandPlatform>()?;
+    Some(Box::new(move || {
+        wayland.dispatch_native_events();
+    }))
+}
+
+// --- Registry global discovery ---
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for WaylandSessionState {
     fn event(
         state: &mut Self,
         registry: &wl_client::protocol::wl_registry::WlRegistry,
         event: wl_client::protocol::wl_registry::Event,
         _data: &(),
         _conn: &wl_client::Connection,
-        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
     ) {
         use wl_client::protocol::wl_registry::Event;
         if let Event::Global { name, interface, version } = event {
@@ -843,25 +945,28 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()>
                     state.compositor = Some(comp);
                     log::info!("[wayland] Bound wl_compositor (v{})", version);
                 }
-                "wl_shell" => {
-                    let shell = registry.bind::<wl_client::protocol::wl_shell::WlShell, _, _>(
-                        name,
-                        version.min(1),
-                        _qh,
-                        (),
-                    );
-                    state.shell = Some(shell);
-                    log::info!("[wayland] Bound wl_shell");
+                "xdg_wm_base" => {
+                    let xdg = registry
+                        .bind::<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase, _, _>(
+                            name,
+                            version.min(6),
+                            _qh,
+                            (),
+                        );
+                    state.xdg_wm_base = Some(xdg);
+                    log::info!("[wayland] Bound xdg_wm_base (v{})", version);
                 }
-                _ => {}
+                _ => { /* Other globals need no special handling */ }
             }
         }
     }
 }
 
+// --- wl_compositor (no events) ---
+
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
-    for WaylandRegistryState
+    for WaylandSessionState
 {
     fn event(
         _state: &mut Self,
@@ -869,22 +974,106 @@ impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
         _event: wl_client::protocol::wl_compositor::Event,
         _data: &(),
         _conn: &wl_client::Connection,
-        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
     ) {
-        // No compositor events are consumed in the current native-probe path.
+        // wl_compositor has no server-to-client events.
     }
 }
 
+// --- wl_surface (surface enter/leave events) ---
+
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-impl wl_client::Dispatch<wl_client::protocol::wl_shell::WlShell, ()> for WaylandRegistryState {
+impl wl_client::Dispatch<wl_client::protocol::wl_surface::WlSurface, ()> for WaylandSessionState {
     fn event(
         _state: &mut Self,
-        _proxy: &wl_client::protocol::wl_shell::WlShell,
-        _event: wl_client::protocol::wl_shell::Event,
+        _proxy: &wl_client::protocol::wl_surface::WlSurface,
+        _event: wl_client::protocol::wl_surface::Event,
         _data: &(),
         _conn: &wl_client::Connection,
-        _qh: &wl_client::QueueHandle<WaylandRegistryState>,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
     ) {
-        // No shell events are consumed in the current native-probe path.
+        // wl_surface events (enter/leave/frame/etc.) are logged but not acted upon yet.
+        log::trace!("[wayland] wl_surface event: {:?}", _event);
+    }
+}
+
+// --- xdg_wm_base (handle ping events) ---
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase, ()>
+    for WaylandSessionState
+{
+    fn event(
+        _state: &mut Self,
+        proxy: &wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase,
+        event: <wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase as wl_client::Proxy>::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_protocols::xdg::shell::client::xdg_wm_base::Event;
+        if let Event::Ping { serial } = event {
+            proxy.pong(serial);
+            log::trace!("[wayland] xdg_wm_base ping/pong (serial={})", serial);
+        }
+    }
+}
+
+// --- xdg_surface (acknowledge configure events) ---
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_surface::XdgSurface, ()>
+    for WaylandSessionState
+{
+    fn event(
+        _state: &mut Self,
+        proxy: &wl_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+        event: <wl_protocols::xdg::shell::client::xdg_surface::XdgSurface as wl_client::Proxy>::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_protocols::xdg::shell::client::xdg_surface::Event;
+        if let Event::Configure { serial } = event {
+            proxy.ack_configure(serial);
+            log::trace!("[wayland] xdg_surface configure ack (serial={})", serial);
+        }
+    }
+}
+
+// --- xdg_toplevel (handle configure / close) ---
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel, ()>
+    for WaylandSessionState
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
+        event: <wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel as wl_client::Proxy>::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_protocols::xdg::shell::client::xdg_toplevel::Event;
+        match event {
+            Event::Configure { width, height, states } => {
+                log::trace!(
+                    "[wayland] xdg_toplevel configure: {}x{}, states={:?}",
+                    width,
+                    height,
+                    states
+                );
+            }
+            Event::Close => {
+                log::info!("[wayland] xdg_toplevel close requested");
+            }
+            Event::ConfigureBounds { .. } | Event::WmCapabilities { .. } => {
+                log::trace!("[wayland] xdg_toplevel event: {:?}", event);
+            }
+            _ => {
+                log::trace!("[wayland] xdg_toplevel unhandled event: {:?}", event);
+            }
+        }
     }
 }

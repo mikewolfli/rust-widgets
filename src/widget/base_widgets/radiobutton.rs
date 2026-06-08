@@ -103,7 +103,7 @@ impl EventHandler for RadioButton {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

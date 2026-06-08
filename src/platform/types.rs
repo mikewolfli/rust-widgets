@@ -368,6 +368,10 @@ pub trait Platform: Send + Sync {
     fn is_widget_ime_enabled(&self, _widget_id: ObjectId) -> bool {
         false
     }
+    /// Returns a reference to the platform's IME bridge, if available.
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        None
+    }
     /// Set accessibility name/label for a widget.
     fn set_widget_accessibility_name(&self, _widget_id: ObjectId, _name: &str) -> bool {
         false
@@ -375,6 +379,10 @@ pub trait Platform: Send + Sync {
     /// Read accessibility name/label for a widget.
     fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String {
         String::new()
+    }
+    /// Returns a reference to the platform's rich clipboard backend, if available.
+    fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
+        None
     }
     /// Set plain text clipboard content.
     fn set_clipboard_text(&self, _text: &str) -> bool {

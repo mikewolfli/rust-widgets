@@ -117,7 +117,7 @@ impl EventHandler for TerminalView {
                 }
                 38 => self.recall_history(true),
                 40 => self.recall_history(false),
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             }
         }
     }

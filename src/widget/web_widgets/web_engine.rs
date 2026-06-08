@@ -413,10 +413,10 @@ impl EventHandler for WebEngineView {
                         if *modifiers == 1 => {
                             self.reload();
                         }
-                    _ => {}
+                    _ => { /* Other keys are not relevant */ }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

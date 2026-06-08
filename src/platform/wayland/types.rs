@@ -115,6 +115,11 @@ pub struct WaylandPlatform {
     pub(crate) runtime: WaylandRuntimeState,
     /// Shared list storage for ComboBox and ListBox widgets.
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
+    /// Persistent Wayland session (connection, event queue, and global proxies).
+    /// Initialized on first `try_create_native_window` call; used by `run()` for event dispatch.
+    #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+    pub(crate) native_session:
+        Mutex<Option<crate::platform::wayland::platform_impl::WaylandSession>>,
 }
 
 impl WaylandPlatform {
@@ -125,6 +130,8 @@ impl WaylandPlatform {
             menus: Mutex::new(WaylandMenuState::default()),
             runtime: WaylandRuntimeState::new(),
             list_data: Mutex::new(HashMap::new()),
+            #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+            native_session: Mutex::new(None),
         }
     }
 }

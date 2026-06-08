@@ -10,7 +10,7 @@ use crate::render::pipeline::pixel_ops::{
     blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, cluster_ends_with_zwj,
     draw_bitmap_glyph, estimate_cluster_advance, fill_pixels, inset_rect, is_combining_mark,
     is_variation_selector, line_stroke_coverage_grid, rounded_rect_coverage,
-    rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel,
+    rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel, GlyphDrawConfig,
 };
 use crate::render::{
     BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextCluster, TextMetrics,
@@ -752,17 +752,18 @@ impl SoftwareSurface {
                 .chars()
                 .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
             if let Some(ch) = display_char {
-                draw_bitmap_glyph(
-                    frame,
-                    size.width,
-                    size.height,
-                    ch,
-                    pen_x.round() as i32,
-                    origin.y,
-                    glyph_width,
-                    glyph_height,
+                let mut config = GlyphDrawConfig {
+                    canvas: &mut *frame,
+                    canvas_width: size.width,
+                    canvas_height: size.height,
+                    ch: ch as u8,
+                    x: pen_x.round() as i32,
+                    y: origin.y,
+                    w: glyph_width as u32,
+                    h: glyph_height as u32,
                     color,
-                );
+                };
+                draw_bitmap_glyph(&mut config);
             }
             pen_x += cluster.advance;
         }

@@ -220,7 +220,7 @@ impl EventHandler for TimelineWidget {
                     self.zoom(0.8);
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

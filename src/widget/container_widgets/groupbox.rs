@@ -215,7 +215,7 @@ impl Draw for GroupBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
+    use crate::core::{ObjectId, Rect};
 
     #[test]
     fn groupbox_creation_defaults() {
@@ -237,5 +237,46 @@ mod tests {
         assert!(!gb.is_checked());
         gb.toggle();
         assert!(gb.is_checked());
+    }
+
+    // ── Panel / child management tests ─────────────────────────────────
+    #[test]
+    fn test_panel_add_remove_children() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        let child1: ObjectId = 100;
+        let child2: ObjectId = 200;
+        let child3: ObjectId = 300;
+
+        assert!(gb.children().is_empty());
+
+        gb.add_child(child1);
+        assert_eq!(gb.children().len(), 1);
+        assert_eq!(gb.children()[0], child1);
+
+        gb.add_child(child2);
+        assert_eq!(gb.children().len(), 2);
+
+        gb.add_child(child3);
+        assert_eq!(gb.children().len(), 3);
+
+        // Remove middle child
+        gb.remove_child(child2);
+        assert_eq!(gb.children().len(), 2);
+        assert_eq!(gb.children()[0], child1);
+        assert_eq!(gb.children()[1], child3);
+
+        // Remove remaining children
+        gb.remove_child(child1);
+        assert_eq!(gb.children().len(), 1);
+
+        gb.remove_child(child3);
+        assert!(gb.children().is_empty());
+    }
+
+    #[test]
+    fn test_panel_empty_has_no_children() {
+        let gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        assert!(gb.children().is_empty());
+        assert_eq!(gb.children().len(), 0);
     }
 }

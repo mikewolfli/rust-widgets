@@ -141,7 +141,7 @@ impl crate::event::EventHandler for RichEdit {
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

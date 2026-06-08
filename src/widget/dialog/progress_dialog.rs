@@ -137,7 +137,7 @@ impl EventHandler for ProgressDialog {
         }
         match event {
             Event::KeyPress { key, .. } if *key == 27 => self.cancel(),
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

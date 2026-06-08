@@ -131,6 +131,7 @@ impl ListBox {
                 self.selected_indices.truncate(1);
                 self.selection_changed.emit();
             }
+            // No action needed for this transition
             _ => {}
         }
     }
@@ -332,9 +333,11 @@ impl EventHandler for ListBox {
                             self.item_activated.emit(current);
                         }
                     }
+                    // Unknown key; ignore
                     _ => {}
                 }
             }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

@@ -404,3 +404,665 @@ impl Draw for TabWidget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Point, Rect, Size};
+    use crate::widget::svg::{render_to_svg, render_widget_to_svg};
+    use std::sync::Arc;
+
+    /// Helper to create unique test ObjectIds.
+    fn wid1() -> ObjectId {
+        1001
+    }
+    fn wid2() -> ObjectId {
+        1002
+    }
+
+    // ── 1. Creation defaults ──────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_creation_defaults() {
+        let tw = TabWidget::new(Rect::new(10, 20, 400, 300));
+        assert_eq!(tw.kind(), WidgetKind::TabWidget);
+        assert_eq!(tw.geometry(), Rect::new(10, 20, 400, 300));
+        assert_eq!(tw.count(), 0);
+        assert_eq!(tw.current_index(), 0);
+        assert!(tw.current_widget().is_none());
+        assert_eq!(tw.tab_position(), TabPosition::North);
+        assert_eq!(tw.tab_shape(), TabShape::Rounded);
+        assert!(!tw.closable());
+        assert!(!tw.movable());
+        assert!(tw.is_visible());
+        assert!(tw.is_enabled());
+        assert!(tw.children().is_empty());
+        assert!(tw.registry().is_none());
+    }
+
+    // ── 2. Adding tabs ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_add_tab_returns_index_and_increments_count() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        let idx0 = tw.add_tab("Tab A".to_string(), None);
+        assert_eq!(idx0, 0);
+        assert_eq!(tw.count(), 1);
+
+        let idx1 = tw.add_tab("Tab B".to_string(), Some(wid1()));
+        assert_eq!(idx1, 1);
+        assert_eq!(tw.count(), 2);
+
+        let idx2 = tw.add_tab("Tab C".to_string(), Some(wid2()));
+        assert_eq!(idx2, 2);
+        assert_eq!(tw.count(), 3);
+    }
+
+    #[test]
+    fn tabwidget_add_tab_with_widget_updates_children() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("With Widget".to_string(), Some(wid1()));
+        let children = tw.children();
+        assert_eq!(children.len(), 1);
+        assert!(children.contains(&wid1()));
+    }
+
+    #[test]
+    fn tabwidget_add_tab_without_widget_does_not_add_child() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("No Widget".to_string(), None);
+        assert!(tw.children().is_empty());
+    }
+
+    // ── 3. Inserting tabs at specific index ───────────────────────────────────
+
+    #[test]
+    fn tabwidget_insert_tab_at_front_shifts_indices() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.insert_tab(0, "Inserted".to_string(), None);
+        assert_eq!(tw.count(), 3);
+        assert_eq!(tw.tab_text(0), Some("Inserted"));
+        assert_eq!(tw.tab_text(1), Some("A"));
+        assert_eq!(tw.tab_text(2), Some("B"));
+    }
+
+    #[test]
+    fn tabwidget_insert_tab_at_end_acts_like_add() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.insert_tab(1, "B".to_string(), None);
+        assert_eq!(tw.count(), 2);
+        assert_eq!(tw.tab_text(1), Some("B"));
+    }
+
+    #[test]
+    fn tabwidget_insert_tab_shifts_current_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.set_current_index(1);
+        tw.insert_tab(0, "X".to_string(), None);
+        // current_index was 1, now should be 2 because a tab was inserted before it
+        assert_eq!(tw.current_index(), 2);
+    }
+
+    #[test]
+    fn tabwidget_insert_tab_with_widget_adds_child() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.insert_tab(0, "X".to_string(), Some(wid1()));
+        let children = tw.children();
+        assert_eq!(children.len(), 1);
+        assert!(children.contains(&wid1()));
+    }
+
+    // ── 4. Removing tabs ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_remove_tab_reduces_count() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.add_tab("C".to_string(), None);
+        assert_eq!(tw.count(), 3);
+
+        tw.remove_tab(1);
+        assert_eq!(tw.count(), 2);
+        assert_eq!(tw.tab_text(0), Some("A"));
+        assert_eq!(tw.tab_text(1), Some("C"));
+    }
+
+    #[test]
+    fn tabwidget_remove_tab_out_of_bounds_is_noop() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.remove_tab(5); // out of bounds
+        assert_eq!(tw.count(), 1);
+    }
+
+    #[test]
+    fn tabwidget_remove_last_tab_resets_current_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.remove_tab(0);
+        assert_eq!(tw.count(), 0);
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_remove_tab_adjusts_current_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.add_tab("C".to_string(), None);
+        tw.set_current_index(2);
+        tw.remove_tab(2);
+        assert_eq!(tw.current_index(), 1);
+    }
+
+    #[test]
+    fn tabwidget_remove_tab_with_widget_removes_child() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), Some(wid1()));
+        tw.add_tab("B".to_string(), Some(wid2()));
+        assert_eq!(tw.children().len(), 2);
+        tw.remove_tab(0);
+        assert_eq!(tw.children().len(), 1);
+        assert!(!tw.children().contains(&wid1()));
+    }
+
+    // ── 5. Getting / setting current index ────────────────────────────────────
+
+    #[test]
+    fn tabwidget_set_current_index_normal() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), Some(wid1()));
+        tw.add_tab("B".to_string(), Some(wid2()));
+        tw.set_current_index(1);
+        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.current_widget(), Some(wid2()));
+    }
+
+    #[test]
+    fn tabwidget_set_current_index_out_of_bounds_is_noop() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.set_current_index(10);
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_set_current_index_same_value_is_noop() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.set_current_index(0); // already 0
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_current_widget_on_empty_returns_none() {
+        let tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.current_widget(), None);
+    }
+
+    #[test]
+    fn tabwidget_set_current_index_round_trip() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.add_tab("C".to_string(), None);
+        tw.set_current_index(2);
+        assert_eq!(tw.current_index(), 2);
+        tw.set_current_index(0);
+        assert_eq!(tw.current_index(), 0);
+        tw.set_current_index(1);
+        assert_eq!(tw.current_index(), 1);
+    }
+
+    // ── 6. Tab count after operations ─────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_count_after_mixed_operations() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.count(), 0);
+        tw.add_tab("A".to_string(), None);
+        assert_eq!(tw.count(), 1);
+        tw.add_tab("B".to_string(), None);
+        assert_eq!(tw.count(), 2);
+        tw.insert_tab(1, "C".to_string(), None);
+        assert_eq!(tw.count(), 3);
+        tw.remove_tab(0);
+        assert_eq!(tw.count(), 2);
+        tw.remove_tab(0);
+        assert_eq!(tw.count(), 1);
+        tw.remove_tab(0);
+        assert_eq!(tw.count(), 0);
+    }
+
+    // ── 7. Setting tab text and tooltip ───────────────────────────────────────
+
+    #[test]
+    fn tabwidget_set_tab_text_updates_and_retrieves() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Original".to_string(), None);
+        assert_eq!(tw.tab_text(0), Some("Original"));
+        tw.set_tab_text(0, "Updated".to_string());
+        assert_eq!(tw.tab_text(0), Some("Updated"));
+    }
+
+    #[test]
+    fn tabwidget_set_tab_text_out_of_bounds_is_noop() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.set_tab_text(0, "Nope".to_string());
+        // No panic, no change
+        assert_eq!(tw.tab_text(0), None);
+    }
+
+    #[test]
+    fn tabwidget_tab_text_returns_none_for_invalid_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Only".to_string(), None);
+        assert_eq!(tw.tab_text(1), None);
+        assert_eq!(tw.tab_text(usize::MAX), None);
+    }
+
+    #[test]
+    fn tabwidget_tab_tooltip_set_and_get() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        let tab = tw.tab_mut(0).unwrap();
+        assert_eq!(tab.tooltip(), "");
+        tab.set_tooltip("Helpful hint".to_string());
+        assert_eq!(tab.tooltip(), "Helpful hint");
+        let tab_ref = tw.tab(0).unwrap();
+        assert_eq!(tab_ref.tooltip(), "Helpful hint");
+    }
+
+    // ── 8. Enabling / disabling tabs ──────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_tab_enabled_default() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        assert!(tw.tab(0).unwrap().is_enabled());
+    }
+
+    #[test]
+    fn tabwidget_disable_tab_via_tab_mut() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        let tab = tw.tab_mut(0).unwrap();
+        tab.set_enabled(false);
+        assert!(!tw.tab(0).unwrap().is_enabled());
+        // Re-enable
+        let tab = tw.tab_mut(0).unwrap();
+        tab.set_enabled(true);
+        assert!(tw.tab(0).unwrap().is_enabled());
+    }
+
+    #[test]
+    fn tabwidget_tab_title_via_tab_api() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Hello".to_string(), None);
+        assert_eq!(tw.tab(0).unwrap().title(), "Hello");
+        tw.tab_mut(0).unwrap().set_title("World".to_string());
+        assert_eq!(tw.tab(0).unwrap().title(), "World");
+    }
+
+    // ── 9. Tab position and shape configuration ───────────────────────────────
+
+    #[test]
+    fn tabwidget_tab_position_default_is_north() {
+        let tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.tab_position(), TabPosition::North);
+    }
+
+    #[test]
+    fn tabwidget_set_tab_position_cycle() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.set_tab_position(TabPosition::South);
+        assert_eq!(tw.tab_position(), TabPosition::South);
+        tw.set_tab_position(TabPosition::West);
+        assert_eq!(tw.tab_position(), TabPosition::West);
+        tw.set_tab_position(TabPosition::East);
+        assert_eq!(tw.tab_position(), TabPosition::East);
+        tw.set_tab_position(TabPosition::North);
+        assert_eq!(tw.tab_position(), TabPosition::North);
+    }
+
+    #[test]
+    fn tabwidget_tab_shape_default_is_rounded() {
+        let tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.tab_shape(), TabShape::Rounded);
+    }
+
+    #[test]
+    fn tabwidget_set_tab_shape() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.set_tab_shape(TabShape::Triangular);
+        assert_eq!(tw.tab_shape(), TabShape::Triangular);
+        tw.set_tab_shape(TabShape::Rectangular);
+        assert_eq!(tw.tab_shape(), TabShape::Rectangular);
+        tw.set_tab_shape(TabShape::Rounded);
+        assert_eq!(tw.tab_shape(), TabShape::Rounded);
+    }
+
+    #[test]
+    fn tabwidget_closable_movable_default_false() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert!(!tw.closable());
+        assert!(!tw.movable());
+        tw.set_closable(true);
+        tw.set_movable(true);
+        assert!(tw.closable());
+        assert!(tw.movable());
+        tw.set_closable(false);
+        tw.set_movable(false);
+        assert!(!tw.closable());
+        assert!(!tw.movable());
+    }
+
+    // ── 10. Min / max size via Widget trait ───────────────────────────────────
+
+    #[test]
+    fn tabwidget_min_size_default_none() {
+        let tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.min_size(), None);
+        assert_eq!(tw.max_size(), None);
+    }
+
+    #[test]
+    fn tabwidget_set_min_max_size() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.set_min_size(Some(Size::new(100, 80)));
+        tw.set_max_size(Some(Size::new(800, 600)));
+        assert_eq!(tw.min_size(), Some(Size::new(100, 80)));
+        assert_eq!(tw.max_size(), Some(Size::new(800, 600)));
+    }
+
+    // ── 11. Signal accessors ──────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_current_changed_signal_emits_on_set_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        let emitted = Arc::new(std::sync::Mutex::new(None));
+        tw.current_changed.connect({
+            let emitted = Arc::clone(&emitted);
+            move |idx: Arc<usize>| {
+                *emitted.lock().unwrap() = Some(*idx);
+            }
+        });
+
+        tw.set_current_index(1);
+        assert_eq!(*emitted.lock().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn tabwidget_current_changed_not_emitted_for_same_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        tw.current_changed.connect({
+            let count = Arc::clone(&count);
+            move |_: Arc<usize>| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        tw.set_current_index(0); // same as default
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn tabwidget_current_changed_not_emitted_for_out_of_bounds() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        tw.current_changed.connect({
+            let count = Arc::clone(&count);
+            move |_: Arc<usize>| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        tw.set_current_index(5); // out of bounds
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn tabwidget_tab_close_requested_signal_accessible() {
+        let tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        let emitted = Arc::new(std::sync::Mutex::new(None));
+        tw.tab_close_requested.connect({
+            let emitted = Arc::clone(&emitted);
+            move |idx: Arc<usize>| {
+                *emitted.lock().unwrap() = Some(*idx);
+            }
+        });
+        // Manually emit — tabwidget doesn't auto-close, but the signal is public
+        tw.tab_close_requested.emit(1usize);
+        assert_eq!(*emitted.lock().unwrap(), Some(1));
+    }
+
+    // ── 12. Geometry delegation ───────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_geometry_via_widget_trait() {
+        let tw = TabWidget::new(Rect::new(5, 10, 200, 150));
+        assert_eq!(tw.geometry(), Rect::new(5, 10, 200, 150));
+        assert_eq!(tw.rect(), Rect::new(5, 10, 200, 150));
+    }
+
+    #[test]
+    fn tabwidget_set_geometry_via_widget_trait() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 100, 100));
+        tw.set_geometry(Rect::new(20, 30, 500, 400));
+        assert_eq!(tw.geometry(), Rect::new(20, 30, 500, 400));
+        assert_eq!(tw.position(), Point::new(20, 30));
+        assert_eq!(tw.size(), Size::new(500, 400));
+    }
+
+    #[test]
+    fn tabwidget_set_position_and_size() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 200, 100));
+        tw.set_position(Point::new(50, 60));
+        assert_eq!(tw.position(), Point::new(50, 60));
+        assert_eq!(tw.size(), Size::new(200, 100));
+
+        tw.set_size(Size::new(300, 150));
+        assert_eq!(tw.position(), Point::new(50, 60));
+        assert_eq!(tw.size(), Size::new(300, 150));
+    }
+
+    // ── 13. Widget ID and kind ────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_kind_is_tabwidget() {
+        let tw = TabWidget::new(Rect::new(0, 0, 100, 100));
+        assert_eq!(tw.kind(), WidgetKind::TabWidget);
+    }
+
+    #[test]
+    fn tabwidget_id_is_unique() {
+        let tw1 = TabWidget::new(Rect::new(0, 0, 100, 100));
+        let tw2 = TabWidget::new(Rect::new(0, 0, 100, 100));
+        assert_ne!(tw1.id(), tw2.id());
+    }
+
+    #[test]
+    fn tabwidget_accessible_name_falls_back_to_kind() {
+        let tw = TabWidget::new(Rect::new(0, 0, 100, 100));
+        assert_eq!(tw.accessible_name(), "TabWidget");
+    }
+
+    #[test]
+    fn tabwidget_accessible_role_is_kind() {
+        let tw = TabWidget::new(Rect::new(0, 0, 100, 100));
+        assert_eq!(tw.accessible_role(), "TabWidget");
+    }
+
+    // ── 14. Disabled state blocks events ──────────────────────────────────────
+
+    #[test]
+    fn tabwidget_disabled_does_not_switch_on_mouse_press() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        tw.set_current_index(0);
+        // Disable the entire widget
+        tw.set_enabled(false);
+
+        // Click on tab 1's position
+        // tab_rect(0) with North position at Rect(0,0,300,200) starts at x=0, y=0
+        let event = Event::mouse_press(0, 0, 1);
+        tw.handle_event(&event);
+
+        // current_index should still be 0 because the widget is disabled
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_enabled_switches_on_mouse_press() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        tw.set_current_index(0);
+
+        // Click on tab 1's position
+        // tab_rect(1) with North at Rect(0,0,300,200): x=(100+2)*1=102, y=0
+        let event = Event::mouse_press(102, 0, 1);
+        tw.handle_event(&event);
+
+        assert_eq!(tw.current_index(), 1);
+    }
+
+    #[test]
+    fn tabwidget_disabled_tab_does_not_switch_on_mouse_press() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        // Disable tab at index 1
+        tw.tab_mut(1).unwrap().set_enabled(false);
+
+        tw.set_current_index(0);
+
+        // Click on tab 1's position
+        let event = Event::mouse_press(102, 0, 1);
+        tw.handle_event(&event);
+
+        // Should NOT switch because tab 1 is disabled
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_right_click_does_not_switch() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        tw.set_current_index(0);
+
+        // Right-click on tab 1's position
+        let event = Event::mouse_press(102, 0, 3);
+        tw.handle_event(&event);
+
+        // Should NOT switch because only button 1 (left click) triggers switch
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    #[test]
+    fn tabwidget_click_outside_tabs_does_not_change_index() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+
+        tw.set_current_index(0);
+
+        // Click far to the right of any tab
+        let event = Event::mouse_press(500, 0, 1);
+        tw.handle_event(&event);
+
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    // ── 15. SVG output verification ───────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_svg_output_via_render_to_svg() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Home".to_string(), None);
+        tw.add_tab("Settings".to_string(), None);
+
+        let svg = render_to_svg(&mut tw);
+        assert!(svg.starts_with("<svg"), "SVG should start with <svg");
+        assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+        assert!(svg.contains("width=\"300\""), "SVG should contain width=\"300\"");
+        assert!(svg.contains("height=\"200\""), "SVG should contain height=\"200\"");
+        // Should contain tab text
+        assert!(svg.contains("Home"));
+        assert!(svg.contains("Settings"));
+        // Should contain fill and stroke attributes from the rendering
+        assert!(svg.contains("fill=") || svg.contains("stroke="));
+    }
+
+    #[test]
+    fn tabwidget_svg_output_with_explicit_geometry() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 120, 80));
+        tw.add_tab("X".to_string(), None);
+
+        let svg = render_widget_to_svg(&mut tw, Rect::new(0, 0, 120, 80));
+        assert!(svg.contains("width=\"120\""));
+        assert!(svg.contains("height=\"80\""));
+    }
+
+    // ── 16. Tab accessor (tab / tab_mut) ──────────────────────────────────────
+
+    #[test]
+    fn tabwidget_tab_accessor_out_of_bounds() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert!(tw.tab(0).is_none());
+        assert!(tw.tab_mut(0).is_none());
+    }
+
+    #[test]
+    fn tabwidget_tab_mut_allows_widget_assignment() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        tw.tab_mut(0).unwrap().set_widget(Some(wid1()));
+        // Widget assigned to tab 0 is also the current widget (index 0)
+        assert_eq!(tw.tab(0).unwrap().widget(), Some(wid1()));
+        assert_eq!(tw.current_widget(), Some(wid1()));
+    }
+
+    // ── 17. Registry round-trip ───────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_registry_set_and_get() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert!(tw.registry().is_none());
+        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
+        tw.set_registry(reg.clone());
+        assert!(tw.registry().is_some());
+        // Verify pointer identity
+        assert!(Rc::ptr_eq(&reg, tw.registry().unwrap()));
+    }
+
+    // ── 18. Tab icon set/get ───────────────────────────────────────────────────
+
+    #[test]
+    fn tabwidget_tab_icon_default_none() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        assert!(tw.tab(0).unwrap().icon().is_none());
+    }
+}

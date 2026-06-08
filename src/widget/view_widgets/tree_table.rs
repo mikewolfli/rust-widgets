@@ -360,7 +360,7 @@ impl crate::event::EventHandler for TreeTable {
                     let _ = self.toggle_row_expanded(row);
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

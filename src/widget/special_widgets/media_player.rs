@@ -227,6 +227,7 @@ impl EventHandler for MediaPlayer {
                 40 => self.set_volume(self.volume.saturating_sub(5)),
                 77 | 109 => self.toggle_mute(),
                 70 | 102 => self.toggle_fullscreen(),
+                // Unknown key; ignore
                 _ => {}
             },
             Event::MousePress { pos, button: 1 } => {
@@ -251,6 +252,7 @@ impl EventHandler for MediaPlayer {
                     let _ = self.toggle_playback();
                 }
             }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

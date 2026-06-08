@@ -169,8 +169,10 @@ impl EventHandler for SegmentedControl {
             Event::KeyPress { key, modifiers: _ } => match *key {
                 37 => self.move_selection(-1),
                 39 => self.move_selection(1),
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

@@ -208,8 +208,10 @@ impl EventHandler for ToastStack {
                 46 => {
                     let _ = self.dismiss_selected();
                 }
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

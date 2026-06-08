@@ -144,7 +144,7 @@ impl EventHandler for MarkdownEditor {
                 38 => self.move_cursor(-1),
                 40 => self.move_cursor(1),
                 80 | 112 if *modifiers != 0 => self.toggle_preview_mode(),
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             }
         }
     }

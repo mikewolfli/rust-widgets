@@ -1,6 +1,9 @@
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 /// Action/command system.
 pub mod action;
+/// Desktop-only: Generic asset file watcher.
+#[cfg(feature = "desktop")]
+pub mod asset;
 /// Desktop-only: C ABI bindings for desktop runtime.
 #[cfg(feature = "desktop")]
 pub mod bindings;
@@ -57,6 +60,8 @@ pub mod test;
 /// Desktop-only: Theme management.
 #[cfg(feature = "desktop")]
 pub mod theme;
+/// Generic utility modules (asset watcher, helpers, etc.).
+pub mod util;
 /// Web view and engine components.
 pub mod web;
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
@@ -578,6 +583,11 @@ pub fn set_clipboard_text(text: &str) -> bool {
 pub fn get_clipboard_text() -> String {
     platform::get_platform().get_clipboard_text()
 }
+/// Returns the platform's rich clipboard backend, if available.
+pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>
+{
+    platform::get_platform().clipboard_backend()
+}
 // Menu operations
 pub fn create_menu_bar(
     parent: crate::core::ObjectId,
@@ -653,6 +663,10 @@ pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -
 }
 pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_ime_enabled(widget_id)
+}
+/// Returns the platform's IME bridge, if available.
+pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBridge> {
+    platform::get_platform().ime_bridge()
 }
 pub fn set_widget_accessibility_name(widget_id: crate::core::ObjectId, name: &str) -> bool {
     platform::get_platform().set_widget_accessibility_name(widget_id, name)

@@ -14,17 +14,20 @@ Hardware-adaptive rendering, comprehensive 60+ widget library, touch/gesture sup
 ## Quick Start
 
 ```bash
-# Check (default desktop profile)
-cargo check
+# Check (all features, all targets)
+cargo check --all-features --all-targets
 
 # Run the main demo
 cargo run --example demo_basic
 
 # Full test suite
-cargo test --all
+cargo test --all-features -q
 
-# Code quality
-cargo clippy
+# Code quality (must pass — CI enforces zero warnings)
+cargo clippy --all-features --all-targets -- -D warnings
+
+# Formatting check
+cargo fmt --all -- --check
 ```
 
 ### Feature Profiles
@@ -270,7 +273,7 @@ cd examples/java && javac RustWidgets.java && java RustWidgets
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Run tests: `cargo test --all && cargo clippy`
+4. Run tests: `cargo test --all-features -q && cargo clippy --all-features --all-targets -- -D warnings && cargo fmt --all -- --check`
 5. Push to the branch (`git push origin feature/amazing-feature`)
 6. Open a Pull Request
 

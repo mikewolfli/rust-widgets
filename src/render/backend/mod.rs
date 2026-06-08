@@ -4,7 +4,8 @@ pub(crate) mod paint;
 pub(crate) mod scene;
 pub(crate) mod surface;
 
-pub use batch::{BatchCommand, BatchId, BatchRenderer};
+#[allow(unused_imports)]
+pub use batch::{BatchCommand, BatchError, BatchId, BatchRenderer};
 pub use paint::{PaintBackend, SoftwarePaintBackend};
 
 #[cfg(feature = "quality-management")]

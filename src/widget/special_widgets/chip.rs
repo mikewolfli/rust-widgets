@@ -211,8 +211,10 @@ impl EventHandler for Chip {
                         let _ = self.toggle_index(index);
                     }
                 }
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

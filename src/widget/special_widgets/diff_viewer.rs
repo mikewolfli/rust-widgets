@@ -142,7 +142,7 @@ impl EventHandler for DiffViewer {
                         }
                     }
                 }
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             }
         }
     }

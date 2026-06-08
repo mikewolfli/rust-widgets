@@ -344,8 +344,10 @@ impl EventHandler for SplitButton {
                 27 => {
                     self.close_menu();
                 }
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

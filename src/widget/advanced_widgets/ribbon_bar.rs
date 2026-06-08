@@ -925,7 +925,7 @@ impl EventHandler for RibbonBar {
                 }
             }
 
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

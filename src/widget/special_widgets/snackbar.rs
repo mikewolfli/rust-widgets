@@ -138,8 +138,10 @@ impl EventHandler for Snackbar {
                     let _ = self.trigger_action();
                 }
                 27 => self.dismiss(),
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

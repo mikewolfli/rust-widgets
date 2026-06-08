@@ -340,7 +340,7 @@ impl EventHandler for LineEdit {
             Event::FocusLost => {
                 self.editing_finished.emit();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

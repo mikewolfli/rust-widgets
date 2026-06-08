@@ -287,7 +287,7 @@ impl EventHandler for ScrollArea {
                     self.scroll_position.1 + delta.y,
                 );
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
         // Forward events to widget via registry (with viewport offset)
         if let Some(widget_id) = self.widget {

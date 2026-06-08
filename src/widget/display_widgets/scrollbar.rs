@@ -293,10 +293,10 @@ impl EventHandler for ScrollBar {
                         // End
                         self.trigger_action(ScrollBarAction::SliderToMaximum);
                     }
-                    _ => {}
+                    _ => { /* Other keys are not relevant */ }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

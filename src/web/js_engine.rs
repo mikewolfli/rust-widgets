@@ -249,7 +249,7 @@ impl SimpleJsEngine {
                     stmts.push(block[start..i].trim().to_string());
                     start = i + 1;
                 }
-                _ => {}
+                _ => { /* Other characters are not relevant */ }
             }
         }
         let tail = block[start..].trim().to_string();

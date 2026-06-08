@@ -251,9 +251,9 @@ impl EventHandler for VirtualTable {
                 39 => self.set_scroll_column(self.scroll_column.saturating_add(1)),
                 38 => self.set_scroll_row(self.scroll_row.saturating_sub(1)),
                 40 => self.set_scroll_row(self.scroll_row.saturating_add(1)),
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             },
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

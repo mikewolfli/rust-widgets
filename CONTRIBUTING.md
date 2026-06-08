@@ -6,11 +6,13 @@ Thank you for your interest in contributing.
 
 1. Install Rust stable toolchain.
 2. Clone the repository.
-3. Run checks:
+3. Run checks (same as CI):
 
 ```bash
-cargo check
-cargo check --examples
+cargo check --all-features --all-targets
+cargo fmt --all -- --check
+cargo clippy --all-features --all-targets -- -D warnings
+cargo test --all-features -q
 ```
 
 ## Branch and commit
@@ -21,8 +23,10 @@ cargo check --examples
 
 ## Pull request checklist
 
-- [ ] Code compiles with `cargo check`.
-- [ ] Examples compile with `cargo check --examples`.
+- [ ] Code compiles with `cargo check --all-features --all-targets`.
+- [ ] Passes `cargo clippy --all-features --all-targets -- -D warnings`.
+- [ ] Tests pass with `cargo test --all-features -q`.
+- [ ] Formatting passes `cargo fmt --all -- --check`.
 - [ ] Documentation is updated when behavior changes.
 - [ ] No unrelated refactoring.
 - [ ] New/changed logic includes English comments following `docs/COMMENTING_GUIDELINES.md`.

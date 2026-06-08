@@ -135,7 +135,7 @@ impl EventHandler for ColorDialog {
                     self.nudge_rgb(0, -5, 0);
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

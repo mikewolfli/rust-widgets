@@ -1,5 +1,5 @@
 //! Event loop implementation.
-use super::event_queue::EventQueue;
+use super::event_queue::{EventQueue, EventSender};
 use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
 use crate::core::ObjectId;
@@ -41,6 +41,10 @@ pub struct AnimationFrameRequest {
 pub struct EventLoop {
     /// Event queue for processing.
     queue: Arc<Mutex<EventQueue>>,
+    /// Independent sender for posting events without locking the queue.
+    /// Avoids deadlock with the event loop thread which holds the queue mutex
+    /// while blocked on `dequeue_blocking()`.
+    sender: EventSender,
     /// Shared flag indicating if the loop is running.
     running: Arc<Mutex<bool>>,
     /// Processing thread handle.
@@ -51,20 +55,27 @@ pub struct EventLoop {
     timer_manager: TimerManager,
     /// Next animation frame request ID.
     next_anim_frame_id: AtomicU64,
+    /// Optional native platform event pump.
+    /// Called on each loop iteration to dispatch pending native platform events
+    /// (e.g., Wayland dispatch_pending). Replaces standalone platform dispatch loops.
+    native_pump: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl EventLoop {
     /// Creates a new event loop.
     pub fn new() -> Self {
         let queue = EventQueue::new();
-        let timer_manager = TimerManager::new(queue.sender());
+        let sender = queue.sender();
+        let timer_manager = TimerManager::new(sender.clone());
         Self {
             queue: Arc::new(Mutex::new(queue)),
+            sender,
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
             dispatch_fn: None,
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
+            native_pump: None,
         }
     }
 
@@ -79,8 +90,13 @@ impl EventLoop {
         let dispatch_fn = self.dispatch_fn.clone();
         #[cfg(feature = "touch")]
         let mut gesture_engine = GestureEngine::new();
+        let native_pump = self.native_pump.take();
         let handle = thread::spawn(move || {
             while *running.lock().unwrap_or_else(recover_lock) {
+                // Phase 0: Pump native platform events (e.g., Wayland dispatch)
+                if let Some(ref pump) = native_pump {
+                    pump();
+                }
                 // Phase 1: Process all available events (non-blocking drain)
                 // This handles both Normal and Idle priority events without
                 // letting Idle events block Normal ones.
@@ -148,9 +164,16 @@ impl EventLoop {
     }
 
     /// Stops the event loop.
+    ///
+    /// Posts a wake-up event to unblock the event loop thread from
+    /// `dequeue_blocking()` before joining it.
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(recover_lock) = false;
         self.timer_manager.clear();
+        // Post a wake event so the event loop thread unblocks from
+        // dequeue_blocking() and can observe the running flag.
+        let _ =
+            self.sender.post(0, Event::Custom { name: "__stop_wake".to_string(), payload: vec![] });
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[event-loop] Thread join failed: {:?}", e);
@@ -159,18 +182,17 @@ impl EventLoop {
     }
 
     /// Posts an event to the event loop.
+    ///
+    /// Uses an independent sender that does not lock the queue mutex,
+    /// avoiding deadlock with the event loop thread (which holds the mutex
+    /// while blocked on `dequeue_blocking()`).
     pub fn post_event(
         &self,
         target: ObjectId,
         event: Event,
         priority: EventPriority,
     ) -> Result<(), String> {
-        self.queue
-            .lock()
-            .unwrap_or_else(recover_lock)
-            .sender()
-            .post_with_priority(target, event, priority)
-            .map_err(|e| e.to_string())
+        self.sender.post_with_priority(target, event, priority).map_err(|e| e.to_string())
     }
 
     /// Request the event loop to dispatch a custom animation frame event on the next iteration.
@@ -193,6 +215,16 @@ impl EventLoop {
     /// Sets the dispatch callback invoked for each dequeued event.
     pub fn set_dispatch_fn(&mut self, f: EventDispatchFn) {
         self.dispatch_fn = Some(f);
+    }
+
+    /// Set a native platform event pump function.
+    ///
+    /// The pump is called at the start of each event loop iteration to dispatch
+    /// pending native platform events (e.g., Wayland `dispatch_pending`).
+    /// This replaces standalone platform dispatch loops with EventLoop-integrated
+    /// dispatch.
+    pub fn set_native_pump(&mut self, pump: Box<dyn Fn() + Send + Sync>) {
+        self.native_pump = Some(pump);
     }
 
     /// Checks if the event loop is running.
@@ -225,5 +257,171 @@ impl EventLoop {
 impl Default for EventLoop {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::types::Event;
+    use crate::event::EventPriority;
+    use crate::event::EventQueue;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_event_queue_high_throughput() {
+        let queue = EventQueue::new();
+        let sender = queue.sender();
+        let target: ObjectId = 1;
+
+        for i in 0..1000 {
+            let bytes: [u8; 8] = (i as u64).to_le_bytes();
+            let event = Event::Custom { name: "test".to_string(), payload: bytes.to_vec() };
+            sender.post_with_priority(target, event, EventPriority::Normal).unwrap();
+        }
+
+        let mut count = 0;
+        while let Some((_, _, _)) = queue.dequeue() {
+            count += 1;
+        }
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn test_event_queue_empty_drain() {
+        let queue = EventQueue::new();
+        // Drain immediately on an empty queue — should return None
+        assert!(queue.dequeue().is_none());
+    }
+
+    #[test]
+    fn test_event_priority_order() {
+        let queue = EventQueue::new();
+        let sender = queue.sender();
+        let target: ObjectId = 1;
+        let normal_event = Event::Custom { name: "normal".to_string(), payload: vec![] };
+        let high_event = Event::Custom { name: "high".to_string(), payload: vec![] };
+        let idle_event = Event::Custom { name: "idle".to_string(), payload: vec![] };
+
+        sender.post_with_priority(target, normal_event, EventPriority::Normal).unwrap();
+        sender.post_with_priority(target, high_event, EventPriority::High).unwrap();
+        sender.post_with_priority(target, idle_event, EventPriority::Idle).unwrap();
+
+        // Drain and verify each event carries the correct priority metadata
+        let mut events: Vec<EventPriority> = Vec::new();
+        while let Some((_, _, prio)) = queue.dequeue() {
+            events.push(prio);
+        }
+        // Since the underlying channel is FIFO, priority is stored as metadata;
+        // each envelope retains the priority it was posted with.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], EventPriority::Normal);
+        assert_eq!(events[1], EventPriority::High);
+        assert_eq!(events[2], EventPriority::Idle);
+    }
+
+    #[test]
+    fn test_native_pump_called_on_empty_queue() {
+        let mut el = EventLoop::new();
+        let pump_called = Arc::new(AtomicBool::new(false));
+        let pump_called_clone = pump_called.clone();
+
+        el.set_native_pump(Box::new(move || {
+            pump_called_clone.store(true, Ordering::SeqCst);
+        }));
+
+        el.start();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        el.stop();
+
+        assert!(
+            pump_called.load(Ordering::SeqCst),
+            "native pump should have been called during loop iteration"
+        );
+    }
+
+    #[test]
+    fn test_event_loop_timer_integration() {
+        let mut el = EventLoop::new();
+        let timer_fired = Arc::new(AtomicBool::new(false));
+        let timer_fired_clone = timer_fired.clone();
+
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if matches!(event, Event::Timer { id: 1 }) {
+                timer_fired_clone.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        el.start_timer(1u64, 1, std::time::Duration::from_millis(20), false).unwrap();
+        el.start();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        el.stop();
+
+        assert!(
+            timer_fired.load(Ordering::SeqCst),
+            "timer should have fired and been dispatched through the event loop"
+        );
+    }
+
+    #[test]
+    fn test_event_loop_animation_frame_dispatch() {
+        let mut el = EventLoop::new();
+        let anim_fired = Arc::new(AtomicBool::new(false));
+        let anim_fired_clone = anim_fired.clone();
+
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if let Event::Custom { name, .. } = event {
+                if name == "animation_frame" {
+                    anim_fired_clone.store(true, Ordering::SeqCst);
+                }
+            }
+        }));
+
+        el.request_animation_frame(1u64).unwrap();
+        el.start();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        el.stop();
+
+        assert!(
+            anim_fired.load(Ordering::SeqCst),
+            "animation frame event should have been dispatched through the event loop"
+        );
+    }
+
+    #[test]
+    fn test_event_loop_start_stop_idempotent() {
+        let mut el = EventLoop::new();
+
+        // Start once
+        el.start();
+        assert!(el.is_running());
+
+        // Start again — should be a no-op (running flag already true)
+        el.start();
+        assert!(el.is_running());
+
+        // Stop
+        el.stop();
+        assert!(!el.is_running());
+
+        // Stop again — should not panic
+        el.stop();
+        assert!(!el.is_running());
+    }
+
+    #[test]
+    fn test_event_loop_post_event_without_dispatch() {
+        // Posting events should not panic even when no dispatch function is set
+        let mut el = EventLoop::new();
+        el.start();
+        let result = el.post_event(
+            1u64,
+            Event::Custom { name: "orphan".to_string(), payload: vec![] },
+            EventPriority::Normal,
+        );
+        assert!(result.is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        el.stop();
     }
 }

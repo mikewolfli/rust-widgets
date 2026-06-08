@@ -64,7 +64,7 @@ pub use events::{
     EventHandlerMap,
 };
 pub use layout::{
-    add_spacer_to_layout, add_widget_to_layout, add_widget_to_layout_grid, create_layout_from_kind,
-    parse_layout_kind, store_layout, ChildLayoutAttrs, DeclarativeLayoutKind,
+    add_spacer_to_layout, add_widget_to_layout, create_layout_from_kind, parse_layout_kind,
+    store_layout, ChildLayoutAttrs, DeclarativeLayoutKind,
 };
 pub use loader::{extract_event_handlers, load_layout_from_str, JsonLoader};

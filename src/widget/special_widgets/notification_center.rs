@@ -239,8 +239,10 @@ impl EventHandler for NotificationCenter {
                 13 => {
                     let _ = self.activate_selected();
                 }
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

@@ -447,7 +447,7 @@ impl EventHandler for PieMenu {
                 // Escape
                 self.hide();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -530,5 +530,527 @@ impl Draw for PieMenu {
 
         // Draw a small center dot
         context.fill_circle(center, 3, Color::from_rgb(100, 100, 100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Color;
+    use crate::event::Event;
+    use crate::widget::svg::render_to_svg;
+    use std::sync::{Arc, Mutex};
+
+    /// 1. Creating default PieMenu (verify kind, geometry, default state)
+    #[test]
+    fn test_default_creation() {
+        let center = Point::new(200, 200);
+        let radius = 100.0;
+        let menu = PieMenu::new(center, radius);
+
+        assert_eq!(menu.kind(), WidgetKind::PieMenu);
+        assert_eq!(menu.center(), center);
+        assert_eq!(menu.radius(), radius);
+        assert!(menu.inner_radius() < radius);
+        assert_eq!(menu.inner_radius(), radius * 0.35);
+        assert_eq!(menu.current_index(), 0);
+        assert_eq!(menu.hovered_index(), None);
+        assert_eq!(menu.animation_progress(), 1.0);
+        assert_eq!(menu.item_count(), 0);
+        assert!(menu.is_visible());
+        assert!(menu.is_enabled());
+        assert!(menu.items().is_empty());
+
+        // Default colors
+        assert_eq!(menu.hover_color(), Color::from_rgb(0, 120, 215));
+        assert_eq!(menu.text_color(), Color::from_rgb(30, 30, 30));
+
+        // Geometry: centered at (200,200) with radius 100 => rect (100, 100, 200, 200)
+        let geom = menu.geometry();
+        assert_eq!(geom.x, 100);
+        assert_eq!(geom.y, 100);
+        assert_eq!(geom.width, 200);
+        assert_eq!(geom.height, 200);
+    }
+
+    /// 2. Adding items
+    #[test]
+    fn test_add_item() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+
+        let idx0 = menu.add_item("Cut");
+        assert_eq!(idx0, 0);
+        assert_eq!(menu.item_count(), 1);
+
+        let idx1 = menu.add_item("Copy");
+        assert_eq!(idx1, 1);
+        assert_eq!(menu.item_count(), 2);
+
+        let idx2 = menu.add_item_with_icon("Paste", "📋");
+        assert_eq!(idx2, 2);
+        assert_eq!(menu.item_count(), 3);
+
+        // Verify items
+        let items = menu.items();
+        assert_eq!(items[0].text(), "Cut");
+        assert_eq!(items[1].text(), "Copy");
+        assert_eq!(items[2].text(), "Paste");
+        assert_eq!(items[2].icon_text(), "📋");
+    }
+
+    /// 3. Inserting items at specific index
+    #[test]
+    fn test_insert_item_at_index() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("First");
+        menu.add_item("Third");
+        assert_eq!(menu.item_count(), 2);
+
+        // Insert at middle
+        menu.insert_item(1, "Second");
+        assert_eq!(menu.item_count(), 3);
+        assert_eq!(menu.items()[0].text(), "First");
+        assert_eq!(menu.items()[1].text(), "Second");
+        assert_eq!(menu.items()[2].text(), "Third");
+
+        // Insert at beginning
+        menu.insert_item(0, "Zero");
+        assert_eq!(menu.items()[0].text(), "Zero");
+        assert_eq!(menu.items()[1].text(), "First");
+
+        // Insert beyond end => appends
+        menu.insert_item(99, "Last");
+        assert_eq!(menu.items().last().unwrap().text(), "Last");
+
+        // Verify angles are recalculated (all items get equal slices)
+        let count = menu.item_count();
+        let slice = std::f32::consts::TAU / count as f32;
+        for (i, item) in menu.items().iter().enumerate() {
+            let expected_start = i as f32 * slice;
+            let expected_end = (i as f32 + 1.0) * slice;
+            assert!((item.angle_start() - expected_start).abs() < 0.001);
+            assert!((item.angle_end() - expected_end).abs() < 0.001);
+        }
+    }
+
+    /// 4. Removing items
+    #[test]
+    fn test_remove_item() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("A");
+        menu.add_item("B");
+        menu.add_item("C");
+        assert_eq!(menu.item_count(), 3);
+
+        // Remove middle
+        menu.remove_item(1);
+        assert_eq!(menu.item_count(), 2);
+        assert_eq!(menu.items()[0].text(), "A");
+        assert_eq!(menu.items()[1].text(), "C");
+
+        // Remove out of bounds => no-op
+        menu.remove_item(99);
+        assert_eq!(menu.item_count(), 2);
+
+        // Remove all
+        menu.remove_item(1);
+        menu.remove_item(0);
+        assert_eq!(menu.item_count(), 0);
+    }
+
+    /// 5. Setting/getting current index
+    #[test]
+    fn test_current_index() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Red");
+        menu.add_item("Green");
+        menu.add_item("Blue");
+
+        // Default is 0
+        assert_eq!(menu.current_index(), 0);
+
+        menu.set_current_index(1);
+        assert_eq!(menu.current_index(), 1);
+
+        menu.set_current_index(2);
+        assert_eq!(menu.current_index(), 2);
+
+        // Out of bounds => no-op
+        menu.set_current_index(99);
+        assert_eq!(menu.current_index(), 2);
+    }
+
+    /// 6. Item count
+    #[test]
+    fn test_item_count() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        assert_eq!(menu.item_count(), 0);
+
+        menu.add_item("One");
+        assert_eq!(menu.item_count(), 1);
+
+        menu.add_item("Two");
+        menu.add_item("Three");
+        assert_eq!(menu.item_count(), 3);
+
+        menu.clear();
+        assert_eq!(menu.item_count(), 0);
+    }
+
+    /// 7. Setting item text and icon
+    #[test]
+    fn test_item_text_and_icon() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Initial");
+
+        // Mutable access via items() slice is not directly mutable,
+        // but we can use the item API through the menu.
+        // Create a new item and check PieMenuItem's setters
+        let mut item = PieMenuItem::new("Test");
+        assert_eq!(item.text(), "Test");
+        assert_eq!(item.icon_text(), "");
+
+        item.set_text("Updated");
+        assert_eq!(item.text(), "Updated");
+
+        item.set_icon_text("🚀");
+        assert_eq!(item.icon_text(), "🚀");
+
+        // Also verify that add_item_with_icon sets icon correctly
+        let mut menu2 = PieMenu::new(Point::new(50, 50), 60.0);
+        menu2.add_item_with_icon("Save", "💾");
+        assert_eq!(menu2.items()[0].text(), "Save");
+        assert_eq!(menu2.items()[0].icon_text(), "💾");
+    }
+
+    /// 8. Enabling/disabling items
+    #[test]
+    fn test_enable_disable_items() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Alpha");
+        menu.add_item("Beta");
+        menu.add_item("Gamma");
+
+        // All start enabled
+        assert!(menu.items()[0].is_enabled());
+        assert!(menu.items()[1].is_enabled());
+        assert!(menu.items()[2].is_enabled());
+
+        menu.set_item_enabled(1, false);
+        assert!(menu.items()[0].is_enabled());
+        assert!(!menu.items()[1].is_enabled());
+        assert!(menu.items()[2].is_enabled());
+
+        // Re-enable
+        menu.set_item_enabled(1, true);
+        assert!(menu.items()[1].is_enabled());
+
+        // Out of bounds => no-op
+        menu.set_item_enabled(99, false);
+        assert_eq!(menu.item_count(), 3);
+    }
+
+    /// 9. Setting radius and center
+    #[test]
+    fn test_radius_and_center() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        assert_eq!(menu.radius(), 80.0);
+        assert_eq!(menu.center(), Point::new(100, 100));
+
+        // Set radius
+        menu.set_radius(120.0);
+        assert_eq!(menu.radius(), 120.0);
+        // Clamped minimum
+        menu.set_radius(5.0);
+        assert_eq!(menu.radius(), 10.0);
+
+        // Set center
+        menu.set_center(Point::new(300, 400));
+        assert_eq!(menu.center(), Point::new(300, 400));
+
+        // Geometry updates with new center/radius
+        let geom = menu.geometry();
+        assert_eq!(geom.x, 290); // center.x(300) - radius(10) = 290
+        assert_eq!(geom.width, 20);
+        assert_eq!(geom.height, 20);
+    }
+
+    /// 10. Item visibility (via base widget delegation)
+    #[test]
+    fn test_item_visibility() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        assert!(menu.is_visible());
+
+        menu.hide();
+        assert!(!menu.is_visible());
+        assert_eq!(menu.hovered_index(), None);
+
+        menu.show();
+        assert!(menu.is_visible());
+
+        // show_at also makes it visible
+        menu.hide();
+        menu.show_at(Point::new(200, 200));
+        assert!(menu.is_visible());
+    }
+
+    /// 11. Signal accessors (triggered, triggered_text, about_to_show, about_to_hide)
+    #[test]
+    fn test_signal_accessors() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Open");
+        menu.add_item("Save");
+        menu.add_item("Exit");
+
+        // Test triggered signal via set_current_index
+        let triggered = Arc::new(Mutex::new(None));
+        menu.triggered.connect({
+            let triggered = Arc::clone(&triggered);
+            move |val: Arc<usize>| {
+                *triggered.lock().unwrap() = Some(*val);
+            }
+        });
+
+        menu.set_current_index(1);
+        assert_eq!(*triggered.lock().unwrap(), Some(1));
+
+        // Test triggered_text signal
+        let triggered_text = Arc::new(Mutex::new(None::<String>));
+        menu.triggered_text.connect({
+            let triggered_text = Arc::clone(&triggered_text);
+            move |val: Arc<String>| {
+                *triggered_text.lock().unwrap() = Some(val.to_string());
+            }
+        });
+
+        menu.set_current_index(2);
+        assert_eq!(triggered_text.lock().unwrap().as_deref(), Some("Exit"));
+
+        // Test about_to_show signal
+        let show_fired = Arc::new(Mutex::new(false));
+        menu.about_to_show.connect({
+            let show_fired = Arc::clone(&show_fired);
+            move || {
+                *show_fired.lock().unwrap() = true;
+            }
+        });
+
+        menu.hide();
+        menu.show_at(Point::new(150, 150));
+        assert!(*show_fired.lock().unwrap());
+
+        // Test about_to_hide signal
+        let hide_fired = Arc::new(Mutex::new(false));
+        menu.about_to_hide.connect({
+            let hide_fired = Arc::clone(&hide_fired);
+            move || {
+                *hide_fired.lock().unwrap() = true;
+            }
+        });
+
+        menu.hide();
+        assert!(*hide_fired.lock().unwrap());
+    }
+
+    /// 12. Geometry delegation
+    #[test]
+    fn test_geometry_delegation() {
+        let mut menu = PieMenu::new(Point::new(50, 60), 40.0);
+
+        // Geometry via Widget trait
+        let geom = menu.geometry();
+        assert_eq!(geom.x, 10); // 50 - 40
+        assert_eq!(geom.y, 20); // 60 - 40
+        assert_eq!(geom.width, 80);
+        assert_eq!(geom.height, 80);
+
+        // set_geometry through Widget trait
+        menu.set_geometry(Rect::new(0, 0, 100, 100));
+        assert_eq!(menu.geometry(), Rect::new(0, 0, 100, 100));
+
+        // rect() alias
+        assert_eq!(menu.rect(), Rect::new(0, 0, 100, 100));
+
+        // position / size
+        assert_eq!(menu.position(), Point::new(0, 0));
+        assert_eq!(menu.size(), crate::core::Size::new(100, 100));
+    }
+
+    /// 13. Widget ID and kind
+    #[test]
+    fn test_widget_id_and_kind() {
+        let menu = PieMenu::new(Point::new(0, 0), 50.0);
+
+        // Kind
+        assert_eq!(menu.kind(), WidgetKind::PieMenu);
+
+        // ID should be non-zero (Object generates unique IDs)
+        assert_ne!(menu.id(), 0);
+
+        // Two menus should have different IDs
+        let menu2 = PieMenu::new(Point::new(10, 10), 30.0);
+        assert_ne!(menu.id(), menu2.id());
+    }
+
+    /// 14. SVG output verification
+    #[test]
+    fn test_svg_output() {
+        let mut menu = PieMenu::new(Point::new(50, 50), 50.0);
+        menu.add_item("Cut");
+        menu.add_item("Copy");
+        menu.add_item("Paste");
+
+        let svg = render_to_svg(&mut menu);
+
+        // Should be a valid SVG string
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
+
+        // Geometry-derived viewBox/viewport
+        assert!(svg.contains("width=\"100\""));
+        assert!(svg.contains("height=\"100\""));
+
+        // Should draw circle borders and center dot
+        assert!(svg.contains("circle"));
+        assert!(svg.contains("line"));
+
+        // Empty menu also produces SVG with just circles
+        let mut empty = PieMenu::new(Point::new(10, 10), 10.0);
+        let empty_svg = render_to_svg(&mut empty);
+        assert!(empty_svg.starts_with("<svg"));
+    }
+
+    /// 15. Disabled state blocks events
+    #[test]
+    fn test_disabled_state_blocks_events() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Test");
+
+        // Disable the widget
+        menu.set_enabled(false);
+        assert!(!menu.is_enabled());
+
+        // Hover events should not update hovered_index when disabled
+        menu.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
+        assert_eq!(menu.hovered_index(), None);
+
+        // Mouse press should not trigger
+        let triggered = Arc::new(Mutex::new(false));
+        menu.triggered.connect({
+            let triggered = Arc::clone(&triggered);
+            move |_: Arc<usize>| {
+                *triggered.lock().unwrap() = true;
+            }
+        });
+        menu.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1 });
+        assert!(!*triggered.lock().unwrap());
+
+        // Re-enable and verify events flow again
+        // Use a point within the pie slice (dist >= inner_radius and <= radius)
+        menu.set_enabled(true);
+        menu.handle_event(&Event::MouseMove { pos: Point::new(150, 100) });
+        assert_eq!(menu.hovered_index(), Some(0));
+    }
+
+    /// 16. Clear all items
+    #[test]
+    fn test_clear_items() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("A");
+        menu.add_item("B");
+        menu.add_item("C");
+        menu.set_current_index(1);
+
+        menu.clear();
+        assert_eq!(menu.item_count(), 0);
+        assert!(menu.items().is_empty());
+        assert_eq!(menu.hovered_index(), None);
+    }
+
+    /// 17. Inner radius get/set
+    #[test]
+    fn test_inner_radius() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 100.0);
+
+        // Default
+        assert!((menu.inner_radius() - 35.0).abs() < 0.001);
+
+        // Set inner radius
+        menu.set_inner_radius(50.0);
+        assert!((menu.inner_radius() - 50.0).abs() < 0.001);
+
+        // Clamped to min 2.0
+        menu.set_inner_radius(1.0);
+        assert!((menu.inner_radius() - 2.0).abs() < 0.001);
+
+        // Clamped to max radius * 0.95
+        menu.set_inner_radius(200.0);
+        assert!((menu.inner_radius() - 95.0).abs() < 0.001);
+    }
+
+    /// 18. show_at and hide
+    #[test]
+    fn test_show_at_and_hide() {
+        let mut menu = PieMenu::new(Point::new(0, 0), 50.0);
+
+        // Initially visible
+        assert!(menu.is_visible());
+
+        // show_at updates center and makes visible
+        menu.show_at(Point::new(200, 300));
+        assert_eq!(menu.center(), Point::new(200, 300));
+        assert!(menu.is_visible());
+        assert_eq!(menu.hovered_index(), None);
+
+        // hide
+        menu.hide();
+        assert!(!menu.is_visible());
+        assert_eq!(menu.hovered_index(), None);
+
+        // Widget trait show/hide delegation
+        menu.show();
+        assert!(menu.is_visible());
+        menu.hide();
+        assert!(!menu.is_visible());
+    }
+
+    /// 19. Hover color and text color
+    #[test]
+    fn test_hover_and_text_colors() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+
+        // Default hover color
+        assert_eq!(menu.hover_color(), Color::from_rgb(0, 120, 215));
+
+        // Change hover color
+        menu.set_hover_color(Color::from_rgb(255, 0, 0));
+        assert_eq!(menu.hover_color(), Color::from_rgb(255, 0, 0));
+
+        // Default text color
+        assert_eq!(menu.text_color(), Color::from_rgb(30, 30, 30));
+
+        // Change text color
+        menu.set_text_color(Color::from_rgb(255, 255, 255));
+        assert_eq!(menu.text_color(), Color::from_rgb(255, 255, 255));
+    }
+
+    /// 20. Animation progress
+    #[test]
+    fn test_animation_progress() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+
+        // Default
+        assert!((menu.animation_progress() - 1.0).abs() < 0.001);
+
+        // Set value
+        menu.set_animation_progress(0.5);
+        assert!((menu.animation_progress() - 0.5).abs() < 0.001);
+
+        // Clamped to [0.0, 1.0]
+        menu.set_animation_progress(-0.5);
+        assert!((menu.animation_progress() - 0.0).abs() < 0.001);
+
+        menu.set_animation_progress(1.5);
+        assert!((menu.animation_progress() - 1.0).abs() < 0.001);
     }
 }

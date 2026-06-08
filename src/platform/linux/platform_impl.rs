@@ -867,7 +867,7 @@ impl Platform for LinuxPlatform {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let adjustment = gtk::Adjustment::new(0.0, 0.0, 100.0, 1.0, 10.0, 0.0);
-            let spin = gtk::SpinButton::new(&adjustment, 1.0, 0);
+            let spin = gtk::SpinButton::new(Some(&adjustment), 1.0, 0);
             spin.set_size_request(width as i32, height as i32);
             let widget = spin.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
@@ -886,10 +886,12 @@ impl Platform for LinuxPlatform {
         self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let scrolled = gtk::ScrolledWindow::new();
+            let scrolled =
+                gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
             scrolled.set_size_request(width as i32, height as i32);
-            let store = gtk::ListStore::new(&[gtk::Type::String]);
-            let tree = gtk::TreeView::new_with_model(&store);
+            let store = gtk::ListStore::new(&[String::static_type()]);
+            let tree = gtk::TreeView::new();
+            tree.set_model(Some(&store));
             tree.append_column(&gtk::TreeViewColumn::new());
             scrolled.add(&tree);
             let widget = scrolled.clone().upcast::<gtk::Widget>();
@@ -909,7 +911,8 @@ impl Platform for LinuxPlatform {
         self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            let scrolled = gtk::ScrolledWindow::new();
+            let scrolled =
+                gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
             scrolled.set_size_request(width as i32, height as i32);
             let widget = scrolled.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();

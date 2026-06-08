@@ -93,7 +93,7 @@ impl ConfigPersistence {
                     "animation_speed" => overrides.animation_speed = value.parse().ok(),
                     "max_visible_items" => overrides.max_visible_items = value.parse().ok(),
                     "hardware_acceleration" => overrides.hardware_acceleration = value.parse().ok(),
-                    _ => {}
+                    _ => { /* Unknown value; use widget default */ }
                 }
             }
         }

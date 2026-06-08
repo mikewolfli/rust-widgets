@@ -4,41 +4,62 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::render::TextCluster;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_bitmap_glyph(
-    frame: &mut [u8],
-    surface_width: u32,
-    surface_height: u32,
-    ch: char,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color: Color,
-) {
-    if ch.is_whitespace() || width <= 0 || height <= 0 {
+/// Configuration for `draw_bitmap_glyph`.
+pub(crate) struct GlyphDrawConfig<'a> {
+    /// Glyph character code.
+    pub ch: u8,
+    /// X position of the glyph.
+    pub x: i32,
+    /// Y position of the glyph.
+    pub y: i32,
+    /// Glyph width in pixels.
+    pub w: u32,
+    /// Glyph height in pixels.
+    pub h: u32,
+    /// Glyph color.
+    pub color: Color,
+    /// Canvas width.
+    pub canvas_width: u32,
+    /// Canvas height.
+    pub canvas_height: u32,
+    /// Canvas pixel buffer (RGBA8).
+    pub canvas: &'a mut [u8],
+}
+
+pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
+    let ch = config.ch as char;
+    if ch.is_whitespace() || config.w == 0 || config.h == 0 {
         return;
     }
     let glyph = glyph_bitmap(ch);
+    let width = config.w as i32;
+    let height = config.h as i32;
     for gy in 0..8i32 {
         let row = glyph[gy as usize];
         for gx in 0..8i32 {
             if row & (1u8 << gx) == 0 {
                 continue;
             }
-            let x0 = x + (gx * width) / 8;
-            let mut x1 = x + ((gx + 1) * width) / 8;
-            let y0 = y + (gy * height) / 8;
-            let mut y1 = y + ((gy + 1) * height) / 8;
+            let x0 = config.x + (gx * width) / 8;
+            let mut x1 = config.x + ((gx + 1) * width) / 8;
+            let y0 = config.y + (gy * height) / 8;
+            let mut y1 = config.y + ((gy + 1) * height) / 8;
             if x1 <= x0 {
                 x1 = x0 + 1;
             }
             if y1 <= y0 {
                 y1 = y0 + 1;
             }
-            for py in y0.max(0)..y1.min(surface_height as i32) {
-                for px in x0.max(0)..x1.min(surface_width as i32) {
-                    blend_pixel(frame, surface_width, px as u32, py as u32, color, 1.0);
+            for py in y0.max(0)..y1.min(config.canvas_height as i32) {
+                for px in x0.max(0)..x1.min(config.canvas_width as i32) {
+                    blend_pixel(
+                        config.canvas,
+                        config.canvas_width,
+                        px as u32,
+                        py as u32,
+                        config.color,
+                        1.0,
+                    );
                 }
             }
         }

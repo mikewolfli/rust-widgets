@@ -221,7 +221,7 @@ impl EventHandler for Canvas {
                 self.last_mouse_pos = *pos;
                 self.double_clicked.emit();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

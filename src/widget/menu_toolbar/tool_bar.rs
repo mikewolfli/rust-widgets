@@ -264,7 +264,7 @@ impl EventHandler for ToolBar {
                     }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

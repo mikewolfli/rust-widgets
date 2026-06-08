@@ -248,7 +248,7 @@ impl crate::event::EventHandler for TreeView {
                     }
                 }
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

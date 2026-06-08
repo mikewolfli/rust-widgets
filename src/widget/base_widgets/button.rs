@@ -190,7 +190,7 @@ impl EventHandler for Button {
                 self.hovered = false;
                 self.base.request_redraw();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -788,5 +788,72 @@ mod tests {
     fn widget_trait_connection_scope() {
         let b = make_button();
         let _scope = b.connection_scope();
+    }
+
+    // ── 11. Visibility toggling ────────────────────────────────────────
+    #[test]
+    fn test_button_visibility_toggle() {
+        let mut b = make_button();
+        assert!(b.is_visible());
+
+        // Single hide
+        b.hide();
+        assert!(!b.is_visible());
+
+        // Double hide is idempotent
+        b.hide();
+        assert!(!b.is_visible());
+
+        // Show restores
+        b.show();
+        assert!(b.is_visible());
+
+        // Double show is idempotent
+        b.show();
+        assert!(b.is_visible());
+
+        // Multiple toggle cycles
+        for _ in 0..3 {
+            b.hide();
+            assert!(!b.is_visible());
+            b.show();
+            assert!(b.is_visible());
+        }
+    }
+
+    #[test]
+    fn test_button_zero_geometry() {
+        // Zero width/height — should not panic
+        let _b = Button::new("Zero".into(), Rect::new(0, 0, 0, 0));
+
+        // Negative position — should not panic
+        let _b = Button::new("Neg".into(), Rect::new(-10, -20, 100, 30));
+
+        // Zero geometry with negative position — should not panic
+        let _b = Button::new("All".into(), Rect::new(-5, -5, 0, 0));
+    }
+
+    #[test]
+    fn test_button_signal_not_emitted_on_same_value() {
+        let mut b = make_button();
+        let changed_count = Arc::new(AtomicBool::new(false));
+        let c = Arc::clone(&changed_count);
+        b.base.changed.connect(move || {
+            c.store(true, Ordering::SeqCst);
+        });
+
+        // set_text does NOT emit base.changed — it only calls request_redraw()
+        b.set_text("Click".into());
+        assert!(
+            !changed_count.load(Ordering::SeqCst),
+            "set_text with same value should not emit changed"
+        );
+
+        // Even setting different text does not emit base.changed
+        b.set_text("Different".into());
+        assert!(
+            !changed_count.load(Ordering::SeqCst),
+            "set_text with different value should not emit changed"
+        );
     }
 }

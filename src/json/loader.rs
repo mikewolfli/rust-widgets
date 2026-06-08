@@ -528,6 +528,7 @@ impl JsonLoader {
                         "extended" => {
                             lb.set_selection_mode(crate::widget::SelectionMode::ExtendedSelection)
                         }
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -548,6 +549,7 @@ impl JsonLoader {
                     match orientation {
                         "horizontal" => sl.set_orientation(Orientation::Horizontal),
                         "vertical" => sl.set_orientation(Orientation::Vertical),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -571,6 +573,7 @@ impl JsonLoader {
                         "both" => sl.set_tick_position(
                             crate::widget::display_widgets::slider::TickPosition::TicksBothSides,
                         ),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -599,6 +602,7 @@ impl JsonLoader {
                     match orientation {
                         "horizontal" => sb.set_orientation(Orientation::Horizontal),
                         "vertical" => sb.set_orientation(Orientation::Vertical),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -684,6 +688,7 @@ impl JsonLoader {
                         "east" => tw.set_tab_position(
                             crate::widget::container_widgets::tabwidget::TabPosition::East,
                         ),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -696,6 +701,7 @@ impl JsonLoader {
                         "rectangular" => tw.set_tab_shape(
                             crate::widget::container_widgets::tabwidget::TabShape::Rectangular,
                         ),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }
@@ -826,6 +832,7 @@ impl JsonLoader {
                         "sunken" => frame.set_frame_shadow(
                             crate::widget::base_widgets::frame::FrameShadow::Sunken,
                         ),
+                        // Unknown value; use widget default
                         _ => {}
                     }
                 }

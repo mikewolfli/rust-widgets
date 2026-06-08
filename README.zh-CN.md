@@ -14,17 +14,20 @@
 ## 快速开始
 
 ```bash
-# 检查（默认桌面配置）
-cargo check
+# 检查（所有特性、所有目标）
+cargo check --all-features --all-targets
 
 # 运行主演示
 cargo run --example demo_basic
 
 # 完整测试套件
-cargo test --all
+cargo test --all-features -q
 
-# 代码质量检查
-cargo clippy
+# 代码质量检查（CI 强制执行零警告）
+cargo clippy --all-features --all-targets -- -D warnings
+
+# 格式检查
+cargo fmt --all -- --check
 ```
 
 ### 功能配置
@@ -270,7 +273,7 @@ cd examples/java && javac RustWidgets.java && java RustWidgets
 1. Fork 本仓库
 2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
 3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 运行测试：`cargo test --all && cargo clippy`
+4. 运行测试：`cargo test --all-features -q && cargo clippy --all-features --all-targets -- -D warnings && cargo fmt --all -- --check`
 5. 推送到分支 (`git push origin feature/amazing-feature`)
 6. 创建 Pull Request
 

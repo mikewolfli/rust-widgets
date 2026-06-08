@@ -155,8 +155,10 @@ impl EventHandler for Dial {
                 34 => self.set_value(self.value + self.page_step),
                 36 => self.set_value(self.minimum),
                 35 => self.set_value(self.maximum),
+                // Unknown key; ignore
                 _ => {}
             },
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

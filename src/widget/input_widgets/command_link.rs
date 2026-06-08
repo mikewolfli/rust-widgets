@@ -74,7 +74,7 @@ impl EventHandler for CommandLink {
             Event::MouseLeave { .. } => {
                 self.hovered.emit(false);
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

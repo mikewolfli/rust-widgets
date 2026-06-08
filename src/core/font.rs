@@ -108,7 +108,7 @@ impl Font {
             && self.size.is_finite()
             && self.weight >= 100
             && self.weight <= 900
-            && self.weight % 100 == 0
+            && self.weight.is_multiple_of(100)
     }
     /// Creates a font with modified size.
     pub fn with_size(&self, size: f32) -> Self {

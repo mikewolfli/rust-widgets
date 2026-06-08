@@ -192,9 +192,9 @@ impl EventHandler for Breadcrumb {
                 13 => {
                     let _ = self.activate_selected();
                 }
-                _ => {}
+                _ => { /* Other keys are not relevant */ }
             },
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

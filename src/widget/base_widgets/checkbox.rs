@@ -60,6 +60,7 @@ impl CheckBox {
         match (previous, state) {
             (CheckState::Unchecked, CheckState::Checked) => self.toggled.emit(true),
             (CheckState::Checked, CheckState::Unchecked) => self.toggled.emit(false),
+            // No action needed for this transition
             _ => {}
         }
         self.base.request_redraw();
@@ -133,6 +134,7 @@ impl EventHandler for CheckBox {
                     // Space key
                     self.toggle();
                 }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }
@@ -192,6 +194,7 @@ impl Draw for CheckBox {
                     );
                     context.fill_rect(partial_rect, check_color);
                 }
+                // No action needed for this transition
                 _ => {}
             }
         }

@@ -307,7 +307,7 @@ impl EventHandler for GridWidget {
             Event::MouseRelease { pos: _, button: 1 } => {
                 self.base.set_mouse_pressed(false);
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

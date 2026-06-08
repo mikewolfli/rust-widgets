@@ -688,7 +688,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.pressed_changed.emit(false);
                 self.base.request_redraw();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }

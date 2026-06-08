@@ -156,6 +156,7 @@ impl TabBar {
             Some(cur) if cur > index => {
                 self.current_index = Some(cur - 1);
             }
+            // No action needed for this transition
             _ => {}
         }
     }
@@ -554,6 +555,7 @@ impl EventHandler for TabBar {
                     }
                 }
             }
+            // Other events are not relevant for this widget
             _ => {}
         }
     }

@@ -157,7 +157,7 @@ impl EventHandler for WebView {
             Event::Timer { id } if *id == Self::LOAD_TIMER_ID && self.pending_load => {
                 self.finish_loading();
             }
-            _ => {}
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
