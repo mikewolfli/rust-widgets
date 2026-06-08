@@ -1,7 +1,7 @@
 use super::*;
 use crate::control_backend::trait_def::ControlBackend;
 use crate::control_backend::types::ControlBackendKind;
-use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
+use crate::platform::WidgetTriggerKind;
 
 #[test]
 fn custom_paint_control_backend_new_creates_valid_instance() {

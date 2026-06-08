@@ -635,7 +635,7 @@ Windows 有真实 Win32 调用，Linux 有部分 GTK 集成，其余 4 个后端
 | C5 跨平台合规性 | ⏸️ 部分 | — | 需多平台 CI |
 | I1 构造默认文本 | ⏸️ 部分 | — | FileDialog 使用 tr!()，Button 等接收原始 String |
 | I2 工具提示 i18n | ✅ **闭合** | **R3** | set_translated_tooltip() 方法 |
-| I3 无障碍 i18n | ⏸️ 部分 | — | AccessibilityPlatform trait 存在待集成 |
+| I3 无障碍 i18n | ⏸️ 部分 | — | AccessibilityBridge trait 存在待集成 |
 | I4 audit 工具 | ✅ **闭合** | **R3** | I18nManager::audit_keys() |
 | I5 诊断消息 | ✅ **闭合** | R1 | 对话框干净无噪音日志 |
 | W1 base() panic | ✅ **闭合** | R1 | 48 widget 修复 |

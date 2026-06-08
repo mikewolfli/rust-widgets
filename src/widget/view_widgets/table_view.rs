@@ -13,7 +13,7 @@ mod tests {
     use crate::event::{Event, EventHandler};
     use crate::widget::svg::render_to_svg;
     use crate::widget::view_widgets::list_view::SelectionMode;
-    use crate::widget::view_widgets::table_widget::{ItemDelegate, TableModel, TableWidget};
+    use crate::widget::view_widgets::table_widget::{ItemDelegate, TableModel};
     use crate::widget::Widget;
     use crate::WidgetKind;
     use std::sync::atomic::{AtomicBool, Ordering};

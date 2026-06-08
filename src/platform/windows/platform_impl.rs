@@ -1,6 +1,9 @@
 //! `impl Platform for WindowsPlatform` — the main trait implementation.
 
 use crate::core::{ObjectId, PlatformFamily};
+use crate::platform::accessibility::AccessibilityBridge;
+use crate::platform::clipboard::RichClipboardBackend;
+use crate::platform::ime::ImeBridge;
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
     WidgetTriggerEvent, WidgetTriggerKind,
@@ -1637,5 +1640,18 @@ impl Platform for WindowsPlatform {
 
     fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
         self.state.ime_enabled(widget_id)
+    }
+
+    fn ime_bridge(&self) -> Option<&dyn ImeBridge> {
+        Some(&self.ime_bridge)
+    }
+
+    fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
+        Some(&self.clipboard)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
+        Some(&self.a11y_bridge)
     }
 }

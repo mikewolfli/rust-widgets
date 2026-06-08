@@ -3,6 +3,7 @@
 #![allow(deprecated)]
 
 use crate::core::ObjectId;
+use crate::platform::accessibility::macos::MacOSAccessibilityBridge;
 use crate::platform::state::BackendState;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 use cocoa::appkit::{NSView, NSWindow, NSWindowStyleMask};
@@ -64,6 +65,12 @@ pub struct MacOSPlatform {
     pub(crate) list_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
     /// List-box selected index per logical widget id.
     pub(crate) list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
+    /// Platform IME bridge for text input method integration.
+    pub(crate) ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge,
+    /// Platform rich clipboard backend.
+    pub(crate) clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
+    /// Platform accessibility bridge for NSAccessibility notifications.
+    pub(crate) a11y_bridge: MacOSAccessibilityBridge,
 }
 
 static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
@@ -239,6 +246,9 @@ impl MacOSPlatform {
             combo_box_selection: Mutex::new(HashMap::new()),
             list_box_items: Mutex::new(HashMap::new()),
             list_box_selection: Mutex::new(HashMap::new()),
+            ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge,
+            clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
+            a11y_bridge: MacOSAccessibilityBridge::new(),
         }
     }
 }
@@ -278,6 +288,8 @@ impl MacOSPlatform {
             .lock()
             .expect("macos handle lock poisoned")
             .insert(id, CocoaHandle { ptr, kind });
+        // Register the native handle with the accessibility bridge.
+        self.a11y_bridge.register_handle(id, ptr);
         id
     }
     pub(crate) fn as_id(handle: CocoaHandle) -> id {

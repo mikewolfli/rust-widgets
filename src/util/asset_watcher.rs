@@ -139,9 +139,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let events = watcher.drain();
+        // Canonicalize to handle macOS /var -> /private/var symlink
+        let canonical = std::fs::canonicalize(&test_file).unwrap_or_else(|_| test_file.clone());
         let matched = events
             .iter()
-            .any(|e| matches!(e, AssetEvent::FileChanged { path, .. } if path == &test_file));
+            .any(|e| matches!(e, AssetEvent::FileChanged { path, .. } if *path == canonical || path.ends_with("test.txt")));
         assert!(matched, "Expected FileChanged event for test.txt, got {events:?}");
 
         let _ = fs::remove_dir_all(&dir);
@@ -163,9 +165,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let events = watcher.drain();
+        // Canonicalize to handle macOS /var -> /private/var symlink
+        let canonical = std::fs::canonicalize(&txt_file).unwrap_or_else(|_| txt_file.clone());
         let matched = events
             .iter()
-            .any(|e| matches!(e, AssetEvent::FileChanged { path, .. } if path == &txt_file));
+            .any(|e| matches!(e, AssetEvent::FileChanged { path, .. } if *path == canonical || path.ends_with("ignored.txt")));
         assert!(!matched, "Filtered file should not produce event, got {events:?}");
 
         let _ = fs::remove_dir_all(&dir);

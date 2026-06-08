@@ -3,6 +3,7 @@
 use super::{BaseWidget, WidgetKind};
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::EventHandler;
+use crate::platform::accessibility::AccessibleRole;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{Margin, Padding, WidgetStyle};
 use std::any::Any;
@@ -132,8 +133,8 @@ pub trait Widget: EventHandler + Any {
         }
     }
     /// Returns the semantic accessibility role for this widget.
-    fn accessible_role(&self) -> String {
-        format!("{:?}", self.kind())
+    fn accessible_role(&self) -> AccessibleRole {
+        AccessibleRole::from(self.kind())
     }
     /// Returns a short accessibility description with current visibility/enabled state.
     fn accessible_description(&self) -> String {
@@ -145,9 +146,9 @@ pub trait Widget: EventHandler + Any {
             state_flags.push("hidden");
         }
         if state_flags.is_empty() {
-            self.accessible_role()
+            format!("{:?}", self.accessible_role())
         } else {
-            format!("{} ({})", self.accessible_role(), state_flags.join(", "))
+            format!("{:?} ({})", self.accessible_role(), state_flags.join(", "))
         }
     }
     fn dpi_scale(&self) -> f32 {
@@ -350,5 +351,19 @@ mod tests {
         button.set_enabled(false);
         button.hide();
         assert_eq!(button.accessible_description(), "Button (disabled, hidden)");
+    }
+
+    #[test]
+    fn widget_structure_button_exposes_expected_kind_and_geometry() {
+        let button = Button::new("Run".to_string(), Rect::new(10, 20, 120, 36));
+        assert_eq!(button.kind(), crate::widget::WidgetKind::Button);
+        assert_eq!(button.geometry(), Rect::new(10, 20, 120, 36));
+    }
+
+    #[test]
+    fn widget_structure_button_has_distinct_object_ids() {
+        let a = Button::new("A".to_string(), Rect::new(0, 0, 80, 24));
+        let b = Button::new("B".to_string(), Rect::new(0, 0, 80, 24));
+        assert_ne!(a.id(), b.id());
     }
 }

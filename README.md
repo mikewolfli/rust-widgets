@@ -1,6 +1,10 @@
 # rust_widgets
 
-**Pure Rust cross-platform native GUI library** — v0.9.1
+<p align="center">
+  <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
+</p>
+
+**Pure Rust cross-platform native GUI library** — v0.9.6
 
 Hardware-adaptive rendering, comprehensive 60+ widget library, touch/gesture support, full i18n, and SVG-pipeline-accurate output.
 

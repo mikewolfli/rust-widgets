@@ -1,6 +1,10 @@
 # rust_widgets
 
-**纯 Rust 跨平台原生 GUI 库** — v0.9.1
+<p align="center">
+  <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
+</p>
+
+**纯 Rust 跨平台原生 GUI 库** — v0.9.6
 
 硬件自适应渲染、60+ 控件库、触摸/手势支持、完整国际化、以及 SVG 管线精确输出。
 

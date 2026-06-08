@@ -462,7 +462,6 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
     let factory = WidgetFactory::new_with_defaults();
     for capability in factory.capabilities() {
         for prop in capability.properties {
-            let normalized_name = super::normalize_key(prop.name);
             // Skip properties that are known to be unreadable through path quirks
             if prop.name == "modal"
                 || prop.name == "title"

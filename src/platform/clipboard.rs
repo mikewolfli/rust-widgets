@@ -151,10 +151,7 @@ mod tests {
         })
         .join()
         .unwrap();
-        assert_eq!(
-            clip.get_contents(),
-            Some(ClipboardContent::Text("from thread".to_string()))
-        );
+        assert_eq!(clip.get_contents(), Some(ClipboardContent::Text("from thread".to_string())));
     }
 
     #[test]
@@ -169,9 +166,7 @@ mod tests {
         let img = ClipboardContent::Image {
             width: 2,
             height: 2,
-            data: vec![
-                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
-            ],
+            data: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
         };
         clip.set_contents(img.clone());
         assert_eq!(clip.get_contents(), Some(img));

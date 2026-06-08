@@ -97,15 +97,15 @@ impl EventLoop {
                 if let Some(ref pump) = native_pump {
                     pump();
                 }
-                // Phase 1: Process all available events (non-blocking drain)
-                // This handles both Normal and Idle priority events without
-                // letting Idle events block Normal ones.
+                // Phase 1a: Drain all available events, process normal/high immediately,
+                // buffer idle events for budgeted processing.
                 let mut had_work = false;
-                while let Some((_target, event, _priority)) =
+                let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
+                while let Some((target, event, priority)) =
                     queue.lock().unwrap_or_else(recover_lock).dequeue()
                 {
                     had_work = true;
-                    // Route through gesture engine for touch events
+
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if event.is_touch() {
                         gesture_engine.process(&event, now_ms())
@@ -113,28 +113,36 @@ impl EventLoop {
                         None
                     };
 
-                    // Dispatch event to the target widget if a dispatch function is set
+                    // Buffer idle-priority events; process normal/high immediately
+                    if priority == EventPriority::Idle {
+                        idle_events.push((target, event));
+                        continue;
+                    }
+
+                    // Dispatch normal/high priority event immediately
                     if let Some(ref dispatch) = dispatch_fn {
-                        dispatch(_target, &event);
+                        dispatch(target, &event);
                         #[cfg(feature = "touch")]
                         if let Some(ref gesture) = maybe_gesture_event {
-                            dispatch(_target, gesture);
+                            dispatch(target, gesture);
                         }
                     } else {
                         // Fallback: consume values when no dispatch function is set
-                        let _ = _target;
+                        let _ = target;
                         let _ = event;
                         #[cfg(feature = "touch")]
                         let _ = maybe_gesture_event;
                     }
                 }
-                // Phase 2: If no events were available, block until one arrives
-                // This prevents busy-waiting when the queue is truly empty.
-                if !had_work {
-                    if let Some((_target, event, _priority)) =
-                        queue.lock().unwrap_or_else(recover_lock).dequeue_blocking()
-                    {
-                        // Route through gesture engine for touch events
+
+                // Phase 1b: Process buffered idle events with a 5ms time budget.
+                // This prevents idle processing from starving frame-critical work.
+                if !idle_events.is_empty() {
+                    let idle_budget_start = std::time::Instant::now();
+                    for (target, event) in idle_events {
+                        if idle_budget_start.elapsed().as_millis() >= 5 {
+                            break; // budget exhausted, remaining idle events are dropped
+                        }
                         #[cfg(feature = "touch")]
                         let maybe_gesture_event = if event.is_touch() {
                             gesture_engine.process(&event, now_ms())
@@ -142,17 +150,47 @@ impl EventLoop {
                             None
                         };
 
-                        // Dispatch event to the target widget if a dispatch function is set
                         if let Some(ref dispatch) = dispatch_fn {
-                            dispatch(_target, &event);
+                            dispatch(target, &event);
                             #[cfg(feature = "touch")]
                             if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(_target, gesture);
+                                dispatch(target, gesture);
+                            }
+                        } else {
+                            let _ = target;
+                            let _ = event;
+                            #[cfg(feature = "touch")]
+                            let _ = maybe_gesture_event;
+                        }
+                    }
+                }
+
+                // Phase 2: If no events were available, block until one arrives.
+                // This prevents busy-waiting when the queue is truly empty.
+                if !had_work {
+                    if let Some((target, event, priority)) =
+                        queue.lock().unwrap_or_else(recover_lock).dequeue_blocking()
+                    {
+                        // Idle events from blocking dequeue are processed immediately
+                        // (only one, so no budget concern)
+                        #[cfg(feature = "touch")]
+                        let maybe_gesture_event = if event.is_touch() {
+                            gesture_engine.process(&event, now_ms())
+                        } else {
+                            None
+                        };
+
+                        if let Some(ref dispatch) = dispatch_fn {
+                            dispatch(target, &event);
+                            #[cfg(feature = "touch")]
+                            if let Some(ref gesture) = maybe_gesture_event {
+                                dispatch(target, gesture);
                             }
                         } else {
                             // Fallback: consume values when no dispatch function is set
-                            let _ = _target;
+                            let _ = target;
                             let _ = event;
+                            let _ = priority;
                             #[cfg(feature = "touch")]
                             let _ = maybe_gesture_event;
                         }

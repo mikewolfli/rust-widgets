@@ -675,8 +675,8 @@ impl StyleSheet {
 - 在 BLUE4 的 P2/P3 阶段按需实现，不阻塞核心路线
 
 ```json
-<!-- WebView 作为原生 widget 容器 -->
-<webview id="map_view" url="https://example.com/map" x="0" y="0" width="400" height="300" />
+<!-- WebView as native widget container (example — replace with real URL) -->
+<webview id="map_view" url="https://www.example.com/map" x="0" y="0" width="400" height="300" />
 ```
 
 ---

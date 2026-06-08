@@ -213,6 +213,42 @@ impl Platform for IosMobilePlatform {
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) -> bool {
         self.state.set_widget_geometry(widget_id, x, y, width, height)
     }
+
+    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
+        self.state.set_ime_enabled(widget_id, enabled)
+    }
+
+    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
+        self.state.ime_enabled(widget_id)
+    }
+
+    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
+        self.state.set_accessibility_name(widget_id, name)
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
+        self.state.accessibility_name(widget_id)
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        self.state.set_clipboard_text(text)
+    }
+
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
+    }
+
+    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    fn poll_drop_event(&self) -> Option<DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    fn inject_drop_event(&self, event: DropEvent) -> bool {
+        self.state.inject_drop_event(event)
+    }
 }
 
 #[cfg(test)]

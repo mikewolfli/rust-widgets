@@ -247,3 +247,216 @@ impl EventHandler for BaseWidget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_base() -> BaseWidget {
+        BaseWidget::new(WidgetKind::Button, Rect::new(10, 20, 100, 30), "Button")
+    }
+
+    #[test]
+    fn test_new_creates_widget_with_defaults() {
+        let bw = make_base();
+        assert_eq!(bw.kind(), WidgetKind::Button);
+        assert_eq!(bw.geometry(), Rect::new(10, 20, 100, 30));
+        assert!(bw.is_visible());
+        assert!(bw.is_enabled());
+        assert!(!bw.is_mouse_pressed());
+        assert!(bw.tooltip().is_empty());
+        assert!((bw.dpi_scale() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_id_unique_per_instance() {
+        let a = make_base();
+        let b = make_base();
+        assert_ne!(a.id(), b.id());
+    }
+
+    #[test]
+    fn test_set_geometry_updates() {
+        let mut bw = make_base();
+        bw.set_geometry(Rect::new(0, 0, 200, 50));
+        assert_eq!(bw.geometry(), Rect::new(0, 0, 200, 50));
+    }
+
+    #[test]
+    fn test_min_max_size() {
+        let mut bw = make_base();
+        assert!(bw.min_size().is_none());
+        assert!(bw.max_size().is_none());
+
+        bw.set_min_size(Some(Size::new(50, 20)));
+        bw.set_max_size(Some(Size::new(500, 300)));
+        assert_eq!(bw.min_size(), Some(Size::new(50, 20)));
+        assert_eq!(bw.max_size(), Some(Size::new(500, 300)));
+    }
+
+    #[test]
+    fn test_parent_and_children() {
+        let mut bw = make_base();
+        assert!(bw.parent().is_none());
+        assert!(bw.children().is_empty());
+
+        bw.set_parent(Some(100));
+        assert_eq!(bw.parent(), Some(100));
+
+        bw.add_child(200);
+        bw.add_child(300);
+        assert_eq!(bw.children(), &[200, 300]);
+
+        bw.remove_child(200);
+        assert_eq!(bw.children(), &[300]);
+    }
+
+    #[test]
+    fn test_show_hide_visibility() {
+        let mut bw = make_base();
+
+        bw.hide();
+        assert!(!bw.is_visible());
+
+        bw.show();
+        assert!(bw.is_visible());
+    }
+
+    #[test]
+    fn test_set_enabled() {
+        let mut bw = make_base();
+        assert!(bw.is_enabled());
+
+        bw.set_enabled(false);
+        assert!(!bw.is_enabled());
+
+        bw.set_enabled(true);
+        assert!(bw.is_enabled());
+    }
+
+    #[test]
+    fn test_tooltip() {
+        let mut bw = make_base();
+        assert!(bw.tooltip().is_empty());
+
+        bw.set_tooltip("Help text".to_string());
+        assert_eq!(bw.tooltip(), "Help text");
+    }
+
+    #[test]
+    fn test_dpi_scale_clamps_to_minimum() {
+        let mut bw = make_base();
+
+        bw.set_dpi_scale(2.0);
+        assert!((bw.dpi_scale() - 2.0).abs() < 0.01);
+
+        bw.set_dpi_scale(0.0); // should clamp to 0.1
+        assert!((bw.dpi_scale() - 0.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_contains_point_without_touch_expansion() {
+        let bw = make_base(); // Rect(10, 20, 100, 30)
+        assert!(bw.contains_point_with_touch_expansion(Point::new(15, 25)));
+        assert!(!bw.contains_point_with_touch_expansion(Point::new(0, 0)));
+    }
+
+    #[test]
+    fn test_contains_point_with_touch_expansion() {
+        let mut bw = make_base(); // Rect(10, 20, 100, 30)
+        bw.style.touch_target = Some(Size::new(150, 50));
+
+        // Inside expanded area but outside original rect
+        assert!(bw.contains_point_with_touch_expansion(Point::new(5, 15)));
+        assert!(bw.contains_point_with_touch_expansion(Point::new(115, 55)));
+
+        // Far outside
+        assert!(!bw.contains_point_with_touch_expansion(Point::new(-50, -50)));
+    }
+
+    #[test]
+    fn test_mouse_pressed_state() {
+        let mut bw = make_base();
+        assert!(!bw.is_mouse_pressed());
+
+        bw.set_mouse_pressed(true);
+        assert!(bw.is_mouse_pressed());
+
+        bw.set_mouse_pressed(false);
+        assert!(!bw.is_mouse_pressed());
+    }
+
+    #[test]
+    fn test_style_accessors() {
+        let mut bw = make_base();
+        let _style = bw.style();
+        let _style_mut = bw.style_mut();
+        // Just verify methods exist and don't panic
+        bw.set_style(WidgetStyle::default());
+    }
+
+    #[test]
+    fn test_signal_accessors_return_signals() {
+        let bw = make_base();
+        // All signal accessors should return Some (signal exists)
+        let _ = bw.hover_signal();
+        let _ = bw.mouse_down_signal();
+        let _ = bw.mouse_up_signal();
+        let _ = bw.key_down_signal();
+        let _ = bw.key_up_signal();
+        let _ = bw.focus_gained_signal();
+        let _ = bw.focus_lost_signal();
+        let _ = bw.redraw_requested_signal();
+        let _ = bw.layout_requested_signal();
+    }
+
+    #[test]
+    fn test_event_routing_mouse_move_emits_hover() {
+        let mut bw = make_base();
+        let hovered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let last_pos = std::sync::Arc::new(std::sync::Mutex::new(Point::new(0, 0)));
+        let h = hovered.clone();
+        let lp = last_pos.clone();
+        bw.hover.connect(move |p| {
+            h.store(true, std::sync::atomic::Ordering::SeqCst);
+            *lp.lock().unwrap() = *p;
+        });
+
+        bw.handle_event(&Event::MouseMove { pos: Point::new(50, 25) });
+        assert!(hovered.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(*last_pos.lock().unwrap(), Point::new(50, 25));
+    }
+
+    #[test]
+    fn test_event_routing_key_down_emits_signal() {
+        let mut bw = make_base();
+        let emitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let emitted_clone = emitted.clone();
+        bw.key_down.connect(move |args| {
+            let (key, _mods) = *args;
+            if key == 65 {
+                emitted_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        bw.handle_event(&Event::KeyDown((65, 0)));
+        assert!(emitted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_request_redraw_and_layout_emit_signals() {
+        let bw = make_base();
+        let redrawn = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let laid_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let r = redrawn.clone();
+        let l = laid_out.clone();
+        bw.redraw_requested.connect(move || r.store(true, std::sync::atomic::Ordering::SeqCst));
+        bw.layout_requested.connect(move || l.store(true, std::sync::atomic::Ordering::SeqCst));
+
+        bw.request_redraw();
+        bw.request_layout();
+
+        assert!(redrawn.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(laid_out.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}

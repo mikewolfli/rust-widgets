@@ -1,7 +1,41 @@
+# Rust build artifacts
 /target
-*.DS_Store
+**/*.rs.bk
+**/*.rlib
+
+# IDE/Editor files
+.idea/
+*.iml
+.vscode/.DS_Store
 *.swp
 *.swo
 *~
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.o
+*.so
+*.dylib
+*.exe
+*.dll
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
 .env
-libtypes.rlib
+.env.local
+
+# Build outputs
+**/*.exp
+**/*.lib
+**/pkg/
+
+# Test outputs
+**/test_output/

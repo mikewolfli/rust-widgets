@@ -91,7 +91,9 @@ impl Default for DpiScaler {
 mod tests {
     use super::*;
     #[test]
-    fn test_fixed_dpi() {
+    fn test_fixed_dpi_and_scale_functions() {
+        // These tests are combined because they share global FIXED_DPI state
+        // and would race when run in parallel.
         set_fixed_dpi(144);
         assert!(is_fixed_dpi());
         assert_eq!(get_fixed_dpi(), Some(144));
@@ -99,9 +101,7 @@ mod tests {
         clear_fixed_dpi();
         assert!(!is_fixed_dpi());
         assert_eq!(get_fixed_dpi(), None);
-    }
-    #[test]
-    fn test_scale_functions() {
+
         set_fixed_dpi(192);
         assert_eq!(scale(100), 200);
         assert_eq!(scale_u32(100), 200);

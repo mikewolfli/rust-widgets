@@ -2,12 +2,18 @@ use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;
 use crate::core::PlatformFamily;
+#[cfg(target_os = "linux")]
+use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
+#[cfg(target_os = "linux")]
+use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
 use std::sync::atomic::Ordering;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
@@ -922,5 +928,11 @@ impl Platform for LinuxPlatform {
             native.widgets.insert(id, widget);
         }
         id
+    }
+
+    #[cfg(target_os = "linux")]
+    fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
+        static BRIDGE: OnceLock<LinuxAccessibilityBridge> = OnceLock::new();
+        Some(BRIDGE.get_or_init(|| LinuxAccessibilityBridge::new()))
     }
 }

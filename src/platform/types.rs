@@ -116,9 +116,8 @@ impl NativeCapabilityContract {
 /// Platform backend contract used by widget/runtime layers.
 ///
 /// Core lifecycle methods are required. Optional capabilities (IME,
-/// accessibility, drag-and-drop) are defined as separate extension
-/// traits: [`ImePlatform`], [`AccessibilityPlatform`], and
-/// [`DragDropPlatform`] — backends implement those only when supported.
+/// accessibility, drag-and-drop) have default no-op implementations
+/// on the Platform trait itself — backends override them when supported.
 pub trait Platform: Send + Sync {
     /// Returns self as a `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn std::any::Any {
@@ -380,6 +379,13 @@ pub trait Platform: Send + Sync {
     fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String {
         String::new()
     }
+    /// Returns a reference to the platform's accessibility bridge, if available.
+    fn accessibility_bridge(
+        &self,
+    ) -> Option<&dyn crate::platform::accessibility::AccessibilityBridge> {
+        None
+    }
+
     /// Returns a reference to the platform's rich clipboard backend, if available.
     fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
         None
@@ -411,55 +417,6 @@ pub trait MobilePlatformExtension: Send + Sync {
     fn mobile_backend(&self) -> MobileBackend;
     /// Attaches runtime to an externally provided native view handle.
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
-}
-
-// ── Platform extension traits (BLUE8 P1-2) ──
-
-/// IME (Input Method Editor) extension for platform backends.
-///
-/// Backends that support widget-level IME control implement this trait.
-/// When not implemented, the default fallback returns false/empty.
-pub trait ImePlatform: Send + Sync {
-    /// Enable or disable IME input handling for a widget.
-    fn set_widget_ime_enabled(&self, _widget_id: ObjectId, _enabled: bool) -> bool {
-        false
-    }
-    /// Query IME enabled state for a widget.
-    fn is_widget_ime_enabled(&self, _widget_id: ObjectId) -> bool {
-        false
-    }
-}
-
-/// Accessibility extension for platform backends.
-///
-/// Backends that support accessibility labels implement this trait.
-pub trait AccessibilityPlatform: Send + Sync {
-    /// Set accessibility name/label for a widget.
-    fn set_widget_accessibility_name(&self, _widget_id: ObjectId, _name: &str) -> bool {
-        false
-    }
-    /// Read accessibility name/label for a widget.
-    fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String {
-        String::new()
-    }
-}
-
-/// Drag-and-drop extension for platform backends.
-///
-/// Backends that support native drag-and-drop implement this trait.
-pub trait DragDropPlatform: Send + Sync {
-    /// Start a drag operation from source widget.
-    fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
-        false
-    }
-    /// Poll next drop event if available.
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        None
-    }
-    /// Inject drop event into backend queue.
-    fn inject_drop_event(&self, _event: DropEvent) -> bool {
-        false
-    }
 }
 
 pub(crate) struct MenuNodeState {

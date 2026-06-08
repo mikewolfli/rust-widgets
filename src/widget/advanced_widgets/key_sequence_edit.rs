@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_default_creation() {
-        let mut kse = KeySequenceEdit::new(Rect::new(10, 20, 150, 30));
+        let kse = KeySequenceEdit::new(Rect::new(10, 20, 150, 30));
 
         assert_eq!(kse.kind(), WidgetKind::LineEdit);
         assert_eq!(kse.geometry(), Rect::new(10, 20, 150, 30));

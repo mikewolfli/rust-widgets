@@ -3,6 +3,9 @@
 #![allow(deprecated)]
 
 use crate::core::{ObjectId, PlatformFamily};
+use crate::platform::accessibility::AccessibilityBridge;
+use crate::platform::clipboard::RichClipboardBackend;
+use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use cocoa::appkit::{
@@ -1326,5 +1329,17 @@ impl Platform for MacOSPlatform {
         height: u32,
     ) -> ObjectId {
         self.state.create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
+    }
+
+    fn ime_bridge(&self) -> Option<&dyn ImeBridge> {
+        Some(&self.ime_bridge)
+    }
+
+    fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
+        Some(&self.clipboard)
+    }
+
+    fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
+        Some(&self.a11y_bridge)
     }
 }

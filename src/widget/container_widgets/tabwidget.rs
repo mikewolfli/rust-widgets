@@ -905,8 +905,9 @@ mod tests {
 
     #[test]
     fn tabwidget_accessible_role_is_kind() {
+        use crate::platform::accessibility::AccessibleRole;
         let tw = TabWidget::new(Rect::new(0, 0, 100, 100));
-        assert_eq!(tw.accessible_role(), "TabWidget");
+        assert_eq!(tw.accessible_role(), AccessibleRole::TabGroup);
     }
 
     // ── 14. Disabled state blocks events ──────────────────────────────────────

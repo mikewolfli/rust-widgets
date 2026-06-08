@@ -78,7 +78,7 @@ where
 {
     let vm = JAVA_VM.get()?;
     let mut guard = vm.attach_current_thread().ok()?;
-    Some(f(&mut *guard))
+    Some(f(&mut guard))
 }
 
 /// Store a JNI GlobalRef for a given widget ObjectId.
