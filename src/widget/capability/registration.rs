@@ -1,6 +1,6 @@
 //! Core widget registration — registers all 64 widget kinds in the factory.
 //!
-//! This module defines [`register_core_widgets`] which is called from
+//! This module defines `register_core_widgets` which is called from
 //! [`WidgetFactory::new_with_defaults`] to populate the factory with every
 //! built-in widget kind.
 

@@ -2,7 +2,7 @@
 //!
 //! Each handle type wraps a raw `ObjectId` and exposes only the operations
 //! that are valid for that widget kind.  Handles also support event callbacks
-//! via the [`WidgetHandle`] extension trait.
+//! via the `WidgetHandle` extension trait.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -79,7 +79,7 @@ pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(String)>>;
 
 /// Common operations available on every widget handle.
 ///
-/// Implemented automatically by the [`impl_handle!`] macro and by
+/// Implemented automatically by the `impl_handle!` macro and by
 /// [`WindowHandle`].
 pub trait WidgetHandle: Sized {
     /// Return the raw [`ObjectId`] backing this handle.

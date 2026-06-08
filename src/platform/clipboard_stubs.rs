@@ -96,11 +96,11 @@ pub mod windows {
     //! Reference: OpenClipboard, SetClipboardData, GetClipboardData, CF_TEXT
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
-    use winapi::shared::minwindef::{FALSE, TRUE, UINT};
+    use winapi::shared::minwindef::{FALSE, UINT};
     use winapi::um::winbase::GlobalAlloc;
     use winapi::um::winbase::{GlobalLock, GlobalUnlock, GHND};
+    use winapi::um::winuser::CF_UNICODETEXT;
     use winapi::um::winuser::{CloseClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
-    use winapi::um::winuser::{CF_TEXT, CF_UNICODETEXT};
 
     pub struct WindowsClipboard;
 
@@ -150,9 +150,9 @@ pub mod windows {
                 }
                 std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
                 GlobalUnlock(h_mem);
-                let result: UINT = SetClipboardData(CF_UNICODETEXT, h_mem);
+                let result = SetClipboardData(CF_UNICODETEXT, h_mem);
                 CloseClipboard();
-                result != 0
+                !result.is_null()
             });
             result.unwrap_or(false)
         }

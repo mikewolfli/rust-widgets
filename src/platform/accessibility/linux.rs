@@ -58,12 +58,6 @@ const ATSPI_REGISTRY_INTERFACE: &str = "org.a11y.atspi.Registry";
 pub struct LinuxAccessibilityBridge {
     /// Widget accessibility names (label / accessible-name).
     names: Mutex<HashMap<ObjectId, String>>,
-    /// Widget accessibility roles (reserved for future use).
-    #[allow(dead_code)]
-    roles: Mutex<HashMap<ObjectId, AccessibleRole>>,
-    /// Widget enabled / disabled state (reserved for future use).
-    #[allow(dead_code)]
-    enabled_states: Mutex<HashMap<ObjectId, bool>>,
     /// D-Bus connection to the a11y bus (or session bus fallback).
     /// This is `Some` only when the `linux-a11y` feature is enabled AND a
     /// connection was successfully established.
@@ -90,12 +84,7 @@ impl LinuxAccessibilityBridge {
                  (no D-Bus connection)"
             );
         }
-        Self {
-            names: Mutex::new(HashMap::new()),
-            roles: Mutex::new(HashMap::new()),
-            enabled_states: Mutex::new(HashMap::new()),
-            dbus_connection: Mutex::new(conn),
-        }
+        Self { names: Mutex::new(HashMap::new()), dbus_connection: Mutex::new(conn) }
     }
 
     /// Try to establish a D-Bus connection to the AT-SPI a11y bus.

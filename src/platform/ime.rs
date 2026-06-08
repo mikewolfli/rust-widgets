@@ -1,6 +1,6 @@
 //! IME (Input Method Editor) bridge infrastructure.
 //!
-//! Provides the [`ImeBridge`] trait for platform IME integration,
+//! Provides the `ImeBridge` trait for platform IME integration,
 //! IME event types, and a mock implementation for testing.
 
 use crate::core::ObjectId;
@@ -26,7 +26,7 @@ pub struct ImeCandidatePosition {
 /// Platform IME bridge trait.
 ///
 /// Each platform backend that supports IME should implement this trait
-/// and return an instance from [`Platform::ime_bridge()`].
+/// and return an instance from `Platform::ime_bridge()`.
 pub trait ImeBridge: Send + Sync {
     /// Notify the IME that a widget has received focus and may accept IME input.
     fn focus_in(&self, widget_id: ObjectId);

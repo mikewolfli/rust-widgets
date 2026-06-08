@@ -12,9 +12,9 @@ use crate::layout::Layout;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use crate::chart::layout::ChartLayout;
-/// use crate::layout::Layout;
+/// ```rust
+/// use rust_widgets::chart::layout::ChartLayout;
+/// use rust_widgets::layout::Layout;
 ///
 /// let mut layout = ChartLayout::new(42);
 /// assert!(layout.has_child(42));

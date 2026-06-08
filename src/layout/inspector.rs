@@ -304,7 +304,7 @@ impl LayoutInspector {
 
     /// Run diagnostics once and log any issues found.
     ///
-    /// This is a convenience wrapper around [`run_once`] that logs each
+    /// This is a convenience wrapper around `run_once` that logs each
     /// detected issue via `log::warn!()`. If the inspector is disabled,
     /// this is a no-op.
     pub fn run_once_logged(registry: &WidgetRegistry) {

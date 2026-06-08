@@ -6,7 +6,7 @@
 //! yet supported:
 //!
 //! - **Tokenization**: The parser operates on a line-level basis rather than
-//!   proper PDF tokenization. A proper [`Lexer`] should be implemented to
+//!   proper PDF tokenization. A proper `Lexer` should be implemented to
 //!   produce tokens for names (`/Name`), numbers, strings, hex strings,
 //!   dictionaries (`<< ... >>`), arrays (`[ ... ]`), etc.
 //! - **Cross-reference stream (XRefStm)**: Only classic cross-reference tables

@@ -222,9 +222,8 @@ pub struct WindowsPlatform {
 }
 /// Win32 menu state holder.
 /// Reserved for Windows platform menu integration — stores HWND handles and
-/// command-to-widget mappings. Only compiled on `cfg(windows)` targets.
-/// Marked `#[allow(dead_code)]` on non-Windows builds where it is never constructed.
-#[allow(dead_code)]
+/// command-to-widget mappings. Only compiled on Windows targets.
+#[cfg(target_os = "windows")]
 pub struct Win32MenuState {
     // SAFETY: HWND is only used on the main thread, and Win32MenuState is not shared across threads in this context.
     pub(crate) handles: Mutex<HashMap<u64, usize>>,

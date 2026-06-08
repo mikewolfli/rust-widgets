@@ -37,20 +37,6 @@ fn fs_main() -> @location(0) vec4f {
     return color;
 }"#;
 
-/// Four corners of a unit rectangle centered at origin in NDC.
-/// Used as the vertex buffer for rectangle rendering.
-#[allow(dead_code)]
-pub(crate) const UNIT_RECT_VERTICES: &[f32] = &[
-    // First triangle
-    -0.5, -0.5, // bottom-left
-    0.5, -0.5, // bottom-right
-    -0.5, 0.5, // top-left
-    // Second triangle
-    0.5, -0.5, // bottom-right
-    0.5, 0.5, // top-right
-    -0.5, 0.5, // top-left
-];
-
 /// Clear-color fragment shader.
 /// Fills the render target with a uniform solid color.
 pub(crate) const CLEAR_FS: &str = r#"
@@ -59,17 +45,4 @@ pub(crate) const CLEAR_FS: &str = r#"
 @fragment
 fn fs_main() -> @location(0) vec4f {
     return color;
-}"#;
-
-/// Texture-copy fragment shader.
-/// Copies a source texture to the render target.
-#[allow(dead_code)]
-pub(crate) const TEXTURE_COPY_FS: &str = r#"
-@group(0) @binding(0) var src_texture: texture_2d<f32>;
-@group(0) @binding(1) var src_sampler: sampler;
-
-@fragment
-fn fs_main(@builtin(position) coord: vec4f) -> @location(0) vec4f {
-    let uv = vec2f(coord.x / 800.0, coord.y / 600.0);
-    return textureSample(src_texture, src_sampler, uv);
 }"#;

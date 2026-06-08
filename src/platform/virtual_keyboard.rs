@@ -6,9 +6,9 @@
 //!
 //! # Architecture
 //!
-//! - [`VirtualKeyboard`] — Main controller with state machine.
-//! - [`KeyboardNotch`] — Represents the safe-area inset caused by the OSK.
-//! - Platform backends integrate via [`PlatformKeyboard`] extension trait.
+//! - `VirtualKeyboard` — Main controller with state machine.
+//! - `KeyboardNotch` — Represents the safe-area inset caused by the OSK.
+//! - Platform backends integrate via `PlatformKeyboard` extension trait.
 //!
 //! # Integration points
 //!

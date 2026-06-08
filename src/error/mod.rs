@@ -1,6 +1,6 @@
 //! Unified error system for rust_widgets.
 //!
-//! Provides [`ErrorId`] for FFI-safe error codes and [`RwError`] for
+//! Provides `ErrorId` for FFI-safe error codes and `RwError` for
 //! rich Rust-side error reporting.  `ErrorId` is **only** used at the
 //! C/C++ FFI boundary; internal Rust code uses `RwResult<T>`.
 //!
@@ -84,7 +84,7 @@ impl ErrorId {
 // RwError — rich Rust error type
 // ---------------------------------------------------------------------------
 
-/// Rich error carrying an [`ErrorId`] and a human‑readable message.
+/// Rich error carrying an `ErrorId` and a human‑readable message.
 ///
 /// # Examples
 ///

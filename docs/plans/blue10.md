@@ -3115,3 +3115,76 @@ Widget::draw() → Draw trait → RenderContext → PaintBackend
 | R8 事件/运行时 | **98%** | 空闲调度 ✅·Timer ✅·native_pump ✅ |
 | R9 代码质量 | **100%** | ✅ |
 | **总体** | **99.1%** | 🏆 |
+
+## 第四十四轮执行回写（2026-06-09）
+
+### 本轮目标（深度扫描后高收益闭环：残留编译错误 + 文档警告 + 死代码清理）
+
+- 修复 4 个构建阻断错误（macOS a11y cfg-gating + Windows HWND 路径 + 剪贴板类型/导入）
+- 修复 36 个文档警告（broken intra-doc links + private item links）
+- 清理死代码：移除 `linux.rs` 中未使用的 `roles`/`enabled_states` 字段
+- 清理死代码：移除 `runtime.rs` 中零调用者的 `with_platform()` 函数
+- 清理死代码：移除 `shaders.rs` 中未使用的 `UNIT_RECT_VERTICES` 和 `TEXTURE_COPY_FS` 常量
+- 重构 `Win32MenuState`：用 `#[cfg]` 门控替换 `#[allow(dead_code)]`
+- 修复 clippy `collapsible_match` lint
+- 激活 2 个 doc-test（ChartLayout + SvgPaintBackend），从 ignored 转为可运行
+
+### 本轮实际完成项
+
+1. **构建修复（4 个阻断错误）**：
+   - `src/platform/accessibility/mod.rs`：macOS 模块新增 `#[cfg(target_os = "macos")]` 门控
+   - `src/platform/accessibility/windows.rs`：`HWND` 导入路径从 `winnt` 修正为 `windef`
+   - `src/platform/clipboard_stubs.rs`：移除未使用的 `TRUE`/`CF_TEXT` 导入，修正 `SetClipboardData` 返回值类型
+
+2. **文档修复（36 个警告清零）**：
+   - 修复 19 个文件中的 36 个文档链接问题（broken intra-doc links、private item links、bare URLs）
+
+3. **死代码清理**：
+   - `linux.rs`：移除 `roles`、`enabled_states` 字段 + `#[allow(dead_code)]`
+   - `runtime.rs`：移除 `with_platform()` 函数 + `#[allow(dead_code)]`
+   - `shaders.rs`：移除 `UNIT_RECT_VERTICES`、`TEXTURE_COPY_FS` 常量 + `#[allow(dead_code)]`
+   - `windows/types.rs`：用 `#[cfg]` 门控替换 `#[allow(dead_code)]`
+
+4. **Clippy 修复**：`canvas.rs` 中 `collapsible_match` lint
+
+5. **Doc-test 激活**：
+   - `chart/layout.rs`：ChartLayout 示例从 `ignore` → 可运行
+   - `render/svg/mod.rs`：SvgPaintBackend 示例从 `ignore` → 可运行
+
+### 证据（不虚标）
+
+1. `cargo check --all`：通过（零错误）。
+2. `cargo test --lib -q`：**2233 passed; 0 failed; 0 ignored**。
+3. `cargo clippy --lib -- -D warnings`：通过（零 warning）。
+4. `cargo fmt --all -- --check`：通过。
+5. `cargo doc --no-deps`：**零 warning**。
+6. `cargo test --doc --features chart`：**15 passed; 0 failed; 12 ignored**。
+
+### 完成率更新（保守口径）
+
+- R1（控件圆满化）：**100%**
+- R2（平台能力对齐）：**100%**
+- R3（测试与门禁基建）：**98%**（2233 tests）
+- R4（配置与文档圆满化）：**100%** ✅（36 个文档警告清零）
+- R5（渲染管线增强）：**100%**
+- R6（动画与样式集成）：**100%**
+- R7（无障碍）：**100%**
+- R8（事件与运行时）：**98%**
+- R9（代码质量债务）：**100%**（死代码清理 + clippy 零警告）
+
+**BLUE10 总体完成率（按 R1-R9 等权）：99.5%**
+
+### 完成领域一览
+
+| 领域 | 完成率 | 状态 |
+|------|:------:|:----:|
+| R1 控件圆满化 | **100%** | ✅ |
+| R2 平台能力对齐 | **100%** | ✅ |
+| R3 测试与门禁 | **98%** | 2233 tests · 15 doc-tests ✅ |
+| R4 配置与文档 | **100%** | ✅ 36 个文档警告清零 |
+| R5 渲染管线 | **100%** | ✅ |
+| R6 动画/样式 | **100%** | ✅ |
+| R7 无障碍 | **100%** | ✅ |
+| R8 事件/运行时 | **98%** | ✅ |
+| R9 代码质量 | **100%** | ✅ 死代码清理 + clippy 零警告 |
+| **总体** | **99.5%** | 🏆 |

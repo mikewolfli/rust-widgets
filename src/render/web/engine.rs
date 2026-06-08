@@ -1,7 +1,7 @@
 //! `WebEngine` rendering wrapper that delegates to the main web engine module.
 //!
 //! This module provides a thin rendering-oriented wrapper around the full
-//! [`WebEngineViewEnhanced`](crate::web::WebEngineViewEnhanced) widget. It is
+//! [`WebEngineViewEnhanced`] widget. It is
 //! used by the rendering pipeline to interact with a web engine view without
 //! pulling in the entire widget implementation.
 

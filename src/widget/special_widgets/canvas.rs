@@ -211,11 +211,9 @@ impl EventHandler for Canvas {
                 self.base.set_mouse_pressed(false);
                 self.mouse_released.emit();
             }
-            Event::MouseMove { pos } => {
-                if self.geometry().contains(*pos) {
-                    self.last_mouse_pos = *pos;
-                    self.mouse_moved.emit(*pos);
-                }
+            Event::MouseMove { pos } if self.geometry().contains(*pos) => {
+                self.last_mouse_pos = *pos;
+                self.mouse_moved.emit(*pos);
             }
             Event::MouseDoubleClick { pos, button } if *button == 1 => {
                 self.last_mouse_pos = *pos;

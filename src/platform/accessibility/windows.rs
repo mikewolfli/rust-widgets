@@ -6,7 +6,7 @@
 //!
 //! For focus changes: `NotifyWinEvent(EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, 0)`
 //!
-//! Reference: https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants
+//! Reference: <https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants>
 
 use super::AccessibilityBridge;
 use crate::core::ObjectId;
@@ -45,10 +45,10 @@ impl WindowsAccessibilityBridge {
             Ok(h) => h.get(&id).copied(),
             Err(_) => return false,
         };
-        let Some(_ptr) = ptr else { return false };
+        let Some(hwnd_val) = ptr else { return false };
         #[cfg(target_os = "windows")]
         {
-            let hwnd = ptr as winapi::um::winnt::HWND;
+            let hwnd = hwnd_val as winapi::shared::windef::HWND;
             unsafe {
                 winapi::um::winuser::NotifyWinEvent(
                     event,

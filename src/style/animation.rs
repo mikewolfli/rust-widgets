@@ -370,7 +370,7 @@ impl AnimationDriver {
     }
 
     /// Register a new animation and return its ID.
-    /// The `tick` callback is called every frame with the eased progress [0,1].
+    /// The `tick` callback is called every frame with the eased progress \[0,1\].
     pub fn add<F>(&mut self, config: AnimationConfig, tick: F) -> AnimationId
     where
         F: FnMut(f32) + 'static,

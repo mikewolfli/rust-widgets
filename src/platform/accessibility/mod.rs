@@ -4,6 +4,7 @@
 //! Each platform backend can implement the `AccessibilityBridge` trait to expose
 //! widget information to screen readers and other assistive technologies.
 
+#[cfg(target_os = "macos")]
 pub mod macos;
 
 #[cfg(target_os = "windows")]

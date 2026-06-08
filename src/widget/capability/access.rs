@@ -6,8 +6,8 @@
 //! object to the concrete widget type (via [`widget_as`] / [`widget_as_mut`])
 //! and call the native getter or setter.
 //!
-//! These functions are called by [`WidgetFactory::read_property`] and
-//! [`WidgetFactory::write_property`] after the property schema has been
+//! These functions are called by `WidgetFactory::read_property` and
+//! `WidgetFactory::write_property` after the property schema has been
 //! validated — so the match arms here can assume the property exists and is
 //! accessible.
 

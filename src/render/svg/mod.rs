@@ -6,13 +6,13 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```rust
 //! use rust_widgets::render::svg::SvgPaintBackend;
+//! use rust_widgets::render::PaintBackend;
 //! use rust_widgets::core::{Color, Size};
 //!
 //! let mut svg = SvgPaintBackend::new(Size::new(100, 50));
 //! svg.begin_frame(Color::WHITE);
-//! // ... execute commands via RenderContext ...
 //! svg.end_frame();
 //! let output = svg.finish();
 //! ```

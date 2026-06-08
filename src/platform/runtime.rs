@@ -121,12 +121,6 @@ pub fn get_platform() -> &'static dyn Platform {
     PLATFORM.get_or_init(create_native_platform).as_ref()
 }
 
-/// Invokes a closure with the process-global platform backend.
-#[allow(dead_code)]
-pub(crate) fn with_platform<R>(f: impl FnOnce(&dyn Platform) -> R) -> R {
-    f(get_platform())
-}
-
 /// Initializes the platform backend.
 pub fn init() {
     get_platform().init();

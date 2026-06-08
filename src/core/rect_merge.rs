@@ -3,9 +3,9 @@
 //!
 //! # Duplication Elimination
 //!
-//! Previously, [`crate::performance::region::DirtyRegionTracker`] implemented
+//! Previously, `crate::performance::region::DirtyRegionTracker` implemented
 //! its own rect-merging loop with `intersects` + `union`, and
-//! [`crate::render::backend::batch::RenderBatch`] had its own `merge_adjacent_rects`.
+//! `crate::render::backend::batch::RenderBatch` had its own `merge_adjacent_rects`.
 //! This module centralises the core algorithm so all consumers share a single
 //! correct, tested implementation.
 

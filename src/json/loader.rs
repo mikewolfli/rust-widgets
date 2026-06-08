@@ -53,7 +53,7 @@ impl JsonLoader {
     /// # Errors
     ///
     /// Returns an error if JSON parsing fails, an unknown widget type is
-    /// encountered, or the widget tree exceeds [`MAX_DEPTH`].
+    /// encountered, or the widget tree exceeds `MAX_DEPTH`.
     pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
         let value: Value =
             serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;

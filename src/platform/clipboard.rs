@@ -2,7 +2,7 @@
 //!
 //! Extends the existing plain-text clipboard with support for HTML, RTF,
 //! images, and file lists. Each platform backend can implement the
-//! [`RichClipboardBackend`] trait to provide native clipboard integration.
+//! `RichClipboardBackend` trait to provide native clipboard integration.
 
 use std::path::PathBuf;
 

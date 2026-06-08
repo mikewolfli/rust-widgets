@@ -27,7 +27,7 @@ use crate::core::ObjectId;
 
 /// A named widget layout, mapping JSON `"id"` attributes to `ObjectId` values.
 ///
-/// Created by [`JsonLoader::load`] after instantiating a JSON layout.
+/// Created by `JsonLoader::load` after instantiating a JSON layout.
 /// Provides typed widget access via [`widget_by_name`](BoundJsonLayout::widget_by_name).
 pub struct BoundJsonLayout {
     name_map: HashMap<String, ObjectId>,

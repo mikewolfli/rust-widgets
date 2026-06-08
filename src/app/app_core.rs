@@ -160,8 +160,8 @@ impl App {
     /// Run the platform main event loop (blocks).
     ///
     /// While the loop runs, every polled [`WidgetTriggerEvent`] is dispatched
-    /// to the callbacks registered via [`WidgetHandle::on_click`] /
-    /// [`WidgetHandle::on_value_changed`].
+    /// to the callbacks registered via `WidgetHandle::on_click` /
+    /// `WidgetHandle::on_value_changed`.
     pub fn run(&self) {
         trace_runtime_route("app::run");
 

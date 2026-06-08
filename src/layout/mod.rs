@@ -49,7 +49,7 @@ impl LayoutConstraints {
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutContext {
     /// Scale factor applied to spacing, margins, and padding.
-    /// Derived from [`DeviceEnvironment::layout_scale`].
+    /// Derived from `DeviceEnvironment::layout_scale`.
     pub layout_scale: f32,
     /// Scale factor applied to font/metric sizes.
     pub font_scale: f32,
