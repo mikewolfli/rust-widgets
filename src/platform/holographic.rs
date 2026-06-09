@@ -2,15 +2,15 @@
 //!
 //! This module provides a state machine that simulates a laser-projected
 //! keyboard on a flat surface. It uses Z-axis depth information from
-//! [`Event::HolographicTouch`] (gated behind the `holographic` feature)
+//! `Event::HolographicTouch` (gated behind the `holographic` feature)
 //! to detect finger presses, releases, and key hits.
 //!
 //! # Architecture
 //!
-//! - [`HolographicKeyboardDetector`] — Manages a virtual keyboard layout
+//! - `HolographicKeyboardDetector` — Manages a virtual keyboard layout
 //!   and processes depth events to emit synthetic key-press events.
-//! - [`KeyboardLayout`] — Defines key positions on the projection plane.
-//! - [`KeyHit`] — Represents a detected key press with confidence.
+//! - `KeyboardLayout` — Defines key positions on the projection plane.
+//! - `KeyHit` — Represents a detected key press with confidence.
 //!
 //! # State machine
 //!

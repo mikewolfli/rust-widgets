@@ -5,6 +5,9 @@
 //! - `mock.rs` — test mock (`TestBackend`) and associated unit tests
 
 mod mock;
+// BLUE11: Allow module inception; `trait_def` is the trait definition sub-module
+// inside `trait_def/` parent directory.
+#[allow(clippy::module_inception)]
 mod trait_def;
 
 pub use trait_def::ControlBackend;

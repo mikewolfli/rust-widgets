@@ -11,9 +11,11 @@ use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Severity level for a badge, determining its color scheme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Badge severity/notification level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BadgeLevel {
     /// Informational — blue.
+    #[default]
     Info,
     /// Success/green — green.
     Success,
@@ -32,12 +34,6 @@ impl BadgeLevel {
             BadgeLevel::Warning => Color::WARNING,
             BadgeLevel::Error => Color::ERROR,
         }
-    }
-}
-
-impl Default for BadgeLevel {
-    fn default() -> Self {
-        BadgeLevel::Info
     }
 }
 

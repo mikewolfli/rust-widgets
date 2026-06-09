@@ -11,11 +11,10 @@ use rust_widgets::core::{Color, Point, Rect};
 
 /// Helper: a Color generated from RGBA components for property testing.
 fn assert_color_invariants(c: Color) {
-    // Color components must be in valid range 0-255
-    assert!(c.r <= 255, "Red out of range");
-    assert!(c.g <= 255, "Green out of range");
-    assert!(c.b <= 255, "Blue out of range");
-    assert!(c.a <= 255, "Alpha out of range");
+    // Color components are u8, guaranteed to be in 0-255 range.
+    // This function exists for proptest integration where components
+    // could come from generated arbitrary values.
+    let _ = c;
 }
 
 #[test]

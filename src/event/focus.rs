@@ -13,6 +13,10 @@ pub struct FocusManager {
     focusable_widgets: Vec<ObjectId>,
     /// Callback invoked when focus changes (used by AccessibilityBridge).
     on_focus_changed: Option<Box<dyn Fn(ObjectId)>>,
+    /// Focus traversal strategy (BLUE11 R7.2).
+    traversal_strategy: FocusTraversalStrategy,
+    /// Widget positions for RowMajor/ColumnMajor traversal.
+    widget_positions: std::collections::HashMap<ObjectId, (i32, i32)>,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -23,6 +27,8 @@ impl FocusManager {
             _connection_scope: ConnectionScope::new(),
             focusable_widgets: Vec::new(),
             on_focus_changed: None,
+            traversal_strategy: FocusTraversalStrategy::TabOrder,
+            widget_positions: std::collections::HashMap::new(),
         }
     }
     /// Returns the currently focused widget, if any.
@@ -155,9 +161,42 @@ pub enum FocusTraversalStrategy {
 
 impl FocusManager {
     /// Set the focus traversal strategy.
-    pub fn set_traversal_strategy(&mut self, _strategy: FocusTraversalStrategy) {
-        // Focus traversal strategy setter
-        // TODO: Implement actual reordering when strategy != TabOrder
+    pub fn set_traversal_strategy(&mut self, strategy: FocusTraversalStrategy) {
+        self.traversal_strategy = strategy;
+        self.reorder_by_strategy();
+    }
+
+    /// Record a widget's position for use by RowMajor/ColumnMajor traversal.
+    pub fn set_widget_position(&mut self, id: ObjectId, x: i32, y: i32) {
+        self.widget_positions.insert(id, (x, y));
+        if !matches!(self.traversal_strategy, FocusTraversalStrategy::TabOrder) {
+            self.reorder_by_strategy();
+        }
+    }
+
+    /// Reorder the focusable list according to the current traversal strategy.
+    fn reorder_by_strategy(&mut self) {
+        match self.traversal_strategy {
+            FocusTraversalStrategy::TabOrder => {
+                // TabOrder is the default insertion order; no reordering needed.
+            }
+            FocusTraversalStrategy::RowMajor => {
+                // Sort by y first (top-to-bottom), then x (left-to-right).
+                self.focusable_widgets.sort_by(|a, b| {
+                    let pos_a = self.widget_positions.get(a).copied().unwrap_or((0, 0));
+                    let pos_b = self.widget_positions.get(b).copied().unwrap_or((0, 0));
+                    pos_a.1.cmp(&pos_b.1).then(pos_a.0.cmp(&pos_b.0))
+                });
+            }
+            FocusTraversalStrategy::ColumnMajor => {
+                // Sort by x first (left-to-right), then y (top-to-bottom).
+                self.focusable_widgets.sort_by(|a, b| {
+                    let pos_a = self.widget_positions.get(a).copied().unwrap_or((0, 0));
+                    let pos_b = self.widget_positions.get(b).copied().unwrap_or((0, 0));
+                    pos_a.0.cmp(&pos_b.0).then(pos_a.1.cmp(&pos_b.1))
+                });
+            }
+        }
     }
 }
 

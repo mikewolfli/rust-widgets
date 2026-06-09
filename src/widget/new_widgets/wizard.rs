@@ -62,6 +62,7 @@ impl WizardDialog {
 
     /// Advances to the next step if not already on the last step.
     /// Returns `true` if the step actually changed.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> bool {
         if self.current_step < self.steps.len().saturating_sub(1) {
             // Mark current step as completed
@@ -450,7 +451,6 @@ impl EventHandler for WizardDialog {
                     } else {
                         self.next();
                     }
-                    return;
                 }
             }
             _ => {

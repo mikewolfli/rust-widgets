@@ -25,7 +25,6 @@ pub use selector::*;
 pub use theme::*;
 pub use theme_state::*;
 /// Per-side padding values around widget content.
-
 /// Whether the user prefers reduced motion (BLUE11 R7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReducedMotionPreference {

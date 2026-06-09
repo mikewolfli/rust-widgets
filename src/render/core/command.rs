@@ -194,7 +194,7 @@ pub enum RenderCommand {
         center: Point,
         /// Starting angle in radians.
         start_angle: f32,
-        /// Color stops as (position [0,1], color) pairs.
+        /// Color stops as (position \[0,1\], color) pairs.
         stops: Vec<(f32, Color)>,
     },
 }

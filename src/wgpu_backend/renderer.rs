@@ -13,7 +13,6 @@ pub struct WgpuRenderer {
     clear_pipeline: wgpu::RenderPipeline,
     rect_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    #[allow(dead_code)]
     /// Cached shader module pipeline references (BLUE11 R5.2).
     shader_cache: HashMap<String, wgpu::ShaderModule>,
 }

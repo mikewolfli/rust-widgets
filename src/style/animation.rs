@@ -717,7 +717,6 @@ pub struct Keyframe {
 pub struct KeyframeAnimation {
     keyframes: Vec<Keyframe>,
     animation: Animation,
-    #[allow(dead_code)]
     config: AnimationConfig,
 }
 
@@ -744,6 +743,11 @@ impl KeyframeAnimation {
     pub fn resume(&mut self) {
         self.animation.resume();
     }
+    /// Returns a reference to the animation config.
+    pub fn config(&self) -> &AnimationConfig {
+        &self.config
+    }
+
     /// Returns true if the animation is currently running.
     pub fn is_running(&self) -> bool {
         self.animation.is_running()
@@ -877,7 +881,7 @@ impl TransitionManager {
     /// Advance all active transitions by `dt`. Returns true if any still active.
     pub fn advance(&mut self, dt: Duration) -> bool {
         let mut any_active = false;
-        for (_, t) in &mut self.transitions {
+        for t in self.transitions.values_mut() {
             if t.completed {
                 continue;
             }
@@ -928,9 +932,7 @@ impl Default for TransitionManager {
 
 /// Physical spring animation (iOS-style spring physics).
 pub struct SpringAnimation {
-    #[allow(dead_code)]
     animation: Animation,
-    #[allow(dead_code)]
     from_value: f32,
     to_value: f32,
     stiffness: f32,
@@ -971,6 +973,10 @@ impl SpringAnimation {
     pub fn stop(&mut self) {
         self.animation.stop();
     }
+    pub fn from_value(&self) -> f32 {
+        self.from_value
+    }
+
     pub fn current_value(&self) -> f32 {
         self.current_value
     }

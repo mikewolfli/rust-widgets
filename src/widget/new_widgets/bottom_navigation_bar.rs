@@ -130,8 +130,8 @@ impl Draw for BottomNavigationBar {
         );
 
         // Determine font sizes proportional to bar height
-        let icon_font_size = (bar_height as f32 * 0.32).max(14.0).min(28.0);
-        let label_font_size = (bar_height as f32 * 0.18).max(9.0).min(14.0);
+        let icon_font_size = (bar_height as f32 * 0.32).clamp(14.0, 28.0);
+        let label_font_size = (bar_height as f32 * 0.18).clamp(9.0, 14.0);
 
         let icon_font = crate::core::Font::new("sans-serif", icon_font_size, false, false);
         let label_font = crate::core::Font::new("sans-serif", label_font_size, false, false);

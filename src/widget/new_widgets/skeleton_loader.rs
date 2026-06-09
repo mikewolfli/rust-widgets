@@ -123,7 +123,7 @@ impl Draw for SkeletonLoader {
                 let total_h = 3 * line_h + 2 * gap;
                 let start_y = cy - total_h as i32 / 2;
                 for i in 0..3 {
-                    let y = start_y + i as i32 * (line_h + gap) as i32;
+                    let y = start_y + i * (line_h + gap) as i32;
                     let line_rect = Rect::new(cx - w as i32 / 2, y, w, line_h);
                     context.fill_rounded_rect(line_rect, 3, base_color);
                 }

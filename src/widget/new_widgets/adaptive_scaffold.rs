@@ -109,8 +109,8 @@ impl AdaptiveScaffold {
     }
 
     /// Returns a reference to the optional body widget.
-    pub fn body_widget(&self) -> Option<&Box<dyn Widget>> {
-        self.body_widget.as_ref()
+    pub fn body_widget(&self) -> Option<&dyn Widget> {
+        self.body_widget.as_deref()
     }
 
     /// Returns a mutable reference to the optional body widget.
@@ -239,8 +239,8 @@ impl AdaptiveScaffold {
             Color::DIVIDER,
         );
 
-        let icon_font_size = (nav_rect.height as f32 * 0.32).max(14.0).min(28.0);
-        let label_font_size = (nav_rect.height as f32 * 0.18).max(9.0).min(14.0);
+        let icon_font_size = (nav_rect.height as f32 * 0.32).clamp(14.0, 28.0);
+        let label_font_size = (nav_rect.height as f32 * 0.18).clamp(9.0, 14.0);
 
         let icon_font = crate::core::Font::new("sans-serif", icon_font_size, false, false);
         let label_font = crate::core::Font::new("sans-serif", label_font_size, false, false);

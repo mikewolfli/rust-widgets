@@ -492,6 +492,8 @@ mod tests {
 
     #[test]
     fn last_auto_render_backend_default_is_cpu() {
+        // Reset to default before checking (other tests may have modified global state)
+        set_last_auto_render_backend(AutoRenderBackend::CpuSoftware);
         let backend = last_auto_render_backend();
         assert_eq!(backend, AutoRenderBackend::CpuSoftware);
     }

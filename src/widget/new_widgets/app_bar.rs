@@ -113,8 +113,8 @@ impl Draw for AppBar {
         );
 
         // Determine font sizes based on bar height
-        let title_font_size = (bar_height as f32 * 0.38).max(14.0).min(22.0);
-        let action_font_size = (bar_height as f32 * 0.32).max(12.0).min(18.0);
+        let title_font_size = (bar_height as f32 * 0.38).clamp(14.0, 22.0);
+        let action_font_size = (bar_height as f32 * 0.32).clamp(12.0, 18.0);
 
         // ── Back arrow (left side) ──
         if self.show_back {

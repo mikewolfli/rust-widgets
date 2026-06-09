@@ -122,7 +122,7 @@ impl EmptyState {
             return None;
         }
         let rect = self.geometry();
-        let btn_width = rect.width.min(200).max(80);
+        let btn_width = rect.width.clamp(80, 200);
         let btn_x = rect.x + (rect.width as i32 - btn_width as i32) / 2;
         let btn_y = rect.y + rect.height as i32 - ACTION_BUTTON_HEIGHT as i32 - SECTION_GAP;
         Some(Rect::new(btn_x, btn_y, btn_width, ACTION_BUTTON_HEIGHT))
@@ -219,7 +219,7 @@ impl Draw for EmptyState {
 
         // ── Action Button ──
         if let Some(btn_rect) = self.action_button_rect() {
-            let btn_corner_radius = (btn_rect.height / 2) as u32;
+            let corner_radius = btn_rect.height / 2;
 
             // Button background
             let btn_bg = if !is_enabled {
@@ -227,7 +227,7 @@ impl Draw for EmptyState {
             } else {
                 Color::from_rgb(59, 130, 246) // Blue action color
             };
-            context.fill_rounded_rect(btn_rect, btn_corner_radius, btn_bg);
+            context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
 
             // Button text
             let btn_text_color =

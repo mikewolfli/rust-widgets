@@ -1,12 +1,13 @@
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 
 // BLUE11 R9.6: Unsafe code audit — unsafe is required for platform FFI
-#![allow(unsafe_code)]
+// Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
 // BLUE11 R4.7: Documentation completeness
 // Note: Missing docs warnings silenced to reduce noise. Docs added for public API items.
 #![allow(missing_docs)]
-// Allow all clippy lints for clean build output
-#![allow(clippy::all)]
+// BLUE11: Clippy lints enabled for quality enforcement.
+// Individual allows are placed next to their specific violations.
+#![cfg_attr(test, allow(clippy::all))]
 
 /// Action/command system.
 pub mod action;

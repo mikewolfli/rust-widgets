@@ -3,7 +3,7 @@
 //! Displays key-value pairs in a two-column layout similar to VS/Unity Inspector:
 //! - Name column (left): bold text on gray background
 //! - Value column (right): editable text with alternating row colors
-//! Supports row selection via click and emits a `selected` signal.
+//!   Supports row selection via click and emits a `selected` signal.
 
 use crate::core::{Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -169,6 +169,7 @@ impl Draw for PropertyGrid {
         let value_font = Font::new("Arial", 12.0, false, false);
         let mut y = separator_y + 1;
 
+        #[allow(clippy::manual_checked_ops)]
         let visible_count = if row_height > 0 {
             (rect.height.saturating_sub(row_height + 1)) / row_height
         } else {
@@ -268,11 +269,9 @@ impl EventHandler for PropertyGrid {
             }
             Event::Wheel { delta, .. } => {
                 let row_height = 24u32;
-                let max_scroll = (self.properties.len() as u32)
-                    .saturating_sub(
-                        (self.geometry().height.saturating_sub(row_height + 1)) / row_height,
-                    )
-                    .max(0);
+                let max_scroll = (self.properties.len() as u32).saturating_sub(
+                    (self.geometry().height.saturating_sub(row_height + 1)) / row_height,
+                );
                 if delta.y > 0 {
                     self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 } else if delta.y < 0 {

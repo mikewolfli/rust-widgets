@@ -17,6 +17,12 @@ pub mod macos {
         composition: Mutex<Option<ImeComposition>>,
     }
 
+    impl Default for MacOsImeBridge {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MacOsImeBridge {
         pub fn new() -> Self {
             Self {

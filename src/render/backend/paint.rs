@@ -130,10 +130,10 @@ impl PaintBackend for SoftwarePaintBackend {
             } => {
                 // Render as a semi-transparent filled rect with offset and optional spread
                 let spread_rect = crate::core::Rect::new(
-                    rect.x + offset_x - *spread as i32,
-                    rect.y + offset_y - *spread as i32,
-                    (rect.width as i32 + *spread as i32 * 2).max(0) as u32,
-                    (rect.height as i32 + *spread as i32 * 2).max(0) as u32,
+                    rect.x + offset_x - *spread,
+                    rect.y + offset_y - *spread,
+                    (rect.width as i32 + *spread * 2).max(0) as u32,
+                    (rect.height as i32 + *spread * 2).max(0) as u32,
                 );
                 let shadow_color =
                     Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);

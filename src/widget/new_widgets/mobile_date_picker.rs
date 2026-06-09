@@ -137,7 +137,7 @@ impl Draw for MobileDatePicker {
         // Column layout
         let col_width = rect.width / 3;
         let row_height = rect.height / 5;
-        let font_size = (row_height as f32 * 0.38).max(10.0).min(15.0);
+        let font_size = (row_height as f32 * 0.38).clamp(10.0, 15.0);
         let font = Font::new("sans-serif", font_size, false, false);
         let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(12.0), true, false);
 
@@ -178,7 +178,7 @@ impl Draw for MobileDatePicker {
 
             // Draw the five visible rows
             for row in 0..5 {
-                let item_idx = (row as i32) + (sel_offset - 2);
+                let item_idx = row + (sel_offset - 2);
                 if item_idx < 0 || item_idx >= items.len() as i32 {
                     continue;
                 }

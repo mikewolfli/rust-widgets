@@ -7,20 +7,20 @@
 //!
 //! # Architecture
 //!
-//! - [`GestureRecognizer`] trait: processes raw events, emits semantic events
-//! - [`GestureEngine`]: holds a chain of recognizers, dispatches events
+//! - `GestureRecognizer` trait: processes raw events, emits semantic events
+//! - `GestureEngine`: holds a chain of recognizers, dispatches events
 //! - Concrete recognizers:
-//!   - [`TapGesture`] — quick touch-and-release
-//!   - [`DoubleTapGesture`] — two taps within 400ms
-//!   - [`LongPressGesture`] — hold ≥500ms
-//!   - [`SwipeGesture`] — rapid directional motion
-//!   - [`PanGesture`] — continuous drag tracking
-//!   - [`LongPressDragGesture`] — long press then drag
-//!   - [`FlingGesture`] — velocity-based fling/flick
-//!   - [`TwoFingerTapGesture`] — two-finger tap (≈ right-click)
-//!   - [`TwoFingerSwipeGesture`] — two-finger directional swipe
-//!   - [`PinchGesture`] — two-finger distance change
-//!   - [`RotateGesture`] — two-finger angle change
+//!   - `TapGesture` — quick touch-and-release
+//!   - `DoubleTapGesture` — two taps within 400ms
+//!   - `LongPressGesture` — hold ≥500ms
+//!   - `SwipeGesture` — rapid directional motion
+//!   - `PanGesture` — continuous drag tracking
+//!   - `LongPressDragGesture` — long press then drag
+//!   - `FlingGesture` — velocity-based fling/flick
+//!   - `TwoFingerTapGesture` — two-finger tap (≈ right-click)
+//!   - `TwoFingerSwipeGesture` — two-finger directional swipe
+//!   - `PinchGesture` — two-finger distance change
+//!   - `RotateGesture` — two-finger angle change
 
 use crate::core::Point;
 use crate::event::Event;

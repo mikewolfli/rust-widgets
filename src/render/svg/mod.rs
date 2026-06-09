@@ -448,10 +448,10 @@ impl PaintBackend for SvgPaintBackend {
                 blur_radius: _,
                 spread,
             } => {
-                let spread_w = (rect.width as i32 + *spread as i32 * 2).max(0) as u32;
-                let spread_h = (rect.height as i32 + *spread as i32 * 2).max(0) as u32;
-                let x = rect.x + offset_x - *spread as i32;
-                let y = rect.y + offset_y - *spread as i32;
+                let spread_w = (rect.width as i32 + *spread * 2).max(0) as u32;
+                let spread_h = (rect.height as i32 + *spread * 2).max(0) as u32;
+                let x = rect.x + offset_x - *spread;
+                let y = rect.y + offset_y - *spread;
                 self.push_element(format!(
                     r##"<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" filter=\"url(#shadowBlur)\" rx=\"4\" />"##,
                     x, y, spread_w, spread_h, color_to_rgba(color)

@@ -35,7 +35,7 @@ impl MasonryLayout {
         Self {
             base: BaseWidget::new(WidgetKind::MasonryLayout, geometry, "MasonryLayout"),
             columns: 2,
-            column_width: geometry.width / 2.max(1),
+            column_width: geometry.width / 2,
             gaps: Vec::new(),
             items: Vec::new(),
         }

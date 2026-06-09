@@ -25,7 +25,6 @@ const TAG_CHIP_RADIUS: u32 = 12;
 /// Minimum input area width.
 const MIN_INPUT_WIDTH: i32 = 60;
 /// Cursor blink interval in milliseconds.
-
 /// TagInput widget — a text input that creates tags/chips on Enter or comma.
 pub struct TagInput {
     base: BaseWidget,

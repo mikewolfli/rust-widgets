@@ -73,14 +73,13 @@ impl QRCode {
         for row in 0..MATRIX_SIZE {
             for col in 0..MATRIX_SIZE {
                 // Skip finder patterns (top-left, top-right, bottom-left corners)
-                let in_finder = (row < 7 && col < 7)
-                    || (row < 7 && col >= MATRIX_SIZE - 7)
-                    || (row >= MATRIX_SIZE - 7 && col < 7);
+                let in_finder = row < 7 && !(7..MATRIX_SIZE - 7).contains(&col)
+                    || row >= MATRIX_SIZE - 7 && col < 7;
 
                 if in_finder {
                     // Draw finder pattern: 7x7 with a 3x3 inner black square
                     let is_outer = row == 0 || row == 6 || col == 0 || col == 6;
-                    let is_inner = row >= 2 && row <= 4 && col >= 2 && col <= 4;
+                    let is_inner = (2..=4).contains(&row) && (2..=4).contains(&col);
                     let _is_sep = row == 7
                         || col == 7
                         || (row < 7 && col == MATRIX_SIZE - 8)
@@ -92,7 +91,7 @@ impl QRCode {
 
                 // Fill the remaining area with deterministic pseudo-random bits
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                matrix[row as usize][col as usize] = (state >> (col % 8) * 8) & 1 == 1;
+                matrix[row as usize][col as usize] = (state >> ((col % 8) * 8)) & 1 == 1;
             }
         }
 

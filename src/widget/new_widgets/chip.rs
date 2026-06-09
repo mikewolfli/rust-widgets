@@ -96,7 +96,7 @@ impl Chip {
 
     /// Returns whether the given point is inside the close button hit area.
     fn hit_close_button(&self, pos: Point) -> bool {
-        self.close_button_center().map_or(false, |center| {
+        self.close_button_center().is_some_and(|center| {
             let dx = (pos.x - center.x) as i64;
             let dy = (pos.y - center.y) as i64;
             dx * dx + dy * dy <= (CLOSE_RADIUS as i64 + 2) * (CLOSE_RADIUS as i64 + 2)
