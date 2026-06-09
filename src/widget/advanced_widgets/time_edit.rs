@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn time_to_msecs_since_midnight() {
         let t = Time::new(1, 30, 15, 250);
-        let expected = (1 * 3600 + 30 * 60 + 15) * 1000 + 250;
+        let expected = (3600 + 30 * 60 + 15) * 1000 + 250;
         assert_eq!(t.to_msecs_since_midnight(), expected);
     }
 

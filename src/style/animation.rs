@@ -686,6 +686,317 @@ impl SequentialAnimation {
         self.current_index = 0;
         self.current_id = None;
     }
+
+    /// Returns the number of animation configs in the sequence.
+    pub fn len(&self) -> usize {
+        self.animations.len()
+    }
+
+    /// Returns `true` if the sequence contains no animations.
+    pub fn is_empty(&self) -> bool {
+        self.animations.is_empty()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BLUE11 R6.1: Keyframe Animation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single keyframe at a specific progress point.
+#[derive(Debug, Clone)]
+pub struct Keyframe {
+    /// Normalized time [0.0, 1.0] for this keyframe.
+    pub time: f32,
+    /// Value at this keyframe.
+    pub value: f32,
+    /// Easing function to use when interpolating FROM this keyframe to the next.
+    pub easing: EasingFunction,
+}
+
+/// A multi-keyframe animation that interpolates through a series of waypoints.
+pub struct KeyframeAnimation {
+    keyframes: Vec<Keyframe>,
+    animation: Animation,
+    #[allow(dead_code)]
+    config: AnimationConfig,
+}
+
+impl KeyframeAnimation {
+    /// Create a new keyframe animation with the given keyframes and config.
+    /// Keyframes should be sorted by time ascending.
+    pub fn new(keyframes: Vec<Keyframe>, config: AnimationConfig) -> Self {
+        Self { keyframes, config: config.clone(), animation: Animation::new(config) }
+    }
+
+    /// Start the animation.
+    pub fn start(&mut self) {
+        self.animation.start();
+    }
+    /// Stop the animation and reset progress.
+    pub fn stop(&mut self) {
+        self.animation.stop();
+    }
+    /// Pause the animation.
+    pub fn pause(&mut self) {
+        self.animation.pause();
+    }
+    /// Resume from pause.
+    pub fn resume(&mut self) {
+        self.animation.resume();
+    }
+    /// Returns true if the animation is currently running.
+    pub fn is_running(&self) -> bool {
+        self.animation.is_running()
+    }
+
+    /// Evaluate the current interpolated value based on animation progress.
+    pub fn current_value(&self) -> f32 {
+        let progress = self.animation.progress();
+        self.evaluate(progress)
+    }
+
+    /// Evaluate the animation at a given normalized progress [0.0, 1.0].
+    pub fn evaluate(&self, progress: f32) -> f32 {
+        if self.keyframes.is_empty() {
+            return 0.0;
+        }
+        let progress = progress.clamp(0.0, 1.0);
+        if progress <= self.keyframes[0].time {
+            return self.keyframes[0].value;
+        }
+        if progress >= self.keyframes.last().unwrap().time {
+            return self.keyframes.last().unwrap().value;
+        }
+        for i in 0..self.keyframes.len() - 1 {
+            let kf_a = &self.keyframes[i];
+            let kf_b = &self.keyframes[i + 1];
+            if progress >= kf_a.time && progress <= kf_b.time {
+                let segment_duration = kf_b.time - kf_a.time;
+                if segment_duration == 0.0 {
+                    return kf_b.value;
+                }
+                let local_t = (progress - kf_a.time) / segment_duration;
+                let eased_t = kf_a.easing.apply(local_t);
+                return kf_a.value + (kf_b.value - kf_a.value) * eased_t;
+            }
+        }
+        self.keyframes.last().unwrap().value
+    }
+
+    /// Update animation state (call each frame).
+    pub fn update(&mut self) {
+        self.animation.update();
+    }
+    /// Returns true when the animation has completed.
+    pub fn is_completed(&self) -> bool {
+        self.animation.is_completed()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BLUE11 R6.2: CSS-style Transition Animation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A CSS-style transition rule mapping a property to an animation config.
+#[derive(Debug, Clone)]
+pub struct TransitionRule {
+    /// Property name pattern.
+    pub property: String,
+    /// Animation configuration (duration, easing, delay).
+    pub config: AnimationConfig,
+}
+
+impl TransitionRule {
+    pub fn new(property: impl Into<String>, duration: Duration, easing: EasingFunction) -> Self {
+        Self {
+            property: property.into(),
+            config: AnimationConfig::new(duration).with_easing(easing),
+        }
+    }
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.config = self.config.clone().with_delay(delay);
+        self
+    }
+}
+
+/// Manages CSS-style transitions for a set of properties.
+/// When a property value changes, smoothly interpolates to the new value.
+#[derive(Debug, Clone)]
+pub struct TransitionManager {
+    transitions: HashMap<String, ActiveTransition>,
+    rules: HashMap<String, TransitionRule>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveTransition {
+    from: f32,
+    to: f32,
+    current: f32,
+    elapsed: Duration,
+    rule: TransitionRule,
+    completed: bool,
+}
+
+impl TransitionManager {
+    /// Create a new empty transition manager.
+    pub fn new() -> Self {
+        Self { transitions: HashMap::new(), rules: HashMap::new() }
+    }
+    /// Add a transition rule for a property.
+    pub fn add_rule(&mut self, rule: TransitionRule) {
+        self.rules.insert(rule.property.clone(), rule);
+    }
+    /// Remove a transition rule for a property.
+    pub fn remove_rule(&mut self, property: &str) {
+        self.rules.remove(property);
+    }
+    /// Check if a transition rule exists.
+    pub fn has_rule(&self, property: &str) -> bool {
+        self.rules.contains_key(property)
+    }
+
+    /// Begin a transition for a property from its old value to a new value.
+    pub fn transition_to(&mut self, property: impl Into<String>, value: f32) {
+        let prop = property.into();
+        if let Some(rule) = self.rules.get(&prop) {
+            let current = self.transitions.get(&prop).map(|t| t.current).unwrap_or(value);
+            self.transitions.insert(
+                prop,
+                ActiveTransition {
+                    from: current,
+                    to: value,
+                    current,
+                    elapsed: Duration::ZERO,
+                    rule: rule.clone(),
+                    completed: false,
+                },
+            );
+        }
+    }
+
+    /// Advance all active transitions by `dt`. Returns true if any still active.
+    pub fn advance(&mut self, dt: Duration) -> bool {
+        let mut any_active = false;
+        for (_, t) in &mut self.transitions {
+            if t.completed {
+                continue;
+            }
+            t.elapsed += dt;
+            if t.elapsed >= t.rule.config.delay {
+                let active_time = t.elapsed - t.rule.config.delay;
+                let duration_s = t.rule.config.duration.as_secs_f32();
+                let progress = if duration_s > 0.0 {
+                    (active_time.as_secs_f32() / duration_s).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let eased = t.rule.config.easing.apply(progress);
+                t.current = t.from + (t.to - t.from) * eased;
+                if progress >= 1.0 {
+                    t.current = t.to;
+                    t.completed = true;
+                } else {
+                    any_active = true;
+                }
+            } else {
+                any_active = true;
+            }
+        }
+        self.transitions.retain(|_, t| !t.completed);
+        any_active
+    }
+    /// Get the current value of a transitioning property.
+    pub fn current_value(&self, property: &str) -> Option<f32> {
+        self.transitions.get(property).map(|t| t.current)
+    }
+    pub fn len(&self) -> usize {
+        self.transitions.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.transitions.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.transitions.clear();
+    }
+}
+
+impl Default for TransitionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Physical spring animation (iOS-style spring physics).
+pub struct SpringAnimation {
+    #[allow(dead_code)]
+    animation: Animation,
+    #[allow(dead_code)]
+    from_value: f32,
+    to_value: f32,
+    stiffness: f32,
+    damping: f32,
+    mass: f32,
+    velocity: f32,
+    current_value: f32,
+}
+
+impl SpringAnimation {
+    pub fn new(from: f32, to: f32) -> Self {
+        Self {
+            animation: Animation::new(AnimationConfig::new(Duration::from_secs(1))),
+            from_value: from,
+            to_value: to,
+            stiffness: 200.0,
+            damping: 20.0,
+            mass: 1.0,
+            velocity: 0.0,
+            current_value: from,
+        }
+    }
+    pub fn with_stiffness(mut self, s: f32) -> Self {
+        self.stiffness = s;
+        self
+    }
+    pub fn with_damping(mut self, d: f32) -> Self {
+        self.damping = d;
+        self
+    }
+    pub fn with_mass(mut self, m: f32) -> Self {
+        self.mass = m;
+        self
+    }
+    pub fn start(&mut self) {
+        self.animation.start();
+    }
+    pub fn stop(&mut self) {
+        self.animation.stop();
+    }
+    pub fn current_value(&self) -> f32 {
+        self.current_value
+    }
+    pub fn is_running(&self) -> bool {
+        self.animation.is_running()
+    }
+
+    pub fn update(&mut self, dt: Duration) {
+        if !self.animation.is_running() {
+            return;
+        }
+        let dt_secs = dt.as_secs_f32().min(0.05);
+        // Spring physics: F = -kx - cv
+        let displacement = self.current_value - self.to_value;
+        let spring_force = -self.stiffness * displacement;
+        let damping_force = -self.damping * self.velocity;
+        let acceleration = (spring_force + damping_force) / self.mass;
+        self.velocity += acceleration * dt_secs;
+        self.current_value += self.velocity * dt_secs;
+        // Check if settled
+        if displacement.abs() < 0.5 && self.velocity.abs() < 0.5 {
+            self.current_value = self.to_value;
+            self.velocity = 0.0;
+            self.animation.stop();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -899,6 +1210,6 @@ mod tests {
         let mut seq = SequentialAnimation::new();
         // An empty sequence should return false from advance() immediately.
         assert!(!seq.advance(&mut driver, |_, _| {}));
-        assert_eq!(seq.advance(&mut driver, |_, _| {}), false);
+        assert!(!seq.advance(&mut driver, |_, _| {}));
     }
 }

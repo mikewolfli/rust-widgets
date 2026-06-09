@@ -196,6 +196,16 @@ pub fn rasterize_draw_commands_rgba8(
                 // Clip stack management is not yet supported in the CPU rasterizer.
                 // These are accepted as no-ops.
             }
+            WgpuDrawCommand::FillLinearGradient { .. }
+            | WgpuDrawCommand::FillRadialGradient { .. } => {
+                // Gradient commands — defer to DrawGradient path in production
+            }
+            WgpuDrawCommand::SetBlendMode { .. } => {
+                // Blend mode — not yet supported in CPU rasterizer
+            }
+            WgpuDrawCommand::BoxShadow { .. } => {
+                // Box shadow — not yet supported in CPU rasterizer
+            }
         }
     }
     Ok(pixels)

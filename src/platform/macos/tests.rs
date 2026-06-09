@@ -1,6 +1,6 @@
 //! macOS platform tests.
 
-#![allow(deprecated)]
+#![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
 mod tests {
     use crate::core::ObjectId;

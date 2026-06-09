@@ -118,6 +118,24 @@ pub enum Event {
     /// 3D touch/gesture with depth information (holographic).
     #[cfg(feature = "holographic")]
     HolographicTouch { pos: Point, depth: f32, touch_id: TouchId },
+    // ── Pointer / Stylus events (BLUE11 R8.1) ──
+    /// Pointer/stylus press with pressure and tilt.
+    PointerPress { pos: Point, button: u32, pressure: f32, tilt_x: f32, tilt_y: f32 },
+    /// Pointer/stylus move with pressure and tilt.
+    PointerMove { pos: Point, pressure: f32, tilt_x: f32, tilt_y: f32 },
+    /// Pointer/stylus release with pressure.
+    PointerRelease { pos: Point, button: u32, pressure: f32 },
+    // ── Gamepad Events (BLUE11 R8.3) ──
+    /// Gamepad button press.
+    GamepadPress { button: u32 },
+    /// Gamepad button release.
+    GamepadRelease { button: u32 },
+    /// Gamepad axis movement.
+    GamepadAxis { axis: u32, value: f32 },
+    /// Gamepad connected.
+    GamepadConnected { id: u32 },
+    /// Gamepad disconnected.
+    GamepadDisconnected { id: u32 },
 }
 impl Event {
     /// Creates a mouse press event.
@@ -541,4 +559,47 @@ pub enum EventPriority {
     Normal,
     /// Idle-priority events, delivered when no higher-priority events exist.
     Idle,
+}
+
+/// Async task that can be scheduled on the event loop (BLUE11 R8.2).
+pub struct AsyncTask {
+    /// Unique task ID.
+    pub id: u64,
+    /// The closure to execute.
+    pub task: Box<dyn FnOnce() + Send>,
+}
+
+impl AsyncTask {
+    pub fn new<F>(id: u64, f: F) -> Self
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        Self { id, task: Box::new(f) }
+    }
+}
+
+/// Schedules a closure to run on the event loop thread.
+pub fn schedule_task<F>(id: u64, f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let task = AsyncTask::new(id, f);
+    // Push to a global task queue that the event loop drains each frame
+    TASK_QUEUE.with(|q| {
+        q.borrow_mut().push(task);
+    });
+}
+
+thread_local! {
+    static TASK_QUEUE: std::cell::RefCell<Vec<AsyncTask>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain all pending async tasks (called by event loop each frame).
+pub fn drain_tasks() {
+    TASK_QUEUE.with(|q| {
+        let mut tasks = q.borrow_mut();
+        while let Some(task) = tasks.pop() {
+            (task.task)();
+        }
+    });
 }

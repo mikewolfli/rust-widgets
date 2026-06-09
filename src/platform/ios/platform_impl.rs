@@ -3,6 +3,23 @@
 //! Implements the Platform contract for iOS mobile devices.
 //! This is a state-driven backend that can be progressively enhanced
 //! with native UIKit/SwiftUI bindings.
+//!
+//! ## UIKit Integration Path (BLUE11 R2.4)
+//!
+//! All widget creation methods (`create_window`, `create_button`, etc.)
+//! currently delegate to the state backend (`IosMobilePlatform::insert_widget`)
+//! which returns a monotonically increasing handle ID.
+//!
+//! To wire real UIKit views:
+//!
+//! 1. Check [`IosMobilePlatform::ui_kit_available()`] — returns `false` currently.
+//! 2. When FFI is wired, each creation method should additionally spawn a real
+//!    `UIView` / `UIButton` / `UILabel` etc. via `objc2` and store the pointer
+//!    alongside the state handle.
+//! 3. State operations (`set_widget_text`, `set_widget_geometry`, etc.) should
+//!    first perform the Rust-side mutation, then forward the call to UIKit.
+//! 4. All real FFI code should be feature-gated (`#[cfg(feature = "ios-uikit-ffi")]`)
+//!    so the state-only backend remains the default for testing and CI.
 
 use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::core::PlatformFamily;

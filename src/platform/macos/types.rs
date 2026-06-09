@@ -1,6 +1,6 @@
 //! macOS platform types, structs, enums, and helper functions.
 
-#![allow(deprecated)]
+#![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
 use crate::core::ObjectId;
 use crate::platform::accessibility::macos::MacOSAccessibilityBridge;
@@ -15,7 +15,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HandleKind {
     /// Top-level NSWindow.
     Window,
@@ -246,7 +246,7 @@ impl MacOSPlatform {
             combo_box_selection: Mutex::new(HashMap::new()),
             list_box_items: Mutex::new(HashMap::new()),
             list_box_selection: Mutex::new(HashMap::new()),
-            ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge,
+            ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge::new(),
             clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
             a11y_bridge: MacOSAccessibilityBridge::new(),
         }
@@ -270,7 +270,16 @@ impl MacOSPlatform {
             | NSWindowStyleMask::NSMiniaturizableWindowMask
     }
     pub(crate) fn get_handle(&self, widget_id: ObjectId) -> Option<CocoaHandle> {
-        self.handles.lock().expect("macos handle lock poisoned").get(&widget_id).copied()
+        let guard = self.handles.lock().expect("macos handle lock poisoned");
+        let handle = guard.get(&widget_id).copied();
+        if handle.is_none() {
+            log::error!(
+                "[macos] get_handle: widget_id={} not found in handle registry ({} total handles)",
+                widget_id,
+                guard.len()
+            );
+        }
+        handle
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_handle(
@@ -284,12 +293,19 @@ impl MacOSPlatform {
         ptr: usize,
     ) -> ObjectId {
         let id = self.state.create_widget(kind, text, x, y, width, height);
-        self.handles
-            .lock()
-            .expect("macos handle lock poisoned")
-            .insert(id, CocoaHandle { ptr, kind });
+        {
+            let mut guard = self.handles.lock().expect("macos handle lock poisoned");
+            if guard.contains_key(&id) {
+                log::warn!(
+                    "[macos] register_handle: overwriting existing handle for widget_id={}",
+                    id
+                );
+            }
+            guard.insert(id, CocoaHandle { ptr, kind });
+        }
         // Register the native handle with the accessibility bridge.
         self.a11y_bridge.register_handle(id, ptr);
+        log::trace!("[macos] register_handle: id={}, kind={:?}, ptr=0x{:x}", id, kind, ptr);
         id
     }
     pub(crate) fn as_id(handle: CocoaHandle) -> id {

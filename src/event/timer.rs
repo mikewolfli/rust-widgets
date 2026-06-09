@@ -138,6 +138,35 @@ impl Drop for TimerManager {
     }
 }
 
+/// Idle task that runs when the event loop has no higher-priority events (BLUE11 R8.5).
+pub struct IdleTask {
+    pub id: u64,
+    pub callback: Box<dyn FnMut() + Send>,
+    pub threshold_frames: u32,
+    frames_since_run: u32,
+}
+
+impl IdleTask {
+    pub fn new<F>(id: u64, threshold_frames: u32, callback: F) -> Self
+    where
+        F: FnMut() + Send + 'static,
+    {
+        Self { id, callback: Box::new(callback), threshold_frames, frames_since_run: 0 }
+    }
+
+    /// Called each frame by the event loop. Returns true if the task ran this frame.
+    pub fn tick(&mut self) -> bool {
+        self.frames_since_run += 1;
+        if self.frames_since_run >= self.threshold_frames {
+            self.frames_since_run = 0;
+            (self.callback)();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

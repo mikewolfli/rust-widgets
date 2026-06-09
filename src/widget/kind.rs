@@ -104,4 +104,66 @@ pub enum WidgetKind {
     PieMenu,
     /// RibbonBar (Office-style ribbon) widget.
     RibbonBar,
+    /// Switch/Toggle widget for on/off binary state.
+    Switch,
+    /// Search box with search icon and clear button.
+    SearchBox,
+    /// Chip/Tag widget for labels and tokens.
+    Chip,
+    /// Badge widget for notification counts and status indicators.
+    Badge,
+    /// Skeleton loader placeholder widget.
+    SkeletonLoader,
+    /// Floating action button.
+    FAB,
+    /// Pull-to-refresh control for scrollable views.
+    PullToRefresh,
+    /// Bottom sheet modal panel.
+    BottomSheet,
+    /// Bottom navigation bar (mobile tab bar).
+    BottomNavigationBar,
+    /// Navigation drawer sidebar.
+    NavigationDrawer,
+    /// Top app bar.
+    AppBar,
+    /// Mobile-style date picker.
+    MobileDatePicker,
+    /// Divider/Separator line widget.
+    Divider,
+    /// Stepper widget for numeric increment/decrement with +/- buttons.
+    Stepper,
+    /// Star rating control.
+    Rating,
+    /// Avatar widget — circular/square user image placeholder with initials fallback.
+    Avatar,
+    /// EmptyState widget — placeholder shown when a view has no content.
+    EmptyState,
+    /// Carousel/SwipeView widget — horizontal swipeable page carousel with dot indicators.
+    Carousel,
+    /// ColorWell widget — compact color swatch that shows the current color and emits a signal when clicked.
+    ColorWell,
+    /// TagInput widget — text input that creates tags/chips on Enter or comma, with removable tags.
+    TagInput,
+    /// IME preedit text overlay widget for composition text input.
+    ImePreedit,
+    /// QRCode widget — displays a deterministic QR code pattern from a data string.
+    QRCode,
+    /// MasonryLayout widget — a Pinterest-style waterfall grid layout.
+    MasonryLayout,
+    /// CupertinoSwitch — iOS-style switch (alias for Switch with iOS coloring).
+    CupertinoSwitch,
+    /// MaterialSnackbar — Material Design snackbar notification.
+    MaterialSnackbar,
+    /// AdaptiveScaffold — cross-platform adaptive scaffold with AppBar + content + bottom nav.
+    AdaptiveScaffold,
+    /// WizardDialog — step-by-step wizard control with back/next/finish navigation.
+    WizardDialog,
+    /// SafeArea — mobile safe area widget that insets content to avoid notches, status bars, and home indicators.
+    SafeArea,
+    /// CupertinoAlertDialog — iOS-style alert dialog with title, message, and buttons.
+    CupertinoAlertDialog,
+    /// CupertinoSlider — iOS-style slider with rounded track and circular knob.
+    CupertinoSlider,
+    /// MaterialNavigationRail — Material Design side navigation rail for tablets.
+    MaterialNavigationRail,
 }

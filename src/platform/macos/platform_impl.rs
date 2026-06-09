@@ -1,6 +1,6 @@
 //! `impl Platform for MacOSPlatform` — the main trait implementation.
 
-#![allow(deprecated)]
+#![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
@@ -67,20 +67,46 @@ impl Platform for MacOSPlatform {
         // SAFETY: Cocoa APIs require the main thread, guaranteed by the platform contract.
         // NSAutoreleasePool::new(nil) is safe with nil argument. All Objective-C messages
         // use valid selectors from the cocoa crate. Self::register_handle() stores the
-        // raw pointer cast as usize without aliasing issues.
+        // raw pointer cast as usize without aliasing issues. Nil returns from alloc are
+        // checked and logged before proceeding.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let window = NSWindow::alloc(nil).initWithContentRect_styleMask_backing_defer_(
+
+            // Check for nil after NSWindow::alloc — Cocoa returns nil on allocation failure.
+            let raw_window = NSWindow::alloc(nil);
+            if raw_window == nil {
+                log::error!("[macos] create_window: NSWindow::alloc returned nil (out of memory?)");
+                pool.drain();
+                return 0;
+            }
+            let window = raw_window.initWithContentRect_styleMask_backing_defer_(
                 Self::make_rect(x, y, width, height),
                 Self::window_style(),
                 NSBackingStoreBuffered,
                 NO,
             );
-            let content_view =
-                NSView::initWithFrame_(NSView::alloc(nil), Self::make_rect(0, 0, width, height));
+
+            // Check for nil after NSView::alloc
+            let raw_content = NSView::alloc(nil);
+            let content_view = if raw_content == nil {
+                log::error!("[macos] create_window: NSView::alloc returned nil (out of memory?)");
+                pool.drain();
+                return 0;
+            } else {
+                NSView::initWithFrame_(raw_content, Self::make_rect(0, 0, width, height))
+            };
+
+            // Check for nil after NSString::alloc for the title
+            let raw_title = NSString::alloc(nil);
+            if raw_title == nil {
+                log::error!("[macos] create_window: NSString::alloc returned nil (out of memory?)");
+                pool.drain();
+                return 0;
+            }
+
             let _: () = msg_send![window, setContentView: content_view];
             window.cascadeTopLeftFromPoint_(NSPoint::new(20.0, 20.0));
-            NSWindow::setTitle_(window, NSString::alloc(nil).init_str(title));
+            NSWindow::setTitle_(window, raw_title.init_str(title));
             window.makeKeyAndOrderFront_(nil);
             let _: () = msg_send![window, display];
             let id = self.register_handle(
@@ -111,17 +137,30 @@ impl Platform for MacOSPlatform {
             text
         );
         // SAFETY: All Objective-C messages in this block use valid selectors from the
-        // cocoa/objc crates, called on the main thread. NSButton::alloc(nil) returns
-        // a valid instance (or nil, which is handled by Cocoa's nil-messaging). The
-        // parent handle is validated against the handle registry before use.
+        // cocoa/objc crates, called on the main thread. NSButton::alloc(nil) and
+        // NSString::alloc(nil) are checked for nil returns before use. The parent
+        // handle is validated against the handle registry before use.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let button = NSButton::initWithFrame_(
-                NSButton::alloc(nil),
-                Self::make_rect(x, y, width, height),
-            );
+
+            // Check for nil after NSButton::alloc
+            let raw_button = NSButton::alloc(nil);
+            if raw_button == nil {
+                log::error!("[macos] create_button: NSButton::alloc returned nil (out of memory?)");
+                pool.drain();
+                return 0;
+            }
+            let button = NSButton::initWithFrame_(raw_button, Self::make_rect(x, y, width, height));
             log::info!("[rust_widgets] MacOSPlatform::create_button: button created {:?}", button);
-            NSButton::setTitle_(button, NSString::alloc(nil).init_str(text));
+
+            // Check for nil after NSString::alloc for the button title
+            let raw_title = NSString::alloc(nil);
+            if raw_title == nil {
+                log::error!("[macos] create_button: NSString::alloc returned nil (out of memory?)");
+                pool.drain();
+                return 0;
+            }
+            NSButton::setTitle_(button, raw_title.init_str(text));
             NSButton::setBezelStyle_(button, NSBezelStyle::NSRoundedBezelStyle);
             // Set button type to momentary push button
             let _: () = msg_send![button, setButtonType: 0u64]; // NSMomentaryPushInButton

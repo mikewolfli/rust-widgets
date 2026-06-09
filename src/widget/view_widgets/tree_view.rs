@@ -114,11 +114,6 @@ impl TreeView {
     pub fn model_ref(&self) -> Option<&Arc<dyn TreeModel>> {
         self.model.as_ref()
     }
-    /// Deprecated: add_node is no longer supported. TreeView requires a bound model.
-    #[deprecated(note = "Imperative add_node is removed. Use set_model with a TreeModel.")]
-    pub fn add_node(&mut self, _node: impl Into<String>) {
-        panic!("TreeView::add_node is deprecated. Use set_model with a TreeModel.");
-    }
     /// Returns current visible node count.
     pub fn node_count(&self) -> usize {
         self.model.as_ref().map(|model| model.node_count()).unwrap_or(0)

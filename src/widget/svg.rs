@@ -6,9 +6,6 @@
 //!    through the actual [`Draw::draw()`] pipeline via [`SvgPaintBackend`].
 //!    The SVG output is guaranteed to match the widget's real rendering.
 //!
-//! 2. **Manual SVG** — Implement [`ToSvg`] directly for custom SVG output
-//!    without going through the full render pipeline.
-//!
 //! Most users should use [`render_widget_to_svg()`] as it is zero-maintenance
 //! and guaranteed accurate.
 
@@ -53,18 +50,6 @@ pub fn render_widget_to_svg<T: Draw>(widget: &mut T, geometry: Rect) -> String {
     widget.draw(&mut ctx);
     backend.end_frame();
     backend.finish()
-}
-
-/// Trait for rendering a widget to an SVG string (manual approach).
-///
-/// Prefer [`render_widget_to_svg()`] for pipeline-accurate output.
-/// Implement this trait directly only when you need custom SVG
-/// output that differs from the widget's pixel rendering.
-#[deprecated(since = "0.9.0", note = "Use render_widget_to_svg() instead")]
-pub trait ToSvg {
-    /// Generate SVG markup representing this widget's current visual state.
-    /// The output should be a complete, well-formed XML string.
-    fn to_svg(&self) -> String;
 }
 
 #[cfg(test)]

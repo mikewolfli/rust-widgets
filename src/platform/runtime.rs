@@ -15,8 +15,8 @@ use crate::core::PlatformFamily;
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
-#[cfg(all(target_os = "macos", not(feature = "embedded"), not(feature = "objc2-macos")))]
-use crate::platform::macos::MacOSPlatform;
+#[cfg(all(target_os = "macos", not(feature = "embedded")))]
+use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 #[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 use crate::platform::mobile;
 pub use crate::platform::types::*;
@@ -66,16 +66,11 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(WindowsPlatform::new())
 }
 
-/// Select objc2 preview backend when migration feature is enabled on macOS.
-#[cfg(all(target_os = "macos", feature = "objc2-macos", not(feature = "embedded")))]
+/// Select macOS backend via the bridge (BLUE11 R1.5).
+/// The bridge dispatches to objc2 or cocoa based on feature flags.
+#[cfg(all(target_os = "macos", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(crate::platform::macos_objc2::MacOSObjc2Platform::new())
-}
-
-/// Select legacy Cocoa backend when objc2 migration feature is disabled.
-#[cfg(all(target_os = "macos", not(feature = "objc2-macos"), not(feature = "embedded")))]
-fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(MacOSPlatform::new())
+    Box::new(SelectedMacOSPlatform::new())
 }
 
 /// Linux runtime auto-detection:

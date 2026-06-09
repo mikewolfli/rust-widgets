@@ -148,6 +148,34 @@ impl IosMobilePlatform {
         // Marker for iOS platform backend
         0
     }
+
+    /// Returns `true` when `ios-uikit-ffi` feature is enabled
+    /// and real UIKit views are being created.
+    #[cfg(feature = "ios-uikit-ffi")]
+    pub fn ui_kit_available(&self) -> bool {
+        true
+    }
+
+    /// Returns `false` — no real UIKit FFI bindings are wired yet.
+    ///
+    /// Once UIKit FFI is integrated (e.g. via `objc2` crates), this
+    /// should return `true` and the creation methods should additionally
+    /// construct and return native `UIView` handles.
+    ///
+    /// # Integration Path
+    ///
+    /// 1. Add `objc2` and `objc2-foundation` / `objc2-ui-kit` dependencies.
+    /// 2. Replace each `insert_widget` call with real `UIView` creation:
+    ///    - `UIButton` for `Button`
+    ///    - `UILabel` for `Label`
+    ///    - `UIWindow` for `Window`
+    ///    - etc.
+    /// 3. Use `objc_id::Id<Object>` or `*mut Object` as the handle value.
+    /// 4. Gate the real FFI code behind `#[cfg(feature = "ios-uikit-ffi")]`.
+    #[cfg(not(feature = "ios-uikit-ffi"))]
+    pub fn ui_kit_available(&self) -> bool {
+        false
+    }
 }
 
 impl Default for IosMobilePlatform {

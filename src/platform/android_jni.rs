@@ -68,6 +68,28 @@ pub fn is_initialized() -> bool {
     JAVA_VM.get().is_some()
 }
 
+/// Integration status report for the Android JNI backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegrationStatus {
+    /// Whether `JAVA_VM` has been initialized via `nativeInit`.
+    pub jni_initialized: bool,
+    /// Number of `#[no_mangle]` JNI native method implementations exported.
+    pub native_methods_count: u32,
+    /// Overall readiness: JNI initialized + methods available.
+    pub ready: bool,
+}
+
+/// Returns the current integration readiness of the Android JNI backend.
+pub fn android_integration_ready() -> IntegrationStatus {
+    let jni_initialized = JAVA_VM.get().is_some();
+    let native_methods_count = 13;
+    IntegrationStatus {
+        jni_initialized,
+        native_methods_count,
+        ready: jni_initialized && native_methods_count > 0,
+    }
+}
+
 /// Attach the current thread to the Java VM and call `f` with a `JNIEnv`.
 ///
 /// Returns the result of `f`, or `None` if the bridge was never initialized

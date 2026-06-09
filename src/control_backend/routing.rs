@@ -83,7 +83,38 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
         WidgetKind::StackedWidget
         | WidgetKind::Action
         | WidgetKind::ToolButton
-        | WidgetKind::ToolBox => ControlRoutePreference::CustomRequired,
+        | WidgetKind::ToolBox
+        | WidgetKind::Switch
+        | WidgetKind::SearchBox
+        | WidgetKind::Chip
+        | WidgetKind::Badge
+        | WidgetKind::SkeletonLoader
+        | WidgetKind::FAB
+        | WidgetKind::PullToRefresh
+        | WidgetKind::BottomSheet
+        | WidgetKind::BottomNavigationBar
+        | WidgetKind::NavigationDrawer
+        | WidgetKind::AppBar
+        | WidgetKind::MobileDatePicker
+        | WidgetKind::Divider
+        | WidgetKind::Stepper
+        | WidgetKind::Rating
+        | WidgetKind::Avatar
+        | WidgetKind::EmptyState
+        | WidgetKind::Carousel
+        | WidgetKind::ColorWell
+        | WidgetKind::TagInput
+        | WidgetKind::ImePreedit
+        | WidgetKind::QRCode
+        | WidgetKind::MasonryLayout
+        | WidgetKind::CupertinoSwitch
+        | WidgetKind::MaterialSnackbar
+        | WidgetKind::AdaptiveScaffold
+        | WidgetKind::WizardDialog
+        | WidgetKind::SafeArea
+        | WidgetKind::CupertinoAlertDialog
+        | WidgetKind::CupertinoSlider
+        | WidgetKind::MaterialNavigationRail => ControlRoutePreference::CustomRequired,
     }
 }
 
@@ -192,6 +223,35 @@ mod tests {
             WidgetKind::Action,
             WidgetKind::ToolButton,
             WidgetKind::ToolBox,
+            WidgetKind::Switch,
+            WidgetKind::SearchBox,
+            WidgetKind::Chip,
+            WidgetKind::Badge,
+            WidgetKind::SkeletonLoader,
+            WidgetKind::FAB,
+            WidgetKind::PullToRefresh,
+            WidgetKind::BottomSheet,
+            WidgetKind::BottomNavigationBar,
+            WidgetKind::NavigationDrawer,
+            WidgetKind::AppBar,
+            WidgetKind::MobileDatePicker,
+            WidgetKind::Divider,
+            WidgetKind::Stepper,
+            WidgetKind::Rating,
+            WidgetKind::Avatar,
+            WidgetKind::EmptyState,
+            WidgetKind::Carousel,
+            WidgetKind::ColorWell,
+            WidgetKind::TagInput,
+            WidgetKind::QRCode,
+            WidgetKind::MasonryLayout,
+            WidgetKind::CupertinoSwitch,
+            WidgetKind::MaterialSnackbar,
+            WidgetKind::AdaptiveScaffold,
+            WidgetKind::WizardDialog,
+            WidgetKind::CupertinoAlertDialog,
+            WidgetKind::CupertinoSlider,
+            WidgetKind::MaterialNavigationRail,
         ];
         for kind in &custom_required {
             assert_eq!(
@@ -290,6 +350,36 @@ mod tests {
             WidgetKind::TabBar,
             WidgetKind::PieMenu,
             WidgetKind::RibbonBar,
+            WidgetKind::Switch,
+            WidgetKind::SearchBox,
+            WidgetKind::Chip,
+            WidgetKind::Badge,
+            WidgetKind::SkeletonLoader,
+            WidgetKind::FAB,
+            WidgetKind::PullToRefresh,
+            WidgetKind::BottomSheet,
+            WidgetKind::BottomNavigationBar,
+            WidgetKind::NavigationDrawer,
+            WidgetKind::AppBar,
+            WidgetKind::MobileDatePicker,
+            WidgetKind::Divider,
+            WidgetKind::Stepper,
+            WidgetKind::Rating,
+            WidgetKind::Avatar,
+            WidgetKind::EmptyState,
+            WidgetKind::Carousel,
+            WidgetKind::ColorWell,
+            WidgetKind::TagInput,
+            WidgetKind::QRCode,
+            WidgetKind::MasonryLayout,
+            WidgetKind::CupertinoSwitch,
+            WidgetKind::MaterialSnackbar,
+            WidgetKind::AdaptiveScaffold,
+            WidgetKind::WizardDialog,
+            WidgetKind::SafeArea,
+            WidgetKind::CupertinoAlertDialog,
+            WidgetKind::CupertinoSlider,
+            WidgetKind::MaterialNavigationRail,
         ];
         for kind in &all {
             let preference = route_preference_for_widget_kind(*kind);

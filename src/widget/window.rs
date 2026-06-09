@@ -39,15 +39,8 @@ impl Window {
         self.title = title;
     }
     /// Returns the title bar height.
-    #[deprecated(since = "0.9.0", note = "use title_bar_height() instead")]
-    pub fn get_title_bar_height(&self) -> u32 {
-        self.title_bar_height
-    }
-
-    /// Returns the title bar height.
-    #[allow(deprecated)]
     pub fn title_bar_height(&self) -> u32 {
-        self.get_title_bar_height()
+        self.title_bar_height
     }
 
     /// Sets the title bar height and requests redraw.
@@ -57,15 +50,8 @@ impl Window {
     }
 
     /// Returns the close button size.
-    #[deprecated(since = "0.9.0", note = "use close_button_size() instead")]
-    pub fn get_close_button_size(&self) -> u32 {
-        self.close_button_size
-    }
-
-    /// Returns the close button size.
-    #[allow(deprecated)]
     pub fn close_button_size(&self) -> u32 {
-        self.get_close_button_size()
+        self.close_button_size
     }
 
     /// Sets the close button size and requests redraw.
@@ -75,15 +61,8 @@ impl Window {
     }
 
     /// Returns the button spacing.
-    #[deprecated(since = "0.9.0", note = "use button_spacing() instead")]
-    pub fn get_button_spacing(&self) -> u32 {
-        self.button_spacing
-    }
-
-    /// Returns the button spacing.
-    #[allow(deprecated)]
     pub fn button_spacing(&self) -> u32 {
-        self.get_button_spacing()
+        self.button_spacing
     }
 
     /// Sets the button spacing and requests redraw.

@@ -565,3 +565,27 @@ fn test_all_widget_handle_types_exist() {
     let _ = ScrollAreaHandle::from_raw(13);
     let _ = MessageBoxHandle::from_raw(14);
 }
+
+#[test]
+fn test_new_widgets_module_exports_exist() {
+    // Verify that BLUE11 R10 new widgets are accessible from the widget crate root
+    #[cfg(feature = "desktop")]
+    {
+        use rust_widgets::widget::{
+            AppBar, Badge, BottomNavigationBar, BottomSheet, MobileDatePicker, NavigationDrawer,
+            PullToRefresh, SearchBox, SkeletonLoader, Switch, FAB,
+        };
+        // Compile-time check: all types exist and are constructable
+        let _ = Switch::new(rust_widgets::core::Rect::new(0, 0, 60, 30));
+        let _ = SearchBox::new(rust_widgets::core::Rect::new(0, 0, 200, 30));
+        let _ = Badge::new(rust_widgets::core::Rect::new(0, 0, 24, 24));
+        let _ = FAB::new(rust_widgets::core::Rect::new(0, 0, 56, 56));
+        let _ = SkeletonLoader::new(rust_widgets::core::Rect::new(0, 0, 200, 20));
+        let _ = PullToRefresh::new(rust_widgets::core::Rect::new(0, 0, 300, 400));
+        let _ = BottomSheet::new(rust_widgets::core::Rect::new(0, 0, 300, 400));
+        let _ = BottomNavigationBar::new(rust_widgets::core::Rect::new(0, 0, 375, 56));
+        let _ = NavigationDrawer::new(rust_widgets::core::Rect::new(0, 0, 300, 600));
+        let _ = AppBar::new("Test", rust_widgets::core::Rect::new(0, 0, 375, 56));
+        let _ = MobileDatePicker::new(rust_widgets::core::Rect::new(0, 0, 300, 200));
+    }
+}

@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.9.6 (2026-06-09) — BLUE11 Release
+
+### New Widgets (28 new controls)
+- **Popular Controls**: Switch, SearchBox, Chip, Badge, SkeletonLoader, FAB, Avatar, Rating, Stepper, Divider, Carousel, EmptyState, ColorWell, QRCode
+- **Mobile-First**: PullToRefresh, BottomSheet, BottomNavigationBar, NavigationDrawer, AppBar, MobileDatePicker, ContextMenu (alias)
+- **Platform Styles**: CupertinoSwitch, MaterialSnackbar, AdaptiveScaffold
+- **Desktop Advanced**: PropertyGrid, WizardDialog, TagInput
+- **Input Support**: ImePreedit
+- **Layout**: MasonryLayout
+
+### Visual Effects (R5)
+- BoxShadow, Blur, ClipPath, BlendMode (16 modes), ConicGradient render commands
+- Software and SVG backend support for all new commands
+
+### Animation System (R6)
+- KeyframeAnimation with multi-keyframe interpolation
+- TransitionManager for CSS-style property transitions
+- SpringAnimation with physical spring dynamics
+- ThemeStateManager dark/light auto mode
+
+### Accessibility (R7)
+- AccessibleRole mappings for all 30+ new widgets
+- AriaProperties struct for platform API bridging
+- FocusTraversalStrategy (TabOrder, RowMajor, ColumnMajor)
+- HighContrastMode support (BlackOnWhite, WhiteOnBlack, Custom)
+- ReducedMotionPreference detection
+
+### Event System (R8)
+- Pointer Events with pressure and tilt support
+- Gamepad Events (press, release, axis, connect/disconnect)
+- AsyncTask with thread-local task queue
+- IdleTask with frame-threshold scheduling
+
+### Configuration & Documentation (R4)
+- Cargo.toml enhanced (authors, categories, include/exclude)
+- deny.toml for cargo-deny license auditing
+- ARCHITECTURE.md and TUTORIAL.md documentation
+- WIDGET_GALLERY.md visual reference
+- .gitignore coverage improvements
+
+### Quality & CI (R3)
+- 130+ new tests across all new widgets
+- CI: cargo-deny license audit job
+- CI: docs-build check job
+- Full feature build verification
+
+### Architecture (R9)
+- Widget re-export normalization
+- containers.rs confirmed at 849 lines (no split needed)
+- missing_docs and unsafe_code lint warnings added
+
 ## [Unreleased]
 
 ### Added

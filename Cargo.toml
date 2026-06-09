@@ -4,12 +4,15 @@ version = "0.9.6"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
-keywords = ["gui", "ui", "widget", "cross-platform", "native"]
-categories = ["gui", "rendering", "graphics"]
+keywords = ["gui", "ui", "widget", "cross-platform", "native", "mobile", "reactive", "wasm"]
+categories = ["gui", "rendering", "graphics", "development-tools", "embedded", "multimedia", "web-programming"]
+authors = ["Mike Wolfli <mikewolfli@gmail.com>"]
 readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.87"
+include = ["src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
+exclude = [".github/**/*", ".cargo/**/*", ".vscode/**/*", "tools/**/*", "docs/**/*", "target/**/*"]
 
 [lints.rust]
 unexpected_cfgs = "allow"
@@ -46,8 +49,12 @@ mobile-api = []
 gtk-native = ["dep:gtk"]
 wayland-native = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-cursor"]
 controls-native = []
-objc2-macos = ["dep:objc2-foundation"]
+objc2-macos = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-core-graphics"]
+ios-uikit-ffi = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-ui-kit"]
 controls-custom = []
+
+# ── WASM platform support (browser via wasm-bindgen + web-sys) ──
+wasm = ["dep:wasm-bindgen", "dep:web-sys"]
 
 # ── Android JNI bridge (optional, creates real native views on Android) ──
 android-jni = ["dep:jni"]
@@ -68,10 +75,12 @@ linux-a11y = ["zbus"]
 # NOTE: device-class features (desktop/tablet/mobile/embedded) are
 # mutually exclusive and NOT combined here. Pick one device profile
 # and compose with interaction add-ons as needed.
-full = ["desktop", "touch", "holographic", "projection", "wayland-native", "gtk-native", "objc2-macos", "unstable-pipeline-routing", "unstable-special-widgets"]
+full = ["desktop", "touch", "holographic", "projection", "wayland-native", "gtk-native", "objc2-macos", "ios-uikit-ffi", "android-jni", "mobile-api", "wasm", "print", "pdf", "chart", "advanced-widgets", "unstable-pipeline-routing", "unstable-special-widgets"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "Node", "Event", "MouseEvent", "KeyboardEvent", "console"], optional = true }
 serde_json = "1.0"
 threadpool = "1.8"
 crossbeam-channel = "0.5"
@@ -92,8 +101,16 @@ winapi = { version = "0.3", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 objc-foundation = "0.1"
+objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
+objc2-app-kit = { version = "0.3", optional = true }
+objc2-core-graphics = { version = "0.3", optional = true }
 cocoa = "0.24"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-ui-kit = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }

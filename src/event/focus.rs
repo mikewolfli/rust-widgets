@@ -143,6 +143,24 @@ impl Default for FocusManager {
     }
 }
 
+/// Focus traversal order strategy (BLUE11 R7.2).
+pub enum FocusTraversalStrategy {
+    /// Tab order (linear).
+    TabOrder,
+    /// Row-major (left-to-right, top-to-bottom).
+    RowMajor,
+    /// Column-major (top-to-bottom, left-to-right).
+    ColumnMajor,
+}
+
+impl FocusManager {
+    /// Set the focus traversal strategy.
+    pub fn set_traversal_strategy(&mut self, _strategy: FocusTraversalStrategy) {
+        // Focus traversal strategy setter
+        // TODO: Implement actual reordering when strategy != TabOrder
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

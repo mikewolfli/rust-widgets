@@ -37,5 +37,14 @@ __pycache__/
 **/*.lib
 **/pkg/
 
+# Coverage artifacts
+*.profraw
+*.profdata
+*.gcov
+*.gcda
+*.gcno
+lcov.info
+coverage/
+
 # Test outputs
 **/test_output/

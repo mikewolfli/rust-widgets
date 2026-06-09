@@ -46,3 +46,66 @@ pub(crate) const CLEAR_FS: &str = r#"
 fn fs_main() -> @location(0) vec4f {
     return color;
 }"#;
+
+/// Image fragment shader stub.
+/// Placeholder for texture-based image rendering.
+pub(crate) const IMAGE_FRAG: &str = r#"
+@group(0) @binding(0) var<uniform> color: vec4f;
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return color;
+}"#;
+
+/// Text fragment shader stub.
+/// Placeholder for glyph/sdf-based text rendering.
+pub(crate) const TEXT_FRAG: &str = r#"
+@group(0) @binding(0) var<uniform> color: vec4f;
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return color;
+}"#;
+
+/// Rounded rectangle fill fragment shader stub.
+/// Placeholder for rounded-rect SDF rendering.
+pub(crate) const ROUNDED_RECT_FRAG: &str = r#"
+@group(0) @binding(0) var<uniform> color: vec4f;
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return color;
+}"#;
+
+/// Circle fill fragment shader stub.
+/// Placeholder for circle SDF rendering.
+pub(crate) const CIRCLE_FRAG: &str = r#"
+@group(0) @binding(0) var<uniform> color: vec4f;
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return color;
+}"#;
+
+/// Shader module identifiers for the WgpuRenderer pipeline (BLUE11 R5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderModule {
+    FillRect,
+    DrawImage,
+    DrawText,
+    FillRoundedRect,
+    FillCircle,
+}
+
+impl ShaderModule {
+    /// Get the WGSL shader source for this module.
+    pub fn source(&self) -> &'static str {
+        match self {
+            ShaderModule::FillRect => FILL_RECT_FS,
+            ShaderModule::DrawImage => IMAGE_FRAG,
+            ShaderModule::DrawText => TEXT_FRAG,
+            ShaderModule::FillRoundedRect => ROUNDED_RECT_FRAG,
+            ShaderModule::FillCircle => CIRCLE_FRAG,
+        }
+    }
+}

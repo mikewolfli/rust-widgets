@@ -93,7 +93,7 @@ echo "=============================================="
 
 run_smoke "platform integration tests" cargo test -q --lib platform::tests
 run_smoke "widget kind smoke test" cargo test -q --test blue9_r6_platform_capability_test
-run_smoke "widget structure tests" cargo test -q --test test_widget_structure
+run_smoke "widget structure tests" cargo test -q --test integration_test
 
 # ---------------------------------------------------------------------------
 # Summary

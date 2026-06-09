@@ -60,6 +60,19 @@ pub trait RichClipboardBackend: Send + Sync {
     /// Check whether the clipboard currently contains data in any of the
     /// given content types.
     fn has_format(&self, content_type: &str) -> bool;
+
+    /// Set HTML content on the clipboard (R2.7).
+    fn set_clipboard_html(&self, html: &str, plain_text: &str) {
+        self.set_contents(ClipboardContent::Html {
+            html: html.to_string(),
+            plain: plain_text.to_string(),
+        });
+    }
+
+    /// Set an image on the clipboard from raw RGBA data (R2.7).
+    fn set_clipboard_image(&self, rgba: &[u8], width: u32, height: u32) {
+        self.set_contents(ClipboardContent::Image { width, height, data: rgba.to_vec() });
+    }
 }
 
 /// Mock clipboard backend for testing.

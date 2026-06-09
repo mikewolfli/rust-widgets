@@ -440,6 +440,48 @@ impl PaintBackend for SvgPaintBackend {
                     d, fill, stroke, width
                 ));
             }
+            RenderCommand::BoxShadow {
+                rect,
+                color,
+                offset_x,
+                offset_y,
+                blur_radius: _,
+                spread,
+            } => {
+                let spread_w = (rect.width as i32 + *spread as i32 * 2).max(0) as u32;
+                let spread_h = (rect.height as i32 + *spread as i32 * 2).max(0) as u32;
+                let x = rect.x + offset_x - *spread as i32;
+                let y = rect.y + offset_y - *spread as i32;
+                self.push_element(format!(
+                    r##"<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" filter=\"url(#shadowBlur)\" rx=\"4\" />"##,
+                    x, y, spread_w, spread_h, color_to_rgba(color)
+                ));
+            }
+            RenderCommand::Blur { radius } => {
+                self.push_element(format!(
+                    r##"<filter id=\"blur_{}\"><feGaussianBlur stdDeviation=\"{}\" /></filter>"##,
+                    radius, radius
+                ));
+            }
+            RenderCommand::ClipPath { points } => {
+                if !points.is_empty() {
+                    let mut d = format!("M {} {}", points[0].x, points[0].y);
+                    for pt in &points[1..] {
+                        d.push_str(&format!(" L {} {}", pt.x, pt.y));
+                    }
+                    d.push_str(" Z");
+                    self.push_element(format!(
+                        r##"<clipPath id=\"cp\"><path d=\"{}\" /></clipPath>"##,
+                        d
+                    ));
+                }
+            }
+            RenderCommand::SetBlendMode { mode: _ } => {
+                // SVG backend: blend mode is not directly supported; skip
+            }
+            RenderCommand::DrawConicGradient { center: _, start_angle: _, stops: _ } => {
+                // SVG backend: conic gradient is not natively supported; skip
+            }
         }
     }
 

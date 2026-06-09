@@ -2,6 +2,27 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::style::Gradient;
 
+/// Compositing blend mode for rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
 /// Draw command recorded by a render layer.
 #[derive(Debug, Clone)]
 pub enum RenderCommand {
@@ -137,5 +158,43 @@ pub enum RenderCommand {
         color: Color,
         filled: bool,
         width: u32,
+    },
+    /// Draw a drop shadow behind a rectangle (BLUE11 R5.3).
+    BoxShadow {
+        /// The shadow's rectangular bounds.
+        rect: Rect,
+        /// Shadow color with alpha.
+        color: Color,
+        /// Horizontal offset in pixels.
+        offset_x: i32,
+        /// Vertical offset in pixels.
+        offset_y: i32,
+        /// Blur radius in pixels.
+        blur_radius: u32,
+        /// Spread radius in pixels (positive expands, negative contracts).
+        spread: i32,
+    },
+    /// Apply a Gaussian blur to the current clip region (BLUE11 R5.4).
+    Blur {
+        /// Blur radius in pixels.
+        radius: u32,
+    },
+    /// Set a clip path from a list of points (BLUE11 R5.5).
+    ClipPath {
+        /// Points defining the clip path.
+        points: Vec<Point>,
+    },
+    /// Set blend mode for subsequent draw commands (BLUE11 R5.6).
+    SetBlendMode {
+        mode: BlendMode,
+    },
+    /// Draw a conic (angular/sweep) gradient (BLUE11 R5.7).
+    DrawConicGradient {
+        /// Center point of the gradient.
+        center: Point,
+        /// Starting angle in radians.
+        start_angle: f32,
+        /// Color stops as (position [0,1], color) pairs.
+        stops: Vec<(f32, Color)>,
     },
 }

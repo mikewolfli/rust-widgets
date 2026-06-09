@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30" viewBox="0 0 80 30">
+  <rect x="0" y="0" width="80" height="30" fill="rgba(255,255,255,1.00)" />
+  <rect x="0" y="0" width="80" height="30" fill="rgba(240,240,240,1.00)" />
+  <rect x="0" y="0" width="80" height="30" fill="none" stroke="rgba(200,200,200,1.00)" stroke-width="1" />
+  <text x="6" y="15" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">OK</text>
+</svg>

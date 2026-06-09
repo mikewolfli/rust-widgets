@@ -2,5 +2,5 @@
 pub(crate) mod command;
 pub(crate) mod types;
 
-pub use command::RenderCommand;
+pub use command::{BlendMode, RenderCommand};
 pub use types::{ShapedText, TextCluster, TextMetrics};

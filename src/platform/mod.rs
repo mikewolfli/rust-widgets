@@ -8,7 +8,7 @@ pub mod harmony;
 #[cfg(target_os = "ios")]
 pub mod ios;
 pub mod linux;
-#[cfg(all(target_os = "macos", not(feature = "objc2-macos")))]
+#[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
 pub mod macos_objc2;

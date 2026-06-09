@@ -18,6 +18,13 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::HMENU;
 
+/// SAFETY: All Win32 FFI calls in this module follow standard Windows API safety patterns:
+/// - `CreateWindowExW` return values are checked for null (via `hwnd.is_null()`) before use.
+/// - `GetLastError` is implicitly checked via the null-return convention; a null HWND indicates
+///   that the caller should inspect `GetLastError` for the specific failure code.
+/// - Pointers passed to Win32 functions must remain valid for the duration of the call; wide
+///   strings (`to_wide`) are kept alive via local variables that live across the `unsafe` block.
+/// - `ShowWindow` / `UpdateWindow` / `MoveWindow` operate on previously-validated HWNDs.
 impl Platform for WindowsPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
         self

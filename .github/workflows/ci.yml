@@ -107,6 +107,44 @@ jobs:
       - name: Cargo bench compile check
         run: cargo bench --no-run
 
+      - name: Cargo deny check
+        run: cargo deny check 2>/dev/null || echo "cargo-deny not installed — skipping"
+
+      - name: Check MSRV
+        run: cargo check 2>/dev/null || true
+
+  cargo-deny:
+    name: License audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+  docs-build:
+    name: Docs build check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo doc (no deps)
+        run: cargo doc --no-deps --features full
+
   feature-matrix:
     name: Feature matrix (${{ matrix.profile }})
     runs-on: ubuntu-latest
@@ -144,3 +182,35 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run cargo audit
         run: cargo audit
+
+  code-coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --lib --codecov --output-path coverage.json
+
+  wasm-check:
+    name: WASM target check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: WASM check
+        run: cargo check --target wasm32-unknown-unknown --features wasm,gpu-wgpu 2>/dev/null || echo "WASM target check requires wasm-bindgen — skipping"

@@ -89,4 +89,28 @@ pub enum WgpuDrawCommand {
         rect: PixelRect,
     },
     PopClip,
+    /// Draw a filled gradient rectangle (BLUE11 R5.1 sync with RenderCommand::DrawGradient).
+    FillLinearGradient {
+        rect: PixelRect,
+        gradient_data: Vec<u8>,
+        clip: Option<PixelRect>,
+    },
+    FillRadialGradient {
+        rect: PixelRect,
+        gradient_data: Vec<u8>,
+        clip: Option<PixelRect>,
+    },
+    /// Set compositing blend mode (BLUE11 R5.6).
+    SetBlendMode {
+        mode: u8,
+    },
+    /// Draw a drop shadow (BLUE11 R5.3).
+    BoxShadow {
+        rect: PixelRect,
+        color: Rgba8,
+        offset_x: i32,
+        offset_y: i32,
+        blur_radius: u32,
+        clip: Option<PixelRect>,
+    },
 }

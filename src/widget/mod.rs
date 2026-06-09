@@ -18,6 +18,8 @@ pub mod registry;
 pub mod special_widgets;
 pub mod view_widgets;
 pub mod web_widgets;
+// New widget types (modern UI controls, mobile-first)
+pub mod new_widgets;
 // Individual widget files (not in subfolders)
 pub mod svg;
 pub mod window;
@@ -67,6 +69,42 @@ pub use display_widgets::lcd_number::LCDNumber as LcdNumber;
 pub use display_widgets::{
     lcd_number::LCDNumber, progressbar::ProgressBar, scrollbar::ScrollBar, slider::Slider,
 };
+// Re-export new widgets
+pub use new_widgets::{
+    adaptive_scaffold::AdaptiveScaffold,
+    app_bar::AppBar,
+    avatar::Avatar,
+    badge::Badge,
+    bottom_navigation_bar::BottomNavigationBar,
+    bottom_navigation_bar::NavItem,
+    bottom_sheet::BottomSheet,
+    carousel::Carousel,
+    color_well::ColorWell,
+    cupertino::CupertinoAlertDialog,
+    cupertino::CupertinoSlider,
+    cupertino::CupertinoSwitch,
+    cupertino::MaterialNavigationRail,
+    cupertino::MaterialSnackbar,
+    cupertino::RailItem,
+    divider::Divider,
+    empty_state::EmptyState,
+    fab::FAB,
+    masonry_layout::MasonryItem,
+    masonry_layout::MasonryLayout,
+    mobile_date_picker::MobileDatePicker,
+    navigation_drawer::NavigationDrawer,
+    property_grid::{PropertyGrid, PropertyItem},
+    pull_to_refresh::PullToRefresh,
+    qr_code::QRCode,
+    rating::Rating,
+    safe_area::{SafeArea, SafeAreaInsets},
+    search_box::SearchBox,
+    skeleton_loader::SkeletonLoader,
+    stepper::Stepper,
+    switch::Switch,
+    tag_input::TagInput,
+    wizard::{WizardDialog, WizardStep},
+};
 // Re-export web widgets
 pub use web_widgets::{web_engine::WebEngine, web_view::WebView};
 pub use web_widgets::{
@@ -101,7 +139,6 @@ pub use view_widgets::tree_view::TreeModel;
 pub use view_widgets::{
     data_grid::{ColumnFilter, DataGrid, SortSpec},
     list_view::{ListModel, ListView, VecListModel},
-    table_view::TableView,
     table_widget::TableWidget,
     tree_table::{TreeTable, TreeTableModel},
     tree_view::TreeView,
@@ -124,7 +161,6 @@ pub type DoubleSpinBox = SpinBox;
 pub type Wizard = Panel;
 // ── P3-6: WidgetKind variant type aliases ──
 pub type DataView = VirtualList;
-pub type PropertyGrid = TreeView;
 pub type ColumnView = TreeView;
 pub type UndoView = ListView;
 pub type DatePicker = DateEdit;

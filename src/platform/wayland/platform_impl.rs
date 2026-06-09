@@ -12,6 +12,7 @@
 
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
+use crate::event::EventLoop;
 use crate::platform::types::{
     DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
@@ -75,8 +76,19 @@ impl Platform for WaylandPlatform {
             }
         }
         // Fallback: assume 96 DPI (1.0 scale factor).
-        // TODO: When native wayland-client integration is wired, query
-        // wl_output scaling via wl_output::scale event.
+        // When wayland-native feature is active, check the native session
+        // for wl_output scale factor obtained from the compositor.
+        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        {
+            if let Ok(guard) = self.native_session.lock() {
+                if let Some(ref session) = *guard {
+                    let scale = session.state.dpi_scale;
+                    if scale > 0.0 {
+                        return scale;
+                    }
+                }
+            }
+        }
         1.0
     }
 
@@ -102,11 +114,31 @@ impl Platform for WaylandPlatform {
             wayland_display
         );
 
-        // Wait until quit is requested.
-        // Actual Wayland event dispatch is handled by the EventLoop thread
-        // via the native pump registered with `set_native_pump()`.
-        // This avoids both the EventLoop thread and the run() thread competing
-        // for dispatch on the same event queue.
+        // Start EventLoop with native pump for Wayland dispatch.
+        // The EventLoop runs in a background thread and calls the pump
+        // on each iteration to dispatch pending native Wayland events.
+        // Meanwhile, this thread blocks waiting for the quit signal.
+        let mut event_loop = EventLoop::new();
+        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        if let Some(pump) = super::create_event_loop_pump() {
+            event_loop.set_native_pump(pump);
+        }
+        event_loop.start();
+
+        // ── Polling loop ──
+        // Current state: busy-wait with 16 ms sleep (~60 Hz polling rate) checking
+        // the `running` flag. This is sufficient for the state-only backend but
+        // is NOT a proper Wayland event loop.
+        //
+        // Path to a proper Wayland event loop:
+        // 1. Use `wl_client::EventQueue::dispatch()` or `dispatch_pending()` on
+        //    the Wayland connection in each iteration instead of sleeping.
+        // 2. Integrate with an epoll/fd-based pump so the thread blocks on the
+        //    Wayland socket fd rather than busy-waiting.
+        // 3. Replace `EventLoop` with `calloop` or an `os_pipe`-based wakeup
+        //    mechanism to support proper event sources.
+        // 4. Wire `wl_display_roundtrip()` during init to ensure all globals are
+        //    received before entering the main loop.
         while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
@@ -814,7 +846,12 @@ impl WaylandPlatform {
             let qh = event_queue.handle();
             let _registry = display.get_registry(&qh, ());
 
-            let mut state = WaylandSessionState { compositor: None, xdg_wm_base: None };
+            let mut state = WaylandSessionState {
+                compositor: None,
+                xdg_wm_base: None,
+                wl_output: None,
+                dpi_scale: 1.0,
+            };
             event_queue
                 .roundtrip(&mut state)
                 .inspect_err(|e| log::error!("[wayland] Registry roundtrip failed: {}", e))
@@ -881,6 +918,11 @@ impl WaylandPlatform {
 pub(crate) struct WaylandSessionState {
     pub(crate) compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
     pub(crate) xdg_wm_base: Option<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase>,
+    /// wl_output proxy for DPI scale detection.
+    pub(crate) wl_output: Option<wl_client::protocol::wl_output::WlOutput>,
+    /// DPI scale factor obtained from wl_output::scale event.
+    /// Defaults to 1.0 until the compositor sends a scale event.
+    pub(crate) dpi_scale: f32,
 }
 
 /// A persistent Wayland session containing the connection, event queue,
@@ -956,6 +998,16 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for W
                     state.xdg_wm_base = Some(xdg);
                     log::info!("[wayland] Bound xdg_wm_base (v{})", version);
                 }
+                "wl_output" => {
+                    let output = registry.bind::<wl_client::protocol::wl_output::WlOutput, _, _>(
+                        name,
+                        version.min(4),
+                        _qh,
+                        (),
+                    );
+                    state.wl_output = Some(output);
+                    log::info!("[wayland] Bound wl_output (v{})", version);
+                }
                 _ => { /* Other globals need no special handling */ }
             }
         }
@@ -977,6 +1029,40 @@ impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
         _qh: &wl_client::QueueHandle<WaylandSessionState>,
     ) {
         // wl_compositor has no server-to-client events.
+    }
+}
+
+// --- wl_output (handle scale events for DPI detection) ---
+
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+impl wl_client::Dispatch<wl_client::protocol::wl_output::WlOutput, ()> for WaylandSessionState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_output::WlOutput,
+        event: wl_client::protocol::wl_output::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_output::Event;
+        match event {
+            Event::Scale { factor } => {
+                state.dpi_scale = factor as f32;
+                log::info!("[wayland] wl_output scale factor: {} (DPI: {})", factor, factor * 96);
+            }
+            Event::Done => {
+                log::trace!("[wayland] wl_output done");
+            }
+            Event::Geometry { .. }
+            | Event::Mode { .. }
+            | Event::Name { .. }
+            | Event::Description { .. } => {
+                log::trace!("[wayland] wl_output event: {:?}", event);
+            }
+            _ => {
+                log::trace!("[wayland] wl_output unhandled event: {:?}", event);
+            }
+        }
     }
 }
 

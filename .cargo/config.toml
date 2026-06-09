@@ -3,3 +3,15 @@ check-all = "check --all-features"
 test-all = "test --all-features -q"
 lint = "clippy --all-features --all-targets -- -D warnings"
 fmt-check = "fmt --all -- --check"
+
+# MIRI configuration for unsafe code audit (BLUE11 R3.9)
+[target.'cfg(miri)']
+runner = "cargo miri run"
+
+[env]
+# Enable runtime tracing for MIRI validation
+RUST_WIDGETS_TRACE_RUNTIME = { value = "1", target = "miri" }
+
+# Suppress future-incompat report for block 0.1.6 (transitive dep of cocoa 0.24)
+[future-incompat-report]
+frequency = "never"

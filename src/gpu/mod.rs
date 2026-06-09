@@ -23,7 +23,7 @@
 //! async fn setup_gpu() {
 //!     // Auto-detect best GPU
 //!     let manager = GpuManager::new().await.unwrap();
-//!     
+//!
 //!     println!("Using GPU: {}", manager.adapter_info().name);
 //!     println!("Mode: {:?}", manager.operation_mode());
 //! }
@@ -32,6 +32,7 @@ pub mod adapter;
 pub mod buffer_pool;
 pub mod manager;
 pub mod performance;
+pub mod texture_atlas;
 // Re-export main types
 pub use adapter::{
     AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector, GpuAdapter,
@@ -48,6 +49,7 @@ pub use performance::{
     AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceMonitorStrategy,
     PerformanceSample, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
+pub use texture_atlas::TextureAtlas;
 /// Initialize the GPU subsystem with automatic hardware detection
 pub async fn init() -> Result<GpuManager, GpuManagerError> {
     GpuManager::new().await

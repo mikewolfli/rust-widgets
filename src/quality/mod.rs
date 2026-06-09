@@ -15,18 +15,17 @@
 //! assert!(QualityLevel::Medium < QualityLevel::High);
 //! ```
 mod config;
-mod gpu;
 mod level;
 mod manager;
 mod monitor;
 pub use config::QualityConfig;
-pub use gpu::GpuCapability;
 pub use level::QualityLevel;
-pub use manager::QualityManager;
+pub use manager::{GpuCapability, QualityManager};
 pub use monitor::FrameTimeMonitor;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quality::manager::GpuCapability;
     #[test]
     fn quality_level_ordering() {
         assert!(QualityLevel::Low < QualityLevel::Medium);

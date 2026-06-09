@@ -33,7 +33,8 @@ impl Platform for LinuxPlatform {
         self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            // Initialize GTK runtime when native path is enabled.
+            // SAFETY: GTK initialization follows the standard gtk_init_check pattern.
+            // Returned GtkWidget pointers from creation functions are checked for null.
             if let Err(e) = gtk::init() {
                 log::error!("[linux] gtk::init() failed: {:?}", e);
             }
@@ -71,6 +72,8 @@ impl Platform for LinuxPlatform {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
+            // SAFETY: gtk::Window::new returns a valid GtkWidget backed by the GTK C API.
+            // The Rust bindings own the reference and guarantee non-null for constructed widgets.
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
             window.set_title(title);
             window.set_default_size(width as i32, height as i32);

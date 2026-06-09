@@ -121,7 +121,7 @@ mod tests {
             assert_eq!(pixels[g_off], 0, "(12,12) R should be 0");
             assert_eq!(pixels[g_off + 1], 255, "(12,12) should be green");
             // Gap between rects should be transparent
-            let t_off = ((0 * 16 + 12) * 4) as usize;
+            let t_off = (12 * 4) as usize;
             assert_eq!(pixels[t_off + 3], 0, "gap should be transparent");
         }
     }

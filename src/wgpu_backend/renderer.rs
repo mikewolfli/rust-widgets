@@ -1,8 +1,10 @@
 //! WGPU renderer implementation.
 use super::commands::WgpuDrawCommand;
 use super::raster::{align_to, rasterize_draw_commands_rgba8};
+use super::shaders::ShaderModule;
 use super::types::Rgba8;
 use crate::render::gpu::{GpuCapability, GpuRenderer};
+use std::collections::HashMap;
 use std::sync::mpsc;
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
@@ -11,6 +13,9 @@ pub struct WgpuRenderer {
     clear_pipeline: wgpu::RenderPipeline,
     rect_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
+    /// Cached shader module pipeline references (BLUE11 R5.2).
+    shader_cache: HashMap<String, wgpu::ShaderModule>,
 }
 impl WgpuRenderer {
     /// Create a new renderer by requesting a default GPU adapter and logical device.
@@ -178,7 +183,13 @@ impl WgpuRenderer {
             cache: None,
         });
 
-        Ok(Self { device, queue, clear_pipeline, rect_pipeline, bind_group_layout })
+        let mut shader_cache = HashMap::new();
+        shader_cache.insert("clear_vs".to_string(), clear_vs_module);
+        shader_cache.insert("clear_fs".to_string(), clear_fs_module);
+        shader_cache.insert("rect_vs".to_string(), rect_vs_module);
+        shader_cache.insert("rect_fs".to_string(), rect_fs_module);
+
+        Ok(Self { device, queue, clear_pipeline, rect_pipeline, bind_group_layout, shader_cache })
     }
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.
     pub fn render_clear_rgba8(
@@ -742,6 +753,22 @@ impl WgpuRenderer {
         rgba8: &[u8],
     ) -> Result<Vec<u8>, String> {
         self.upload_rgba8_and_readback(width, height, rgba8)
+    }
+
+    /// Get the shader module enum for integration (BLUE11 R5.2).
+    pub fn shader_modules(&self) -> Vec<ShaderModule> {
+        vec![
+            ShaderModule::FillRect,
+            ShaderModule::DrawImage,
+            ShaderModule::DrawText,
+            ShaderModule::FillRoundedRect,
+            ShaderModule::FillCircle,
+        ]
+    }
+
+    /// Return a reference to the cached wgpu `ShaderModule` for the given module name.
+    pub fn get_shader_module(&self, name: &str) -> Option<&wgpu::ShaderModule> {
+        self.shader_cache.get(name)
     }
 }
 

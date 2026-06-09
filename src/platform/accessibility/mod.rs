@@ -50,6 +50,23 @@ pub enum AccessibleRole {
     Unknown,
 }
 
+/// ARIA property mapping for accessibility (BLUE11 R7.5).
+#[derive(Debug, Clone, Default)]
+pub struct AriaProperties {
+    /// aria-label — overrides the accessible name.
+    pub label: Option<String>,
+    /// aria-describedby reference.
+    pub described_by: Option<String>,
+    /// aria-live region (polite, assertive, off).
+    pub live_region: Option<String>,
+    /// aria-atomic for live regions.
+    pub atomic: bool,
+    /// aria-busy state.
+    pub busy: bool,
+    /// Custom key-value ARIA attributes.
+    pub custom: Vec<(String, String)>,
+}
+
 impl From<WidgetKind> for AccessibleRole {
     fn from(kind: WidgetKind) -> Self {
         match kind {
@@ -84,6 +101,25 @@ impl From<WidgetKind> for AccessibleRole {
             WidgetKind::TreeView => AccessibleRole::Tree,
             WidgetKind::Splitter => AccessibleRole::Splitter,
             WidgetKind::Window => AccessibleRole::Window,
+            // BLUE11 new widgets
+            WidgetKind::Switch => AccessibleRole::Button,
+            WidgetKind::SearchBox => AccessibleRole::TextField,
+            WidgetKind::Chip => AccessibleRole::Button,
+            WidgetKind::Badge => AccessibleRole::Label,
+            WidgetKind::SkeletonLoader => AccessibleRole::Label,
+            WidgetKind::FAB => AccessibleRole::Button,
+            WidgetKind::PullToRefresh => AccessibleRole::Group,
+            WidgetKind::BottomSheet => AccessibleRole::Group,
+            WidgetKind::BottomNavigationBar => AccessibleRole::TabGroup,
+            WidgetKind::NavigationDrawer => AccessibleRole::Group,
+            WidgetKind::AppBar => AccessibleRole::Group,
+            WidgetKind::MobileDatePicker => AccessibleRole::SpinButton,
+            WidgetKind::Divider => AccessibleRole::Group,
+            WidgetKind::Stepper => AccessibleRole::SpinButton,
+            WidgetKind::Rating => AccessibleRole::Slider,
+            WidgetKind::Avatar => AccessibleRole::Image,
+            WidgetKind::EmptyState => AccessibleRole::Group,
+            WidgetKind::Carousel => AccessibleRole::TabGroup,
             _ => AccessibleRole::Unknown,
         }
     }
@@ -103,4 +139,6 @@ pub trait AccessibilityBridge: Send + Sync {
     fn notify_state_changed(&self, id: ObjectId);
     /// Post a notification that focus moved to a widget.
     fn notify_focus_changed(&self, id: ObjectId);
+    /// Set ARIA properties on a widget.
+    fn set_aria_properties(&self, _id: ObjectId, _props: &AriaProperties) {}
 }

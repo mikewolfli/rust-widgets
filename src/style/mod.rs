@@ -1,14 +1,38 @@
 //! Style system primitives.
 pub mod animation;
+pub mod animation_group;
 pub mod gradient;
 pub mod selector;
+pub mod theme;
 pub mod theme_state;
 use crate::core::{Color, Font, Size};
+
+// ── Style Inheritance Chain (BLUE11 R6.6) ──
+//
+// Widget style resolution follows this inheritance chain:
+//
+// 1. Global Theme defaults (ThemeManager → Theme)
+// 2. ThemeOverrides per widget class (e.g., "Button", "Label")
+// 3. Widget instance state (StatefulTheme → WidgetState)
+// 4. Inline style overrides (future)
+//
+// The ThemeManager resolves: Theme → ThemeOverrides → WidgetState
+// Each step falls through to the next level if unset.
 pub use animation::*;
+pub use animation_group::*;
 pub use gradient::*;
 pub use selector::*;
+pub use theme::*;
 pub use theme_state::*;
 /// Per-side padding values around widget content.
+
+/// Whether the user prefers reduced motion (BLUE11 R7.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReducedMotionPreference {
+    #[default]
+    NoPreference,
+    ReduceMotion,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Padding {
     /// Top padding.

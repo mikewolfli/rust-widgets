@@ -4,7 +4,6 @@
 pub mod data_grid;
 pub mod data_source;
 pub mod list_view;
-pub mod table_view;
 pub mod table_widget;
 pub mod tree_table;
 pub mod tree_view;
@@ -16,7 +15,6 @@ pub use data_source::{
     IncrementalTableDataSource, ListModelDataSource, TableModelDataSource, TreeModelDataSource,
 };
 pub use list_view::ListView;
-pub use table_view::TableView;
 pub use table_widget::TableWidget;
 pub use tree_table::{TreeTable, TreeTableModel};
 pub use tree_view::TreeView;

@@ -129,7 +129,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut watcher = AssetWatcher::new();
-        watcher.watch(&dir, false, |p| p.extension().map_or(false, |e| e == "txt")).unwrap();
+        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "txt")).unwrap();
 
         // Create a .txt file
         let test_file = dir.join("test.txt");
@@ -156,7 +156,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut watcher = AssetWatcher::new();
-        watcher.watch(&dir, false, |p| p.extension().map_or(false, |e| e == "json")).unwrap();
+        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "json")).unwrap();
 
         // Create .txt file (should NOT produce event)
         let txt_file = dir.join("ignored.txt");
