@@ -10,6 +10,12 @@
 [![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
+<p align="center">
+  <a href="README.md">
+    <img src="https://img.shields.io/badge/lang-English-blue" alt="English">
+  </a>
+</p>
+
 ---
 
 ## 快速开始

@@ -12,7 +12,6 @@ homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.87"
 include = ["src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
-exclude = [".github/**/*", ".cargo/**/*", ".vscode/**/*", "tools/**/*", "docs/**/*", "target/**/*"]
 
 [lints.rust]
 unexpected_cfgs = "allow"

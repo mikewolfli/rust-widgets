@@ -10,6 +10,12 @@ Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, wid
 [![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
+<p align="center">
+  <a href="README.zh-CN.md">
+    <img src="https://img.shields.io/badge/%E4%B8%AD%E6%96%87-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue" alt="简体中文">
+  </a>
+</p>
+
 ---
 
 ## Quick Start
