@@ -1,0 +1,30 @@
+{
+  "name": "rust-widgets",
+  "version": "0.9.6",
+  "description": "Node.js binding for the rust-widgets native GUI library (cross-platform, 60+ widgets, hardware-adaptive rendering)",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT",
+  "keywords": [
+    "gui",
+    "ui",
+    "widget",
+    "native",
+    "cross-platform",
+    "rust",
+    "ffi"
+  ],
+  "homepage": "https://github.com/mikewolfli/rust-widgets",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikewolfli/rust-widgets.git"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "ffi-napi": "^4.0.3",
+    "ref-napi": "^3.0.3",
+    "ref-struct-napi": "^1.1.0"
+  }
+}

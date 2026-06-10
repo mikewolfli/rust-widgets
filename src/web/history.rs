@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_HISTORY_ENTRIES: usize = 100;
 #[derive(Debug, Clone, PartialEq, Eq)]

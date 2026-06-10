@@ -9,8 +9,8 @@ pub use types::{Action, ActionBinding, ActionHostKind};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     #[test]
     fn shortcut_triggers_action() {
         let mut mgr = ActionManager::new();

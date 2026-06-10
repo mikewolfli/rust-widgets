@@ -1,10 +1,13 @@
 //! Stable C ABI for foreign language bindings.
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::control_backend::get_control_backend;
 use crate::{c_try, c_try_void};
-use std::collections::HashMap;
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_float, c_int, c_uint};
-use std::sync::{Mutex, OnceLock};
+use alloc::boxed::Box;
+use alloc::ffi::CString;
+use core::ffi::{c_char, c_float, c_int, c_uint, CStr};
+#[cfg(not(feature = "mini"))]
+use std::sync::OnceLock;
 type CBool = bool;
 /// Global node-handle registry used by Harmony native bridge callbacks.
 fn harmony_node_registry() -> &'static Mutex<HashMap<u64, u64>> {
@@ -240,6 +243,298 @@ pub extern "C" fn rust_widgets_create_panel(
     height: c_uint,
 ) -> u64 {
     c_try!({ get_control_backend().create_panel(parent, x, y, width, height) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_message_box(
+    parent: u64,
+    title: *const c_char,
+    text: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({
+        get_control_backend().create_message_box(
+            parent,
+            &c_str_or_default(title),
+            &c_str_or_default(text),
+            x,
+            y,
+            width,
+            height,
+        )
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_file_dialog(
+    parent: u64,
+    title: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({
+        get_control_backend().create_file_dialog(
+            parent,
+            &c_str_or_default(title),
+            x,
+            y,
+            width,
+            height,
+        )
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_color_dialog(
+    parent: u64,
+    title: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({
+        get_control_backend().create_color_dialog(
+            parent,
+            &c_str_or_default(title),
+            x,
+            y,
+            width,
+            height,
+        )
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_font_dialog(
+    parent: u64,
+    title: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({
+        get_control_backend().create_font_dialog(
+            parent,
+            &c_str_or_default(title),
+            x,
+            y,
+            width,
+            height,
+        )
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_spin_box(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({ get_control_backend().create_spin_box(parent, x, y, width, height) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_list_view(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({ get_control_backend().create_list_view(parent, x, y, width, height) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_create_scroll_area(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({ get_control_backend().create_scroll_area(parent, x, y, width, height) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_set_widget_geometry(
+    widget_id: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) {
+    c_try_void!({
+        get_control_backend().set_widget_geometry(widget_id, x, y, width, height);
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_get_widget_geometry(
+    widget_id: u64,
+    x_out: *mut c_int,
+    y_out: *mut c_int,
+    width_out: *mut c_uint,
+    height_out: *mut c_uint,
+) -> CBool {
+    c_try!({
+        let geo = get_control_backend().get_widget_geometry(widget_id);
+        if let Some((x, y, w, h)) = geo {
+            unsafe {
+                if !x_out.is_null() {
+                    *x_out = x;
+                }
+                if !y_out.is_null() {
+                    *y_out = y;
+                }
+                if !width_out.is_null() {
+                    *width_out = w;
+                }
+                if !height_out.is_null() {
+                    *height_out = h;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
+    c_try!({ get_control_backend().combo_box_add_item(combo_box, &c_str_or_default(text)) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_clear_items(combo_box: u64) -> CBool {
+    c_try!({ get_control_backend().combo_box_clear_items(combo_box) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_set_current_index(combo_box: u64, index: c_uint) -> CBool {
+    c_try!({
+        crate::platform::get_platform().combo_box_set_current_index(combo_box, index as usize)
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_current_index(combo_box: u64) -> c_int {
+    c_try!({
+        match crate::platform::get_platform().combo_box_current_index(combo_box) {
+            Some(idx) => idx as c_int,
+            None => -1,
+        }
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_item_count(combo_box: u64) -> c_uint {
+    c_try!({ crate::platform::get_platform().combo_box_item_count(combo_box) as c_uint })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_combo_box_item_text(combo_box: u64, index: c_uint) -> *const c_char {
+    c_try!({
+        let text = crate::platform::get_platform().combo_box_item_text(combo_box, index as usize);
+        to_c_string_or_empty(text.unwrap_or_default())
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_add_item(list_box: u64, text: *const c_char) -> CBool {
+    c_try!({ get_control_backend().list_box_add_item(list_box, &c_str_or_default(text)) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_remove_item(list_box: u64, index: c_uint) -> CBool {
+    c_try!({ get_control_backend().list_box_remove_item(list_box, index as usize) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_clear_items(list_box: u64) -> CBool {
+    c_try!({ get_control_backend().list_box_clear_items(list_box) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_set_current_index(list_box: u64, index: c_uint) -> CBool {
+    c_try!({ crate::platform::get_platform().list_box_set_current_index(list_box, index as usize) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_current_index(list_box: u64) -> c_int {
+    c_try!({
+        match crate::platform::get_platform().list_box_current_index(list_box) {
+            Some(idx) => idx as c_int,
+            None => -1,
+        }
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_item_count(list_box: u64) -> c_uint {
+    c_try!({ crate::platform::get_platform().list_box_item_count(list_box) as c_uint })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_list_box_item_text(list_box: u64, index: c_uint) -> *const c_char {
+    c_try!({
+        let text = crate::platform::get_platform().list_box_item_text(list_box, index as usize);
+        to_c_string_or_empty(text.unwrap_or_default())
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_set_clipboard_text(text: *const c_char) -> CBool {
+    c_try!({ get_control_backend().set_clipboard_text(&c_str_or_default(text)) })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_get_clipboard_text() -> *const c_char {
+    c_try!({
+        let text = get_control_backend().get_clipboard_text();
+        to_c_string_or_empty(text)
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_begin_drag(
+    source: u64,
+    mime_type: *const c_char,
+    payload: *const u8,
+    payload_len: c_uint,
+) -> CBool {
+    c_try!({
+        let slice = if payload.is_null() || payload_len == 0 {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(payload, payload_len as usize) }
+        };
+        get_control_backend().begin_drag(source, &c_str_or_default(mime_type), slice)
+    })
+}
+#[no_mangle]
+pub extern "C" fn rust_widgets_poll_drop_event(
+    source_out: *mut u64,
+    target_out: *mut u64,
+    mime_out: *mut *mut c_char,
+    payload_out: *mut *mut u8,
+    payload_len_out: *mut c_uint,
+) -> CBool {
+    c_try!({
+        let Some(event) = get_control_backend().poll_drop_event() else {
+            return false;
+        };
+        unsafe {
+            if !source_out.is_null() {
+                *source_out = event.source_widget_id;
+            }
+            if !target_out.is_null() {
+                *target_out = event.target_widget_id;
+            }
+            if !mime_out.is_null() {
+                let cs = CString::new(event.mime).unwrap_or_else(|_| CString::new("").unwrap());
+                *mime_out = cs.into_raw();
+            }
+            if !payload_out.is_null() && !payload_len_out.is_null() && !event.payload.is_empty() {
+                let len = event.payload.len();
+                let slice = event.payload.into_boxed_slice();
+                *payload_out = Box::into_raw(slice) as *mut u8;
+                *payload_len_out = len as c_uint;
+            } else {
+                if !payload_out.is_null() {
+                    *payload_out = std::ptr::null_mut();
+                }
+                if !payload_len_out.is_null() {
+                    *payload_len_out = 0;
+                }
+            }
+        }
+        true
+    })
 }
 #[no_mangle]
 pub extern "C" fn rust_widgets_create_menu_bar(

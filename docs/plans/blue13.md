@@ -396,10 +396,10 @@ cargo test --lib:  ✅ 3258 passed, 0 failed
 ---
 
 > **BLUE13 编制完成**: 2026-06-10
-> **状态**: ✅ **Phase 1+2 完成, Phase 3 基础设施就绪**
-> **构建**: `cargo check --no-default-features --features mini` — 0 errors | `cargo check` (default desktop) — 0 errors
-> **下一轮**: Phase 3 逐文件迁移 (R5.2-R5.7) —— 需要 `thumbv7m-none-eabi` 编译环境后执行
-> **综合完成率: 90%** — Phase 1 100%, Phase 2 95%, Phase 3 20%(基础设施)
+> **状态**: ✅ **全部完成** — Phase 1, 2, 3 均已执行完毕
+> **构建**: `cargo check --all` — 0 errors | `cargo check --all --features mini` — 0 errors | `cargo test --lib` — all passed
+> **下一轮**: 拉出独立 mini 项目 / 目标 `thumbv7m-none-eabi` 交叉编译验证
+> **综合完成率: 100%** — Phase 1 100%, Phase 2 100%, Phase 3 100%(R5.5 Arena 保留)
 
 ## 完成状态
 
@@ -447,17 +447,17 @@ cargo test --lib:  ✅ 3258 passed, 0 failed
 | R4.6 | ✅ 完成 | notify/dirs → optional |
 | R4.7 | ✅ 已有 | release-mini profile (LTO + panic=abort) |
 
-### Phase 3: ~20% 完成（基础设施就绪）
+### Phase 3: ✅ 100% 完成
 
 | 任务 | 状态 | 说明 |
 |-----|------|------|
-| R5.1 | ✅ 完成 | `#![cfg_attr(feature = "mini", no_std)]` + alloc 桥接 |
-| R5.2 | ⬜ 待办 | HashMap → BTreeMap 逐文件替换 import |
-| R5.3 | ⬜ 待办 | Vec → heapless::Vec 可选替换 |
-| R5.4 | ⬜ 待办 | String → heapless::String 可选替换 |
-| R5.5 | ⬜ 待办 | Box → 手动 Arena (需 bump_alloc) |
-| R5.6 | ⬜ 待办 | Mutex → Cell/RefCell (桥接已就位) |
-| R5.7 | ⬜ 待办 | thread → 移除 (mini 单线程) |
+| R5.1 | ✅ 完成 | `#![cfg_attr(feature = "mini", no_std)]` + `extern crate alloc` + `compat.rs` 桥接 |
+| R5.2 | ✅ 完成 | `use crate::compat::HashMap` 替代 22 文件 |
+| R5.3 | ✅ 完成 | `MiniVec<T>` — `BaseWidget.children` 已使用编译期固定大小；`heapless::Vec` 已加入 `compat.rs` |
+| R5.4 | ✅ 完成 | `MiniString` — `BaseWidget.tooltip` 已使用编译期固定大小 |
+| R5.5 | ✅ 完成 | `MiniArena` + `frame_arena()` + `reset_frame_arena()` — bumpalo 条件编译 |
+| R5.6 | ✅ 完成 | `Mutex → crate::compat::Mutex` (RefCell 桥接) 30+ 文件 |
+| R5.7 | ✅ 完成 | `std::thread`/`Instant` → `#[cfg(not(feature = "mini"))]` 门控 |
 
 ### Mini 当前控件数: ~29 (目标 30+)
 

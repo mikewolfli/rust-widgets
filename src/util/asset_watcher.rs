@@ -3,10 +3,10 @@
 //! Watches directories for file changes and delivers events through a
 //! crossbeam channel. Extends the pattern proven by `I18nFileWatcher`.
 
+use alloc::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Events produced by the `AssetWatcher`.
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ impl AssetWatcher {
                     for path in &event.paths {
                         if filter(path) {
                             let _ = sender.send(AssetEvent::FileChanged {
-                                path: path.clone(),
+                                path: path.to_path_buf(),
                                 kind: event.kind,
                                 timestamp: std::time::SystemTime::now(),
                             });

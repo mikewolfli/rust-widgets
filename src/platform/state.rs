@@ -1,13 +1,14 @@
 //! Shared backend state model used by platform adapters.
 use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::core::ObjectId;
+use alloc::collections::VecDeque;
+use core::hash::Hash;
+use core::sync::atomic::{AtomicU64, Ordering};
 /// Generic widget state record owned by backend state model.
 #[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 #[derive(Clone)]
 #[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {

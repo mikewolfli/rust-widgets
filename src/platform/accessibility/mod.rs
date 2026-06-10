@@ -16,9 +16,9 @@ pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+use crate::compat::HashMap;
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;
-use std::collections::HashMap;
 
 // ─── Cross‑platform A11y role enumeration ───────────────────────────────
 

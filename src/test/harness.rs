@@ -1,7 +1,7 @@
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::widget::Widget;
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
 /// Test harness for widget testing
 pub struct TestHarness {
     events: VecDeque<Event>,

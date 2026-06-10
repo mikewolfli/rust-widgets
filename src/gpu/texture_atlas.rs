@@ -1,6 +1,6 @@
 //! Texture atlas for GPU rendering — packs small textures into a larger atlas (BLUE11 R5.8).
+use crate::compat::HashMap;
 use crate::core::Size;
-use std::collections::HashMap;
 
 /// A rectangle within the texture atlas.
 #[derive(Debug, Clone, Copy)]

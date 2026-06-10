@@ -13,9 +13,9 @@
 //! btn.set_text("Confirm");
 //! ```
 
-use std::collections::HashMap;
+use crate::compat::HashMap;
 
-use std::fmt;
+use core::fmt;
 
 use crate::app::{
     ButtonHandle, CheckBoxHandle, ComboBoxHandle, FrameHandle, GridWidgetHandle, LabelHandle,

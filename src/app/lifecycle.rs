@@ -259,9 +259,9 @@ impl Default for AppLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::time::Duration;
 
     // ── 1. State transitions ──────────────────────────────────
 

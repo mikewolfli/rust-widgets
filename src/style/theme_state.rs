@@ -1,7 +1,7 @@
+use crate::compat::HashMap;
 use crate::core::Color;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 
 /// Callback type for theme mode change notifications.
 pub type ModeChangedCallback = Rc<RefCell<Option<Box<dyn FnMut(ThemeMode)>>>>;

@@ -12,8 +12,8 @@ use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
 use super::performance::{
     AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
+use crate::compat::Mutex;
 use crate::quality::{GpuCapability, QualityLevel};
-use std::sync::Mutex;
 
 /// GPU operation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

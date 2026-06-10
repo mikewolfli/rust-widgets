@@ -1,8 +1,9 @@
 //! Control backend abstraction for native and custom-painted control paths.
+use crate::compat::HashMap;
 use crate::core::ObjectId;
 use crate::platform::WidgetTriggerEvent;
 use crate::widget::WidgetKind;
-use std::collections::{HashMap, VecDeque};
+use alloc::collections::VecDeque;
 /// Control backend family used by runtime routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlBackendKind {

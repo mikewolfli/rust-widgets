@@ -1,13 +1,15 @@
 //! Runtime timer manager that emits `Event::Timer` into the event queue.
 use super::event_queue::EventSender;
 use super::types::Event;
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::core::ObjectId;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use alloc::sync::Arc;
+use core::time::Duration;
+#[cfg(not(feature = "mini"))]
 use std::thread;
-use std::time::{Duration, Instant};
-
-#[derive(Debug, Clone, Copy)]
+#[cfg(not(feature = "mini"))]
+use std::time::Instant;
 struct TimerEntry {
     interval: Duration,
     repeating: bool,
@@ -20,9 +22,10 @@ struct TimerState {
     running: bool,
 }
 
+#[cfg(not(feature = "mini"))]
 fn recover_lock<T>(
-    e: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>,
-) -> std::sync::MutexGuard<'_, T> {
+    e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
+) -> crate::compat::MutexGuard<'_, T> {
     e.into_inner()
 }
 
@@ -171,7 +174,9 @@ impl IdleTask {
 mod tests {
     use super::*;
     use crate::event::EventQueue;
+    #[cfg(not(feature = "mini"))]
     use std::thread;
+    #[cfg(not(feature = "mini"))]
     use std::time::Instant;
 
     #[test]

@@ -1,4 +1,4 @@
-use std::any::Any;
+use core::any::Any;
 
 /// A listener that gets notified when a binding value changes.
 ///
@@ -35,8 +35,9 @@ impl<F: FnMut(&str) + Send + 'static> BindingListener for FnListener<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use crate::compat::Mutex;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
     fn test_fn_listener_invocation() {

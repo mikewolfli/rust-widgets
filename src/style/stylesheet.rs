@@ -8,8 +8,8 @@ use crate::style::css::CssParser;
 use crate::style::PseudoState;
 use crate::style::WidgetStyle;
 
-use std::sync::Mutex;
-use std::sync::MutexGuard;
+use crate::compat::Mutex;
+use crate::compat::MutexGuard;
 use std::sync::OnceLock;
 
 /// A registered stylesheet with its raw CSS text and priority.

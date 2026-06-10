@@ -308,8 +308,8 @@ mod tests {
 
     #[test]
     fn test_a11y_callback_fires() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicU64, Ordering};
 
         let mut fm = FocusManager::new();
         let last_id = Arc::new(AtomicU64::new(0));
@@ -327,8 +327,8 @@ mod tests {
 
     #[test]
     fn test_a11y_callback_fires_on_clear() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicU64, Ordering};
 
         let mut fm = FocusManager::new();
         let last_id = Arc::new(AtomicU64::new(0));

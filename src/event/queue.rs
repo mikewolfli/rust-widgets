@@ -1,6 +1,10 @@
-use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex};
-use std::time::{Duration, Instant};
+use crate::compat::Mutex;
+use alloc::collections::VecDeque;
+use core::time::Duration;
+#[cfg(not(feature = "mini"))]
+use std::sync::Condvar;
+#[cfg(not(feature = "mini"))]
+use std::time::Instant;
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
@@ -16,7 +20,7 @@ pub struct FixedSizeQueue<T, const N: usize = DEFAULT_QUEUE_CAPACITY> {
 }
 impl<T, const N: usize> FixedSizeQueue<T, N> {
     pub fn new() -> Self {
-        Self { buffer: std::array::from_fn(|_| None), head: 0, tail: 0, len: 0 }
+        Self { buffer: core::array::from_fn(|_| None), head: 0, tail: 0, len: 0 }
     }
     pub fn push(&mut self, item: T) -> Result<(), QueueError> {
         if self.len >= N {

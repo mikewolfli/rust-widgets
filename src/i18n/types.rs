@@ -1,6 +1,6 @@
 //! i18n types - data structures for internationalization
+use crate::compat::HashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 /// Translation entry
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Translation {

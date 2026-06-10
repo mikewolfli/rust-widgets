@@ -10,8 +10,8 @@
 //! handle touch receive the original touch events; legacy widgets
 //! receive the synthesized mouse events.
 
+use crate::compat::HashMap;
 use crate::event::types::{Event, TouchId};
-use std::collections::HashMap;
 
 /// Touch-to-mouse event translator.
 ///

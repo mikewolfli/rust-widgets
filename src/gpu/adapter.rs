@@ -14,7 +14,7 @@
 //! let adapter_info = pollster::block_on(selector.select_adapter_with_fallback(None)).unwrap();
 //! println!("Selected: {:?}", adapter_info.device_type);
 //! ```
-use std::fmt;
+use core::fmt;
 /// GPU type for simplified hardware detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuType {
@@ -101,12 +101,12 @@ impl GpuDeviceType {
     }
 }
 impl PartialOrd for GpuDeviceType {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 impl Ord for GpuDeviceType {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.priority().cmp(&other.priority())
     }
 }
@@ -450,6 +450,7 @@ impl fmt::Display for AdapterSelectionError {
         }
     }
 }
+#[cfg(not(feature = "mini"))]
 impl std::error::Error for AdapterSelectionError {}
 /// Detects if running in a browser environment with forced integrated GPU
 #[cfg(target_arch = "wasm32")]
@@ -465,6 +466,7 @@ pub fn detect_browser_forced_integrated_gpu() -> bool {
 /// Detects Windows browser environment that forces integrated GPU
 #[cfg(target_os = "windows")]
 pub fn detect_windows_browser_forced_igpu() -> Option<String> {
+    #[cfg(not(feature = "mini"))]
     use std::env;
     // Check if we're in a browser environment on Windows
     // Common browser executables that force iGPU

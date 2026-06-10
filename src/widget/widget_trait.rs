@@ -116,7 +116,7 @@ pub trait Widget: EventHandler + Any {
         self.base().is_enabled()
     }
     fn set_tooltip(&mut self, tooltip: String) {
-        self.base_mut().set_tooltip(tooltip);
+        self.base_mut().set_tooltip(crate::compat::mini_string_from(tooltip));
     }
     fn tooltip(&self) -> &str {
         self.base().tooltip()

@@ -2,15 +2,16 @@
 use super::event_queue::{EventQueue, EventSender};
 use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
+use crate::compat::Mutex;
 use crate::core::ObjectId;
 #[cfg(feature = "touch")]
 use crate::gesture::GestureEngine;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Mutex;
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
+use core::time::Duration;
+#[cfg(not(feature = "mini"))]
 use std::thread;
-use std::time::Duration;
 #[cfg(feature = "touch")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,9 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
 
 /// Helper to recover from a poisoned mutex by extracting the inner value.
+#[cfg(not(feature = "mini"))]
 fn recover_lock<T>(
-    e: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>,
-) -> std::sync::MutexGuard<'_, T> {
+    e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
+) -> crate::compat::MutexGuard<'_, T> {
     e.into_inner()
 }
 
@@ -138,8 +140,10 @@ impl EventLoop {
                 // Phase 1b: Process buffered idle events with a 5ms time budget.
                 // This prevents idle processing from starving frame-critical work.
                 if !idle_events.is_empty() {
+                    #[cfg(not(feature = "mini"))]
                     let idle_budget_start = std::time::Instant::now();
                     for (target, event) in idle_events {
+                        #[cfg(not(feature = "mini"))]
                         if idle_budget_start.elapsed().as_millis() >= 5 {
                             break; // budget exhausted, remaining idle events are dropped
                         }
@@ -304,8 +308,8 @@ mod tests {
     use crate::event::types::Event;
     use crate::event::EventPriority;
     use crate::event::EventQueue;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn test_event_queue_high_throughput() {
@@ -370,6 +374,7 @@ mod tests {
         }));
 
         el.start();
+        #[cfg(not(feature = "mini"))]
         std::thread::sleep(std::time::Duration::from_millis(50));
         el.stop();
 
@@ -391,9 +396,10 @@ mod tests {
             }
         }));
 
-        el.start_timer(1u64, 1, std::time::Duration::from_millis(20), false).unwrap();
+        el.start_timer(1u64, 1, Duration::from_millis(20), false).unwrap();
         el.start();
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        #[cfg(not(feature = "mini"))]
+        std::thread::sleep(Duration::from_millis(150));
         el.stop();
 
         assert!(
@@ -418,7 +424,8 @@ mod tests {
 
         el.request_animation_frame(1u64).unwrap();
         el.start();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        #[cfg(not(feature = "mini"))]
+        std::thread::sleep(Duration::from_millis(100));
         el.stop();
 
         assert!(
@@ -459,7 +466,8 @@ mod tests {
             EventPriority::Normal,
         );
         assert!(result.is_ok());
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        #[cfg(not(feature = "mini"))]
+        std::thread::sleep(Duration::from_millis(30));
         el.stop();
     }
 }

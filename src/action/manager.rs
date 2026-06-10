@@ -1,8 +1,8 @@
 use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
+use crate::compat::HashMap;
 use crate::core::ObjectId;
 use crate::shortcut::Shortcut;
-use std::collections::HashMap;
-use std::fmt;
+use core::fmt;
 /// Registry for actions, shortcuts, and menu/toolbar bindings.
 pub struct ActionManager {
     actions: HashMap<String, Action>,

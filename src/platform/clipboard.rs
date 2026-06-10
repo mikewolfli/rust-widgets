@@ -4,6 +4,7 @@
 //! images, and file lists. Each platform backend can implement the
 //! `RichClipboardBackend` trait to provide native clipboard integration.
 
+#[cfg(not(feature = "mini"))]
 use std::path::PathBuf;
 
 /// Content types that can be stored on the system clipboard.
@@ -81,7 +82,7 @@ pub trait RichClipboardBackend: Send + Sync {
 /// without accessing the OS clipboard.
 #[derive(Debug, Default)]
 pub struct MockClipboard {
-    content: std::sync::Mutex<Option<ClipboardContent>>,
+    content: crate::compat::Mutex<Option<ClipboardContent>>,
 }
 
 impl MockClipboard {
@@ -157,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_clipboard_mock_thread_safety() {
-        let clip = std::sync::Arc::new(MockClipboard::new());
+        let clip = alloc::sync::Arc::new(MockClipboard::new());
         let clip2 = clip.clone();
         std::thread::spawn(move || {
             clip2.set_contents(ClipboardContent::Text("from thread".into()))

@@ -1,7 +1,7 @@
 use crate::core::ObjectId;
 use crate::signal::{ConnectionHandle, GenericSignal};
-use std::fmt;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::fmt;
 /// Represents a user-invokable command with enabled state and trigger signal.
 #[derive(Clone)]
 pub struct Action {

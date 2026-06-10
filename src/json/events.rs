@@ -5,8 +5,8 @@
 //! instantiation, the [`EventHandlerMap`] connects those names to Rust
 //! closures.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::compat::HashMap;
+use core::cell::RefCell;
 
 use crate::WidgetTriggerEvent;
 

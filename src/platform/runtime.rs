@@ -32,6 +32,7 @@ use crate::platform::windows::WindowsPlatform;
     )
 ))]
 use crate::platform::StubPlatform;
+#[cfg(not(feature = "mini"))]
 use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------

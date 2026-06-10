@@ -73,11 +73,13 @@ pub fn default_render_engine() -> Box<dyn RenderEngine> {
 mod tests {
     use super::*;
     use crate::render_engine::embedded::{set_embedded_target_fps, submit_embedded_task};
+    use core::time::Duration;
+    #[cfg(not(feature = "mini"))]
     use std::sync::mpsc;
+    #[cfg(not(feature = "mini"))]
     use std::thread;
-    use std::time::Duration;
 
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
         GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -142,5 +144,7 @@ mod tests {
         handle.join().expect("embedded render loop thread should join");
     }
 
-    use std::sync::{Mutex, OnceLock};
+    use crate::compat::Mutex;
+    #[cfg(not(feature = "mini"))]
+    use std::sync::OnceLock;
 }

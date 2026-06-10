@@ -9,6 +9,7 @@ use crate::control_backend::trait_def::ControlBackend;
 use crate::control_backend::types::ControlRoutePreference;
 use crate::widget::WidgetKind;
 #[cfg(feature = "controls-custom")]
+#[cfg(not(feature = "mini"))]
 use std::sync::OnceLock;
 
 #[cfg(feature = "controls-native")]

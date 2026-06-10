@@ -3,7 +3,7 @@
 //! This is the "index" that allows any part of the system to look up
 //! a widget by its raw `ObjectId` at runtime.
 
-use std::collections::HashMap;
+use crate::compat::HashMap;
 
 #[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};

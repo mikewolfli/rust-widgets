@@ -1,6 +1,6 @@
+use crate::compat::HashMap;
 use crate::core::Color;
 use crate::style::theme_state::{StatefulTheme, WidgetState};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EasingFunction {

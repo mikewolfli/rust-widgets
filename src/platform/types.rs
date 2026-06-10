@@ -124,7 +124,7 @@ impl NativeCapabilityContract {
 /// on the Platform trait itself — backends override them when supported.
 pub trait Platform: Send + Sync {
     /// Returns self as a `&dyn Any` for downcasting.
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn core::any::Any {
         panic!("as_any not implemented — override in concrete platform backend");
     }
     /// Returns backend identifier string.

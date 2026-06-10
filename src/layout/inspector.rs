@@ -22,9 +22,9 @@
 //! LayoutInspector::disable();
 //! ```
 
-use std::cell::RefCell;
-use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::cell::RefCell;
+use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::{ObjectId, Rect};
 use crate::index::{WidgetKind, WidgetRegistry};

@@ -1,7 +1,7 @@
 //! i18n manager - core internationalization management
+use crate::compat::HashMap;
 use crate::i18n::types::{ReloadEvent, TranslationFile};
 use crossbeam_channel::Sender;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;

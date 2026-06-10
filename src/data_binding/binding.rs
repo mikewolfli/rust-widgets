@@ -1,7 +1,7 @@
+use crate::compat::HashMap;
 use crate::data_binding::traits::*;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A reactive binding that notifies listeners when the value changes.
 ///
@@ -121,8 +121,8 @@ impl<T: Clone + Send + 'static + PartialEq> BindingListener for TwoWayListener<T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicI32;
-    use std::sync::Mutex;
+    use crate::compat::Mutex;
+    use core::sync::atomic::AtomicI32;
 
     #[test]
     fn test_binding_get_set() {

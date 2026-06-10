@@ -1,5 +1,5 @@
+use crate::compat::HashMap;
 use crate::data_binding::traits::*;
-use std::collections::HashMap;
 
 /// An observable list that notifies listeners on mutations.
 ///
@@ -105,8 +105,9 @@ impl<T: Clone + Send + 'static> ObservableList<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use crate::compat::Mutex;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
     fn test_list_push_get() {

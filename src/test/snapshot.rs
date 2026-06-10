@@ -1,6 +1,6 @@
+use core::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 /// Snapshot for visual regression testing
 #[derive(Debug, Clone)]

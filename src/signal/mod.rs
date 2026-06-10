@@ -8,8 +8,8 @@ pub use hub::CustomSignalHub;
 #[cfg(test)]
 mod tests {
     use super::{ConnectionScope, GenericSignal, Signal};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     #[test]
     fn signal_emits_to_multiple_slots() {
         let signal = Signal::<u32>::new();

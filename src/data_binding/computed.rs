@@ -1,5 +1,5 @@
+use crate::compat::HashMap;
 use crate::data_binding::traits::*;
-use std::collections::HashMap;
 
 /// A computed/derived value that auto-updates when its dependencies change.
 ///
@@ -93,8 +93,8 @@ impl<T: Clone + Send + 'static> Computed<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
     fn test_computed_initial_value() {

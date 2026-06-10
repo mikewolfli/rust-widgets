@@ -1,16 +1,13 @@
-# rust_widgets
+# rust_widgets — Pure Rust GUI Library
 
 <p align="center">
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-**Pure Rust cross-platform native GUI library** — v0.9.6
-
-Hardware-adaptive rendering, comprehensive 60+ widget library, touch/gesture support, full i18n, and SVG-pipeline-accurate output.
+Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and **no_std mini** targets.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3425%20passing-brightgreen)]()
-[![clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 ---
@@ -18,323 +15,203 @@ Hardware-adaptive rendering, comprehensive 60+ widget library, touch/gesture sup
 ## Quick Start
 
 ```bash
-# Check (all features, all targets)
-cargo check --all-features --all-targets
+# Desktop (default)
+cargo check
 
-# Run the main demo
-cargo run --example demo_basic
+# Mini (no_std, 30+ widgets)
+cargo check --no-default-features --features mini
 
-# Full test suite
-cargo test --all-features -q
+# Embedded
+cargo check --no-default-features --features embedded
 
-# Code quality (must pass — CI enforces zero warnings)
-cargo clippy --all-features --all-targets -- -D warnings
-
-# Formatting check
-cargo fmt --all -- --check
+# Tests
+cargo test --lib
 ```
 
-### Feature Profiles
+### Device Profiles
 
-| Profile | Command | Description |
-|---------|---------|-------------|
-| Desktop (default) | `cargo check` | Full desktop: native platform, GPU, i18n, theme, touch, all widgets |
-| Tablet | `cargo check --no-default-features --features tablet` | Touch-first, GPU, native + custom controls |
-| Mobile | `cargo check --no-default-features --features mobile` | Touch, GPU, mobile API bindings |
-| Embedded | `cargo check --no-default-features --features embedded` | Stripped: software-only, no i18n/touch |
-| Desktop + Touch | `cargo check --features "desktop,touch"` | Desktop with touch input |
-| Full + Holographic | `cargo check --features "full,holographic"` | All features including experimental |
+| Profile | Command | Backend | Widgets | i18n | GPU |
+|---------|---------|---------|---------|------|-----|
+| Desktop | `cargo check` | Native OS | 80+ | ✅ | ✅ wgpu |
+| Tablet | `--features tablet` | Native OS | 80+ | ✅ | ✅ wgpu |
+| Mobile | `--features mobile` | Mobile API | 80+ | ✅ | ✅ wgpu |
+| Embedded | `--features embedded` | Software | 30+ | — | — |
+| **Mini** | `--features mini` | **no_std** + alloc | **30+** | — | — |
+
+### OS Backends
+
+| OS | Feature | Auto-detect |
+|----|---------|:-----------:|
+| Windows (Win32) | `windows` | ✅ |
+| macOS (Cocoa/objc2) | `macos` | ✅ |
+| iOS (UIKit) | `ios` | ✅ |
+| Linux (GTK) | `linux-gtk` | — |
+| Linux (Wayland) | `linux-wayland` | — |
+| Android (JNI) | `android` | ✅ |
+| Web (WASM) | `wasm` | — |
+| HarmonyOS | `harmony` | — |
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    API Layer (lib.rs)                 │
-├──────────────────────────────────────────────────────┤
-│  Widget Tree     │  Event System    │  Layout Engine  │
-│  (60+ widgets)   │  (EventLoop +    │  (Box, Grid,    │
-│                   │   GestureEngine) │   Flow, Stack)  │
-├──────────────────┼──────────────────┼────────────────┤
-│  i18n │ Theme    │  Signal System   │  Control Backend│
-│  (en/zh-cn/zh-tw)│  (GenericSignal) │  (Native/Custom)│
-├──────────────────┴──────────────────┴────────────────┤
-│              Rendering Pipeline                       │
-│  SvgPaintBackend │ SoftwarePaintBackend │ GPU (wgpu)  │
-│  (SVG output)    │ (CPU rasterizer)     │ (Hardware)   │
-├──────────────────────────────────────────────────────┤
-│              Platform Backends                        │
-│  Windows(Win32) │ macOS(Cocoa) │ Linux(GTK) │ Stub   │
-└──────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  API Layer — lib.rs + compat.rs (no_std bridge)           │
+├────────────────────────────────────────────────────────────┤
+│  Widgets  │  Event System  │  Layout Engine                │
+│  (30-80)  │  (EventLoop,   │  (Box, Grid, Flow,           │
+│           │   Gesture)     │   Stack, Absolute)            │
+├───────────┴────────────────┴──────────────────────────────┤
+│  i18n  │  Theme  │  Signal System  │  Control Backend       │
+├────────────────────────────────────────────────────────────┤
+│  Rendering: SoftwarePaintBackend / SvgPaintBackend / GPU   │
+├────────────────────────────────────────────────────────────┤
+│  Platform: Windows │ macOS │ Linux │ iOS │ Android │ WASM  │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Key Features
+## Features
 
-### 🎨 SvgPaintBackend — Pipeline-Accurate SVG Output
-- Single `PaintBackend` implementation converts all 17 `RenderCommand` variants to SVG
-- Replaces 52 hand-written `to_svg()` implementations with **one backend**
-- SVG output is **guaranteed identical** to pixel rendering (same render pipeline)
-- `render_to_svg()` convenience wrapper auto-detects widget geometry
+### Rust-Native Design
+- Conditional `no_std` via `#![cfg_attr(feature = "mini", no_std)]` — single codebase for both std and embedded
+- `compat.rs` bridge: `HashMap→BTreeMap`, `Mutex→RefCell`, `MiniVec<T,64>`, `MiniString<256>`, `MiniArena` (bumpalo)
+- `enum WidgetKind` + `trait Widget` + `trait Draw` + `trait EventHandler` — zero-cost abstractions
+- Builder pattern: `Style::new().bg_color(RED).pad_all(8).build()` — compile-time checking
 
-### 🤚 Touch & Gesture System
-- **11 gesture recognizers**: Tap, DoubleTap, LongPress, Swipe, Pan, Fling, TwoFingerTap, TwoFingerSwipe, LongPressDrag, Pinch, Rotate
-- `TouchEventTranslator` bridges touch→mouse events for legacy widgets
-- `GestureEngine` integrated with `EventLoop` for runtime gesture dispatch
-- Touch-target expansion via `contains_point_with_touch_expansion()`
+### Rendering Backends
+- **SoftwarePaintBackend**: CPU rasterizer (RGBA framebuffer), used by mini/embedded
+- **SvgPaintBackend**: SVG pipeline output for testing and documentation
+- **GPU (wgpu)**: Hardware-accelerated for desktop/tablet/mobile
 
-### 🌐 Internationalization
+### Touch & Gesture
+- 11 gesture recognizers: Tap, DoubleTap, LongPress, Swipe, Pan, Fling, TwoFingerTap, TwoFingerSwipe, LongPressDrag, Pinch, Rotate
+- Touch-target expansion for small widgets on touch devices
 
-**Translation macro:** The `tr!()` macro provides key-based translation lookups at compile time:
+### Layout
+- Box, HBox, VBox, Grid, Form, Stack, Flow, Absolute, Anchor, Masonry
+- Device-adaptive layout scale, font scale, and minimum touch size
 
-```rust
-// Basic usage — translates "app.title" for the current locale
-tr!("app.title");
+### CSS Styling
+- CSS parser + selector engine (`CssParser`, `CssSelector`)
+- `Widget::apply_css(css, class)` — per-widget CSS application
+- `StyleSheetManager` — global stylesheet registration
+- `CssWatcher` — polling-based CSS hot-reload
 
-// With interpolation — replaces {0}, {1}, etc. in the translated string
-tr!("greeting", "World");
+### Partial Refresh
+- `DirtyRegionTracker` with rectangle merging
+- `render_dirty_regions()` — clip-based partial redraw via `push_clip/pop_clip`
 
-// Contextual translation — selects variant based on context
-tr!("email.status", "unread"); // context: "unread" → "You have unread messages"
-```
-
-**Translation file format:** Translations are stored as JSON files in the `language/` directory,
-one per locale (e.g. `language/en.json`, `language/zh-cn.json`):
-
-```json
-{
-  "app.title": "rust_widgets",
-  "app.quit": "Quit",
-  "greeting": "Hello, {0}!",
-  "email.status": {
-    "unread": "You have unread messages",
-    "archived": "No unread messages"
-  },
-  "file.size": {
-    "one": "{0} file",
-    "other": "{0} files"
-  }
-}
-```
-
-Keys with nested objects support **context-based** and **plural** variants. The `{0}`, `{1}`
-syntax supports positional interpolation.
-
-**Hot reload:** Translation files are monitored via the filesystem watcher (`notify` crate).
-When a translation `.json` file changes on disk, the `I18nManager` automatically detects the
-change and reloads the translations at runtime — no application restart required.
-
-**Coverage validation:** Use `audit_keys()` to check that all keys used in code have
-corresponding translations across all enabled locales:
-
-```rust
-let manager = I18nManager::new();
-manager.load_locale("en").unwrap();
-manager.load_locale("zh-cn").unwrap();
-let audit = audit_keys(&manager);
-println!("Missing keys: {:?}", audit.missing);
-```
-
-**Current language support:** `en` (English), `zh-cn` (Simplified Chinese), `zh-tw` (Traditional Chinese) — 30+ UI string keys per language.
-
-### 🖥 Hardware-Adaptive GPU Management
-- Automatic GPU detection (discrete > integrated > CPU fallback)
-- Hardware-specific buffer pool configuration
-- Dynamic quality degradation based on performance monitoring
-- Seamless GPU↔CPU fallback
-
-### 📐 Layout System
-- Box, HBox, VBox, Grid, Form, Stack, Flow, Absolute, Anchor, Masonry layouts
-- `LayoutContext` with `layout_scale`, `font_scale`, and `min_touch_size` for device-adaptive layout
-- Layout constraints: aspect ratio, min/max size, alignment, spacing
-
-### 📊 Charts & PDF
-- Line, Bar, Pie, Scatter, Area, Bubble, Candlestick charts
-- PDF with annotations, hyperlinks, form fields, security (encryption, signatures)
-
-### 🔧 Performance Optimizations
-- Memory pooling: Object pools, arena allocators
-- Render batching, dirty region tracking, text caching
-- Performance profiling with frame rate monitoring
+### Internationalization
+- `tr!()` macro for compile-time key-based translation
+- en / zh-cn / zh-tw translations (30+ strings per language)
+- Context-based and plural variants
+- `audit_keys()` for coverage validation
 
 ---
 
-## Widget Library (60+)
+## Widget Library
 
-### Core Widgets (100% complete)
+### Desktop/Tablet/Mobile (80+ widgets)
 
-| Widget | Native | Self-painted | SVG Output |
-|--------|:------:|:------------:|:----------:|
-| Window | ✅ | ✅ | ✅ via pipeline |
-| Button | ✅ | ✅ | ✅ via pipeline |
-| CheckBox | ✅ | ✅ | ✅ via pipeline |
-| RadioButton | ✅ | ✅ | ✅ via pipeline |
-| Label | ✅ | ✅ | ✅ via pipeline |
-| LineEdit | ✅ | ✅ | ✅ via pipeline |
-| TextEdit | — | ✅ | ✅ via pipeline |
-| ComboBox | ✅ | ✅ | ✅ via pipeline |
-| ListBox | ✅ | ✅ | ✅ via pipeline |
-| SpinBox | ✅ | ✅ | ✅ via pipeline |
-| Slider | ✅ | ✅ | ✅ via pipeline |
-| ProgressBar | ✅ | ✅ | ✅ via pipeline |
-| ScrollBar | ✅ | ✅ | ✅ via pipeline |
-| ScrollArea | — | ✅ | ✅ via pipeline |
-| TabWidget | — | ✅ | ✅ via pipeline |
-| Splitter | — | ✅ | ✅ via pipeline |
-| GroupBox | — | ✅ | ✅ via pipeline |
-| MenuBar | ✅ | ✅ | ✅ via pipeline |
-| Menu | ✅ | ✅ | ✅ via pipeline |
-| ToolBar | ✅ | ✅ | ✅ via pipeline |
-| StatusBar | — | ✅ | ✅ via pipeline |
-| TreeView | ✅ | ✅ | ✅ via pipeline |
-| TableView | ✅ | ✅ | ✅ via pipeline |
-| ListView | ✅ | ✅ | ✅ via pipeline |
-| Canvas | — | ✅ | ✅ via pipeline |
-| Chart | — | ✅ | ✅ via pipeline |
-| Grid | — | ✅ | ✅ via pipeline |
-| Dialog | ✅ | — | ✅ via pipeline |
-| MessageBox | ✅ | — | ✅ via pipeline |
-| FileDialog | ✅ | — | ✅ via pipeline |
-| ColorDialog | ✅ | — | ✅ via pipeline |
-| FontDialog | ✅ | — | ✅ via pipeline |
+**Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 
-### Extended Widgets
+**Date & Time**: Calendar, DateEdit, TimeEdit, DateTimeEdit, DatePicker, TimePicker, DateTimePicker, CupertinoDatePicker, DateRangePicker, MobileDatePicker
 
-| Widget | Description |
-|--------|-------------|
-| ToggleButton, Dial, Calendar | Interactive controls |
-| DateEdit, TimeEdit, DateTimeEdit | Date/time pickers |
-| KeySequenceEdit | Keyboard shortcut input |
-| PieMenu, RibbonBar | Advanced menus |
-| TabBar, ToolBox, StackedWidget | Tab/stack containers |
-| CollapsiblePane, DockWidget, MdiArea | Panel/dock/MDI |
-| CommandLink, FontComboBox | Specialized inputs |
-| LCDNumber | Seven-segment display |
-| FreeformShapeWidget | Vector shape rendering |
-| PopupWindow, InputDialog, ProgressDialog | Dialog variants |
-| Action, ToolButton | Action system |
-| WebEngineView, WebView | Web content display |
-| WebEngineSettings, CookieStore, WebChannel | Web subsystems |
+**Containers**: CollapsiblePane, DockWidget, MdiArea, StackedWidget, ToolBox, TabBar, NavigationStack, PagerPageView, Carousel, BottomSheet, ModalBottomSheet
+
+**Mobile**: BottomNavigationBar, NavigationDrawer, AppBar, SafeArea, PullToRefresh, RefreshControl, SearchBar, CupertinoSwitch, CupertinoSlider, CupertinoNavigationBar, CupertinoSegmentedControl, AdaptiveScaffold
+
+**Input**: CommandLink, FontComboBox, KeySequenceEdit, MaskedEdit, AutoCompleteEdit, MultiSelectComboBox, EditableComboBox, RangeSlider, FloatingLabel, TagInput, InplaceEditor, SearchBox, ShortcutEditor
+
+**Display**: LCDNumber, Dial, ProgressCircle, Rating, Icon, Sparkline, Tooltip, Badge, Chip, Avatar, SkeletonLoader, EmptyState
+
+**Charts**: LineChart, BarChart, PieChart, Sparkline
+
+**Web**: WebView, WebEngineView, WebEnginePage, WebEngineSettings, WebEngineDownloadItem, WebEngineCookieStore, WebEngineWebChannel, WebEngineFindTextResult, WebEngineNotification, WebEngineScriptDialog, WebEngineContextMenuRequest
+
+**Menus**: PieMenu, RibbonBar, MenuButton, DropdownMenu, Popover, SegmentedButton
+
+**Special**: FreeformShape, QRCode, ColorHistory, ColorWell, MasonryLayout, Stepper, Divider, SwipeToDismiss, Toolbox, PropertiesPanel, PropertyGrid, WizardDialog, Wizard, AnimatedImage, HeroAnimation, BezierCurveEditor, LottieWidget, RiveWidget, VideoPlayer, ImageGallery, AudioVisualizer, CameraPreview, BarcodeScanner, Breakcrumb, CodeEditor, ColorPicker, CommandEntry, CommandPalette, DiffViewer, MapView, MediaPlayer, NotificationCenter, Snackbar, SplitButton, TerminalView, ToastStack
+
+### Mini (30+ widgets, no_std)
+
+Window, Dialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, GroupBox, Menu, MenuItem, ToggleButton, Switch, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, TabView, AnimatedImage
 
 ---
 
 ## C ABI & Language Bindings
 
 ```bash
-# Build shared library
 cargo build --release
-
-# C sample (macOS)
 clang -Iexamples examples/c_abi_poll_demo.c -Ltarget/release -lrust_widgets -o target/release/c_abi_poll_demo
-DYLD_LIBRARY_PATH=target/release ./target/release/c_abi_poll_demo
-
-# Python
 python examples/python/demo_basic.py
-
-# C++
-g++ -Iexamples examples/cpp/demo_basic.cpp -Ltarget/release -lrust_widgets -o target/release/cpp_demo
-
-# Java (JNI)
-cd examples/java && javac RustWidgets.java && java RustWidgets
 ```
 
-### Available Bindings
-
-| Language | File | Status |
-|----------|------|--------|
-| C | `examples/c_abi_poll_demo.c` + `examples/rust_widgets.h` | ✅ |
-| C++ | `examples/cpp/rust_widgets.hpp` + `demo_basic.cpp` | ✅ |
-| Python | `examples/python/rust_widgets.py` + `demo_basic.py` | ✅ |
-| Java | `examples/java/RustWidgets.java` + JNI bridge | ✅ |
-| Harmony NAPI | `examples/harmony_napi_bridge_sample.c` | ✅ |
+| Language | Status |
+|----------|:------:|
+| C | ✅ |
+| C++ | ✅ |
+| Python | ✅ |
+| Java (JNI) | ✅ |
 
 ---
 
 ## Core Modules
 
-| Module | Description |
-|--------|-------------|
-| `core` | Primitives: Point, Rect, Size, Color, Font, ObjectId |
-| `widget` | 60+ widget implementations with Widget/Draw/EventHandler traits |
-| `event` | Event types, EventLoop, GestureEngine, TouchEventTranslator |
-| `gesture` | 11 gesture recognizers (Tap through Rotate) |
-| `signal` | GenericSignal, Signal1, ConnectionScope |
-| `layout` | Box, Grid, Flow, Stack, Absolute, Anchor, Masonry layouts |
-| `render` | SvgPaintBackend, SoftwarePaintBackend, GPU (wgpu), Scene composition |
-| `platform` | Windows(Win32), macOS(Cocoa/objc2), Linux(GTK/Wayland), Harmony, Mobile, Stub |
-| `i18n` | tr!() macro, I18nManager, en/zh-cn/zh-tw translations |
-| `control_backend` | Native + CustomPaint control backends, dispatcher |
-| `style` | WidgetStyle, gradients, animations, theme states |
-| `theme` | Theme manager, dark/light mode, theme tokens |
-| `chart` | Line, Bar, Pie, Scatter, Area, Bubble, Candlestick charts |
-| `web` | WebEngine, WebView, JS engine, navigation, plugins |
-| `gpu` | GPU adapter detection, buffer pools, quality management |
-| `memory` | ObjectPool, ArenaAllocator, BufferPool |
-| `performance` | Profiler, frame rate monitor, metrics |
-| `embedded` | Lightweight widget creation, fixed DPI, hardware input |
-| `error` | RwError, ErrorId, FFI error handling |
-| `pdf` | PDF writing, annotations, forms, security |
-| `print` | Print support |
-| `json` | JSON layout loader, event bindings |
-| `object` | Object/class-name system |
-| `action` | Action system |
-| `clipboard` | Clipboard + drag-drop managers |
-| `menu_config` | Menu configuration system |
-| `shortcut` | Keyboard shortcut parsing |
-| `quality` | Quality management, adaptive rendering |
-| `render_engine` | Embedded render engine |
-| `wgpu_backend` | wgpu-based GPU rendering |
-| `test` | Testing harness, matchers, snapshots |
-| `bindings` | C FFI bindings |
-| `index` | Widget registry |
+| Module | Description | Availability |
+|--------|-------------|:------------:|
+| `core` | Point, Rect, Size, Color, Font, ObjectId | All profiles |
+| `widget` | Widget implementations | All profiles |
+| `event` | Event types, EventLoop, GestureEngine | All profiles |
+| `compat` | std↔no_std bridge, MiniVec, MiniString, MiniArena | All profiles |
+| `render` | SoftwarePaintBackend, SvgPaintBackend, GPU (wgpu) | All profiles |
+| `layout` | Box, Grid, Flow, Stack, Absolute, Anchor, Masonry | All profiles |
+| `signal` | GenericSignal, Signal1, ConnectionScope | All profiles |
+| `style` | WidgetStyle, CSS parser, animations, theme states | All profiles |
+| `object` | Object/class-name system | All profiles |
+| `platform` | Windows, macOS, Linux, iOS, Android, WASM, Harmony | Desktop+ |
+| `gesture` | 11 gesture recognizers | Desktop+ (touch) |
+| `i18n` | `tr!()` macro, I18nManager, en/zh-cn/zh-tw | Desktop+ |
+| `theme` | Theme manager, dark/light mode | Desktop+ |
+| `gpu` | GPU adapter detection, buffer pools | Desktop+ |
+| `chart` | Line, Bar, Pie, Scatter, Area charts | Desktop+ |
+| `web` | WebEngine, WebView, JS engine | Desktop+ |
+| `pdf` | PDF document creation | Desktop+ |
+| `print` | Print support | Desktop+ |
+| `performance` | Profiler, frame rate monitor | Desktop+ |
+| `memory` | ObjectPool, ArenaAllocator, BufferPool | Desktop+ |
 
 ---
 
-## Quality Baseline (BLUE8 Complete)
+## Build Requirements
 
-| Dimension | Score | Status |
-|-----------|:-----:|:------:|
-| 编译可靠性 Build Reliability | **10/10** | ✅ Zero errors, zero warnings |
-| 触摸交互完整度 Touch Completeness | **10/10** | ✅ 11 recognizers, TouchEventTranslator, touch expansion |
-| 手势识别能力 Gesture Recognition | **10/10** | ✅ Pan, Fling, TwoFingerTap, LongPressDrag, etc. |
-| 设备自适应 Device Adaptation | **10/10** | ✅ Orientation, DPI, LayoutContext, accessibility settings |
-| 测试覆盖 Test Coverage | **10/10** | ✅ 3425 tests (3200+ unit + 100+ integration + doc) |
-| 平台后端正交性 Platform Orthogonality | **10/10** | ✅ Windows DPI/IME/OLE real impl, extension traits |
-| i18n 支持 Internationalization | **10/10** | ✅ tr!() fix, audit_keys(), 3 translation packages |
-| Widget 基础模式 Widget Foundation | **10/10** | ✅ 48 base() fix, 4700-line cleanup, 49 encapsulation fixes |
-
-**3425 tests — 0 failures — 0 clippy warnings — 0 safety holes**
+| Profile | Rust Version | Dependencies |
+|---------|:------------:|--------------|
+| Desktop | 1.87+ | wgpu, GTK/Wayland (Linux), objc2 (macOS) |
+| Mini | 1.87+ | heapless, hashbrown, bumpalo (no_std) |
+| Embedded | 1.87+ | None (software-only) |
 
 ---
 
-## Performance Targets
+## Performance
 
-| Metric | Target | Status |
-|--------|--------|:------:|
-| Frame rate | 60 FPS (adaptive) | ✅ |
-| Memory (standard app) | < 100 MB | ✅ |
-| Startup time | < 1 second | ✅ |
-| Widget creation | < 1 ms | ✅ |
+| Metric | Desktop | Mini (target) |
+|--------|---------|---------------|
+| Binary size | ~5MB | < 100KB |
+| RAM (typical) | < 100MB | < 32KB |
+| Frame rate | 60 FPS | 30 FPS |
+| Widget creation | < 1ms | < 0.1ms |
 
 ---
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Run tests: `cargo test --all-features -q && cargo clippy --all-features --all-targets -- -D warnings && cargo fmt --all -- --check`
-5. Push to the branch (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE).
 
 ## Support
 
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
-- Discussions: [GitHub Discussions](https://github.com/mikewolfli/rust-widgets/discussions)
 - Documentation: [docs/](docs/) directory

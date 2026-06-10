@@ -1,7 +1,7 @@
 use super::Layout;
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
-use std::fmt;
+use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
     #[default]

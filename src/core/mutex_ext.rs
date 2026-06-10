@@ -4,7 +4,7 @@
 //! mutexes by calling `into_inner()` on the poison error, instead
 //! of panicking with `expect("... poisoned")`.
 
-use std::sync::{Mutex, MutexGuard};
+use crate::compat::{Mutex, MutexGuard};
 
 /// Extension trait that adds `.lock_guard()` to `Mutex<T>`.
 pub trait MutexExt<T> {

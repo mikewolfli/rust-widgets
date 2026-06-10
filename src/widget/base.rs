@@ -16,11 +16,13 @@ pub struct BaseWidget {
     pub(crate) min_size: Option<Size>,
     pub(crate) max_size: Option<Size>,
     pub(crate) parent: Option<ObjectId>,
-    pub(crate) children: Vec<ObjectId>,
+    /// Child widget IDs. Under mini, this is a fixed-capacity `MiniVec<ObjectId, 64>`
+    /// (compile-time known size, no heap alloc). Under desktop, `alloc::vec::Vec`.
+    pub(crate) children: crate::compat::MiniVec<ObjectId>,
     pub(crate) visible: bool,
     pub(crate) enabled: bool,
     pub(crate) mouse_pressed: bool,
-    pub(crate) tooltip: String,
+    pub(crate) tooltip: crate::compat::MiniString,
     pub(crate) dpi_scale: f32,
     pub(crate) style: WidgetStyle,
     pub(crate) connection_scope: ConnectionScope,
@@ -57,11 +59,11 @@ impl BaseWidget {
             min_size: None,
             max_size: None,
             parent: None,
-            children: Vec::new(),
+            children: crate::compat::MiniVec::new(),
             visible: true,
             enabled: true,
             mouse_pressed: false,
-            tooltip: String::new(),
+            tooltip: crate::compat::MiniString::new(),
             dpi_scale: 1.0,
             style: WidgetStyle::default(),
             connection_scope: ConnectionScope::new(),
@@ -113,7 +115,7 @@ impl BaseWidget {
         &self.children
     }
     pub fn add_child(&mut self, child: ObjectId) {
-        self.children.push(child);
+        let _ = self.children.push(child);
     }
     pub fn remove_child(&mut self, child: ObjectId) {
         self.children.retain(|&id| id != child);
@@ -133,7 +135,7 @@ impl BaseWidget {
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-    pub fn set_tooltip(&mut self, tooltip: String) {
+    pub fn set_tooltip(&mut self, tooltip: crate::compat::MiniString) {
         self.tooltip = tooltip;
     }
     pub fn tooltip(&self) -> &str {
@@ -148,11 +150,11 @@ impl BaseWidget {
     pub fn set_translated_tooltip(&mut self, key: &str) {
         #[cfg(feature = "desktop")]
         {
-            self.tooltip = crate::i18n::translate(key);
+            self.tooltip = crate::compat::mini_string_from(crate::i18n::translate(key));
         }
         #[cfg(not(feature = "desktop"))]
         {
-            self.tooltip = key.to_string();
+            self.tooltip = crate::compat::into_mini(key);
         }
     }
     pub fn style(&self) -> &WidgetStyle {

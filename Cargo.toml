@@ -59,7 +59,7 @@ mobile = [
 embedded = ["software", "controls-custom"]
 
 ## LVGL-style mini: ~15 core widgets, software raster, no alloc-heavy deps.
-mini = ["software", "controls-custom", "dep:heapless", "dep:hashbrown", "dep:spin"]
+mini = ["software", "controls-custom", "dep:heapless", "dep:hashbrown", "dep:spin", "dep:bumpalo"]
 
 
 # ── Axis 2: OS BACKENDS (composable; `os-auto` picks by target_os) ──
@@ -163,6 +163,7 @@ jni = { version = "0.21", features = ["invocation"], optional = true }
 heapless = { version = "0.8", optional = true }
 hashbrown = { version = "0.15", optional = true, default-features = false, features = ["alloc"] }
 spin = { version = "0.9", optional = true }
+bumpalo = { version = "3.16", optional = true, default-features = false }
 
 
 [target.'cfg(windows)'.dependencies]

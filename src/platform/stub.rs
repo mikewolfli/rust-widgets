@@ -1,11 +1,11 @@
 //! Stub platform implementation for testing and demonstrations.
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::state::BackendState;
 use crate::platform::types::*;
 #[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Handle kind discriminator for stub widget records.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,7 +82,7 @@ impl StubPlatform {
 }
 
 impl Platform for StubPlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn core::any::Any {
         self
     }
 

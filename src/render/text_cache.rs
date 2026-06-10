@@ -1,6 +1,6 @@
+use crate::compat::HashMap;
 use crate::core::{Color, Rect, Size};
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use core::hash::{Hash, Hasher};
 #[derive(Debug, Clone)]
 pub struct TextKey {
     pub text: String,

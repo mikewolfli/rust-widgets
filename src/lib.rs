@@ -10,37 +10,14 @@
 #![cfg_attr(test, allow(clippy::all))]
 // Conditional no_std for mini builds (BLUE13 Phase 3)
 #![cfg_attr(feature = "mini", no_std)]
-#[cfg(feature = "mini")]
+// Required unconditionally — `alloc` is available in both std (re-exported)
+// and no_std contexts. `core` is always available via `extern crate std` under
+// std, but we need direct `alloc::` paths in `compat` for no_std builds.
 extern crate alloc;
 
-// ── BLUE13 Phase 3: Conditional no_std bridge for mini builds ──
-// Vec/String/Box/BTreeMap are available via alloc under no_std.
-// HashMap and Mutex are aliased for mini to avoid cfg noise in 200+ source files.
-#[cfg(feature = "mini")]
-pub(crate) use alloc::boxed::Box;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::collections::BTreeMap;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::format;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::string::String;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::string::ToString;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::vec;
-#[cfg(feature = "mini")]
-pub(crate) use alloc::vec::Vec;
-#[cfg(feature = "mini")]
-pub(crate) use core::cell::Cell;
-#[cfg(feature = "mini")]
-pub(crate) use core::cell::RefCell;
-
-// ── Type alias bridge: Mini uses BTreeMap (sorted, alloc-compatible)
-//    instead of HashMap; RefCell instead of Mutex (single-threaded).
-#[cfg(feature = "mini")]
-pub(crate) type HashMap<K, V> = BTreeMap<K, V>;
-#[cfg(feature = "mini")]
-pub(crate) type Mutex<T> = RefCell<T>;
+// ── BLUE13 Phase 3: Alloc bridge — unified imports for std and no_std ──
+// All crate files import from `compat` instead of directly from std.
+pub mod compat;
 
 /// Action/command system.
 pub mod action;

@@ -1,5 +1,5 @@
 use super::{MenuConfig, UserOverrides};
-use std::collections::HashMap;
+use crate::compat::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;

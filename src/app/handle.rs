@@ -4,8 +4,8 @@
 //! that are valid for that widget kind.  Handles also support event callbacks
 //! via the `WidgetHandle` extension trait.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 
 use crate::core::{ObjectId, Orientation};
 use crate::platform::WidgetTriggerKind;
@@ -1339,8 +1339,8 @@ impl WindowHandle {
 mod tests {
     use super::*;
     use crate::core::ObjectId;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
 
     #[test]
     fn remove_callbacks_cleans_up() {

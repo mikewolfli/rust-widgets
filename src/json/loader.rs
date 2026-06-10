@@ -1044,7 +1044,7 @@ fn apply_size_constraints(widget: &mut dyn Widget, obj: &serde_json::Map<String,
 fn parse_spacing(value: &Value) -> Option<crate::style::Padding> {
     match value {
         Value::Number(n) => {
-            let v = n.as_u64()? as u32;
+            let v = n.as_u64()?.try_into().ok()?;
             Some(crate::style::Padding::all(v))
         }
         Value::Object(map) => {

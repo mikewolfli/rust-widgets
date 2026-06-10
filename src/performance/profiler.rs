@@ -1,5 +1,7 @@
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::compat::HashMap;
+use core::time::Duration;
+#[cfg(not(feature = "mini"))]
+use std::time::Instant;
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileEntry {
     pub start: Instant,
@@ -77,7 +79,7 @@ impl Profiler {
             .filter(|(_, e)| e.duration >= threshold)
             .map(|(name, e)| (name.as_str(), e.duration))
             .collect();
-        hotspots.sort_by_key(|b| std::cmp::Reverse(b.1));
+        hotspots.sort_by_key(|b| core::cmp::Reverse(b.1));
         hotspots
     }
     pub fn get_all_stats(&self) -> &HashMap<String, ProfileEntry> {
@@ -102,7 +104,7 @@ impl Profiler {
                 },
             })
             .collect();
-        entries.sort_by_key(|b| std::cmp::Reverse(b.total_duration));
+        entries.sort_by_key(|b| core::cmp::Reverse(b.total_duration));
         ProfileReport { entries, total_duration: self.get_total_duration() }
     }
 }
@@ -319,6 +321,7 @@ impl PerformanceReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "mini"))]
     use std::thread::sleep;
     #[test]
     fn test_profiler() {

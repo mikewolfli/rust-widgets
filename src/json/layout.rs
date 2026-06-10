@@ -2,8 +2,8 @@
 //!
 //! Converts JSON `"layout"` objects into concrete [`Layout`](crate::layout::Layout) trait objects.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::compat::HashMap;
+use core::cell::RefCell;
 
 use serde_json::Value;
 

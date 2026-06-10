@@ -3,7 +3,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use std::collections::HashMap;
+use crate::compat::HashMap;
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::render::RenderCommand;

@@ -1,7 +1,7 @@
 //! i18n global - global functions and static instances
+use crate::compat::Mutex;
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
-use std::sync::Mutex;
 /// Global i18n manager instance using Mutex for thread-safe access
 static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 /// Initialize the i18n system

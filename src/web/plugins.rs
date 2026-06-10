@@ -1,5 +1,5 @@
-use std::any::Any;
-use std::collections::HashMap;
+use crate::compat::HashMap;
+use core::any::Any;
 pub type PluginId = u64;
 /// Handler type for content transformation plugins.
 pub type ContentHandler = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;

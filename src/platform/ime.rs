@@ -50,8 +50,8 @@ pub trait ImeBridge: Send + Sync {
 /// Mock IME bridge for testing.
 #[derive(Debug, Default)]
 pub struct MockImeBridge {
-    focused_widget: std::sync::Mutex<Option<ObjectId>>,
-    active: std::sync::Mutex<bool>,
+    focused_widget: crate::compat::Mutex<Option<ObjectId>>,
+    active: crate::compat::Mutex<bool>,
 }
 
 impl MockImeBridge {

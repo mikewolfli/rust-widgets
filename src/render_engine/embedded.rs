@@ -1,9 +1,18 @@
 //! Embedded runtime state, task queue, and shared engine internals.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
+use crate::compat::HashMap;
+use crate::compat::Mutex;
+use crate::compat::MutexGuard;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
+#[cfg(not(feature = "mini"))]
+use std::sync::Condvar;
+#[cfg(not(feature = "mini"))]
+use std::sync::OnceLock;
+#[cfg(not(feature = "mini"))]
+use std::time::Instant;
 
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
 const MIN_EMBEDDED_TARGET_FPS: u32 = 1;
@@ -312,7 +321,7 @@ pub fn embedded_engine_stats() -> EmbeddedEngineStats {
 mod tests {
     use super::*;
 
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
         GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
