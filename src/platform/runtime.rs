@@ -8,6 +8,11 @@
             target_os = "linux",
             target_os = "ios"
         ))
+    ),
+    all(
+        target_os = "macos",
+        not(feature = "embedded"),
+        not(any(feature = "macos", feature = "macos-legacy"))
     )
 ))]
 use crate::core::PlatformFamily;
@@ -15,7 +20,11 @@ use crate::core::PlatformFamily;
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
-#[cfg(all(target_os = "macos", not(feature = "embedded")))]
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "embedded"),
+    any(feature = "macos", feature = "macos-legacy")
+))]
 use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 #[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 use crate::platform::mobile;
@@ -29,6 +38,11 @@ use crate::platform::windows::WindowsPlatform;
     all(
         not(feature = "embedded"),
         not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+    ),
+    all(
+        target_os = "macos",
+        not(feature = "embedded"),
+        not(any(feature = "macos", feature = "macos-legacy"))
     )
 ))]
 use crate::platform::StubPlatform;
@@ -69,9 +83,23 @@ fn create_native_platform() -> Box<dyn Platform> {
 
 /// Select macOS backend via the bridge (BLUE11 R1.5).
 /// The bridge dispatches to objc2 or cocoa based on feature flags.
-#[cfg(all(target_os = "macos", not(feature = "embedded")))]
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "embedded"),
+    any(feature = "macos", feature = "macos-legacy")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(SelectedMacOSPlatform::new())
+}
+
+/// macOS fallback when no macos/macos-legacy backend feature is active.
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "embedded"),
+    not(any(feature = "macos", feature = "macos-legacy"))
+))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(StubPlatform::new("macos-fallback-stub", PlatformFamily::Desktop))
 }
 
 /// Linux runtime auto-detection:

@@ -13,7 +13,7 @@
 ///
 /// ```rust,ignore
 /// #[no_mangle]
-/// pub extern "C" fn rust_widgets_create_button(...) -> u64 {
+/// pub extern "C" fn rw_create_button(...) -> u64 {
 ///     c_try!({ get_control_backend().create_button(...) })
 /// }
 /// ```
@@ -139,7 +139,7 @@ impl CAbiSafe for isize {
 ///
 /// ```rust,ignore
 /// #[no_mangle]
-/// pub extern "C" fn rust_widgets_something(id: u64) {
+/// pub extern "C" fn rw_something(id: u64) {
 ///     c_try_void!({
 ///         do_something(id);
 ///     })

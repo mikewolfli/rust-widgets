@@ -455,7 +455,7 @@ use std::sync::Mutex;
 static MEMORY_PRINT_JOBS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 impl PrintBackend {
     fn default_for_platform() -> Self {
-        if std::env::var("RUST_WIDGETS_PRINT_BACKEND")
+        if std::env::var("RW_PRINT_BACKEND")
             .map(|value| value.eq_ignore_ascii_case("memory"))
             .unwrap_or(false)
         {
@@ -512,7 +512,7 @@ fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
-    path.push(format!("rust_widgets_print_job_{ts}.txt"));
+    path.push(format!("rw_print_job_{ts}.txt"));
     let mut content = String::new();
     content.push_str(&format!(
         "rust_widgets print job\npage_size={}x{}\n\n",
@@ -803,7 +803,7 @@ pub fn print_to_printer(content: &str, _settings: &PrintSettings) -> Result<(), 
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
-    path.push(format!("rust_widgets_print_output_{ts}.txt"));
+    path.push(format!("rw_print_output_{ts}.txt"));
     fs::write(&path, content).map_err(|err| format!("write print output failed: {err}"))?;
     let result = run_print_command(&path);
     let _ = fs::remove_file(&path);

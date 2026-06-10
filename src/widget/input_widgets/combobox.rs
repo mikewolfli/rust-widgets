@@ -1,5 +1,5 @@
 //! Combo box widget.
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

@@ -10,8 +10,8 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::new_widgets::app_bar::AppBar;
-use crate::widget::new_widgets::bottom_navigation_bar::NavItem;
+use crate::widget::nav_widgets::app_bar::AppBar;
+use crate::widget::nav_widgets::bottom_navigation_bar::NavItem;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// AdaptiveScaffold — a cross-platform adaptive scaffold combining AppBar +

@@ -27,7 +27,7 @@ pub(crate) fn ensure_window_class_registered() {
         let hinstance = GetModuleHandleW(std::ptr::null());
         let mut wnd_class: WNDCLASSW = std::mem::zeroed();
         wnd_class.style = CS_HREDRAW | CS_VREDRAW;
-        wnd_class.lpfnWndProc = Some(super::types::rust_widgets_wnd_proc);
+        wnd_class.lpfnWndProc = Some(super::types::rw_wnd_proc);
         wnd_class.hInstance = hinstance as _;
         wnd_class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wnd_class.lpszClassName = class_name.as_ptr();

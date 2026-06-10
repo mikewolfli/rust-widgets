@@ -350,7 +350,6 @@ impl EventHandler for MultiSelectComboBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Size;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 

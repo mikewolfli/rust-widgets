@@ -148,7 +148,7 @@ class LibraryNotFoundError(FileNotFoundError):
 class RustWidgets:
     """Pythonic wrapper around the ``rust-widgets`` C ABI.
 
-    Every public method corresponds to a ``rust_widgets_*`` C function.
+    Every public method corresponds to a ``rw_*`` C function.
     The native library is loaded lazily on first call.
 
     Parameters
@@ -210,14 +210,14 @@ class RustWidgets:
         # ------------------------------------------------------------------ #
         # Core lifecycle                                                     #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_init.argtypes = []
-        L.rust_widgets_init.restype = None
+        L.rw_init.argtypes = []
+        L.rw_init.restype = None
 
-        L.rust_widgets_run.argtypes = []
-        L.rust_widgets_run.restype = None
+        L.rw_run.argtypes = []
+        L.rw_run.restype = None
 
-        L.rust_widgets_quit.argtypes = []
-        L.rust_widgets_quit.restype = None
+        L.rw_quit.argtypes = []
+        L.rw_quit.restype = None
 
         # ------------------------------------------------------------------ #
         # Widget creation  — all return u64 (0 = failure)                     #
@@ -228,14 +228,14 @@ class RustWidgets:
         # ------------------------------------------------------------------ #
 
         # Window (no parent)
-        L.rust_widgets_create_window.argtypes = [
+        L.rw_create_window.argtypes = [
             c_char_p,  # title
             c_int,
             c_int,  # x, y
             c_uint,
             c_uint,  # width, height
         ]
-        L.rust_widgets_create_window.restype = c_uint64
+        L.rw_create_window.restype = c_uint64
 
         # Simple widgets: parent + text + x/y/w/h
         _textual = [
@@ -246,26 +246,26 @@ class RustWidgets:
             c_uint,
             c_uint,  # width, height
         ]
-        L.rust_widgets_create_button.argtypes = _textual
-        L.rust_widgets_create_button.restype = c_uint64
+        L.rw_create_button.argtypes = _textual
+        L.rw_create_button.restype = c_uint64
 
-        L.rust_widgets_create_checkbox.argtypes = _textual
-        L.rust_widgets_create_checkbox.restype = c_uint64
+        L.rw_create_checkbox.argtypes = _textual
+        L.rw_create_checkbox.restype = c_uint64
 
-        L.rust_widgets_create_line_edit.argtypes = _textual
-        L.rust_widgets_create_line_edit.restype = c_uint64
+        L.rw_create_line_edit.argtypes = _textual
+        L.rw_create_line_edit.restype = c_uint64
 
-        L.rust_widgets_create_label.argtypes = _textual
-        L.rust_widgets_create_label.restype = c_uint64
+        L.rw_create_label.argtypes = _textual
+        L.rw_create_label.restype = c_uint64
 
-        L.rust_widgets_create_radio_button.argtypes = _textual
-        L.rust_widgets_create_radio_button.restype = c_uint64
+        L.rw_create_radio_button.argtypes = _textual
+        L.rw_create_radio_button.restype = c_uint64
 
-        L.rust_widgets_create_menu.argtypes = _textual
-        L.rust_widgets_create_menu.restype = c_uint64
+        L.rw_create_menu.argtypes = _textual
+        L.rw_create_menu.restype = c_uint64
 
-        L.rust_widgets_create_status_bar.argtypes = _textual
-        L.rust_widgets_create_status_bar.restype = c_uint64
+        L.rw_create_status_bar.argtypes = _textual
+        L.rw_create_status_bar.restype = c_uint64
 
         # Simple widgets: parent + x/y/w/h (no text)
         _nont_textual = [
@@ -275,38 +275,38 @@ class RustWidgets:
             c_uint,
             c_uint,  # width, height
         ]
-        L.rust_widgets_create_slider.argtypes = _nont_textual
-        L.rust_widgets_create_slider.restype = c_uint64
+        L.rw_create_slider.argtypes = _nont_textual
+        L.rw_create_slider.restype = c_uint64
 
-        L.rust_widgets_create_progress_bar.argtypes = _nont_textual
-        L.rust_widgets_create_progress_bar.restype = c_uint64
+        L.rw_create_progress_bar.argtypes = _nont_textual
+        L.rw_create_progress_bar.restype = c_uint64
 
-        L.rust_widgets_create_combo_box.argtypes = _nont_textual
-        L.rust_widgets_create_combo_box.restype = c_uint64
+        L.rw_create_combo_box.argtypes = _nont_textual
+        L.rw_create_combo_box.restype = c_uint64
 
-        L.rust_widgets_create_list_box.argtypes = _nont_textual
-        L.rust_widgets_create_list_box.restype = c_uint64
+        L.rw_create_list_box.argtypes = _nont_textual
+        L.rw_create_list_box.restype = c_uint64
 
-        L.rust_widgets_create_panel.argtypes = _nont_textual
-        L.rust_widgets_create_panel.restype = c_uint64
+        L.rw_create_panel.argtypes = _nont_textual
+        L.rw_create_panel.restype = c_uint64
 
-        L.rust_widgets_create_spin_box.argtypes = _nont_textual
-        L.rust_widgets_create_spin_box.restype = c_uint64
+        L.rw_create_spin_box.argtypes = _nont_textual
+        L.rw_create_spin_box.restype = c_uint64
 
-        L.rust_widgets_create_list_view.argtypes = _nont_textual
-        L.rust_widgets_create_list_view.restype = c_uint64
+        L.rw_create_list_view.argtypes = _nont_textual
+        L.rw_create_list_view.restype = c_uint64
 
-        L.rust_widgets_create_scroll_area.argtypes = _nont_textual
-        L.rust_widgets_create_scroll_area.restype = c_uint64
+        L.rw_create_scroll_area.argtypes = _nont_textual
+        L.rw_create_scroll_area.restype = c_uint64
 
-        L.rust_widgets_create_menu_bar.argtypes = _nont_textual
-        L.rust_widgets_create_menu_bar.restype = c_uint64
+        L.rw_create_menu_bar.argtypes = _nont_textual
+        L.rw_create_menu_bar.restype = c_uint64
 
-        L.rust_widgets_create_tool_bar.argtypes = _nont_textual
-        L.rust_widgets_create_tool_bar.restype = c_uint64
+        L.rw_create_tool_bar.argtypes = _nont_textual
+        L.rw_create_tool_bar.restype = c_uint64
 
         # MessageBox: parent + title + text + x/y/w/h
-        L.rust_widgets_create_message_box.argtypes = [
+        L.rw_create_message_box.argtypes = [
             c_uint64,  # parent
             c_char_p,  # title
             c_char_p,  # text
@@ -315,7 +315,7 @@ class RustWidgets:
             c_uint,
             c_uint,  # width, height
         ]
-        L.rust_widgets_create_message_box.restype = c_uint64
+        L.rw_create_message_box.restype = c_uint64
 
         # File / Color / Font dialog: parent + title + x/y/w/h
         _dialog = [
@@ -326,262 +326,262 @@ class RustWidgets:
             c_uint,
             c_uint,  # width, height
         ]
-        L.rust_widgets_create_file_dialog.argtypes = _dialog
-        L.rust_widgets_create_file_dialog.restype = c_uint64
+        L.rw_create_file_dialog.argtypes = _dialog
+        L.rw_create_file_dialog.restype = c_uint64
 
-        L.rust_widgets_create_color_dialog.argtypes = _dialog
-        L.rust_widgets_create_color_dialog.restype = c_uint64
+        L.rw_create_color_dialog.argtypes = _dialog
+        L.rw_create_color_dialog.restype = c_uint64
 
-        L.rust_widgets_create_font_dialog.argtypes = _dialog
-        L.rust_widgets_create_font_dialog.restype = c_uint64
+        L.rw_create_font_dialog.argtypes = _dialog
+        L.rw_create_font_dialog.restype = c_uint64
 
         # ------------------------------------------------------------------ #
         # Widget manipulation                                                #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_show_widget.argtypes = [c_uint64]
-        L.rust_widgets_show_widget.restype = None
+        L.rw_show_widget.argtypes = [c_uint64]
+        L.rw_show_widget.restype = None
 
-        L.rust_widgets_hide_widget.argtypes = [c_uint64]
-        L.rust_widgets_hide_widget.restype = None
+        L.rw_hide_widget.argtypes = [c_uint64]
+        L.rw_hide_widget.restype = None
 
-        L.rust_widgets_set_widget_text.argtypes = [c_uint64, c_char_p]
-        L.rust_widgets_set_widget_text.restype = None
+        L.rw_set_widget_text.argtypes = [c_uint64, c_char_p]
+        L.rw_set_widget_text.restype = None
 
-        L.rust_widgets_get_widget_text.argtypes = [c_uint64]
-        L.rust_widgets_get_widget_text.restype = c_char_p
+        L.rw_get_widget_text.argtypes = [c_uint64]
+        L.rw_get_widget_text.restype = c_char_p
 
-        L.rust_widgets_set_widget_enabled.argtypes = [c_uint64, c_bool]
-        L.rust_widgets_set_widget_enabled.restype = None
+        L.rw_set_widget_enabled.argtypes = [c_uint64, c_bool]
+        L.rw_set_widget_enabled.restype = None
 
-        L.rust_widgets_is_widget_enabled.argtypes = [c_uint64]
-        L.rust_widgets_is_widget_enabled.restype = c_bool
+        L.rw_is_widget_enabled.argtypes = [c_uint64]
+        L.rw_is_widget_enabled.restype = c_bool
 
-        L.rust_widgets_set_widget_visible.argtypes = [c_uint64, c_bool]
-        L.rust_widgets_set_widget_visible.restype = None
+        L.rw_set_widget_visible.argtypes = [c_uint64, c_bool]
+        L.rw_set_widget_visible.restype = None
 
-        L.rust_widgets_is_widget_visible.argtypes = [c_uint64]
-        L.rust_widgets_is_widget_visible.restype = c_bool
+        L.rw_is_widget_visible.argtypes = [c_uint64]
+        L.rw_is_widget_visible.restype = c_bool
 
-        L.rust_widgets_set_widget_geometry.argtypes = [
+        L.rw_set_widget_geometry.argtypes = [
             c_uint64,
             c_int,
             c_int,
             c_uint,
             c_uint,
         ]
-        L.rust_widgets_set_widget_geometry.restype = None
+        L.rw_set_widget_geometry.restype = None
 
-        L.rust_widgets_set_widget_ime_enabled.argtypes = [c_uint64, c_bool]
-        L.rust_widgets_set_widget_ime_enabled.restype = c_bool
+        L.rw_set_widget_ime_enabled.argtypes = [c_uint64, c_bool]
+        L.rw_set_widget_ime_enabled.restype = c_bool
 
-        L.rust_widgets_is_widget_ime_enabled.argtypes = [c_uint64]
-        L.rust_widgets_is_widget_ime_enabled.restype = c_bool
+        L.rw_is_widget_ime_enabled.argtypes = [c_uint64]
+        L.rw_is_widget_ime_enabled.restype = c_bool
 
-        L.rust_widgets_set_widget_accessibility_name.argtypes = [c_uint64, c_char_p]
-        L.rust_widgets_set_widget_accessibility_name.restype = c_bool
+        L.rw_set_widget_accessibility_name.argtypes = [c_uint64, c_char_p]
+        L.rw_set_widget_accessibility_name.restype = c_bool
 
-        L.rust_widgets_get_widget_accessibility_name.argtypes = [c_uint64]
-        L.rust_widgets_get_widget_accessibility_name.restype = c_char_p
+        L.rw_get_widget_accessibility_name.argtypes = [c_uint64]
+        L.rw_get_widget_accessibility_name.restype = c_char_p
 
         # ------------------------------------------------------------------ #
         # Menu operations                                                    #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_attach_menu_bar_to_window.argtypes = [c_uint64, c_uint64]
-        L.rust_widgets_attach_menu_bar_to_window.restype = c_bool
+        L.rw_attach_menu_bar_to_window.argtypes = [c_uint64, c_uint64]
+        L.rw_attach_menu_bar_to_window.restype = c_bool
 
-        L.rust_widgets_menu_add_item.argtypes = [c_uint64, c_char_p, c_char_p]
-        L.rust_widgets_menu_add_item.restype = c_uint64
+        L.rw_menu_add_item.argtypes = [c_uint64, c_char_p, c_char_p]
+        L.rw_menu_add_item.restype = c_uint64
 
-        L.rust_widgets_poll_menu_triggered.argtypes = []
-        L.rust_widgets_poll_menu_triggered.restype = c_uint64
+        L.rw_poll_menu_triggered.argtypes = []
+        L.rw_poll_menu_triggered.restype = c_uint64
 
-        L.rust_widgets_inject_menu_trigger.argtypes = [c_uint64]
-        L.rust_widgets_inject_menu_trigger.restype = c_bool
+        L.rw_inject_menu_trigger.argtypes = [c_uint64]
+        L.rw_inject_menu_trigger.restype = c_bool
 
         # ------------------------------------------------------------------ #
         # Event polling                                                      #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_poll_widget_triggered.argtypes = []
-        L.rust_widgets_poll_widget_triggered.restype = c_uint64
+        L.rw_poll_widget_triggered.argtypes = []
+        L.rw_poll_widget_triggered.restype = c_uint64
 
-        L.rust_widgets_poll_widget_trigger_event.argtypes = [POINTER(c_uint64)]
-        L.rust_widgets_poll_widget_trigger_event.restype = c_uint
+        L.rw_poll_widget_trigger_event.argtypes = [POINTER(c_uint64)]
+        L.rw_poll_widget_trigger_event.restype = c_uint
 
-        L.rust_widgets_inject_widget_trigger_event.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_inject_widget_trigger_event.restype = c_bool
+        L.rw_inject_widget_trigger_event.argtypes = [c_uint64, c_uint]
+        L.rw_inject_widget_trigger_event.restype = c_bool
 
         # ------------------------------------------------------------------ #
         # Combo Box                                                          #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_combo_box_add_item.argtypes = [c_uint64, c_char_p]
-        L.rust_widgets_combo_box_add_item.restype = c_bool
+        L.rw_combo_box_add_item.argtypes = [c_uint64, c_char_p]
+        L.rw_combo_box_add_item.restype = c_bool
 
-        L.rust_widgets_combo_box_clear_items.argtypes = [c_uint64]
-        L.rust_widgets_combo_box_clear_items.restype = c_bool
+        L.rw_combo_box_clear_items.argtypes = [c_uint64]
+        L.rw_combo_box_clear_items.restype = c_bool
 
-        L.rust_widgets_combo_box_set_current_index.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_combo_box_set_current_index.restype = c_bool
+        L.rw_combo_box_set_current_index.argtypes = [c_uint64, c_uint]
+        L.rw_combo_box_set_current_index.restype = c_bool
 
-        L.rust_widgets_combo_box_current_index.argtypes = [c_uint64]
-        L.rust_widgets_combo_box_current_index.restype = c_int
+        L.rw_combo_box_current_index.argtypes = [c_uint64]
+        L.rw_combo_box_current_index.restype = c_int
 
-        L.rust_widgets_combo_box_item_count.argtypes = [c_uint64]
-        L.rust_widgets_combo_box_item_count.restype = c_uint
+        L.rw_combo_box_item_count.argtypes = [c_uint64]
+        L.rw_combo_box_item_count.restype = c_uint
 
-        L.rust_widgets_combo_box_item_text.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_combo_box_item_text.restype = c_char_p
+        L.rw_combo_box_item_text.argtypes = [c_uint64, c_uint]
+        L.rw_combo_box_item_text.restype = c_char_p
 
         # ------------------------------------------------------------------ #
         # List Box                                                           #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_list_box_add_item.argtypes = [c_uint64, c_char_p]
-        L.rust_widgets_list_box_add_item.restype = c_bool
+        L.rw_list_box_add_item.argtypes = [c_uint64, c_char_p]
+        L.rw_list_box_add_item.restype = c_bool
 
-        L.rust_widgets_list_box_remove_item.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_list_box_remove_item.restype = c_bool
+        L.rw_list_box_remove_item.argtypes = [c_uint64, c_uint]
+        L.rw_list_box_remove_item.restype = c_bool
 
-        L.rust_widgets_list_box_clear_items.argtypes = [c_uint64]
-        L.rust_widgets_list_box_clear_items.restype = c_bool
+        L.rw_list_box_clear_items.argtypes = [c_uint64]
+        L.rw_list_box_clear_items.restype = c_bool
 
-        L.rust_widgets_list_box_set_current_index.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_list_box_set_current_index.restype = c_bool
+        L.rw_list_box_set_current_index.argtypes = [c_uint64, c_uint]
+        L.rw_list_box_set_current_index.restype = c_bool
 
-        L.rust_widgets_list_box_current_index.argtypes = [c_uint64]
-        L.rust_widgets_list_box_current_index.restype = c_int
+        L.rw_list_box_current_index.argtypes = [c_uint64]
+        L.rw_list_box_current_index.restype = c_int
 
-        L.rust_widgets_list_box_item_count.argtypes = [c_uint64]
-        L.rust_widgets_list_box_item_count.restype = c_uint
+        L.rw_list_box_item_count.argtypes = [c_uint64]
+        L.rw_list_box_item_count.restype = c_uint
 
-        L.rust_widgets_list_box_item_text.argtypes = [c_uint64, c_uint]
-        L.rust_widgets_list_box_item_text.restype = c_char_p
+        L.rw_list_box_item_text.argtypes = [c_uint64, c_uint]
+        L.rw_list_box_item_text.restype = c_char_p
 
         # ------------------------------------------------------------------ #
         # Clipboard & Drag                                                   #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_set_clipboard_text.argtypes = [c_char_p]
-        L.rust_widgets_set_clipboard_text.restype = c_bool
+        L.rw_set_clipboard_text.argtypes = [c_char_p]
+        L.rw_set_clipboard_text.restype = c_bool
 
-        L.rust_widgets_get_clipboard_text.argtypes = []
-        L.rust_widgets_get_clipboard_text.restype = c_char_p
+        L.rw_get_clipboard_text.argtypes = []
+        L.rw_get_clipboard_text.restype = c_char_p
 
-        L.rust_widgets_begin_drag.argtypes = [
+        L.rw_begin_drag.argtypes = [
             c_uint64,  # source widget id
             c_char_p,  # mime_type
             POINTER(c_uint8),  # payload
             c_uint,  # payload_len
         ]
-        L.rust_widgets_begin_drag.restype = c_bool
+        L.rw_begin_drag.restype = c_bool
 
         # ------------------------------------------------------------------ #
         # Platform info                                                      #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_backend_name.argtypes = []
-        L.rust_widgets_backend_name.restype = c_char_p
+        L.rw_backend_name.argtypes = []
+        L.rw_backend_name.restype = c_char_p
 
-        L.rust_widgets_platform_capabilities.argtypes = []
-        L.rust_widgets_platform_capabilities.restype = c_uint
+        L.rw_platform_capabilities.argtypes = []
+        L.rw_platform_capabilities.restype = c_uint
 
-        L.rust_widgets_platform_dpi_scale_factor.argtypes = []
-        L.rust_widgets_platform_dpi_scale_factor.restype = c_float
+        L.rw_platform_dpi_scale_factor.argtypes = []
+        L.rw_platform_dpi_scale_factor.restype = c_float
 
-        L.rust_widgets_platform_capability_contract.argtypes = [c_uint]
-        L.rust_widgets_platform_capability_contract.restype = c_uint
+        L.rw_platform_capability_contract.argtypes = [c_uint]
+        L.rw_platform_capability_contract.restype = c_uint
 
-        L.rust_widgets_bindings_api_version.argtypes = []
-        L.rust_widgets_bindings_api_version.restype = c_uint
+        L.rw_bindings_api_version.argtypes = []
+        L.rw_bindings_api_version.restype = c_uint
 
         # ------------------------------------------------------------------ #
         # Render configuration                                               #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_set_render_aa_samples_per_axis.argtypes = [c_uint]
-        L.rust_widgets_set_render_aa_samples_per_axis.restype = c_uint
+        L.rw_set_render_aa_samples_per_axis.argtypes = [c_uint]
+        L.rw_set_render_aa_samples_per_axis.restype = c_uint
 
-        L.rust_widgets_get_render_aa_samples_per_axis.argtypes = []
-        L.rust_widgets_get_render_aa_samples_per_axis.restype = c_uint
+        L.rw_get_render_aa_samples_per_axis.argtypes = []
+        L.rw_get_render_aa_samples_per_axis.restype = c_uint
 
-        L.rust_widgets_set_embedded_target_fps.argtypes = [c_uint]
-        L.rust_widgets_set_embedded_target_fps.restype = c_uint
+        L.rw_set_embedded_target_fps.argtypes = [c_uint]
+        L.rw_set_embedded_target_fps.restype = c_uint
 
-        L.rust_widgets_get_embedded_target_fps.argtypes = []
-        L.rust_widgets_get_embedded_target_fps.restype = c_uint
+        L.rw_get_embedded_target_fps.argtypes = []
+        L.rw_get_embedded_target_fps.restype = c_uint
 
-        L.rust_widgets_submit_embedded_noop_task.argtypes = [c_char_p]
-        L.rust_widgets_submit_embedded_noop_task.restype = c_uint64
+        L.rw_submit_embedded_noop_task.argtypes = [c_char_p]
+        L.rw_submit_embedded_noop_task.restype = c_uint64
 
         # ------------------------------------------------------------------ #
         # Embedded engine stats                                              #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_embedded_engine_is_initialized.argtypes = []
-        L.rust_widgets_embedded_engine_is_initialized.restype = c_bool
+        L.rw_embedded_engine_is_initialized.argtypes = []
+        L.rw_embedded_engine_is_initialized.restype = c_bool
 
-        L.rust_widgets_embedded_engine_is_running.argtypes = []
-        L.rust_widgets_embedded_engine_is_running.restype = c_bool
+        L.rw_embedded_engine_is_running.argtypes = []
+        L.rw_embedded_engine_is_running.restype = c_bool
 
-        L.rust_widgets_embedded_engine_frame_count.argtypes = []
-        L.rust_widgets_embedded_engine_frame_count.restype = c_uint64
+        L.rw_embedded_engine_frame_count.argtypes = []
+        L.rw_embedded_engine_frame_count.restype = c_uint64
 
-        L.rust_widgets_embedded_engine_pending_task_count.argtypes = []
-        L.rust_widgets_embedded_engine_pending_task_count.restype = c_uint64
+        L.rw_embedded_engine_pending_task_count.argtypes = []
+        L.rw_embedded_engine_pending_task_count.restype = c_uint64
 
-        L.rust_widgets_embedded_engine_window_count.argtypes = []
-        L.rust_widgets_embedded_engine_window_count.restype = c_uint64
+        L.rw_embedded_engine_window_count.argtypes = []
+        L.rw_embedded_engine_window_count.restype = c_uint64
 
-        L.rust_widgets_embedded_engine_button_count.argtypes = []
-        L.rust_widgets_embedded_engine_button_count.restype = c_uint64
+        L.rw_embedded_engine_button_count.argtypes = []
+        L.rw_embedded_engine_button_count.restype = c_uint64
 
         # ------------------------------------------------------------------ #
         # Mobile (only available with "mobile-api" feature)                   #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_mobile_backend_name.argtypes = []
-        L.rust_widgets_mobile_backend_name.restype = c_char_p
+        L.rw_mobile_backend_name.argtypes = []
+        L.rw_mobile_backend_name.restype = c_char_p
 
-        L.rust_widgets_mobile_attach_native_view.argtypes = [c_uint64]
-        L.rust_widgets_mobile_attach_native_view.restype = c_bool
+        L.rw_mobile_attach_native_view.argtypes = [c_uint64]
+        L.rw_mobile_attach_native_view.restype = c_bool
 
         # ------------------------------------------------------------------ #
         # Binding status                                                     #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_python_binding_status.argtypes = []
-        L.rust_widgets_python_binding_status.restype = c_uint
+        L.rw_python_binding_status.argtypes = []
+        L.rw_python_binding_status.restype = c_uint
 
-        L.rust_widgets_cpp_binding_status.argtypes = []
-        L.rust_widgets_cpp_binding_status.restype = c_uint
+        L.rw_cpp_binding_status.argtypes = []
+        L.rw_cpp_binding_status.restype = c_uint
 
-        L.rust_widgets_java_binding_status.argtypes = []
-        L.rust_widgets_java_binding_status.restype = c_uint
+        L.rw_java_binding_status.argtypes = []
+        L.rw_java_binding_status.restype = c_uint
 
-        L.rust_widgets_java_jni_skeleton_version.argtypes = []
-        L.rust_widgets_java_jni_skeleton_version.restype = c_uint
+        L.rw_java_jni_skeleton_version.argtypes = []
+        L.rw_java_jni_skeleton_version.restype = c_uint
 
-        L.rust_widgets_python_reserved.argtypes = []
-        L.rust_widgets_python_reserved.restype = c_uint
+        L.rw_python_reserved.argtypes = []
+        L.rw_python_reserved.restype = c_uint
 
-        L.rust_widgets_cpp_reserved.argtypes = []
-        L.rust_widgets_cpp_reserved.restype = c_uint
+        L.rw_cpp_reserved.argtypes = []
+        L.rw_cpp_reserved.restype = c_uint
 
-        L.rust_widgets_java_reserved.argtypes = []
-        L.rust_widgets_java_reserved.restype = c_uint
+        L.rw_java_reserved.argtypes = []
+        L.rw_java_reserved.restype = c_uint
 
         # ------------------------------------------------------------------ #
         # Memory                                                             #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_free_string.argtypes = [c_char_p]
-        L.rust_widgets_free_string.restype = None
+        L.rw_free_string.argtypes = [c_char_p]
+        L.rw_free_string.restype = None
 
-        L.rust_widgets_free_rust_string.argtypes = [c_char_p]
-        L.rust_widgets_free_rust_string.restype = None
+        L.rw_free_rust_string.argtypes = [c_char_p]
+        L.rw_free_rust_string.restype = None
 
         # ------------------------------------------------------------------ #
         # Drop event polling (advanced drag-drop)                              #
         # ------------------------------------------------------------------ #
-        L.rust_widgets_poll_drop_event.argtypes = [
+        L.rw_poll_drop_event.argtypes = [
             POINTER(c_uint64),  # source_out
             POINTER(c_uint64),  # target_out
             POINTER(c_char_p),  # mime_out
             POINTER(c_void_p),  # payload_out
             POINTER(c_uint),  # payload_len_out
         ]
-        L.rust_widgets_poll_drop_event.restype = c_bool
+        L.rw_poll_drop_event.restype = c_bool
 
     # ------------------------------------------------------------------ #
     # String helpers                                                     #
@@ -610,14 +610,14 @@ class RustWidgets:
 
     @staticmethod
     def _decode_and_free(lib: ctypes.CDLL, ptr) -> str:
-        """Decode a ``*const c_char`` and free it via ``rust_widgets_free_string``."""
+        """Decode a ``*const c_char`` and free it via ``rw_free_string``."""
         if not ptr:
             return ""
         try:
             return ptr.decode("utf-8")
         finally:
             if ptr:
-                lib.rust_widgets_free_string(ptr)
+                lib.rw_free_string(ptr)
 
     # ------------------------------------------------------------------ #
     # Public API — Core lifecycle                                        #
@@ -625,15 +625,15 @@ class RustWidgets:
 
     def init(self) -> None:
         """Initialise the library. Must be called once before most operations."""
-        self.lib.rust_widgets_init()
+        self.lib.rw_init()
 
     def run(self) -> None:
         """Enter the native event loop. Blocks until :meth:`quit` is called."""
-        self.lib.rust_widgets_run()
+        self.lib.rw_run()
 
     def quit(self) -> None:
         """Signal the event loop to exit."""
-        self.lib.rust_widgets_quit()
+        self.lib.rw_quit()
 
     # ------------------------------------------------------------------ #
     # Public API — Widget creation                                       #
@@ -641,7 +641,7 @@ class RustWidgets:
 
     def create_window(self, title: str, x: int, y: int, width: int, height: int) -> int:
         """Create a top-level window. Returns the widget ID (0 on failure)."""
-        return self.lib.rust_widgets_create_window(
+        return self.lib.rw_create_window(
             self._encode(title), x, y, width, height
         )
 
@@ -649,7 +649,7 @@ class RustWidgets:
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a push button."""
-        return self.lib.rust_widgets_create_button(
+        return self.lib.rw_create_button(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -657,7 +657,7 @@ class RustWidgets:
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a check box."""
-        return self.lib.rust_widgets_create_checkbox(
+        return self.lib.rw_create_checkbox(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -665,7 +665,7 @@ class RustWidgets:
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a single-line text editor."""
-        return self.lib.rust_widgets_create_line_edit(
+        return self.lib.rw_create_line_edit(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -673,7 +673,7 @@ class RustWidgets:
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a static text label."""
-        return self.lib.rust_widgets_create_label(
+        return self.lib.rw_create_label(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -681,7 +681,7 @@ class RustWidgets:
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a radio button."""
-        return self.lib.rust_widgets_create_radio_button(
+        return self.lib.rw_create_radio_button(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -689,29 +689,29 @@ class RustWidgets:
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a horizontal slider."""
-        return self.lib.rust_widgets_create_slider(parent, x, y, width, height)
+        return self.lib.rw_create_slider(parent, x, y, width, height)
 
     def create_progress_bar(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a progress bar."""
-        return self.lib.rust_widgets_create_progress_bar(parent, x, y, width, height)
+        return self.lib.rw_create_progress_bar(parent, x, y, width, height)
 
     def create_combo_box(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a combo-box (drop-down list)."""
-        return self.lib.rust_widgets_create_combo_box(parent, x, y, width, height)
+        return self.lib.rw_create_combo_box(parent, x, y, width, height)
 
     def create_list_box(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a list box."""
-        return self.lib.rust_widgets_create_list_box(parent, x, y, width, height)
+        return self.lib.rw_create_list_box(parent, x, y, width, height)
 
     def create_panel(self, parent: int, x: int, y: int, width: int, height: int) -> int:
         """Create a container panel."""
-        return self.lib.rust_widgets_create_panel(parent, x, y, width, height)
+        return self.lib.rw_create_panel(parent, x, y, width, height)
 
     def create_message_box(
         self,
@@ -724,7 +724,7 @@ class RustWidgets:
         height: int,
     ) -> int:
         """Create a message-box dialog."""
-        return self.lib.rust_widgets_create_message_box(
+        return self.lib.rw_create_message_box(
             parent,
             self._encode(title),
             self._encode(text),
@@ -738,7 +738,7 @@ class RustWidgets:
         self, parent: int, title: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a file-open/save dialog."""
-        return self.lib.rust_widgets_create_file_dialog(
+        return self.lib.rw_create_file_dialog(
             parent, self._encode(title), x, y, width, height
         )
 
@@ -746,7 +746,7 @@ class RustWidgets:
         self, parent: int, title: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a color-picker dialog."""
-        return self.lib.rust_widgets_create_color_dialog(
+        return self.lib.rw_create_color_dialog(
             parent, self._encode(title), x, y, width, height
         )
 
@@ -754,7 +754,7 @@ class RustWidgets:
         self, parent: int, title: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a font-picker dialog."""
-        return self.lib.rust_widgets_create_font_dialog(
+        return self.lib.rw_create_font_dialog(
             parent, self._encode(title), x, y, width, height
         )
 
@@ -762,31 +762,31 @@ class RustWidgets:
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a numeric spin box."""
-        return self.lib.rust_widgets_create_spin_box(parent, x, y, width, height)
+        return self.lib.rw_create_spin_box(parent, x, y, width, height)
 
     def create_list_view(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a list view."""
-        return self.lib.rust_widgets_create_list_view(parent, x, y, width, height)
+        return self.lib.rw_create_list_view(parent, x, y, width, height)
 
     def create_scroll_area(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a scrollable area."""
-        return self.lib.rust_widgets_create_scroll_area(parent, x, y, width, height)
+        return self.lib.rw_create_scroll_area(parent, x, y, width, height)
 
     def create_menu_bar(
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a menu bar."""
-        return self.lib.rust_widgets_create_menu_bar(parent, x, y, width, height)
+        return self.lib.rw_create_menu_bar(parent, x, y, width, height)
 
     def create_menu(
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a drop-down menu."""
-        return self.lib.rust_widgets_create_menu(
+        return self.lib.rw_create_menu(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -794,13 +794,13 @@ class RustWidgets:
         self, parent: int, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a tool bar."""
-        return self.lib.rust_widgets_create_tool_bar(parent, x, y, width, height)
+        return self.lib.rw_create_tool_bar(parent, x, y, width, height)
 
     def create_status_bar(
         self, parent: int, text: str, x: int, y: int, width: int, height: int
     ) -> int:
         """Create a status bar."""
-        return self.lib.rust_widgets_create_status_bar(
+        return self.lib.rw_create_status_bar(
             parent, self._encode(text), x, y, width, height
         )
 
@@ -810,53 +810,53 @@ class RustWidgets:
 
     def show_widget(self, widget_id: int) -> None:
         """Show (make visible) a widget."""
-        self.lib.rust_widgets_show_widget(widget_id)
+        self.lib.rw_show_widget(widget_id)
 
     def hide_widget(self, widget_id: int) -> None:
         """Hide a widget."""
-        self.lib.rust_widgets_hide_widget(widget_id)
+        self.lib.rw_hide_widget(widget_id)
 
     def set_widget_text(self, widget_id: int, text: str) -> None:
         """Set the text content of a widget."""
-        self.lib.rust_widgets_set_widget_text(widget_id, self._encode(text))
+        self.lib.rw_set_widget_text(widget_id, self._encode(text))
 
     def get_widget_text(self, widget_id: int) -> str:
         """Get the text content of a widget (frees the C string internally)."""
-        ptr = self.lib.rust_widgets_get_widget_text(widget_id)
+        ptr = self.lib.rw_get_widget_text(widget_id)
         return self._decode_and_free(self.lib, ptr)
 
     def set_widget_enabled(self, widget_id: int, enabled: bool) -> None:
         """Enable or disable a widget."""
-        self.lib.rust_widgets_set_widget_enabled(widget_id, enabled)
+        self.lib.rw_set_widget_enabled(widget_id, enabled)
 
     def is_widget_enabled(self, widget_id: int) -> bool:
         """Check whether a widget is enabled."""
-        return bool(self.lib.rust_widgets_is_widget_enabled(widget_id))
+        return bool(self.lib.rw_is_widget_enabled(widget_id))
 
     def set_widget_visible(self, widget_id: int, visible: bool) -> None:
         """Show or hide a widget programmatically."""
-        self.lib.rust_widgets_set_widget_visible(widget_id, visible)
+        self.lib.rw_set_widget_visible(widget_id, visible)
 
     def is_widget_visible(self, widget_id: int) -> bool:
         """Check whether a widget is visible."""
-        return bool(self.lib.rust_widgets_is_widget_visible(widget_id))
+        return bool(self.lib.rw_is_widget_visible(widget_id))
 
     def set_widget_geometry(
         self, widget_id: int, x: int, y: int, width: int, height: int
     ) -> None:
         """Set the position and size of a widget."""
-        self.lib.rust_widgets_set_widget_geometry(widget_id, x, y, width, height)
+        self.lib.rw_set_widget_geometry(widget_id, x, y, width, height)
 
     def set_widget_ime_enabled(self, widget_id: int, enabled: bool) -> bool:
         """Enable/disable IME (input method editor) on a widget.
 
         Returns ``True`` on success.
         """
-        return bool(self.lib.rust_widgets_set_widget_ime_enabled(widget_id, enabled))
+        return bool(self.lib.rw_set_widget_ime_enabled(widget_id, enabled))
 
     def is_widget_ime_enabled(self, widget_id: int) -> bool:
         """Check whether IME is enabled on a widget."""
-        return bool(self.lib.rust_widgets_is_widget_ime_enabled(widget_id))
+        return bool(self.lib.rw_is_widget_ime_enabled(widget_id))
 
     def set_widget_accessibility_name(self, widget_id: int, name: str) -> bool:
         """Set the accessibility name for a widget.
@@ -864,14 +864,14 @@ class RustWidgets:
         Returns ``True`` on success.
         """
         return bool(
-            self.lib.rust_widgets_set_widget_accessibility_name(
+            self.lib.rw_set_widget_accessibility_name(
                 widget_id, self._encode(name)
             )
         )
 
     def get_widget_accessibility_name(self, widget_id: int) -> str:
         """Get the accessibility name of a widget."""
-        ptr = self.lib.rust_widgets_get_widget_accessibility_name(widget_id)
+        ptr = self.lib.rw_get_widget_accessibility_name(widget_id)
         return self._decode_and_free(self.lib, ptr)
 
     # ------------------------------------------------------------------ #
@@ -881,7 +881,7 @@ class RustWidgets:
     def attach_menu_bar_to_window(self, window_id: int, menu_bar_id: int) -> bool:
         """Attach a menu bar to a window. Returns ``True`` on success."""
         return bool(
-            self.lib.rust_widgets_attach_menu_bar_to_window(window_id, menu_bar_id)
+            self.lib.rw_attach_menu_bar_to_window(window_id, menu_bar_id)
         )
 
     def menu_add_item(
@@ -898,7 +898,7 @@ class RustWidgets:
         shortcut
             Optional keyboard shortcut string (e.g. ``"Ctrl+O"``).
         """
-        return self.lib.rust_widgets_menu_add_item(
+        return self.lib.rw_menu_add_item(
             parent_menu_id,
             self._encode(text),
             self._encode(shortcut),
@@ -909,11 +909,11 @@ class RustWidgets:
 
         Returns the menu-item widget ID, or 0 if no event is pending.
         """
-        return self.lib.rust_widgets_poll_menu_triggered()
+        return self.lib.rw_poll_menu_triggered()
 
     def inject_menu_trigger(self, menu_item_id: int) -> bool:
         """Inject a synthetic menu trigger event. Returns ``True`` on success."""
-        return bool(self.lib.rust_widgets_inject_menu_trigger(menu_item_id))
+        return bool(self.lib.rw_inject_menu_trigger(menu_item_id))
 
     # ------------------------------------------------------------------ #
     # Public API — Event polling                                         #
@@ -924,7 +924,7 @@ class RustWidgets:
 
         Returns the widget ID, or 0 if no event is pending.
         """
-        return self.lib.rust_widgets_poll_widget_triggered()
+        return self.lib.rw_poll_widget_triggered()
 
     def poll_widget_trigger_event(self) -> Tuple[int, int]:
         """Poll for a typed widget trigger event.
@@ -933,7 +933,7 @@ class RustWidgets:
         A ``widget_id`` of 0 means no event is pending.
         """
         widget_id = ctypes.c_uint64(0)
-        kind = self.lib.rust_widgets_poll_widget_trigger_event(ctypes.byref(widget_id))
+        kind = self.lib.rw_poll_widget_trigger_event(ctypes.byref(widget_id))
         return (widget_id.value, kind)
 
     def inject_widget_trigger_event(self, widget_id: int, kind_code: int) -> bool:
@@ -950,7 +950,7 @@ class RustWidgets:
         Returns ``True`` on success.
         """
         return bool(
-            self.lib.rust_widgets_inject_widget_trigger_event(widget_id, kind_code)
+            self.lib.rw_inject_widget_trigger_event(widget_id, kind_code)
         )
 
     # ------------------------------------------------------------------ #
@@ -960,30 +960,30 @@ class RustWidgets:
     def combo_box_add_item(self, combo_box_id: int, text: str) -> bool:
         """Add an item to a combo box. Returns ``True`` on success."""
         return bool(
-            self.lib.rust_widgets_combo_box_add_item(combo_box_id, self._encode(text))
+            self.lib.rw_combo_box_add_item(combo_box_id, self._encode(text))
         )
 
     def combo_box_clear_items(self, combo_box_id: int) -> bool:
         """Remove all items from a combo box. Returns ``True`` on success."""
-        return bool(self.lib.rust_widgets_combo_box_clear_items(combo_box_id))
+        return bool(self.lib.rw_combo_box_clear_items(combo_box_id))
 
     def combo_box_set_current_index(self, combo_box_id: int, index: int) -> bool:
         """Set the currently selected item index. Returns ``True`` on success."""
         return bool(
-            self.lib.rust_widgets_combo_box_set_current_index(combo_box_id, index)
+            self.lib.rw_combo_box_set_current_index(combo_box_id, index)
         )
 
     def combo_box_current_index(self, combo_box_id: int) -> int:
         """Get the currently selected item index, or -1 if none."""
-        return self.lib.rust_widgets_combo_box_current_index(combo_box_id)
+        return self.lib.rw_combo_box_current_index(combo_box_id)
 
     def combo_box_item_count(self, combo_box_id: int) -> int:
         """Get the number of items in a combo box."""
-        return self.lib.rust_widgets_combo_box_item_count(combo_box_id)
+        return self.lib.rw_combo_box_item_count(combo_box_id)
 
     def combo_box_item_text(self, combo_box_id: int, index: int) -> str:
         """Get the text of a combo-box item at *index*."""
-        ptr = self.lib.rust_widgets_combo_box_item_text(combo_box_id, index)
+        ptr = self.lib.rw_combo_box_item_text(combo_box_id, index)
         return self._decode_and_free(self.lib, ptr)
 
     # ------------------------------------------------------------------ #
@@ -993,34 +993,34 @@ class RustWidgets:
     def list_box_add_item(self, list_box_id: int, text: str) -> bool:
         """Add an item to a list box. Returns ``True`` on success."""
         return bool(
-            self.lib.rust_widgets_list_box_add_item(list_box_id, self._encode(text))
+            self.lib.rw_list_box_add_item(list_box_id, self._encode(text))
         )
 
     def list_box_remove_item(self, list_box_id: int, index: int) -> bool:
         """Remove an item from a list box by index. Returns ``True`` on success."""
-        return bool(self.lib.rust_widgets_list_box_remove_item(list_box_id, index))
+        return bool(self.lib.rw_list_box_remove_item(list_box_id, index))
 
     def list_box_clear_items(self, list_box_id: int) -> bool:
         """Remove all items from a list box. Returns ``True`` on success."""
-        return bool(self.lib.rust_widgets_list_box_clear_items(list_box_id))
+        return bool(self.lib.rw_list_box_clear_items(list_box_id))
 
     def list_box_set_current_index(self, list_box_id: int, index: int) -> bool:
         """Set the currently selected item index. Returns ``True`` on success."""
         return bool(
-            self.lib.rust_widgets_list_box_set_current_index(list_box_id, index)
+            self.lib.rw_list_box_set_current_index(list_box_id, index)
         )
 
     def list_box_current_index(self, list_box_id: int) -> int:
         """Get the currently selected item index, or -1 if none."""
-        return self.lib.rust_widgets_list_box_current_index(list_box_id)
+        return self.lib.rw_list_box_current_index(list_box_id)
 
     def list_box_item_count(self, list_box_id: int) -> int:
         """Get the number of items in a list box."""
-        return self.lib.rust_widgets_list_box_item_count(list_box_id)
+        return self.lib.rw_list_box_item_count(list_box_id)
 
     def list_box_item_text(self, list_box_id: int, index: int) -> str:
         """Get the text of a list-box item at *index*."""
-        ptr = self.lib.rust_widgets_list_box_item_text(list_box_id, index)
+        ptr = self.lib.rw_list_box_item_text(list_box_id, index)
         return self._decode_and_free(self.lib, ptr)
 
     # ------------------------------------------------------------------ #
@@ -1029,11 +1029,11 @@ class RustWidgets:
 
     def set_clipboard_text(self, text: str) -> bool:
         """Set the system clipboard text. Returns ``True`` on success."""
-        return bool(self.lib.rust_widgets_set_clipboard_text(self._encode(text)))
+        return bool(self.lib.rw_set_clipboard_text(self._encode(text)))
 
     def get_clipboard_text(self) -> str:
         """Get the system clipboard text."""
-        ptr = self.lib.rust_widgets_get_clipboard_text()
+        ptr = self.lib.rw_get_clipboard_text()
         return self._decode_and_free(self.lib, ptr)
 
     def begin_drag(
@@ -1057,7 +1057,7 @@ class RustWidgets:
         """
         buf = (ctypes.c_uint8 * len(payload)).from_buffer_copy(payload)
         return bool(
-            self.lib.rust_widgets_begin_drag(
+            self.lib.rw_begin_drag(
                 source_widget_id,
                 self._encode(mime_type),
                 buf,
@@ -1084,7 +1084,7 @@ class RustWidgets:
         payload_out = ctypes.c_void_p()
         payload_len_out = ctypes.c_uint(0)
 
-        ok = self.lib.rust_widgets_poll_drop_event(
+        ok = self.lib.rw_poll_drop_event(
             ctypes.byref(source_out),
             ctypes.byref(target_out),
             ctypes.byref(mime_out),
@@ -1099,7 +1099,7 @@ class RustWidgets:
             try:
                 mime = mime_out.value.decode("utf-8")
             finally:
-                self.lib.rust_widgets_free_string(mime_out)
+                self.lib.rw_free_string(mime_out)
 
         payload = b""
         if payload_out.value and payload_len_out.value > 0:
@@ -1136,7 +1136,7 @@ class RustWidgets:
 
     def backend_name(self) -> str:
         """Return the name of the active backend (e.g. ``"cocoa"``, ``"x11"``)."""
-        ptr = self.lib.rust_widgets_backend_name()
+        ptr = self.lib.rw_backend_name()
         return self._decode_and_free(self.lib, ptr)
 
     def platform_capabilities(self) -> int:
@@ -1149,7 +1149,7 @@ class RustWidgets:
         - bit 3: Native menu
         - bit 4: Typed widget trigger
         """
-        return self.lib.rust_widgets_platform_capabilities()
+        return self.lib.rw_platform_capabilities()
 
     def platform_capability_names(self) -> list[str]:
         """Return a human-readable list of platform capabilities."""
@@ -1157,7 +1157,7 @@ class RustWidgets:
 
     def platform_dpi_scale_factor(self) -> float:
         """Return the platform's DPI scale factor."""
-        return self.lib.rust_widgets_platform_dpi_scale_factor()
+        return self.lib.rw_platform_dpi_scale_factor()
 
     def platform_capability_contract(self, profile_code: int) -> int:
         """Negotiate a capability contract for a runtime profile.
@@ -1167,11 +1167,11 @@ class RustWidgets:
         profile_code
             0 for full profile, 1 for embedded.
         """
-        return self.lib.rust_widgets_platform_capability_contract(profile_code)
+        return self.lib.rw_platform_capability_contract(profile_code)
 
     def bindings_api_version(self) -> int:
         """Return the C ABI bindings version number."""
-        return self.lib.rust_widgets_bindings_api_version()
+        return self.lib.rw_bindings_api_version()
 
     # ------------------------------------------------------------------ #
     # Public API — Render configuration                                  #
@@ -1182,29 +1182,29 @@ class RustWidgets:
 
         Returns the clamped value.
         """
-        return self.lib.rust_widgets_set_render_aa_samples_per_axis(samples)
+        return self.lib.rw_set_render_aa_samples_per_axis(samples)
 
     def get_render_aa_samples_per_axis(self) -> int:
         """Get the current anti-aliasing samples per axis."""
-        return self.lib.rust_widgets_get_render_aa_samples_per_axis()
+        return self.lib.rw_get_render_aa_samples_per_axis()
 
     def set_embedded_target_fps(self, fps: int) -> int:
         """Set the embedded engine target FPS (clamped to [1, 240]).
 
         Returns the clamped value.
         """
-        return self.lib.rust_widgets_set_embedded_target_fps(fps)
+        return self.lib.rw_set_embedded_target_fps(fps)
 
     def get_embedded_target_fps(self) -> int:
         """Get the embedded engine target FPS."""
-        return self.lib.rust_widgets_get_embedded_target_fps()
+        return self.lib.rw_get_embedded_target_fps()
 
     def submit_embedded_noop_task(self, label: str = "") -> int:
         """Submit a no-op task to the embedded engine for testing.
 
         Returns a task ID.
         """
-        return self.lib.rust_widgets_submit_embedded_noop_task(self._encode(label))
+        return self.lib.rw_submit_embedded_noop_task(self._encode(label))
 
     # ------------------------------------------------------------------ #
     # Public API — Embedded engine stats                                 #
@@ -1212,27 +1212,27 @@ class RustWidgets:
 
     def embedded_engine_is_initialized(self) -> bool:
         """Check if the embedded engine is initialized."""
-        return bool(self.lib.rust_widgets_embedded_engine_is_initialized())
+        return bool(self.lib.rw_embedded_engine_is_initialized())
 
     def embedded_engine_is_running(self) -> bool:
         """Check if the embedded engine is running."""
-        return bool(self.lib.rust_widgets_embedded_engine_is_running())
+        return bool(self.lib.rw_embedded_engine_is_running())
 
     def embedded_engine_frame_count(self) -> int:
         """Get the embedded engine frame count."""
-        return self.lib.rust_widgets_embedded_engine_frame_count()
+        return self.lib.rw_embedded_engine_frame_count()
 
     def embedded_engine_pending_task_count(self) -> int:
         """Get the number of pending tasks in the embedded engine."""
-        return self.lib.rust_widgets_embedded_engine_pending_task_count()
+        return self.lib.rw_embedded_engine_pending_task_count()
 
     def embedded_engine_window_count(self) -> int:
         """Get the number of windows tracked by the embedded engine."""
-        return self.lib.rust_widgets_embedded_engine_window_count()
+        return self.lib.rw_embedded_engine_window_count()
 
     def embedded_engine_button_count(self) -> int:
         """Get the number of buttons tracked by the embedded engine."""
-        return self.lib.rust_widgets_embedded_engine_button_count()
+        return self.lib.rw_embedded_engine_button_count()
 
     # ------------------------------------------------------------------ #
     # Public API — Mobile                                                #
@@ -1240,7 +1240,7 @@ class RustWidgets:
 
     def mobile_backend_name(self) -> str:
         """Return the mobile backend name (empty string if not on mobile)."""
-        ptr = self.lib.rust_widgets_mobile_backend_name()
+        ptr = self.lib.rw_mobile_backend_name()
         return self._decode_and_free(self.lib, ptr)
 
     def mobile_attach_native_view(self, native_handle: int) -> bool:
@@ -1248,7 +1248,7 @@ class RustWidgets:
 
         Returns ``True`` on success (requires ``mobile-api`` feature).
         """
-        return bool(self.lib.rust_widgets_mobile_attach_native_view(native_handle))
+        return bool(self.lib.rw_mobile_attach_native_view(native_handle))
 
     # ------------------------------------------------------------------ #
     # Public API — Binding status queries                                #
@@ -1262,31 +1262,31 @@ class RustWidgets:
         - bit 1: Python adapter/example available
         - bit 2: profile-aware capability query available
         """
-        return self.lib.rust_widgets_python_binding_status()
+        return self.lib.rw_python_binding_status()
 
     def cpp_binding_status(self) -> int:
         """Return a bitmask indicating C++ binding status."""
-        return self.lib.rust_widgets_cpp_binding_status()
+        return self.lib.rw_cpp_binding_status()
 
     def java_binding_status(self) -> int:
         """Return a bitmask indicating Java/JNI binding status."""
-        return self.lib.rust_widgets_java_binding_status()
+        return self.lib.rw_java_binding_status()
 
     def java_jni_skeleton_version(self) -> int:
         """Return the Java/JNI skeleton ABI version."""
-        return self.lib.rust_widgets_java_jni_skeleton_version()
+        return self.lib.rw_java_jni_skeleton_version()
 
     def python_reserved(self) -> int:
         """Reserved Python binding query."""
-        return self.lib.rust_widgets_python_reserved()
+        return self.lib.rw_python_reserved()
 
     def cpp_reserved(self) -> int:
         """Reserved C++ binding query."""
-        return self.lib.rust_widgets_cpp_reserved()
+        return self.lib.rw_cpp_reserved()
 
     def java_reserved(self) -> int:
         """Reserved Java binding query."""
-        return self.lib.rust_widgets_java_reserved()
+        return self.lib.rw_java_reserved()
 
     # ------------------------------------------------------------------ #
     # Public API — Memory management helpers                             #
@@ -1298,4 +1298,4 @@ class RustWidgets:
         Normally you do not need to call this directly — the wrapper
         methods handle string freeing automatically.
         """
-        self.lib.rust_widgets_free_string(ptr)
+        self.lib.rw_free_string(ptr)

@@ -10,13 +10,25 @@ pub mod widget_trait;
 #[cfg(not(feature = "mini"))]
 pub mod advanced_widgets;
 pub mod base_widgets;
+#[cfg(not(feature = "mini"))]
+pub mod chart_widgets;
 pub mod container_widgets;
+#[cfg(not(feature = "mini"))]
+pub mod cupertino;
 #[cfg(not(feature = "mini"))]
 pub mod dialog;
 pub mod display_widgets;
 pub mod input_widgets;
 #[cfg(not(feature = "mini"))]
+pub mod media_widgets;
+#[cfg(not(feature = "mini"))]
 pub mod menu_toolbar;
+#[cfg(not(feature = "mini"))]
+pub mod misc_widgets;
+#[cfg(not(feature = "mini"))]
+pub mod nav_widgets;
+#[cfg(not(feature = "mini"))]
+pub mod overlay_widgets;
 pub mod registry;
 #[cfg(not(feature = "mini"))]
 pub mod special_widgets;
@@ -24,8 +36,6 @@ pub mod special_widgets;
 pub mod view_widgets;
 #[cfg(not(feature = "mini"))]
 pub mod web_widgets;
-// New widget types (modern UI controls, mobile-first)
-pub mod new_widgets;
 // Individual widget files (not in subfolders)
 #[cfg(not(feature = "mini"))]
 pub mod svg;
@@ -54,6 +64,24 @@ pub use base_widgets::{
     label::Label,
     radiobutton::RadioButton,
 };
+#[cfg(not(feature = "mini"))]
+pub use input_widgets::{
+    auto_complete_edit::AutoCompleteEdit,
+    command_link::CommandLink,
+    editable_combo_box::EditableComboBox,
+    font_combo_box::FontComboBox,
+    ime_preedit::ImePreedit,
+    inplace_editor::InplaceEditor,
+    masked_edit::MaskedEdit,
+    multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem},
+    range_slider::{RangeSlider, RangeSliderOrientation},
+    rich_edit::RichEdit,
+    search_bar::SearchBar,
+    search_box::SearchBox,
+    shortcut_editor::{ShortcutEditor, ShortcutEntry},
+    tag_input::TagInput,
+    textedit::TextEdit,
+};
 pub use input_widgets::{
     combobox::ComboBox,
     dropdown::Dropdown,
@@ -62,11 +90,6 @@ pub use input_widgets::{
     listbox::{ListBox, SelectionMode},
     spinbox::SpinBox,
     textarea::TextArea,
-};
-#[cfg(not(feature = "mini"))]
-pub use input_widgets::{
-    command_link::CommandLink, font_combo_box::FontComboBox, rich_edit::RichEdit,
-    textedit::TextEdit,
 };
 // Re-export container widgets
 #[cfg(not(feature = "mini"))]
@@ -89,6 +112,17 @@ pub use container_widgets::toolbox::ToolBox;
 pub type Panel = GroupBox;
 #[cfg(not(feature = "mini"))]
 pub type DockPanel = DockWidget;
+// Re-export container widgets from new additions
+#[cfg(not(feature = "mini"))]
+pub use container_widgets::carousel::Carousel;
+#[cfg(not(feature = "mini"))]
+pub use container_widgets::masonry_layout::{MasonryItem, MasonryLayout};
+#[cfg(not(feature = "mini"))]
+pub use container_widgets::pager_page_view::PagerPageView;
+#[cfg(not(feature = "mini"))]
+pub use container_widgets::safe_area::{SafeArea, SafeAreaInsets};
+#[cfg(not(feature = "mini"))]
+pub use container_widgets::stepper::Stepper;
 // Re-export display widgets
 pub use display_widgets::arc::Arc;
 pub use display_widgets::image_view::ImageView;
@@ -105,95 +139,101 @@ pub use display_widgets::roller::Roller;
 pub use display_widgets::scrollbar::ScrollBar;
 pub use display_widgets::slider::Slider;
 pub use display_widgets::spinner::Spinner;
-// Re-export new widgets (core: Switch is always available)
-pub use new_widgets::switch::Switch;
+// Re-export display widgets from new additions
 #[cfg(not(feature = "mini"))]
-pub use new_widgets::{
-    adaptive_scaffold::AdaptiveScaffold,
-    animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat},
-    app_bar::AppBar,
-    audio_visualizer::AudioVisualizer,
-    auto_complete_edit::AutoCompleteEdit,
-    avatar::Avatar,
-    badge::Badge,
-    bar_chart::{BarChart, BarEntry},
-    barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner},
-    bezier_curve_editor::BezierCurveEditor,
-    bottom_navigation_bar::BottomNavigationBar,
-    bottom_navigation_bar::NavItem,
-    bottom_sheet::BottomSheet,
-    camera_preview::CameraPreview,
-    carousel::Carousel,
-    color_history::ColorHistory,
-    color_well::ColorWell,
-    cupertino::CupertinoAlertDialog,
-    cupertino::CupertinoSlider,
-    cupertino::CupertinoSwitch,
-    cupertino::MaterialNavigationRail,
-    cupertino::MaterialSnackbar,
-    cupertino::RailItem,
-    cupertino_date_picker::CupertinoDatePicker,
-    cupertino_nav_bar::CupertinoNavigationBar,
-    cupertino_segmented_control::CupertinoSegmentedControl,
-    date_range_picker::DateRangePicker,
-    divider::Divider,
-    dropdown_menu::{DropdownItem, DropdownMenu},
-    editable_combo_box::EditableComboBox,
-    empty_state::EmptyState,
-    fab::FAB,
-    find_replace_dialog::FindReplaceDialog,
-    floating_label::FloatingLabel,
-    font_preview::FontPreview,
-    hero_animation::HeroAnimation,
-    icon::Icon,
-    icon::IconName,
-    image_gallery::{GalleryImage, ImageGallery},
-    inplace_editor::InplaceEditor,
-    line_chart::LineChart,
-    lottie_widget::LottieWidget,
-    masked_edit::MaskedEdit,
-    masonry_layout::MasonryItem,
-    masonry_layout::MasonryLayout,
-    menu_button::{MenuButton, MenuItem},
-    mobile_date_picker::MobileDatePicker,
-    modal_bottom_sheet::ModalBottomSheet,
-    multi_select_combo_box::MultiSelectComboBox,
-    multi_select_combo_box::MultiSelectItem,
-    navigation_drawer::NavigationDrawer,
-    navigation_stack::NavigationEvent,
-    navigation_stack::NavigationStack,
-    pager_page_view::PagerPageView,
-    pie_chart::PieChart,
-    pie_chart::PieSlice,
-    popover::Popover,
-    progress_circle::ProgressCircle,
-    properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue},
-    property_grid::{PropertyGrid, PropertyItem},
-    pull_to_refresh::PullToRefresh,
-    qr_code::QRCode,
-    range_slider::RangeSlider,
-    range_slider::RangeSliderOrientation,
-    rating::Rating,
-    refresh_control::RefreshControl,
-    rive_widget::{RiveInput, RiveInputValue, RiveWidget},
-    safe_area::{SafeArea, SafeAreaInsets},
-    search_bar::SearchBar,
-    search_box::SearchBox,
-    segmented_button::Segment,
-    segmented_button::SegmentedButton,
-    shortcut_editor::ShortcutEditor,
-    shortcut_editor::ShortcutEntry,
-    skeleton_loader::SkeletonLoader,
-    sparkline::Sparkline,
-    stepper::Stepper,
-    swipe_to_dismiss::SwipeToDismiss,
-    tab_view::TabPage,
-    tab_view::TabView,
-    tag_input::TagInput,
-    tooltip::Tooltip,
-    video_player::VideoPlayer,
-    wizard::{WizardDialog, WizardStep},
+pub use display_widgets::badge::Badge;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::color_history::ColorHistory;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::color_well::ColorWell;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::divider::Divider;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::empty_state::EmptyState;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::floating_label::FloatingLabel;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::font_preview::FontPreview;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::icon::{Icon, IconName};
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::progress_circle::ProgressCircle;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::rating::Rating;
+#[cfg(not(feature = "mini"))]
+pub use display_widgets::skeleton_loader::SkeletonLoader;
+pub use display_widgets::switch::Switch;
+// Re-export nav widgets
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::adaptive_scaffold::AdaptiveScaffold;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::app_bar::AppBar;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::bottom_navigation_bar::BottomNavigationBar;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::bottom_navigation_bar::NavItem;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::navigation_drawer::NavigationDrawer;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::navigation_stack::NavigationEvent;
+#[cfg(not(feature = "mini"))]
+pub use nav_widgets::navigation_stack::NavigationStack;
+pub use nav_widgets::tab_view::TabPage;
+pub use nav_widgets::tab_view::TabView;
+// Re-export chart widgets
+#[cfg(not(feature = "mini"))]
+pub use chart_widgets::bar_chart::{BarChart, BarEntry};
+#[cfg(not(feature = "mini"))]
+pub use chart_widgets::line_chart::LineChart;
+#[cfg(not(feature = "mini"))]
+pub use chart_widgets::pie_chart::{PieChart, PieSlice};
+#[cfg(not(feature = "mini"))]
+pub use chart_widgets::sparkline::Sparkline;
+// Re-export media widgets
+pub use media_widgets::animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::audio_visualizer::AudioVisualizer;
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::camera_preview::CameraPreview;
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::hero_animation::HeroAnimation;
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::lottie_widget::LottieWidget;
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::rive_widget::{RiveInput, RiveInputValue, RiveWidget};
+#[cfg(not(feature = "mini"))]
+pub use media_widgets::video_player::VideoPlayer;
+// Re-export overlay widgets
+#[cfg(not(feature = "mini"))]
+pub use overlay_widgets::fab::FAB;
+#[cfg(not(feature = "mini"))]
+pub use overlay_widgets::pull_to_refresh::PullToRefresh;
+#[cfg(not(feature = "mini"))]
+pub use overlay_widgets::refresh_control::RefreshControl;
+#[cfg(not(feature = "mini"))]
+pub use overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
+// Re-export cupertino widgets
+#[cfg(not(feature = "mini"))]
+pub use cupertino::{
+    core::CupertinoAlertDialog, core::CupertinoSlider, core::CupertinoSwitch,
+    core::MaterialNavigationRail, core::MaterialSnackbar, core::RailItem, CupertinoDatePicker,
+    CupertinoNavigationBar, CupertinoSegmentedControl,
 };
+// Re-export misc widgets
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::avatar::Avatar;
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::bezier_curve_editor::BezierCurveEditor;
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::date_range_picker::DateRangePicker;
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::mobile_date_picker::MobileDatePicker;
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::qr_code::QRCode;
+#[cfg(not(feature = "mini"))]
+pub use misc_widgets::segmented_button::{Segment, SegmentedButton};
 // Re-export web widgets
 #[cfg(not(feature = "mini"))]
 pub use web_widgets::{web_engine::WebEngine, web_view::WebView};
@@ -214,9 +254,19 @@ pub use advanced_widgets::{
 // Re-export dialog widgets
 #[cfg(not(feature = "mini"))]
 pub use dialog::{
-    color_dialog::ColorDialog, file_dialog::FileDialog, font_dialog::FontDialog,
-    input_dialog::InputDialog, message_box::MessageBox, popup_window::PopupWindow,
+    bottom_sheet::BottomSheet,
+    color_dialog::ColorDialog,
+    file_dialog::FileDialog,
+    find_replace_dialog::FindReplaceDialog,
+    font_dialog::FontDialog,
+    input_dialog::InputDialog,
+    message_box::MessageBox,
+    modal_bottom_sheet::ModalBottomSheet,
+    popover::Popover,
+    popup_window::PopupWindow,
     progress_dialog::ProgressDialog,
+    tooltip::Tooltip,
+    wizard::{WizardDialog, WizardStep},
 };
 #[cfg(not(feature = "mini"))]
 pub type Dialog = PopupWindow;
@@ -225,7 +275,13 @@ pub type DirectoryDialog = FileDialog;
 // Re-export menu and toolbar widgets
 #[cfg(not(feature = "mini"))]
 pub use menu_toolbar::{
-    action::Action, menu::Menu, menu_bar::MenuBar, status_bar::StatusBar, tool_bar::ToolBar,
+    action::Action,
+    dropdown_menu::{DropdownItem, DropdownMenu},
+    menu::Menu,
+    menu_bar::MenuBar,
+    menu_button::{MenuButton, MenuItem},
+    status_bar::StatusBar,
+    tool_bar::ToolBar,
     tool_button::ToolButton,
 };
 #[cfg(not(feature = "mini"))]
@@ -238,7 +294,10 @@ pub use view_widgets::tree_view::TreeModel;
 #[cfg(not(feature = "mini"))]
 pub use view_widgets::{
     data_grid::{ColumnFilter, DataGrid, SortSpec},
+    image_gallery::{GalleryImage, ImageGallery},
     list_view::{ListModel, ListView, VecListModel},
+    properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue},
+    property_grid::{PropertyGrid, PropertyItem},
     table_widget::TableWidget,
     tree_table::{TreeTable, TreeTableModel},
     tree_view::TreeView,

@@ -5,7 +5,7 @@
 //! within a configurable range. The region between the handles is visually
 //! highlighted.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -166,6 +166,7 @@ impl RangeSlider {
     }
 
     /// Returns the pixel position for a given value on the track (horizontal).
+    #[allow(dead_code)]
     fn value_to_pos_horizontal(&self, rect: &Rect) -> i32 {
         let track_width = (rect.width as f64) - 20.0; // account for handle radius
         if (self.max_value - self.min_value).abs() < f64::EPSILON {
@@ -394,7 +395,6 @@ impl EventHandler for RangeSlider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Size;
     use crate::widget::svg::render_to_svg;
 
     #[test]

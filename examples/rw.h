@@ -1,8 +1,8 @@
 // Handwritten C header shim for rust_widgets ABI examples.
-#ifndef RUST_WIDGETS_H
-#define RUST_WIDGETS_H
+#ifndef RW_H
+#define RW_H
 
 /* Single source of truth for C ABI declarations. */
 #include "rust_widgets.generated.h"
 
-#endif /* RUST_WIDGETS_H */
+#endif /* RW_H */

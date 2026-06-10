@@ -12,7 +12,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Dyn-safe wrapper trait that combines Widget access with a draw method.
 /// This is necessary because `Draw` is not dyn-compatible.
-trait WidgetAndDraw: Widget {
+pub trait WidgetAndDraw: Widget {
     /// Draw this widget using the provided render context.
     fn draw_widget(&mut self, context: &mut RenderContext);
 }

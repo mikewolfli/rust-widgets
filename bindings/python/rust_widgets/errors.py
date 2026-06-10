@@ -1,6 +1,6 @@
 """Error codes for the rust-widgets C ABI.
 
-These match the `rust_widgets_errors.h` C header exactly.
+These match the `rw_errors.h` C header exactly.
 """
 
 # ------------------------------------------------------------------ #

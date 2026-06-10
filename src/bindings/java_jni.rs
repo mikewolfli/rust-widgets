@@ -35,7 +35,7 @@ fn c_string_to_jstring(env: &mut JNIEnv<'_>, ptr: *const std::ffi::c_char) -> js
     // Free the C string that was allocated by the C ABI layer
     if !ptr.is_null() {
         unsafe {
-            crate::bindings::rust_widgets_free_string(ptr as *mut std::ffi::c_char);
+            crate::bindings::rw_free_string(ptr as *mut std::ffi::c_char);
         }
     }
     env.new_string(&rust_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
@@ -50,7 +50,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeInit(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) {
-    crate::bindings::rust_widgets_init();
+    crate::bindings::rw_init();
 }
 
 #[no_mangle]
@@ -58,7 +58,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeRun(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) {
-    crate::bindings::rust_widgets_run();
+    crate::bindings::rw_run();
 }
 
 #[no_mangle]
@@ -66,7 +66,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeQuit(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) {
-    crate::bindings::rust_widgets_quit();
+    crate::bindings::rw_quit();
 }
 
 // ===========================================================================
@@ -85,7 +85,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateWindow
 ) -> jlong {
     let title_str = jstring_to_string(&mut env, &title);
     let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
-    crate::bindings::rust_widgets_create_window(
+    crate::bindings::rw_create_window(
         c_title.as_ptr(),
         x,
         y,
@@ -146,72 +146,72 @@ macro_rules! jni_create_widget_no_text {
 
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateButton,
-    rust_widgets_create_button
+    rw_create_button
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateCheckbox,
-    rust_widgets_create_checkbox
+    rw_create_checkbox
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateLineEdit,
-    rust_widgets_create_line_edit
+    rw_create_line_edit
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateLabel,
-    rust_widgets_create_label
+    rw_create_label
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateRadioButton,
-    rust_widgets_create_radio_button
+    rw_create_radio_button
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateStatusBar,
-    rust_widgets_create_status_bar
+    rw_create_status_bar
 );
 jni_create_widget_with_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateMenu,
-    rust_widgets_create_menu
+    rw_create_menu
 );
 
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateSlider,
-    rust_widgets_create_slider
+    rw_create_slider
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateProgressBar,
-    rust_widgets_create_progress_bar
+    rw_create_progress_bar
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateComboBox,
-    rust_widgets_create_combo_box
+    rw_create_combo_box
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateListBox,
-    rust_widgets_create_list_box
+    rw_create_list_box
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreatePanel,
-    rust_widgets_create_panel
+    rw_create_panel
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateSpinBox,
-    rust_widgets_create_spin_box
+    rw_create_spin_box
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateListView,
-    rust_widgets_create_list_view
+    rw_create_list_view
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateScrollArea,
-    rust_widgets_create_scroll_area
+    rw_create_scroll_area
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateToolBar,
-    rust_widgets_create_tool_bar
+    rw_create_tool_bar
 );
 jni_create_widget_no_text!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateMenuBar,
-    rust_widgets_create_menu_bar
+    rw_create_menu_bar
 );
 
 // Dialog variants — take an extra `title` parameter (message box)
@@ -231,7 +231,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateMessag
     let text_str = jstring_to_string(&mut env, &text);
     let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    crate::bindings::rust_widgets_create_message_box(
+    crate::bindings::rw_create_message_box(
         parent as u64,
         c_title.as_ptr(),
         c_text.as_ptr(),
@@ -272,15 +272,15 @@ macro_rules! jni_create_dialog {
 
 jni_create_dialog!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateFileDialog,
-    rust_widgets_create_file_dialog
+    rw_create_file_dialog
 );
 jni_create_dialog!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateColorDialog,
-    rust_widgets_create_color_dialog
+    rw_create_color_dialog
 );
 jni_create_dialog!(
     Java_io_github_rustwidgets_RustWidgets_nativeCreateFontDialog,
-    rust_widgets_create_font_dialog
+    rw_create_font_dialog
 );
 
 // ===========================================================================
@@ -293,7 +293,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeShowWidget(
     _class: JClass<'_>,
     widget_id: jlong,
 ) {
-    crate::bindings::rust_widgets_show_widget(widget_id as u64);
+    crate::bindings::rw_show_widget(widget_id as u64);
 }
 
 #[no_mangle]
@@ -302,7 +302,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeHideWidget(
     _class: JClass<'_>,
     widget_id: jlong,
 ) {
-    crate::bindings::rust_widgets_hide_widget(widget_id as u64);
+    crate::bindings::rw_hide_widget(widget_id as u64);
 }
 
 #[no_mangle]
@@ -314,7 +314,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetTex
 ) {
     let text_str = jstring_to_string(&mut env, &text);
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    crate::bindings::rust_widgets_set_widget_text(widget_id as u64, c_text.as_ptr());
+    crate::bindings::rw_set_widget_text(widget_id as u64, c_text.as_ptr());
 }
 
 #[no_mangle]
@@ -323,7 +323,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetWidgetTex
     _class: JClass<'_>,
     widget_id: jlong,
 ) -> jstring {
-    let ptr = crate::bindings::rust_widgets_get_widget_text(widget_id as u64);
+    let ptr = crate::bindings::rw_get_widget_text(widget_id as u64);
     c_string_to_jstring(&mut env, ptr)
 }
 
@@ -334,7 +334,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetEna
     widget_id: jlong,
     enabled: jboolean,
 ) {
-    crate::bindings::rust_widgets_set_widget_enabled(widget_id as u64, enabled != 0);
+    crate::bindings::rw_set_widget_enabled(widget_id as u64, enabled != 0);
 }
 
 #[no_mangle]
@@ -343,7 +343,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeIsWidgetEnab
     _class: JClass<'_>,
     widget_id: jlong,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_is_widget_enabled(widget_id as u64) {
+    if crate::bindings::rw_is_widget_enabled(widget_id as u64) {
         1
     } else {
         0
@@ -360,7 +360,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetGeo
     width: jint,
     height: jint,
 ) {
-    crate::bindings::rust_widgets_set_widget_geometry(
+    crate::bindings::rw_set_widget_geometry(
         widget_id as u64,
         x,
         y,
@@ -382,7 +382,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxAddI
 ) -> jboolean {
     let text_str = jstring_to_string(&mut env, &text);
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    if crate::bindings::rust_widgets_combo_box_add_item(combo_box as u64, c_text.as_ptr()) {
+    if crate::bindings::rw_combo_box_add_item(combo_box as u64, c_text.as_ptr()) {
         1
     } else {
         0
@@ -395,7 +395,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxClea
     _class: JClass<'_>,
     combo_box: jlong,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_combo_box_clear_items(combo_box as u64) {
+    if crate::bindings::rw_combo_box_clear_items(combo_box as u64) {
         1
     } else {
         0
@@ -409,7 +409,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxSetC
     combo_box: jlong,
     index: jint,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_combo_box_set_current_index(combo_box as u64, index as juint) {
+    if crate::bindings::rw_combo_box_set_current_index(combo_box as u64, index as juint) {
         1
     } else {
         0
@@ -422,7 +422,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxCurr
     _class: JClass<'_>,
     combo_box: jlong,
 ) -> jint {
-    crate::bindings::rust_widgets_combo_box_current_index(combo_box as u64) as jint
+    crate::bindings::rw_combo_box_current_index(combo_box as u64) as jint
 }
 
 #[no_mangle]
@@ -431,7 +431,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItem
     _class: JClass<'_>,
     combo_box: jlong,
 ) -> jint {
-    crate::bindings::rust_widgets_combo_box_item_count(combo_box as u64) as jint
+    crate::bindings::rw_combo_box_item_count(combo_box as u64) as jint
 }
 
 #[no_mangle]
@@ -441,7 +441,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItem
     combo_box: jlong,
     index: jint,
 ) -> jstring {
-    let ptr = crate::bindings::rust_widgets_combo_box_item_text(combo_box as u64, index as juint);
+    let ptr = crate::bindings::rw_combo_box_item_text(combo_box as u64, index as juint);
     c_string_to_jstring(&mut env, ptr)
 }
 
@@ -458,7 +458,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxAddIt
 ) -> jboolean {
     let text_str = jstring_to_string(&mut env, &text);
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    if crate::bindings::rust_widgets_list_box_add_item(list_box as u64, c_text.as_ptr()) {
+    if crate::bindings::rw_list_box_add_item(list_box as u64, c_text.as_ptr()) {
         1
     } else {
         0
@@ -472,7 +472,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxRemov
     list_box: jlong,
     index: jint,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_list_box_remove_item(list_box as u64, index as juint) {
+    if crate::bindings::rw_list_box_remove_item(list_box as u64, index as juint) {
         1
     } else {
         0
@@ -485,7 +485,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxClear
     _class: JClass<'_>,
     list_box: jlong,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_list_box_clear_items(list_box as u64) {
+    if crate::bindings::rw_list_box_clear_items(list_box as u64) {
         1
     } else {
         0
@@ -499,7 +499,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxSetCu
     list_box: jlong,
     index: jint,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_list_box_set_current_index(list_box as u64, index as juint) {
+    if crate::bindings::rw_list_box_set_current_index(list_box as u64, index as juint) {
         1
     } else {
         0
@@ -512,7 +512,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxCurre
     _class: JClass<'_>,
     list_box: jlong,
 ) -> jint {
-    crate::bindings::rust_widgets_list_box_current_index(list_box as u64) as jint
+    crate::bindings::rw_list_box_current_index(list_box as u64) as jint
 }
 
 #[no_mangle]
@@ -521,7 +521,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemC
     _class: JClass<'_>,
     list_box: jlong,
 ) -> jint {
-    crate::bindings::rust_widgets_list_box_item_count(list_box as u64) as jint
+    crate::bindings::rw_list_box_item_count(list_box as u64) as jint
 }
 
 #[no_mangle]
@@ -531,7 +531,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemT
     list_box: jlong,
     index: jint,
 ) -> jstring {
-    let ptr = crate::bindings::rust_widgets_list_box_item_text(list_box as u64, index as juint);
+    let ptr = crate::bindings::rw_list_box_item_text(list_box as u64, index as juint);
     c_string_to_jstring(&mut env, ptr)
 }
 
@@ -546,7 +546,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeAttachMenuBa
     window: jlong,
     menu_bar: jlong,
 ) -> jboolean {
-    if crate::bindings::rust_widgets_attach_menu_bar_to_window(window as u64, menu_bar as u64) {
+    if crate::bindings::rw_attach_menu_bar_to_window(window as u64, menu_bar as u64) {
         1
     } else {
         0
@@ -565,7 +565,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeMenuAddItem(
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
     let shortcut_str = jstring_to_string(&mut env, &shortcut);
     let c_shortcut = std::ffi::CString::new(shortcut_str).unwrap_or_default();
-    crate::bindings::rust_widgets_menu_add_item(
+    crate::bindings::rw_menu_add_item(
         parent_menu as u64,
         c_text.as_ptr(),
         c_shortcut.as_ptr(),
@@ -577,7 +577,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollMenuTrig
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jlong {
-    crate::bindings::rust_widgets_poll_menu_triggered() as jlong
+    crate::bindings::rw_poll_menu_triggered() as jlong
 }
 
 // ===========================================================================
@@ -589,7 +589,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jlong {
-    crate::bindings::rust_widgets_poll_widget_triggered() as jlong
+    crate::bindings::rw_poll_widget_triggered() as jlong
 }
 
 /// Returns a long array of 2 elements: [widget_id, trigger_kind_code].
@@ -602,7 +602,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
     // Use C ABI poll_widget_trigger_event with a stack variable
     let mut widget_id_out: u64 = 0;
     let kind_code = unsafe {
-        crate::bindings::rust_widgets_poll_widget_trigger_event(&mut widget_id_out as *mut u64)
+        crate::bindings::rw_poll_widget_trigger_event(&mut widget_id_out as *mut u64)
     };
     if kind_code == 0 {
         return 0;
@@ -624,7 +624,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetClipboard
 ) -> jboolean {
     let text_str = jstring_to_string(&mut env, &text);
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    if crate::bindings::rust_widgets_set_clipboard_text(c_text.as_ptr()) {
+    if crate::bindings::rw_set_clipboard_text(c_text.as_ptr()) {
         1
     } else {
         0
@@ -636,7 +636,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetClipboard
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jstring {
-    let ptr = crate::bindings::rust_widgets_get_clipboard_text();
+    let ptr = crate::bindings::rw_get_clipboard_text();
     c_string_to_jstring(&mut env, ptr)
 }
 
@@ -649,7 +649,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBackendName(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jstring {
-    let ptr = crate::bindings::rust_widgets_backend_name();
+    let ptr = crate::bindings::rw_backend_name();
     c_string_to_jstring(&mut env, ptr)
 }
 
@@ -658,7 +658,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePlatformCapa
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jint {
-    crate::bindings::rust_widgets_platform_capabilities() as jint
+    crate::bindings::rw_platform_capabilities() as jint
 }
 
 #[no_mangle]
@@ -666,7 +666,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBindingsApiV
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jint {
-    crate::bindings::rust_widgets_bindings_api_version() as jint
+    crate::bindings::rw_bindings_api_version() as jint
 }
 
 #[no_mangle]
@@ -677,7 +677,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeFreeString(
 ) {
     if ptr != 0 {
         unsafe {
-            crate::bindings::rust_widgets_free_string(ptr as *mut std::ffi::c_char);
+            crate::bindings::rw_free_string(ptr as *mut std::ffi::c_char);
         }
     }
 }

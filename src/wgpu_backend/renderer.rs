@@ -39,7 +39,7 @@ impl WgpuRenderer {
             .map_err(|_| "wgpu adapter request failed".to_string())?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("rust_widgets_wgpu_device"),
+                label: Some("rw_wgpu_device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
@@ -662,7 +662,7 @@ impl WgpuRenderer {
             return Err("rgba8 input length does not match width*height*4".to_string());
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rust_widgets_wgpu_offscreen_texture"),
+            label: Some("rw_wgpu_offscreen_texture"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
@@ -694,13 +694,13 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rust_widgets_wgpu_readback_buffer"),
+            label: Some("rw_wgpu_readback_buffer"),
             size: output_buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rust_widgets_wgpu_encoder"),
+            label: Some("rw_wgpu_encoder"),
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {

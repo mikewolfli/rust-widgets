@@ -9,7 +9,7 @@ mod tests {
             .expect("clock moved backwards")
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("rust_widgets_pdf_test_{}_{}", ts, suffix));
+        path.push(format!("rw_pdf_test_{}_{}", ts, suffix));
         path.to_string_lossy().to_string()
     }
     #[test]

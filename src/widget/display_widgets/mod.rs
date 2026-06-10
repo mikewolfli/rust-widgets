@@ -1,5 +1,21 @@
 //! Display widgets: progress bars, sliders, scroll bars, etc.
 pub mod arc;
+#[cfg(not(feature = "mini"))]
+pub mod badge;
+#[cfg(not(feature = "mini"))]
+pub mod color_history;
+#[cfg(not(feature = "mini"))]
+pub mod color_well;
+#[cfg(not(feature = "mini"))]
+pub mod divider;
+#[cfg(not(feature = "mini"))]
+pub mod empty_state;
+#[cfg(not(feature = "mini"))]
+pub mod floating_label;
+#[cfg(not(feature = "mini"))]
+pub mod font_preview;
+#[cfg(not(feature = "mini"))]
+pub mod icon;
 pub mod image_view;
 #[cfg(not(feature = "mini"))]
 pub mod lcd_number;
@@ -7,8 +23,13 @@ pub mod line;
 pub mod meter;
 pub mod mini_canvas;
 pub mod mini_chart;
+#[cfg(not(feature = "mini"))]
+pub mod progress_circle;
 pub mod progressbar;
+pub mod rating;
 pub mod roller;
 pub mod scrollbar;
+pub mod skeleton_loader;
 pub mod slider;
 pub mod spinner;
+pub mod switch;

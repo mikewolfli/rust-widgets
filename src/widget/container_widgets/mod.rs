@@ -1,16 +1,26 @@
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
 #[cfg(not(feature = "mini"))]
+pub mod carousel;
+#[cfg(not(feature = "mini"))]
 pub mod collapsible_pane;
 #[cfg(not(feature = "mini"))]
 pub mod dockwidget;
 pub mod groupbox;
 #[cfg(not(feature = "mini"))]
+pub mod masonry_layout;
+#[cfg(not(feature = "mini"))]
 pub mod mdiarea;
+#[cfg(not(feature = "mini"))]
+pub mod pager_page_view;
+#[cfg(not(feature = "mini"))]
+pub mod safe_area;
 pub mod scrollarea;
 #[cfg(not(feature = "mini"))]
 pub mod splitter;
 #[cfg(not(feature = "mini"))]
 pub mod stackedwidget;
+#[cfg(not(feature = "mini"))]
+pub mod stepper;
 #[cfg(not(feature = "mini"))]
 pub mod tabwidget;
 pub mod tile_view;
@@ -18,18 +28,27 @@ pub mod tile_view;
 pub mod toolbox;
 // Re-export container widgets
 #[cfg(not(feature = "mini"))]
+pub use carousel::Carousel;
+#[cfg(not(feature = "mini"))]
 pub use collapsible_pane::CollapsiblePane;
 #[cfg(not(feature = "mini"))]
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
 #[cfg(not(feature = "mini"))]
+pub use masonry_layout::{MasonryItem, MasonryLayout};
+#[cfg(not(feature = "mini"))]
 pub use mdiarea::MdiArea;
+#[cfg(not(feature = "mini"))]
+pub use pager_page_view::PagerPageView;
+#[cfg(not(feature = "mini"))]
+pub use safe_area::{SafeArea, SafeAreaInsets};
 pub use scrollarea::ScrollArea;
 #[cfg(not(feature = "mini"))]
 pub use splitter::Splitter;
 #[cfg(not(feature = "mini"))]
 pub use stackedwidget::StackedWidget;
 #[cfg(not(feature = "mini"))]
-pub use tabwidget::TabWidget;
+pub use stepper::Stepper;
 #[cfg(not(feature = "mini"))]
+pub use tabwidget::TabWidget;
 pub use toolbox::ToolBox;

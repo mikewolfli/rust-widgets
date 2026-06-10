@@ -367,17 +367,6 @@ impl ImeBridge for MacOsImeBridge {
 /// it is clamped to the nearest valid character boundary.
 fn byte_offset_to_utf16(s: &str, byte_offset: usize) -> usize {
     let byte_offset = byte_offset.min(s.len());
-    // Walk the string up to the byte offset.
-    let mut utf16_count = 0;
-    for (i, _ch) in s.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        utf16_count += 1; // every Rust char is 1 or 2 UTF-16 code units
-                          // We only need an *approximate* offset for
-                          // BMP characters; supplementary-plane chars
-                          // would need encode_utf16 for exact counting.
-    }
     // For exact counting we use the encode_utf16 approach:
     s[..byte_offset].encode_utf16().count()
 }

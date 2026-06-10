@@ -10,7 +10,7 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::new_widgets::switch::Switch;
+use crate::widget::display_widgets::switch::Switch;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 // ── CupertinoSwitch ──────────────────────────────────────────────────────────

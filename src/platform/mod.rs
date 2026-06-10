@@ -15,7 +15,7 @@ pub mod ios;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
-#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+#[cfg(all(target_os = "macos", any(feature = "macos", feature = "objc2-macos")))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;

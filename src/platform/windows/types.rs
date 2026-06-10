@@ -31,7 +31,7 @@ pub enum WindowsHandleKind {
     ScrollArea,
 }
 #[cfg(target_os = "windows")]
-pub(crate) unsafe extern "system" fn rust_widgets_wnd_proc(
+pub(crate) unsafe extern "system" fn rw_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: usize,

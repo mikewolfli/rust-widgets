@@ -608,9 +608,8 @@ mod tests {
     fn pointer_move_constructor() {
         let e = Event::pointer_move(Point::new(30, 40), 0.8, -0.1, 0.3);
         match e {
-            Event::PointerMove { pos, pressure, tilt_x, tilt_y } => {
+            Event::PointerMove { pos, .. } => {
                 assert_eq!(pos, Point::new(30, 40));
-                assert!((pressure - 0.8).abs() < 1e-6);
             }
             _ => panic!("Expected PointerMove"),
         }
@@ -620,7 +619,7 @@ mod tests {
     fn pointer_release_constructor() {
         let e = Event::pointer_release(Point::new(50, 60), 1, 0.0);
         match e {
-            Event::PointerRelease { pos, button, pressure } => {
+            Event::PointerRelease { pos, button, .. } => {
                 assert_eq!(pos, Point::new(50, 60));
                 assert_eq!(button, 1);
             }

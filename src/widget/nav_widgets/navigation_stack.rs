@@ -250,8 +250,7 @@ impl EventHandler for NavigationStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
-    use crate::widget::new_widgets::badge::Badge;
+    use crate::widget::display_widgets::badge::Badge;
     use std::sync::{Arc, Mutex};
 
     #[test]

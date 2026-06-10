@@ -129,6 +129,7 @@ impl HeroAnimation {
     }
 
     /// Computes the interpolated rectangle between source and target based on progress.
+    #[allow(dead_code)]
     fn interpolated_rect(&self) -> Option<Rect> {
         let src = self.source_widget.as_ref()?.geometry();
         let tgt = self.target_widget.as_ref()?.geometry();

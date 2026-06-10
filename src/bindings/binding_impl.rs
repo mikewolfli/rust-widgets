@@ -95,25 +95,25 @@ fn to_c_string_or_empty(s: impl Into<String>) -> *const c_char {
     }
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_init() {
+pub extern "C" fn rw_init() {
     c_try_void!({
         crate::init();
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_run() {
+pub extern "C" fn rw_run() {
     c_try_void!({
         crate::run();
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_quit() {
+pub extern "C" fn rw_quit() {
     c_try_void!({
         crate::quit();
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_window(
+pub extern "C" fn rw_create_window(
     title: *const c_char,
     x: c_int,
     y: c_int,
@@ -123,7 +123,7 @@ pub extern "C" fn rust_widgets_create_window(
     c_try!({ get_control_backend().create_window(&c_str_or_default(title), x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_button(
+pub extern "C" fn rw_create_button(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -136,7 +136,7 @@ pub extern "C" fn rust_widgets_create_button(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_checkbox(
+pub extern "C" fn rw_create_checkbox(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -149,7 +149,7 @@ pub extern "C" fn rust_widgets_create_checkbox(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_line_edit(
+pub extern "C" fn rw_create_line_edit(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -162,7 +162,7 @@ pub extern "C" fn rust_widgets_create_line_edit(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_label(
+pub extern "C" fn rw_create_label(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -175,7 +175,7 @@ pub extern "C" fn rust_widgets_create_label(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_radio_button(
+pub extern "C" fn rw_create_radio_button(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -195,7 +195,7 @@ pub extern "C" fn rust_widgets_create_radio_button(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_slider(
+pub extern "C" fn rw_create_slider(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -205,7 +205,7 @@ pub extern "C" fn rust_widgets_create_slider(
     c_try!({ get_control_backend().create_slider(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_progress_bar(
+pub extern "C" fn rw_create_progress_bar(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -215,7 +215,7 @@ pub extern "C" fn rust_widgets_create_progress_bar(
     c_try!({ get_control_backend().create_progress_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_combo_box(
+pub extern "C" fn rw_create_combo_box(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -225,7 +225,7 @@ pub extern "C" fn rust_widgets_create_combo_box(
     c_try!({ get_control_backend().create_combo_box(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_list_box(
+pub extern "C" fn rw_create_list_box(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -235,7 +235,7 @@ pub extern "C" fn rust_widgets_create_list_box(
     c_try!({ get_control_backend().create_list_box(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_panel(
+pub extern "C" fn rw_create_panel(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -245,7 +245,7 @@ pub extern "C" fn rust_widgets_create_panel(
     c_try!({ get_control_backend().create_panel(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_message_box(
+pub extern "C" fn rw_create_message_box(
     parent: u64,
     title: *const c_char,
     text: *const c_char,
@@ -267,7 +267,7 @@ pub extern "C" fn rust_widgets_create_message_box(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_file_dialog(
+pub extern "C" fn rw_create_file_dialog(
     parent: u64,
     title: *const c_char,
     x: c_int,
@@ -287,7 +287,7 @@ pub extern "C" fn rust_widgets_create_file_dialog(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_color_dialog(
+pub extern "C" fn rw_create_color_dialog(
     parent: u64,
     title: *const c_char,
     x: c_int,
@@ -307,7 +307,7 @@ pub extern "C" fn rust_widgets_create_color_dialog(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_font_dialog(
+pub extern "C" fn rw_create_font_dialog(
     parent: u64,
     title: *const c_char,
     x: c_int,
@@ -327,7 +327,7 @@ pub extern "C" fn rust_widgets_create_font_dialog(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_spin_box(
+pub extern "C" fn rw_create_spin_box(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -337,7 +337,7 @@ pub extern "C" fn rust_widgets_create_spin_box(
     c_try!({ get_control_backend().create_spin_box(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_list_view(
+pub extern "C" fn rw_create_list_view(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -347,7 +347,7 @@ pub extern "C" fn rust_widgets_create_list_view(
     c_try!({ get_control_backend().create_list_view(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_scroll_area(
+pub extern "C" fn rw_create_scroll_area(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -357,7 +357,7 @@ pub extern "C" fn rust_widgets_create_scroll_area(
     c_try!({ get_control_backend().create_scroll_area(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_geometry(
+pub extern "C" fn rw_set_widget_geometry(
     widget_id: u64,
     x: c_int,
     y: c_int,
@@ -369,7 +369,7 @@ pub extern "C" fn rust_widgets_set_widget_geometry(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_widget_geometry(
+pub extern "C" fn rw_get_widget_geometry(
     widget_id: u64,
     x_out: *mut c_int,
     y_out: *mut c_int,
@@ -400,21 +400,21 @@ pub extern "C" fn rust_widgets_get_widget_geometry(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
+pub extern "C" fn rw_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
     c_try!({ get_control_backend().combo_box_add_item(combo_box, &c_str_or_default(text)) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_clear_items(combo_box: u64) -> CBool {
+pub extern "C" fn rw_combo_box_clear_items(combo_box: u64) -> CBool {
     c_try!({ get_control_backend().combo_box_clear_items(combo_box) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_set_current_index(combo_box: u64, index: c_uint) -> CBool {
+pub extern "C" fn rw_combo_box_set_current_index(combo_box: u64, index: c_uint) -> CBool {
     c_try!({
         crate::platform::get_platform().combo_box_set_current_index(combo_box, index as usize)
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_current_index(combo_box: u64) -> c_int {
+pub extern "C" fn rw_combo_box_current_index(combo_box: u64) -> c_int {
     c_try!({
         match crate::platform::get_platform().combo_box_current_index(combo_box) {
             Some(idx) => idx as c_int,
@@ -423,34 +423,34 @@ pub extern "C" fn rust_widgets_combo_box_current_index(combo_box: u64) -> c_int 
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_item_count(combo_box: u64) -> c_uint {
+pub extern "C" fn rw_combo_box_item_count(combo_box: u64) -> c_uint {
     c_try!({ crate::platform::get_platform().combo_box_item_count(combo_box) as c_uint })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_combo_box_item_text(combo_box: u64, index: c_uint) -> *const c_char {
+pub extern "C" fn rw_combo_box_item_text(combo_box: u64, index: c_uint) -> *const c_char {
     c_try!({
         let text = crate::platform::get_platform().combo_box_item_text(combo_box, index as usize);
         to_c_string_or_empty(text.unwrap_or_default())
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_add_item(list_box: u64, text: *const c_char) -> CBool {
+pub extern "C" fn rw_list_box_add_item(list_box: u64, text: *const c_char) -> CBool {
     c_try!({ get_control_backend().list_box_add_item(list_box, &c_str_or_default(text)) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_remove_item(list_box: u64, index: c_uint) -> CBool {
+pub extern "C" fn rw_list_box_remove_item(list_box: u64, index: c_uint) -> CBool {
     c_try!({ get_control_backend().list_box_remove_item(list_box, index as usize) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_clear_items(list_box: u64) -> CBool {
+pub extern "C" fn rw_list_box_clear_items(list_box: u64) -> CBool {
     c_try!({ get_control_backend().list_box_clear_items(list_box) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_set_current_index(list_box: u64, index: c_uint) -> CBool {
+pub extern "C" fn rw_list_box_set_current_index(list_box: u64, index: c_uint) -> CBool {
     c_try!({ crate::platform::get_platform().list_box_set_current_index(list_box, index as usize) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_current_index(list_box: u64) -> c_int {
+pub extern "C" fn rw_list_box_current_index(list_box: u64) -> c_int {
     c_try!({
         match crate::platform::get_platform().list_box_current_index(list_box) {
             Some(idx) => idx as c_int,
@@ -459,29 +459,29 @@ pub extern "C" fn rust_widgets_list_box_current_index(list_box: u64) -> c_int {
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_item_count(list_box: u64) -> c_uint {
+pub extern "C" fn rw_list_box_item_count(list_box: u64) -> c_uint {
     c_try!({ crate::platform::get_platform().list_box_item_count(list_box) as c_uint })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_list_box_item_text(list_box: u64, index: c_uint) -> *const c_char {
+pub extern "C" fn rw_list_box_item_text(list_box: u64, index: c_uint) -> *const c_char {
     c_try!({
         let text = crate::platform::get_platform().list_box_item_text(list_box, index as usize);
         to_c_string_or_empty(text.unwrap_or_default())
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_clipboard_text(text: *const c_char) -> CBool {
+pub extern "C" fn rw_set_clipboard_text(text: *const c_char) -> CBool {
     c_try!({ get_control_backend().set_clipboard_text(&c_str_or_default(text)) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_clipboard_text() -> *const c_char {
+pub extern "C" fn rw_get_clipboard_text() -> *const c_char {
     c_try!({
         let text = get_control_backend().get_clipboard_text();
         to_c_string_or_empty(text)
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_begin_drag(
+pub extern "C" fn rw_begin_drag(
     source: u64,
     mime_type: *const c_char,
     payload: *const u8,
@@ -497,7 +497,7 @@ pub extern "C" fn rust_widgets_begin_drag(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_poll_drop_event(
+pub extern "C" fn rw_poll_drop_event(
     source_out: *mut u64,
     target_out: *mut u64,
     mime_out: *mut *mut c_char,
@@ -537,7 +537,7 @@ pub extern "C" fn rust_widgets_poll_drop_event(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_menu_bar(
+pub extern "C" fn rw_create_menu_bar(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -547,7 +547,7 @@ pub extern "C" fn rust_widgets_create_menu_bar(
     c_try!({ get_control_backend().create_menu_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_menu(
+pub extern "C" fn rw_create_menu(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -560,11 +560,11 @@ pub extern "C" fn rust_widgets_create_menu(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_attach_menu_bar_to_window(window: u64, menu_bar: u64) -> CBool {
+pub extern "C" fn rw_attach_menu_bar_to_window(window: u64, menu_bar: u64) -> CBool {
     c_try!({ get_control_backend().attach_menu_bar_to_window(window, menu_bar) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_menu_add_item(
+pub extern "C" fn rw_menu_add_item(
     parent_menu: u64,
     text: *const c_char,
     shortcut: *const c_char,
@@ -580,11 +580,11 @@ pub extern "C" fn rust_widgets_menu_add_item(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_poll_menu_triggered() -> u64 {
+pub extern "C" fn rw_poll_menu_triggered() -> u64 {
     c_try!({ get_control_backend().poll_menu_triggered().unwrap_or(0) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_poll_widget_triggered() -> u64 {
+pub extern "C" fn rw_poll_widget_triggered() -> u64 {
     c_try!({ get_control_backend().poll_widget_triggered().unwrap_or(0) })
 }
 /// Polls the next widget trigger event and optionally writes the widget ID to the provided pointer.
@@ -592,7 +592,7 @@ pub extern "C" fn rust_widgets_poll_widget_triggered() -> u64 {
 /// # Safety
 /// The `widget_id_out` pointer must be either null or valid for writing a `u64`.
 #[no_mangle]
-pub unsafe extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *mut u64) -> c_uint {
+pub unsafe extern "C" fn rw_poll_widget_trigger_event(widget_id_out: *mut u64) -> c_uint {
     c_try!({
         let Some(event) = get_control_backend().poll_widget_trigger_event() else {
             return 0;
@@ -605,12 +605,12 @@ pub unsafe extern "C" fn rust_widgets_poll_widget_trigger_event(widget_id_out: *
 }
 /// Generic menu trigger injection entrypoint for native hosts.
 #[no_mangle]
-pub extern "C" fn rust_widgets_inject_menu_trigger(menu_item_id: u64) -> CBool {
+pub extern "C" fn rw_inject_menu_trigger(menu_item_id: u64) -> CBool {
     c_try!({ get_control_backend().inject_menu_trigger(menu_item_id) })
 }
 /// Generic typed widget trigger injection entrypoint for native hosts.
 #[no_mangle]
-pub extern "C" fn rust_widgets_inject_widget_trigger_event(
+pub extern "C" fn rw_inject_widget_trigger_event(
     widget_id: u64,
     kind_code: c_uint,
 ) -> CBool {
@@ -621,12 +621,12 @@ pub extern "C" fn rust_widgets_inject_widget_trigger_event(
 }
 /// Harmony callback alias: direct menu item trigger by widget id.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_menu_item(menu_item_id: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_menu_item(menu_item_id: u64) -> CBool {
     c_try!({ get_control_backend().inject_menu_trigger(menu_item_id) })
 }
 /// Harmony callback alias: direct click trigger by widget id.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_click(widget_id: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_click(widget_id: u64) -> CBool {
     c_try!({
         get_control_backend()
             .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
@@ -634,7 +634,7 @@ pub extern "C" fn rust_widgets_harmony_on_click(widget_id: u64) -> CBool {
 }
 /// Harmony callback alias: direct value-changed trigger by widget id.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_value_changed(widget_id: u64) -> CBool {
     c_try!({
         get_control_backend().inject_widget_trigger_event(
             widget_id,
@@ -644,7 +644,7 @@ pub extern "C" fn rust_widgets_harmony_on_value_changed(widget_id: u64) -> CBool
 }
 /// Harmony callback alias: direct typed trigger by widget id and kind code.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
+pub extern "C" fn rw_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
     c_try!({
         get_control_backend()
             .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
@@ -652,7 +652,7 @@ pub extern "C" fn rust_widgets_harmony_on_widget_event(widget_id: u64, kind_code
 }
 /// Register a Harmony node handle to logical widget id mapping.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_bind_node(node_handle: u64, widget_id: u64) -> CBool {
+pub extern "C" fn rw_harmony_bind_node(node_handle: u64, widget_id: u64) -> CBool {
     c_try!({
         if node_handle == 0 || widget_id == 0 {
             return false;
@@ -666,7 +666,7 @@ pub extern "C" fn rust_widgets_harmony_bind_node(node_handle: u64, widget_id: u6
 }
 /// Remove a single Harmony node-handle mapping.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_unbind_node(node_handle: u64) -> CBool {
+pub extern "C" fn rw_harmony_unbind_node(node_handle: u64) -> CBool {
     c_try!({
         if node_handle == 0 {
             return false;
@@ -680,19 +680,19 @@ pub extern "C" fn rust_widgets_harmony_unbind_node(node_handle: u64) -> CBool {
 }
 /// Resolve mapped widget id from Harmony node handle.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_lookup_widget_id(node_handle: u64) -> u64 {
+pub extern "C" fn rw_harmony_lookup_widget_id(node_handle: u64) -> u64 {
     c_try!({ harmony_lookup_widget(node_handle).unwrap_or(0) })
 }
 /// Clear all Harmony node-handle mappings.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_clear_node_bindings() {
+pub extern "C" fn rw_harmony_clear_node_bindings() {
     c_try_void!({
         harmony_node_registry().lock().unwrap_or_else(|e| e.into_inner()).clear();
     })
 }
 /// Harmony callback alias: menu trigger by node handle.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_node_menu_item(node_handle: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_node_menu_item(node_handle: u64) -> CBool {
     c_try!({
         let Some(widget_id) = harmony_lookup_widget(node_handle) else {
             return false;
@@ -702,7 +702,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_menu_item(node_handle: u64) -> CB
 }
 /// Harmony callback alias: click trigger by node handle.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_node_click(node_handle: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_node_click(node_handle: u64) -> CBool {
     c_try!({
         let Some(widget_id) = harmony_lookup_widget(node_handle) else {
             return false;
@@ -713,7 +713,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_click(node_handle: u64) -> CBool 
 }
 /// Harmony callback alias: value-changed trigger by node handle.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -> CBool {
+pub extern "C" fn rw_harmony_on_node_value_changed(node_handle: u64) -> CBool {
     c_try!({
         let Some(widget_id) = harmony_lookup_widget(node_handle) else {
             return false;
@@ -726,7 +726,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_value_changed(node_handle: u64) -
 }
 /// Harmony callback alias: typed trigger by node handle and kind code.
 #[no_mangle]
-pub extern "C" fn rust_widgets_harmony_on_node_widget_event(
+pub extern "C" fn rw_harmony_on_node_widget_event(
     node_handle: u64,
     kind_code: c_uint,
 ) -> CBool {
@@ -739,7 +739,7 @@ pub extern "C" fn rust_widgets_harmony_on_node_widget_event(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_tool_bar(
+pub extern "C" fn rw_create_tool_bar(
     parent: u64,
     x: c_int,
     y: c_int,
@@ -749,7 +749,7 @@ pub extern "C" fn rust_widgets_create_tool_bar(
     c_try!({ get_control_backend().create_tool_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_create_status_bar(
+pub extern "C" fn rw_create_status_bar(
     parent: u64,
     text: *const c_char,
     x: c_int,
@@ -769,60 +769,60 @@ pub extern "C" fn rust_widgets_create_status_bar(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_show_widget(widget_id: u64) {
+pub extern "C" fn rw_show_widget(widget_id: u64) {
     c_try_void!({
         get_control_backend().show_widget(widget_id);
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_hide_widget(widget_id: u64) {
+pub extern "C" fn rw_hide_widget(widget_id: u64) {
     c_try_void!({
         get_control_backend().hide_widget(widget_id);
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_text(widget_id: u64, text: *const c_char) {
+pub extern "C" fn rw_set_widget_text(widget_id: u64, text: *const c_char) {
     c_try_void!({
         get_control_backend().set_widget_text(widget_id, &c_str_or_default(text));
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_widget_text(widget_id: u64) -> *const c_char {
+pub extern "C" fn rw_get_widget_text(widget_id: u64) -> *const c_char {
     c_try!({
         let text = get_control_backend().get_widget_text(widget_id);
         to_c_string_or_empty(text)
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_enabled(widget_id: u64, enabled: CBool) {
+pub extern "C" fn rw_set_widget_enabled(widget_id: u64, enabled: CBool) {
     c_try_void!({
         get_control_backend().set_widget_enabled(widget_id, enabled);
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_is_widget_enabled(widget_id: u64) -> CBool {
+pub extern "C" fn rw_is_widget_enabled(widget_id: u64) -> CBool {
     c_try!({ get_control_backend().is_widget_enabled(widget_id) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_visible(widget_id: u64, visible: CBool) {
+pub extern "C" fn rw_set_widget_visible(widget_id: u64, visible: CBool) {
     c_try_void!({
         get_control_backend().set_widget_visible(widget_id, visible);
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_is_widget_visible(widget_id: u64) -> CBool {
+pub extern "C" fn rw_is_widget_visible(widget_id: u64) -> CBool {
     c_try!({ get_control_backend().is_widget_visible(widget_id) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_ime_enabled(widget_id: u64, enabled: CBool) -> CBool {
+pub extern "C" fn rw_set_widget_ime_enabled(widget_id: u64, enabled: CBool) -> CBool {
     c_try!({ crate::platform::get_platform().set_widget_ime_enabled(widget_id, enabled) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_is_widget_ime_enabled(widget_id: u64) -> CBool {
+pub extern "C" fn rw_is_widget_ime_enabled(widget_id: u64) -> CBool {
     c_try!({ crate::platform::get_platform().is_widget_ime_enabled(widget_id) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_widget_accessibility_name(
+pub extern "C" fn rw_set_widget_accessibility_name(
     widget_id: u64,
     name: *const c_char,
 ) -> CBool {
@@ -832,18 +832,18 @@ pub extern "C" fn rust_widgets_set_widget_accessibility_name(
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_widget_accessibility_name(widget_id: u64) -> *const c_char {
+pub extern "C" fn rw_get_widget_accessibility_name(widget_id: u64) -> *const c_char {
     c_try!({
         let name = crate::platform::get_platform().get_widget_accessibility_name(widget_id);
         to_c_string_or_empty(name)
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_backend_name() -> *const c_char {
+pub extern "C" fn rw_backend_name() -> *const c_char {
     c_try!({ to_c_string_or_empty(get_control_backend().backend_name()) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_platform_capabilities() -> c_uint {
+pub extern "C" fn rw_platform_capabilities() -> c_uint {
     c_try!({
         let caps = crate::platform::capabilities();
         let mut mask: c_uint = 0;
@@ -866,11 +866,11 @@ pub extern "C" fn rust_widgets_platform_capabilities() -> c_uint {
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_platform_dpi_scale_factor() -> c_float {
+pub extern "C" fn rw_platform_dpi_scale_factor() -> c_float {
     c_try!({ crate::platform::dpi_scale_factor() })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
+pub extern "C" fn rw_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
     c_try!({
         let config =
             crate::render::SoftwareRenderConfig { aa_samples_per_axis: samples as u8 }.normalized();
@@ -879,47 +879,47 @@ pub extern "C" fn rust_widgets_set_render_aa_samples_per_axis(samples: c_uint) -
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_render_aa_samples_per_axis() -> c_uint {
+pub extern "C" fn rw_get_render_aa_samples_per_axis() -> c_uint {
     c_try!({ crate::render::default_software_render_config().aa_samples_per_axis as c_uint })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_set_embedded_target_fps(fps: c_uint) -> c_uint {
+pub extern "C" fn rw_set_embedded_target_fps(fps: c_uint) -> c_uint {
     c_try!({ crate::render_engine::set_embedded_target_fps(fps) as c_uint })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_get_embedded_target_fps() -> c_uint {
+pub extern "C" fn rw_get_embedded_target_fps() -> c_uint {
     c_try!({ crate::render_engine::embedded_target_fps() as c_uint })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_submit_embedded_noop_task(label: *const c_char) -> u64 {
+pub extern "C" fn rw_submit_embedded_noop_task(label: *const c_char) -> u64 {
     c_try!({ crate::render_engine::submit_embedded_task(c_str_or_default(label), |_| {}) })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_is_initialized() -> CBool {
+pub extern "C" fn rw_embedded_engine_is_initialized() -> CBool {
     c_try!({ crate::render_engine::embedded_engine_stats().initialized })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_is_running() -> CBool {
+pub extern "C" fn rw_embedded_engine_is_running() -> CBool {
     c_try!({ crate::render_engine::embedded_engine_stats().running })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_frame_count() -> u64 {
+pub extern "C" fn rw_embedded_engine_frame_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().frame_count })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_pending_task_count() -> u64 {
+pub extern "C" fn rw_embedded_engine_pending_task_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().pending_task_count as u64 })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_window_count() -> u64 {
+pub extern "C" fn rw_embedded_engine_window_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().window_count as u64 })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_embedded_engine_button_count() -> u64 {
+pub extern "C" fn rw_embedded_engine_button_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().button_count as u64 })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_platform_capability_contract(profile_code: c_uint) -> c_uint {
+pub extern "C" fn rw_platform_capability_contract(profile_code: c_uint) -> c_uint {
     c_try!({
         let profile = if profile_code == 1 {
             crate::core::RuntimeProfile::Embedded
@@ -931,7 +931,7 @@ pub extern "C" fn rust_widgets_platform_capability_contract(profile_code: c_uint
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
+pub extern "C" fn rw_mobile_backend_name() -> *const c_char {
     c_try!({
         #[cfg(feature = "mobile-api")]
         {
@@ -945,7 +945,7 @@ pub extern "C" fn rust_widgets_mobile_backend_name() -> *const c_char {
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_mobile_attach_native_view(native_handle: u64) -> CBool {
+pub extern "C" fn rw_mobile_attach_native_view(native_handle: u64) -> CBool {
     c_try!({
         #[cfg(feature = "mobile-api")]
         {
@@ -959,7 +959,7 @@ pub extern "C" fn rust_widgets_mobile_attach_native_view(native_handle: u64) -> 
     })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_bindings_api_version() -> c_uint {
+pub extern "C" fn rw_bindings_api_version() -> c_uint {
     c_try!({ 7 })
 }
 /// Return Python binding status bitmask.
@@ -969,7 +969,7 @@ pub extern "C" fn rust_widgets_bindings_api_version() -> c_uint {
 /// - bit1: Python adapter/example available
 /// - bit2: profile-aware capability query available
 #[no_mangle]
-pub extern "C" fn rust_widgets_python_binding_status() -> c_uint {
+pub extern "C" fn rw_python_binding_status() -> c_uint {
     c_try!({ (1 << 0) | (1 << 1) | (1 << 2) })
 }
 /// Return C++ wrapper status bitmask.
@@ -978,7 +978,7 @@ pub extern "C" fn rust_widgets_python_binding_status() -> c_uint {
 /// - bit0: C ABI entry points available
 /// - bit1: C++ wrapper skeleton/example available
 #[no_mangle]
-pub extern "C" fn rust_widgets_cpp_binding_status() -> c_uint {
+pub extern "C" fn rw_cpp_binding_status() -> c_uint {
     c_try!({ (1 << 0) | (1 << 1) })
 }
 /// Return Java/JNI binding status bitmask.
@@ -988,25 +988,25 @@ pub extern "C" fn rust_widgets_cpp_binding_status() -> c_uint {
 /// - bit1: Java native-method skeleton available
 /// - bit2: JNI bridge skeleton available
 #[no_mangle]
-pub extern "C" fn rust_widgets_java_binding_status() -> c_uint {
+pub extern "C" fn rw_java_binding_status() -> c_uint {
     c_try!({ (1 << 0) | (1 << 1) | (1 << 2) })
 }
 /// Return Java/JNI skeleton ABI version.
 #[no_mangle]
-pub extern "C" fn rust_widgets_java_jni_skeleton_version() -> c_uint {
+pub extern "C" fn rw_java_jni_skeleton_version() -> c_uint {
     c_try!({ 1 })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_python_reserved() -> c_uint {
-    c_try!({ rust_widgets_python_binding_status() })
+pub extern "C" fn rw_python_reserved() -> c_uint {
+    c_try!({ rw_python_binding_status() })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_cpp_reserved() -> c_uint {
-    c_try!({ rust_widgets_cpp_binding_status() })
+pub extern "C" fn rw_cpp_reserved() -> c_uint {
+    c_try!({ rw_cpp_binding_status() })
 }
 #[no_mangle]
-pub extern "C" fn rust_widgets_java_reserved() -> c_uint {
-    c_try!({ rust_widgets_java_binding_status() })
+pub extern "C" fn rw_java_reserved() -> c_uint {
+    c_try!({ rw_java_binding_status() })
 }
 #[no_mangle]
 /// # Safety
@@ -1014,7 +1014,7 @@ pub extern "C" fn rust_widgets_java_reserved() -> c_uint {
 /// `s` must be either null or a pointer returned by this crate through
 /// `CString::into_raw` and not already freed. Passing any other pointer or
 /// double-freeing is undefined behavior.
-pub unsafe extern "C" fn rust_widgets_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn rw_free_string(s: *mut c_char) {
     c_try_void!({
         if s.is_null() {
             return;
@@ -1025,16 +1025,16 @@ pub unsafe extern "C" fn rust_widgets_free_string(s: *mut c_char) {
     })
 }
 
-/// Alias for [`rust_widgets_free_string`] — explicitly named for callers
+/// Alias for [`rw_free_string`] — explicitly named for callers
 /// who hold a `*mut c_char` from Rust-allocated strings and want clarity
 /// in their own code.
 #[no_mangle]
 /// # Safety
 ///
-/// Same requirements as [`rust_widgets_free_string`]: `s` must be null or a
+/// Same requirements as [`rw_free_string`]: `s` must be null or a
 /// valid pointer previously allocated by this crate for C ownership transfer.
-pub unsafe extern "C" fn rust_widgets_free_rust_string(s: *mut c_char) {
-    rust_widgets_free_string(s);
+pub unsafe extern "C" fn rw_free_rust_string(s: *mut c_char) {
+    rw_free_string(s);
 }
 #[cfg(test)]
 mod tests {
@@ -1044,26 +1044,26 @@ mod tests {
         let _guard = crate::render::software_render_config_test_lock()
             .lock()
             .expect("software render config test lock poisoned");
-        let original = rust_widgets_get_render_aa_samples_per_axis();
-        let low = rust_widgets_set_render_aa_samples_per_axis(0);
+        let original = rw_get_render_aa_samples_per_axis();
+        let low = rw_set_render_aa_samples_per_axis(0);
         assert_eq!(low, 1);
-        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 1);
-        let high = rust_widgets_set_render_aa_samples_per_axis(100);
+        assert_eq!(rw_get_render_aa_samples_per_axis(), 1);
+        let high = rw_set_render_aa_samples_per_axis(100);
         assert_eq!(high, 8);
-        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), 8);
-        rust_widgets_set_render_aa_samples_per_axis(original);
-        assert_eq!(rust_widgets_get_render_aa_samples_per_axis(), original.clamp(1, 8));
+        assert_eq!(rw_get_render_aa_samples_per_axis(), 8);
+        rw_set_render_aa_samples_per_axis(original);
+        assert_eq!(rw_get_render_aa_samples_per_axis(), original.clamp(1, 8));
     }
     #[test]
     fn embedded_target_fps_abi_roundtrip_clamps_values() {
-        let original = rust_widgets_get_embedded_target_fps();
-        let low = rust_widgets_set_embedded_target_fps(0);
+        let original = rw_get_embedded_target_fps();
+        let low = rw_set_embedded_target_fps(0);
         assert_eq!(low, 1);
-        assert_eq!(rust_widgets_get_embedded_target_fps(), 1);
-        let high = rust_widgets_set_embedded_target_fps(1000);
+        assert_eq!(rw_get_embedded_target_fps(), 1);
+        let high = rw_set_embedded_target_fps(1000);
         assert_eq!(high, 240);
-        assert_eq!(rust_widgets_get_embedded_target_fps(), 240);
-        rust_widgets_set_embedded_target_fps(original);
-        assert_eq!(rust_widgets_get_embedded_target_fps(), original.clamp(1, 240));
+        assert_eq!(rw_get_embedded_target_fps(), 240);
+        rw_set_embedded_target_fps(original);
+        assert_eq!(rw_get_embedded_target_fps(), original.clamp(1, 240));
     }
 }

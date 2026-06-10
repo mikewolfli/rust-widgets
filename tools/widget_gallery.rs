@@ -2,7 +2,7 @@
 //!
 //! Usage: cargo run --example widget_gallery [output_dir]
 
-use rust_widgets::core::{Color, Rect};
+use rust_widgets::core::Rect;
 use rust_widgets::widget::svg::render_to_svg;
 use rust_widgets::widget::*;
 use std::fs;

@@ -7,7 +7,7 @@
 //! Higher-level abstractions (`A11yProvider`, `A11yTree`) provide a unified
 //! cross-platform accessibility node tree for screen reader navigation.
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-legacy"))]
 pub mod macos;
 
 #[cfg(target_os = "windows")]

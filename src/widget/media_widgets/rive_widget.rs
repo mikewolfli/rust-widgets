@@ -344,7 +344,6 @@ impl EventHandler for RiveWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
     use std::sync::{Arc, Mutex};
 
     #[test]

@@ -4,7 +4,7 @@
 // Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
 // BLUE11 R4.7: Documentation completeness
 // Note: Missing docs warnings silenced to reduce noise. Docs added for public API items.
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::all))]

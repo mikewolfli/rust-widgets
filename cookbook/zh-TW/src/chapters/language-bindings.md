@@ -12,26 +12,26 @@ C ABI 層是所有語言綁定的基礎。它公開了 102 個 `extern "C"` 函�
 
 跨越 FFI 邊界的字串遵循嚴格的擁有權模型：
 
-- **回傳的字串**：由 Rust 分配，必須透過 `rust_widgets_free_string()` 釋放。
+- **回傳的字串**：由 Rust 分配，必須透過 `rw_free_string()` 釋放。
 - **輸入的字串**：以 `*const c_char`（以 null 結尾的 C 字串）形式接受。
 
 ```c
 // C 標頭檔摘錄 (rust_widgets.h)
 typedef uint64_t ObjectId;
 
-void rust_widgets_init(void);
-void rust_widgets_run(void);
-void rust_widgets_quit(void);
+void rw_init(void);
+void rw_run(void);
+void rw_quit(void);
 
-ObjectId rust_widgets_create_window(const char* title,
+ObjectId rw_create_window(const char* title,
     int32_t x, int32_t y, uint32_t width, uint32_t height);
 
-ObjectId rust_widgets_create_button(ObjectId parent, const char* text,
+ObjectId rw_create_button(ObjectId parent, const char* text,
     int32_t x, int32_t y, uint32_t width, uint32_t height);
 
 // ... 還有 96 個以上函式 ...
 
-void rust_widgets_free_string(char* s);
+void rw_free_string(char* s);
 ```
 
 ### `c_try!` 模式
@@ -59,26 +59,26 @@ macro_rules! c_try {
 #include <stdio.h>
 
 int main(void) {
-    rust_widgets_init();
+    rw_init();
 
-    ObjectId window = rust_widgets_create_window("C Demo", 100, 100, 800, 600);
+    ObjectId window = rw_create_window("C Demo", 100, 100, 800, 600);
 
-    ObjectId button = rust_widgets_create_button(window, "Click Me",
+    ObjectId button = rw_create_button(window, "Click Me",
         10, 10, 120, 32);
 
-    char* text = rust_widgets_get_widget_text(button);
+    char* text = rw_get_widget_text(button);
     printf("Button text: %s\n", text);
-    rust_widgets_free_string(text);
+    rw_free_string(text);
 
-    rust_widgets_run();
-    rust_widgets_quit();
+    rw_run();
+    rw_quit();
     return 0;
 }
 ```
 
 建置指令：
 ```sh
-gcc -o demo demo.c -Ltarget/release -lrust_widgets_ffi -lpthread -ldl
+gcc -o demo demo.c -Ltarget/release -lrw_ffi -lpthread -ldl
 ```
 
 ---
@@ -185,11 +185,11 @@ C++ 綁定為僅標頭檔 (header-only)，提供 RAII 包裝器以及在 C ABI �
 
 using ObjectId = uint64_t;
 
-// RAII 字串包裝器 (透過 rust_widgets_free_string 釋放)
+// RAII 字串包裝器 (透過 rw_free_string 釋放)
 class RustString {
 public:
     explicit RustString(char* s) : ptr_(s) {}
-    ~RustString() { if (ptr_) rust_widgets_free_string(ptr_); }
+    ~RustString() { if (ptr_) rw_free_string(ptr_); }
     RustString(RustString&& other) noexcept : ptr_(other.ptr_) {
         other.ptr_ = nullptr;
     }
@@ -203,20 +203,20 @@ class Widget {
 public:
     ObjectId id() const { return id_; }
     void set_text(const std::string& text) {
-        rust_widgets_set_widget_text(id_, text.c_str());
+        rw_set_widget_text(id_, text.c_str());
     }
     std::string text() const {
-        RustString s(rust_widgets_get_widget_text(id_));
+        RustString s(rw_get_widget_text(id_));
         return s.c_str();
     }
     void set_enabled(bool enabled) {
-        rust_widgets_set_widget_enabled(id_, enabled);
+        rw_set_widget_enabled(id_, enabled);
     }
     void set_geometry(int32_t x, int32_t y, uint32_t w, uint32_t h) {
-        rust_widgets_set_widget_geometry(id_, x, y, w, h);
+        rw_set_widget_geometry(id_, x, y, w, h);
     }
-    void show() { rust_widgets_show_widget(id_); }
-    void hide() { rust_widgets_hide_widget(id_); }
+    void show() { rw_show_widget(id_); }
+    void hide() { rw_hide_widget(id_); }
 protected:
     ObjectId id_ = 0;
 };
@@ -276,7 +276,7 @@ enum class TriggerKind {
 #include <iostream>
 
 int main() {
-    rust_widgets_init();
+    rw_init();
 
     Window window("C++ Demo", 100, 100, 800, 600);
 
@@ -295,21 +295,21 @@ int main() {
     std::cout << "Combo items: " << combo.item_count() << std::endl;
 
     MenuBar menu_bar(window.id(), 0, 0, 800, 24);
-    rust_widgets_attach_menu_bar_to_window(window.id(), menu_bar.id());
+    rw_attach_menu_bar_to_window(window.id(), menu_bar.id());
 
     Menu file_menu(menu_bar.id(), "File", 0, 0, 60, 24);
-    ObjectId new_id = rust_widgets_menu_add_item(file_menu.id(), "New", "Ctrl+N");
-    ObjectId quit_id = rust_widgets_menu_add_item(file_menu.id(), "Quit", "Ctrl+Q");
+    ObjectId new_id = rw_menu_add_item(file_menu.id(), "New", "Ctrl+N");
+    ObjectId quit_id = rw_menu_add_item(file_menu.id(), "Quit", "Ctrl+Q");
 
-    rust_widgets_run();
-    rust_widgets_quit();
+    rw_run();
+    rw_quit();
     return 0;
 }
 ```
 
 建置指令：
 ```sh
-g++ -std=c++17 -o demo example.cpp -Ltarget/release -lrust_widgets_ffi -lpthread -ldl
+g++ -std=c++17 -o demo example.cpp -Ltarget/release -lrw_ffi -lpthread -ldl
 ```
 
 ---
@@ -359,7 +359,7 @@ fn c_string_to_jstring(env: &mut JNIEnv, s: &str) -> JString {
 package io.github.rustwidgets;
 
 public class RustWidgets {
-    static { System.loadLibrary("rust_widgets_jni"); }
+    static { System.loadLibrary("rw_jni"); }
 
     // 生命週期
     public static native void nativeInit();
@@ -464,7 +464,7 @@ public class RustWidgetsDemo {
 ```makefile
 # Makefile
 JAVA_HOME ?= /usr/lib/jvm/java-11-openjdk-amd64
-LIB_NAME = librust_widgets_jni.so
+LIB_NAME = librw_jni.so
 
 all: $(LIB_NAME) demo
 
@@ -515,12 +515,12 @@ class RustWidgets {
         if (_instance) return _instance;
 
         this.lib = ffi.Library(libPath, {
-            rust_widgets_init: ['void', []],
-            rust_widgets_run: ['void', []],
-            rust_widgets_quit: ['void', []],
-            rust_widgets_create_window: [ObjectId, [cstr, 'int', 'int', 'uint', 'uint']],
-            rust_widgets_create_button: [ObjectId, [ObjectId, cstr, 'int', 'int', 'uint', 'uint']],
-            rust_widgets_free_string: ['void', [voidPtr]],
+            rw_init: ['void', []],
+            rw_run: ['void', []],
+            rw_quit: ['void', []],
+            rw_create_window: [ObjectId, [cstr, 'int', 'int', 'uint', 'uint']],
+            rw_create_button: [ObjectId, [ObjectId, cstr, 'int', 'int', 'uint', 'uint']],
+            rw_free_string: ['void', [voidPtr]],
             // ... 全部 102 個函式 ...
         });
 
@@ -533,36 +533,36 @@ class RustWidgets {
         if (!buf || buf.isNull()) return '';
         try {
             const s = ref.readCString(buf, 0);
-            this.lib.rust_widgets_free_string(buf);
+            this.lib.rw_free_string(buf);
             return s;
         } catch (e) {
             return '';
         }
     }
 
-    init() { this.lib.rust_widgets_init(); }
-    run() { this.lib.rust_widgets_run(); }
-    quit() { this.lib.rust_widgets_quit(); }
+    init() { this.lib.rw_init(); }
+    run() { this.lib.rw_run(); }
+    quit() { this.lib.rw_quit(); }
 
     createWindow(title, x, y, w, h) {
-        return this.lib.rust_widgets_create_window(title, x, y, w, h);
+        return this.lib.rw_create_window(title, x, y, w, h);
     }
 
     createButton(parent, text, x, y, w, h) {
-        return this.lib.rust_widgets_create_button(parent, text, x, y, w, h);
+        return this.lib.rw_create_button(parent, text, x, y, w, h);
     }
 
     getWidgetText(id) {
         return this._readString(() =>
-            this.lib.rust_widgets_get_widget_text(id));
+            this.lib.rw_get_widget_text(id));
     }
 
     setWidgetText(id, text) {
-        this.lib.rust_widgets_set_widget_text(id, text);
+        this.lib.rw_set_widget_text(id, text);
     }
 
     backendName() {
-        const buf = this.lib.rust_widgets_backend_name();
+        const buf = this.lib.rw_backend_name();
         return ref.readCString(buf, 0);
     }
 }
@@ -576,7 +576,7 @@ module.exports = RustWidgets;
 const RustWidgets = require('rust-widgets');
 
 async function main() {
-    const rw = new RustWidgets('../target/release/librust_widgets_ffi.so');
+    const rw = new RustWidgets('../target/release/librw_ffi.so');
 
     rw.init();
 
@@ -619,7 +619,7 @@ main().catch(console.error);
 
 ```sh
 cargo build --release
-# 產生：target/release/librust_widgets_ffi.{so,dylib,dll}
+# 產生：target/release/librw_ffi.{so,dylib,dll}
 ```
 
 ### Python
@@ -633,7 +633,7 @@ python example.py
 
 ```sh
 g++ -std=c++17 -Iinclude -o demo examples/cpp/example.cpp \
-    -Ltarget/release -lrust_widgets_ffi -lpthread -ldl
+    -Ltarget/release -lrw_ffi -lpthread -ldl
 ```
 
 ### Java
@@ -659,7 +659,7 @@ node example.js
 
 ```rust
 // C ABI
-pub extern "C" fn rust_widgets_bindings_api_version() -> u32 {
+pub extern "C" fn rw_bindings_api_version() -> u32 {
     1 // 在 ABI 重大變更時遞增
 }
 
@@ -667,28 +667,28 @@ pub extern "C" fn rust_widgets_bindings_api_version() -> u32 {
 version = rw.bindings_api_version()
 
 // C++
-uint32_t version = rust_widgets_bindings_api_version();
+uint32_t version = rw_bindings_api_version();
 
 // Java
 int version = RustWidgets.nativeBindingsApiVersion();
 
 // Node.js
-const version = rw.lib.rust_widgets_bindings_api_version();
+const version = rw.lib.rw_bindings_api_version();
 ```
 
 ### 綁定狀態檢查
 
 ```rust
-pub extern "C" fn rust_widgets_python_binding_status() -> u32 { 1 }
-pub extern "C" fn rust_widgets_cpp_binding_status() -> u32 { 1 }
-pub extern "C" fn rust_widgets_java_binding_status() -> u32 { 1 }
-pub extern "C" fn rust_widgets_java_jni_skeleton_version() -> u32 { 1 }
+pub extern "C" fn rw_python_binding_status() -> u32 { 1 }
+pub extern "C" fn rw_cpp_binding_status() -> u32 { 1 }
+pub extern "C" fn rw_java_binding_status() -> u32 { 1 }
+pub extern "C" fn rw_java_jni_skeleton_version() -> u32 { 1 }
 ```
 
 ### 平台功能位元遮罩 (C ABI)
 
 ```rust
-pub extern "C" fn rust_widgets_platform_capabilities(caps: *mut u32) {
+pub extern "C" fn rw_platform_capabilities(caps: *mut u32) {
     // 回傳位元遮罩：
     //   bit 0: dpi_scaling
     //   bit 1: ime
@@ -723,19 +723,19 @@ C ABI 包含 HarmonyOS 專用函式，用於 NAPI 橋接整合：
 
 ```c
 // Widget 觸發注入 (Harmony 事件橋接)
-void rust_widgets_harmony_on_menu_item(ObjectId widget_id);
-void rust_widgets_harmony_on_click(ObjectId widget_id);
-void rust_widgets_harmony_on_value_changed(ObjectId widget_id);
-void rust_widgets_harmony_on_widget_event(ObjectId widget_id, int trigger_kind);
+void rw_harmony_on_menu_item(ObjectId widget_id);
+void rw_harmony_on_click(ObjectId widget_id);
+void rw_harmony_on_value_changed(ObjectId widget_id);
+void rw_harmony_on_widget_event(ObjectId widget_id, int trigger_kind);
 
 // 節點綁定註冊
-void rust_widgets_harmony_bind_node(ObjectId widget_id, const char* node_id);
-void rust_widgets_harmony_unbind_node(ObjectId widget_id);
+void rw_harmony_bind_node(ObjectId widget_id, const char* node_id);
+void rw_harmony_unbind_node(ObjectId widget_id);
 
 // 型別化節點事件 (harmony)
-void rust_widgets_harmony_on_node_click(ObjectId widget_id, const char* node_id);
-void rust_widgets_harmony_on_node_value_changed(ObjectId widget_id, const char* node_id);
-void rust_widgets_harmony_on_node_widget_event(ObjectId widget_id,
+void rw_harmony_on_node_click(ObjectId widget_id, const char* node_id);
+void rw_harmony_on_node_value_changed(ObjectId widget_id, const char* node_id);
+void rw_harmony_on_node_widget_event(ObjectId widget_id,
     const char* node_id, int trigger_kind);
 ```
 
@@ -745,7 +745,7 @@ void rust_widgets_harmony_on_node_widget_event(ObjectId widget_id,
 
 | 綁定 | 字串回傳型別 | 生命週期 | 釋放機制 |
 |---------|:---:|----------|----------------|
-| **C** | `char*` (堆積) | 直到 `free_string` | `rust_widgets_free_string()` |
+| **C** | `char*` (堆積) | 直到 `free_string` | `rw_free_string()` |
 | **Python** | `str` | 立即複製 | `ctypes` 複製到 Python 字串 |
 | **C++** | `RustString` (RAII) | 作用域綁定 | 解構子呼叫 `free_string` |
 | **Java** | `String` | 立即複製 | JNI 複製到 Java `String` |

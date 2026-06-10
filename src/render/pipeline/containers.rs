@@ -4,7 +4,7 @@
 //! Rendering primitives (rect, circle, line, text, etc.) are in the
 //! `primitives` sub-module.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{
     cluster_ends_with_zwj, estimate_cluster_advance, fill_pixels, is_combining_mark,

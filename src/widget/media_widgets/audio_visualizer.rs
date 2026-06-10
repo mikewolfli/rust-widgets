@@ -30,7 +30,7 @@ pub struct AudioVisualizer {
     /// Whether to show peak hold markers.
     peak_hold: bool,
     /// Duration in ms to hold peak values.
-    peak_hold_duration: u64,
+    _peak_hold_duration: u64,
     /// Current peak hold values for each bar.
     peak_values: Vec<f32>,
 }
@@ -48,7 +48,7 @@ impl AudioVisualizer {
             background_color: Color::rgba(20, 20, 30, 255),
             mirror: false,
             peak_hold: false,
-            peak_hold_duration: 500,
+            _peak_hold_duration: 500,
             peak_values: vec![0.0; bar_count],
         }
     }
@@ -276,7 +276,6 @@ impl EventHandler for AudioVisualizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
 
     #[test]
     fn audio_visualizer_default_state() {

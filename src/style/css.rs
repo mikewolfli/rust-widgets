@@ -78,7 +78,7 @@ impl CssParser {
     /// Parse CSS text into a `StyleSheet` with `StyleRule` entries.
     /// Each rule stores its selector and property declarations.
     pub fn parse(css: &str) -> Result<StyleSheet, String> {
-        let mut sheet = StyleSheet::new();
+        let sheet = StyleSheet::new();
         let rules = Self::parse_rules(css)?;
         for rule in &rules {
             store_declarations(&rule.selector_text, rule.declarations.clone());

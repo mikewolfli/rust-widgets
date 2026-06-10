@@ -11,7 +11,7 @@ use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Combined trait for widgets that can both be managed and drawn.
-trait WidgetDraw: Widget + Draw {}
+pub trait WidgetDraw: Widget + Draw {}
 impl<T: Widget + Draw> WidgetDraw for T {}
 
 /// SwipeToDismiss widget — swipe gesture to reveal actions and dismiss.
@@ -244,7 +244,6 @@ impl EventHandler for SwipeToDismiss {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Size;
     use crate::render::RenderContext;
     use crate::widget::svg::render_to_svg;
     use std::sync::Arc;

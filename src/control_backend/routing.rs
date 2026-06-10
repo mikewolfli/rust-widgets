@@ -77,7 +77,6 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::DataView
             | WidgetKind::PropertyGrid
             | WidgetKind::Toolbox
-            | WidgetKind::Toolbox
             | WidgetKind::CollapsiblePane
             | WidgetKind::DockWidget
             | WidgetKind::WebView

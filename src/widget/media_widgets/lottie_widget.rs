@@ -198,11 +198,8 @@ impl LottieWidget {
             return false;
         }
 
-        let frame_delay = if self.frame_rate > 0.0 {
-            (1000.0 / self.frame_rate as f64) as u64
-        } else {
-            33
-        };
+        let frame_delay =
+            if self.frame_rate > 0.0 { (1000.0 / self.frame_rate as f64) as u64 } else { 33 };
 
         self.frame_timer += delta_ms;
         if self.frame_timer >= frame_delay {
@@ -263,8 +260,7 @@ impl Draw for LottieWidget {
 
         // Draw animation info centered.
         let font = Font::default();
-        let info_text =
-            format!("Lottie Frame {}/{}", self.current_frame + 1, self.total_frames);
+        let info_text = format!("Lottie Frame {}/{}", self.current_frame + 1, self.total_frames);
         let metrics = context.measure_text(&info_text, &font);
         let info_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let info_y = rect.y + rect.height as i32 / 3 + metrics.ascent as i32 / 2;
@@ -288,7 +284,8 @@ impl Draw for LottieWidget {
         context.draw_text(Point::new(status_x, status_y), status, &font, status_color);
 
         // Frame counter overlay at top-right.
-        let counter_text = format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
+        let counter_text =
+            format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
         let c_metrics = context.measure_text(&counter_text, &font);
         let cx = rect.x + rect.width as i32 - c_metrics.width as i32 - 4;
         let cy = rect.y + 2;
@@ -316,8 +313,7 @@ impl Draw for LottieWidget {
 
         if self.total_frames > 0 {
             let fill_ratio = (self.current_frame as f64) / (self.total_frames as f64);
-            let filled_width =
-                ((progress_bar_full.width as f64) * fill_ratio) as u32;
+            let filled_width = ((progress_bar_full.width as f64) * fill_ratio) as u32;
             if filled_width > 0 {
                 let progress_bar_fill = Rect::new(
                     progress_bar_full.x,
@@ -358,14 +354,10 @@ impl EventHandler for LottieWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
     use std::sync::{Arc, Mutex};
 
     fn make_lottie_json(op: f64, ip: f64, fr: f64) -> String {
-        format!(
-            r#"{{"op":{},"ip":{},"fr":{},"v":"5.5.2","w":100,"h":100}}"#,
-            op, ip, fr
-        )
+        format!(r#"{{"op":{},"ip":{},"fr":{},"v":"5.5.2","w":100,"h":100}}"#, op, ip, fr)
     }
 
     #[test]

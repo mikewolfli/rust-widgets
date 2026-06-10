@@ -365,6 +365,7 @@ mod tests {
 
     /// A simple test widget that records draw calls.
     struct TestWidget {
+        #[allow(dead_code)]
         geometry: Rect,
         draw_count: Arc<Mutex<u32>>,
     }
