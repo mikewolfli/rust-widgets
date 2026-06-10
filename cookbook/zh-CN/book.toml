@@ -1,0 +1,15 @@
+[book]
+authors = ["rust-widgets contributors"]
+language = "zh-CN"
+multilingual = false
+src = "src"
+title = "rust-widgets 使用手册"
+
+[output.html]
+mathjax-support = true
+no-section-label = true
+git-repository-url = "https://github.com/mikewolfli/rust-widgets"
+edit-url-template = "https://github.com/mikewolfli/rust-widgets/edit/main/cookbook/zh-CN/src/{path}"
+
+[output.html.search]
+enable = true

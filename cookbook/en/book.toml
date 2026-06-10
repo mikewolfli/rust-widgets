@@ -1,0 +1,15 @@
+[book]
+authors = ["rust-widgets contributors"]
+language = "en"
+multilingual = false
+src = "src"
+title = "rust-widgets Cookbook"
+
+[output.html]
+mathjax-support = true
+no-section-label = true
+git-repository-url = "https://github.com/mikewolfli/rust-widgets"
+edit-url-template = "https://github.com/mikewolfli/rust-widgets/edit/main/cookbook/en/src/{path}"
+
+[output.html.search]
+enable = true
