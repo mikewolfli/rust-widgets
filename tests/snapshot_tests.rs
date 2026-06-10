@@ -23,7 +23,11 @@ fn assert_widget_snapshot<W: rust_widgets::widget::Draw + rust_widgets::widget::
     }
 
     if let Ok(expected) = std::fs::read_to_string(&snapshot_path) {
-        assert_eq!(svg, expected, "Snapshot mismatch for {}. Run with UPDATE_SNAPSHOTS=1 to update.", name);
+        assert_eq!(
+            svg, expected,
+            "Snapshot mismatch for {}. Run with UPDATE_SNAPSHOTS=1 to update.",
+            name
+        );
     } else {
         std::fs::write(&snapshot_path, &svg).expect("write initial snapshot");
         panic!("Snapshot {} did not exist — created. Commit and re-run.", snapshot_path);

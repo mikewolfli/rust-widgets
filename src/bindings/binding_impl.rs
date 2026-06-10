@@ -610,10 +610,7 @@ pub extern "C" fn rw_inject_menu_trigger(menu_item_id: u64) -> CBool {
 }
 /// Generic typed widget trigger injection entrypoint for native hosts.
 #[no_mangle]
-pub extern "C" fn rw_inject_widget_trigger_event(
-    widget_id: u64,
-    kind_code: c_uint,
-) -> CBool {
+pub extern "C" fn rw_inject_widget_trigger_event(widget_id: u64, kind_code: c_uint) -> CBool {
     c_try!({
         get_control_backend()
             .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
@@ -726,10 +723,7 @@ pub extern "C" fn rw_harmony_on_node_value_changed(node_handle: u64) -> CBool {
 }
 /// Harmony callback alias: typed trigger by node handle and kind code.
 #[no_mangle]
-pub extern "C" fn rw_harmony_on_node_widget_event(
-    node_handle: u64,
-    kind_code: c_uint,
-) -> CBool {
+pub extern "C" fn rw_harmony_on_node_widget_event(node_handle: u64, kind_code: c_uint) -> CBool {
     c_try!({
         let Some(widget_id) = harmony_lookup_widget(node_handle) else {
             return false;
@@ -822,10 +816,7 @@ pub extern "C" fn rw_is_widget_ime_enabled(widget_id: u64) -> CBool {
     c_try!({ crate::platform::get_platform().is_widget_ime_enabled(widget_id) })
 }
 #[no_mangle]
-pub extern "C" fn rw_set_widget_accessibility_name(
-    widget_id: u64,
-    name: *const c_char,
-) -> CBool {
+pub extern "C" fn rw_set_widget_accessibility_name(widget_id: u64, name: *const c_char) -> CBool {
     c_try!({
         crate::platform::get_platform()
             .set_widget_accessibility_name(widget_id, &c_str_or_default(name))

@@ -85,13 +85,8 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateWindow
 ) -> jlong {
     let title_str = jstring_to_string(&mut env, &title);
     let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
-    crate::bindings::rw_create_window(
-        c_title.as_ptr(),
-        x,
-        y,
-        width as juint,
-        height as juint,
-    ) as jlong
+    crate::bindings::rw_create_window(c_title.as_ptr(), x, y, width as juint, height as juint)
+        as jlong
 }
 
 /// Macro to generate a widget creation JNI function for widgets that take
@@ -565,11 +560,8 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeMenuAddItem(
     let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
     let shortcut_str = jstring_to_string(&mut env, &shortcut);
     let c_shortcut = std::ffi::CString::new(shortcut_str).unwrap_or_default();
-    crate::bindings::rw_menu_add_item(
-        parent_menu as u64,
-        c_text.as_ptr(),
-        c_shortcut.as_ptr(),
-    ) as jlong
+    crate::bindings::rw_menu_add_item(parent_menu as u64, c_text.as_ptr(), c_shortcut.as_ptr())
+        as jlong
 }
 
 #[no_mangle]
@@ -601,9 +593,8 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
 ) -> jlong {
     // Use C ABI poll_widget_trigger_event with a stack variable
     let mut widget_id_out: u64 = 0;
-    let kind_code = unsafe {
-        crate::bindings::rw_poll_widget_trigger_event(&mut widget_id_out as *mut u64)
-    };
+    let kind_code =
+        unsafe { crate::bindings::rw_poll_widget_trigger_event(&mut widget_id_out as *mut u64) };
     if kind_code == 0 {
         return 0;
     }

@@ -34,8 +34,7 @@ use crate::widget::{
 };
 #[cfg(not(feature = "mini"))]
 use crate::widget::{
-    ColorDialog, FileDialog, FontDialog, GridWidget,
-    ListView, MessageBox, TabWidget, TextEdit,
+    ColorDialog, FileDialog, FontDialog, GridWidget, ListView, MessageBox, TabWidget, TextEdit,
 };
 use crate::window::Window;
 use crate::{

@@ -106,7 +106,8 @@ impl Layout for CenterLayout {
             let child_height = (rect.height as f32 * self.height_factor) as u32;
             let x_offset = (rect.width.saturating_sub(child_width) / 2) as i32;
             let y_offset = (rect.height.saturating_sub(child_height) / 2) as i32;
-            let child_rect = Rect::new(rect.x + x_offset, rect.y + y_offset, child_width, child_height);
+            let child_rect =
+                Rect::new(rect.x + x_offset, rect.y + y_offset, child_width, child_height);
             widgets(child_id, child_rect);
         }
     }

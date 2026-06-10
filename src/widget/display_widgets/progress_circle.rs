@@ -170,14 +170,12 @@ impl Draw for ProgressCircle {
         };
 
         let is_enabled = self.base.is_enabled();
-        let stroke_w = if !is_enabled { self.stroke_width as u32 } else { self.stroke_width as u32 };
+        let stroke_w =
+            if !is_enabled { self.stroke_width as u32 } else { self.stroke_width as u32 };
 
         // Draw track (full circle)
-        let track_color = if is_enabled {
-            self.track_color
-        } else {
-            Color::rgba(200, 200, 200, 100)
-        };
+        let track_color =
+            if is_enabled { self.track_color } else { Color::rgba(200, 200, 200, 100) };
 
         // Draw track as a circle stroke
         context.draw_circle_stroke(center, radius as u32, track_color, stroke_w.max(1));
@@ -194,11 +192,8 @@ impl Draw for ProgressCircle {
             let start_angle = start_offset;
             let end_angle = start_angle + arc_sweep;
 
-            let prog_color = if is_enabled {
-                self.progress_color
-            } else {
-                Color::DISABLED_FOREGROUND
-            };
+            let prog_color =
+                if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
             Self::draw_arc_segments(
                 context,
                 center,
@@ -214,11 +209,8 @@ impl Draw for ProgressCircle {
             let start_angle = -std::f32::consts::FRAC_PI_2;
             let end_angle = start_angle + 2.0 * std::f32::consts::PI * self.value;
 
-            let prog_color = if is_enabled {
-                self.progress_color
-            } else {
-                Color::DISABLED_FOREGROUND
-            };
+            let prog_color =
+                if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
             Self::draw_arc_segments(
                 context,
                 center,

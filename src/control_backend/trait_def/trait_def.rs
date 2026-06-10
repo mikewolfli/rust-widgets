@@ -173,7 +173,12 @@ pub trait ControlBackend: Send + Sync {
         false
     }
     /// Add menu item to menu host control.
-    fn menu_add_item(&self, _parent_menu: ObjectId, _text: &str, _shortcut: Option<&str>) -> ObjectId {
+    fn menu_add_item(
+        &self,
+        _parent_menu: ObjectId,
+        _text: &str,
+        _shortcut: Option<&str>,
+    ) -> ObjectId {
         0
     }
     /// Create tool bar host control.
@@ -416,19 +421,47 @@ pub trait ControlBackend: Send + Sync {
         0
     }
     /// Create canvas control.
-    fn create_canvas(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_canvas(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     /// Create table control.
-    fn create_table(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_table(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     /// Create grid control.
-    fn create_grid(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_grid(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     /// Create chart control.
-    fn create_chart(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     /// Create toggle button control.
@@ -464,7 +497,14 @@ pub trait ControlBackend: Send + Sync {
         0
     }
     /// Create dial control.
-    fn create_dial(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_dial(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     /// Create wizard control.

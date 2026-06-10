@@ -8,5 +8,8 @@ pub enum HighContrastMode {
     None,
     BlackOnWhite,
     WhiteOnBlack,
-    Custom { fg: Color, bg: Color },
+    Custom {
+        fg: Color,
+        bg: Color,
+    },
 }

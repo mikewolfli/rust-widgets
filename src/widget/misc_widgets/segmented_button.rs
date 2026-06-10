@@ -27,12 +27,7 @@ pub struct Segment {
 impl Segment {
     /// Creates a new segment with the given label text.
     pub fn new(text: &str) -> Self {
-        Self {
-            id: text.to_string(),
-            text: text.to_string(),
-            icon: None,
-            enabled: true,
-        }
+        Self { id: text.to_string(), text: text.to_string(), icon: None, enabled: true }
     }
 
     /// Sets the stable identifier for this segment.
@@ -203,12 +198,8 @@ impl Draw for SegmentedButton {
         context.draw_rounded_rect_stroke(rect, corner_radius, border_color, 1);
 
         for (i, segment) in self.segments.iter().enumerate() {
-            let seg_rect = Rect::new(
-                rect.x + (i as u32 * seg_width) as i32,
-                rect.y,
-                seg_width,
-                rect.height,
-            );
+            let seg_rect =
+                Rect::new(rect.x + (i as u32 * seg_width) as i32, rect.y, seg_width, rect.height);
 
             let is_selected = self.selected_index == Some(i);
             let seg_enabled = is_enabled && segment.enabled;
@@ -241,12 +232,8 @@ impl Draw for SegmentedButton {
                     // Last segment: round right corners only
                     context.fill_rounded_rect(seg_rect, corner_radius, bg_color);
                     // Over-draw left side square
-                    let left_half = Rect::new(
-                        seg_rect.x,
-                        seg_rect.y,
-                        seg_width - corner_radius,
-                        rect.height,
-                    );
+                    let left_half =
+                        Rect::new(seg_rect.x, seg_rect.y, seg_width - corner_radius, rect.height);
                     context.fill_rect(left_half, bg_color);
                 } else {
                     // Middle segments: fill fully
@@ -280,10 +267,17 @@ impl Draw for SegmentedButton {
 
             let metrics = context.measure_text(&segment.text, &font);
             let text_x = seg_rect.x + (seg_width as i32 - metrics.width as i32) / 2;
-            let text_y = seg_rect.y + (rect.height as i32 - metrics.height as i32) / 2 + metrics.ascent as i32;
+            let text_y = seg_rect.y
+                + (rect.height as i32 - metrics.height as i32) / 2
+                + metrics.ascent as i32;
 
             if !segment.text.is_empty() {
-                context.draw_text(Point::new(text_x.max(seg_rect.x), text_y.max(seg_rect.y)), &segment.text, &font, text_color);
+                context.draw_text(
+                    Point::new(text_x.max(seg_rect.x), text_y.max(seg_rect.y)),
+                    &segment.text,
+                    &font,
+                    text_color,
+                );
             }
         }
     }

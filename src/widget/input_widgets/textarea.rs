@@ -62,11 +62,7 @@ impl TextArea {
             return;
         }
         let max = self.max_length;
-        self.text = if max > 0 && text.len() > max {
-            text[..max].to_string()
-        } else {
-            text
-        };
+        self.text = if max > 0 && text.len() > max { text[..max].to_string() } else { text };
         self.cursor_pos = self.text.len();
         self.changed.emit();
     }
@@ -91,16 +87,13 @@ impl TextArea {
         if self.cursor_pos == 0 {
             return;
         }
-        let prev = self.text[..self.cursor_pos]
-            .char_indices()
-            .last()
-            .map(|(i, c)| {
-                if c == '\n' {
-                    (i, 1)
-                } else {
-                    (i, c.len_utf8())
-                }
-            });
+        let prev = self.text[..self.cursor_pos].char_indices().last().map(|(i, c)| {
+            if c == '\n' {
+                (i, 1)
+            } else {
+                (i, c.len_utf8())
+            }
+        });
         if let Some((start, len)) = prev {
             self.text.replace_range(start..start + len, "");
             self.cursor_pos = start;
@@ -167,12 +160,7 @@ impl Widget for TextArea {
         } else {
             self.text.chars().filter(|&c| c == '\n').count() + 1
         };
-        let max_line_width = self
-            .text
-            .lines()
-            .map(|l| l.len() as u32)
-            .max()
-            .unwrap_or(0);
+        let max_line_width = self.text.lines().map(|l| l.len() as u32).max().unwrap_or(0);
         let w = (max_line_width * 8 + 10).max(120);
         let h = (line_count as u32 * 16 + 10).max(60);
         Size::new(w, h)
@@ -250,24 +238,15 @@ impl Draw for TextArea {
         let padding = 4;
 
         // -- Background --
-        let bg = self
-            .style()
-            .background_color
-            .unwrap_or(Color::from_rgb(255, 255, 255));
+        let bg = self.style().background_color.unwrap_or(Color::from_rgb(255, 255, 255));
         context.fill_rect(rect, bg);
 
         // -- Border --
-        let border = self
-            .style()
-            .border_color
-            .unwrap_or(Color::from_rgb(200, 200, 200));
+        let border = self.style().border_color.unwrap_or(Color::from_rgb(200, 200, 200));
         context.draw_rect(rect, border);
 
         // -- Text --
-        let text_color = self
-            .style()
-            .text_color
-            .unwrap_or(Color::from_rgb(0, 0, 0));
+        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
         let placeholder_color = Color::from_rgb(180, 180, 180);
 
         if self.text.is_empty() && !self.placeholder.is_empty() && !self.focused {

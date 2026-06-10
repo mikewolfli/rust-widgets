@@ -148,10 +148,8 @@ mod tests {
     #[test]
     fn asset_watcher_watch_nonexistent_directory_returns_error() {
         let mut watcher = AssetWatcher::new();
-        let result = watcher.watch_directory(
-            Path::new("/tmp/rw_nonexistent_asset_test_dir_xyzzy"),
-            |_| true,
-        );
+        let result = watcher
+            .watch_directory(Path::new("/tmp/rw_nonexistent_asset_test_dir_xyzzy"), |_| true);
         assert!(result.is_err(), "Expected error for nonexistent directory");
     }
 

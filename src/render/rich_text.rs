@@ -102,10 +102,7 @@ impl RichText {
                 return;
             }
         }
-        self.spans.push(TextSpan {
-            text: text.to_string(),
-            style,
-        });
+        self.spans.push(TextSpan { text: text.to_string(), style });
     }
 
     /// Adds a span of text with the default style.
@@ -206,7 +203,7 @@ mod tests {
         let (w, h) = rt.measure(&shaper);
         // Height should come from the bigger font size span
         assert!((h - 33.6).abs() < 0.01); // 28 * 1.2
-        // Width is sum: A at 14pt + B at 28pt
+                                          // Width is sum: A at 14pt + B at 28pt
         assert!(w > 0.0);
     }
 

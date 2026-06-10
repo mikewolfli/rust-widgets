@@ -128,10 +128,14 @@ impl BezierCurveEditor {
         let p3 = (1.0f32, 1.0f32);
         Self::cubic_bezier(
             t,
-            p0.0, p0.1,
-            self.control_point1.0, self.control_point1.1,
-            self.control_point2.0, self.control_point2.1,
-            p3.0, p3.1,
+            p0.0,
+            p0.1,
+            self.control_point1.0,
+            self.control_point1.1,
+            self.control_point2.0,
+            self.control_point2.1,
+            p3.0,
+            p3.1,
         )
     }
 
@@ -139,10 +143,14 @@ impl BezierCurveEditor {
     /// Returns the (x, y) point on the curve.
     pub fn cubic_bezier(
         t: f32,
-        p0x: f32, p0y: f32,
-        p1x: f32, p1y: f32,
-        p2x: f32, p2y: f32,
-        p3x: f32, p3y: f32,
+        p0x: f32,
+        p0y: f32,
+        p1x: f32,
+        p1y: f32,
+        p2x: f32,
+        p2y: f32,
+        p3x: f32,
+        p3y: f32,
     ) -> (f32, f32) {
         let u = 1.0 - t;
         let tt = t * t;
@@ -318,8 +326,10 @@ impl Draw for BezierCurveEditor {
 
         // ── Labels ──
         let font = crate::core::Font::default();
-        let cp1_label = format!("CP1: ({:.2}, {:.2})", self.control_point1.0, self.control_point1.1);
-        let cp2_label = format!("CP2: ({:.2}, {:.2})", self.control_point2.0, self.control_point2.1);
+        let cp1_label =
+            format!("CP1: ({:.2}, {:.2})", self.control_point1.0, self.control_point1.1);
+        let cp2_label =
+            format!("CP2: ({:.2}, {:.2})", self.control_point2.0, self.control_point2.1);
 
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 12),

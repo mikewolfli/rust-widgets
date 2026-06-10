@@ -214,9 +214,16 @@ mod tests {
         assert_eq!(tv.page_count(), 1);
 
         // Current page clamps when count shrinks.
-        tv.set_current_page(3);
-        tv.set_page_count(2);
-        assert_eq!(tv.current_page(), 1);
+        // First set to page 4 (0-indexed, so page_count=5 means valid range is 0-4).
+        tv.set_page_count(5);
+        tv.set_current_page(4);
+        tv.set_page_count(3);
+        // 4 >= 3 → clamped to 2 (3-1).
+        assert_eq!(tv.current_page(), 2);
+
+        // Clamp to last valid page when count shrinks further.
+        tv.set_page_count(1);
+        assert_eq!(tv.current_page(), 0);
     }
 
     #[test]

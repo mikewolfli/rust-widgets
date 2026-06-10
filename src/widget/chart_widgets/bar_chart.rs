@@ -23,11 +23,7 @@ pub struct BarEntry {
 impl BarEntry {
     /// Creates a new bar entry with the given label and value.
     pub fn new(label: impl Into<String>, value: f64) -> Self {
-        Self {
-            label: label.into(),
-            value,
-            color: None,
-        }
+        Self { label: label.into(), value, color: None }
     }
 
     /// Sets a custom color for this bar entry.
@@ -225,11 +221,7 @@ impl Draw for BarChart {
         let disabled_color = Color::DISABLED_FOREGROUND;
 
         // ── Draw axes ──
-        let axis_color = if is_enabled {
-            Color::DARK_GRAY
-        } else {
-            disabled_color
-        };
+        let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
         // Y-axis (left edge)
         context.draw_line_stroke(
             Point::new(plot_area.x, plot_area.y),
@@ -240,20 +232,13 @@ impl Draw for BarChart {
         // X-axis (bottom edge)
         context.draw_line_stroke(
             Point::new(plot_area.x, plot_area.y + plot_area.height as i32),
-            Point::new(
-                plot_area.x + plot_area.width as i32,
-                plot_area.y + plot_area.height as i32,
-            ),
+            Point::new(plot_area.x + plot_area.width as i32, plot_area.y + plot_area.height as i32),
             axis_color,
             1,
         );
 
         // ── Draw horizontal grid lines ──
-        let grid_color = if is_enabled {
-            Color::rgba(200, 200, 200, 120)
-        } else {
-            disabled_color
-        };
+        let grid_color = if is_enabled { Color::rgba(200, 200, 200, 120) } else { disabled_color };
         if self.show_grid {
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
@@ -282,11 +267,7 @@ impl Draw for BarChart {
 
         for (i, bar) in self.bars.iter().enumerate() {
             let bar_color = bar.color.unwrap_or(self.bar_color);
-            let effective_color = if is_enabled {
-                bar_color
-            } else {
-                disabled_color
-            };
+            let effective_color = if is_enabled { bar_color } else { disabled_color };
 
             let bar_x = plot_area.x
                 + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
@@ -359,11 +340,8 @@ mod tests {
     #[test]
     fn bar_chart_set_bars() {
         let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
-        let entries = vec![
-            BarEntry::new("A", 10.0),
-            BarEntry::new("B", 20.0),
-            BarEntry::new("C", 15.0),
-        ];
+        let entries =
+            vec![BarEntry::new("A", 10.0), BarEntry::new("B", 20.0), BarEntry::new("C", 15.0)];
         bc.set_bars(entries);
         assert_eq!(bc.bar_count(), 3);
         assert_eq!(bc.bars()[0].label, "A");
