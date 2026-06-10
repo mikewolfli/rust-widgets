@@ -4,14 +4,14 @@ version = "0.9.6"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
-keywords = ["gui", "ui", "widget", "cross-platform", "native", "mobile", "reactive", "wasm"]
+keywords = ["gui", "widget", "cross-platform", "mobile", "wasm"]
 categories = ["gui", "rendering", "graphics", "development-tools", "embedded", "multimedia", "web-programming"]
 authors = ["Mike Wolfli <mikewolfli@gmail.com>"]
 readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.87"
-include = ["src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
+include = ["src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "tools/widget_gallery.rs", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
 
 [lints.rust]
 unexpected_cfgs = "allow"
