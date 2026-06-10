@@ -348,16 +348,15 @@ impl Draw for ListBox {
         // Draw base widget
         let rect = self.geometry();
         let padding = 2;
+        let style = self.style();
+        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
         // Draw background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(255, 255, 255),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
-        );
+        if let Some(border_color) = style.border_color {
+            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+        }
         // Draw items
         let (start, end) = self.visible_range();
         for i in start..end {
@@ -378,11 +377,8 @@ impl Draw for ListBox {
             }
             // Draw item text
             if let Some(text) = self.item(i) {
-                let text_color = if self.is_selected(i) {
-                    Color::from_rgb(255, 255, 255)
-                } else {
-                    Color::from_rgb(0, 0, 0)
-                };
+                let text_color =
+                    if self.is_selected(i) { Color::from_rgb(255, 255, 255) } else { text_color };
                 context.draw_text(
                     Point::new(
                         item_rect.x + padding,

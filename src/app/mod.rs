@@ -6,6 +6,7 @@
 
 mod app_core;
 mod handle;
+pub mod lifecycle;
 
 pub use app_core::{App, AppConfig};
 pub use handle::{
@@ -15,6 +16,7 @@ pub use handle::{
     ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, TabWidgetHandle,
     TextEditHandle, WebViewHandle, WidgetHandle, WindowHandle,
 };
+pub use lifecycle::*;
 
 #[cfg(test)]
 mod tests {

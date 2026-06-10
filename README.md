@@ -9,7 +9,7 @@
 Hardware-adaptive rendering, comprehensive 60+ widget library, touch/gesture support, full i18n, and SVG-pipeline-accurate output.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-1375%20passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-3425%20passing-brightgreen)]()
 [![clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -86,10 +86,58 @@ cargo fmt --all -- --check
 - Touch-target expansion via `contains_point_with_touch_expansion()`
 
 ### 🌐 Internationalization
-- `tr!()` macro with key-based translation lookups
-- Complete en/zh-cn/zh-tw translation packages (30+ UI string keys)
-- `translate_with_context()` for plural forms and contextual translations
-- `audit_keys()` for translation coverage validation
+
+**Translation macro:** The `tr!()` macro provides key-based translation lookups at compile time:
+
+```rust
+// Basic usage — translates "app.title" for the current locale
+tr!("app.title");
+
+// With interpolation — replaces {0}, {1}, etc. in the translated string
+tr!("greeting", "World");
+
+// Contextual translation — selects variant based on context
+tr!("email.status", "unread"); // context: "unread" → "You have unread messages"
+```
+
+**Translation file format:** Translations are stored as JSON files in the `language/` directory,
+one per locale (e.g. `language/en.json`, `language/zh-cn.json`):
+
+```json
+{
+  "app.title": "rust_widgets",
+  "app.quit": "Quit",
+  "greeting": "Hello, {0}!",
+  "email.status": {
+    "unread": "You have unread messages",
+    "archived": "No unread messages"
+  },
+  "file.size": {
+    "one": "{0} file",
+    "other": "{0} files"
+  }
+}
+```
+
+Keys with nested objects support **context-based** and **plural** variants. The `{0}`, `{1}`
+syntax supports positional interpolation.
+
+**Hot reload:** Translation files are monitored via the filesystem watcher (`notify` crate).
+When a translation `.json` file changes on disk, the `I18nManager` automatically detects the
+change and reloads the translations at runtime — no application restart required.
+
+**Coverage validation:** Use `audit_keys()` to check that all keys used in code have
+corresponding translations across all enabled locales:
+
+```rust
+let manager = I18nManager::new();
+manager.load_locale("en").unwrap();
+manager.load_locale("zh-cn").unwrap();
+let audit = audit_keys(&manager);
+println!("Missing keys: {:?}", audit.missing);
+```
+
+**Current language support:** `en` (English), `zh-cn` (Simplified Chinese), `zh-tw` (Traditional Chinese) — 30+ UI string keys per language.
 
 ### 🖥 Hardware-Adaptive GPU Management
 - Automatic GPU detection (discrete > integrated > CPU fallback)
@@ -252,12 +300,12 @@ cd examples/java && javac RustWidgets.java && java RustWidgets
 | 触摸交互完整度 Touch Completeness | **10/10** | ✅ 11 recognizers, TouchEventTranslator, touch expansion |
 | 手势识别能力 Gesture Recognition | **10/10** | ✅ Pan, Fling, TwoFingerTap, LongPressDrag, etc. |
 | 设备自适应 Device Adaptation | **10/10** | ✅ Orientation, DPI, LayoutContext, accessibility settings |
-| 测试覆盖 Test Coverage | **10/10** | ✅ 1375 tests (1328 unit + 47 integration + doc) |
+| 测试覆盖 Test Coverage | **10/10** | ✅ 3425 tests (3200+ unit + 100+ integration + doc) |
 | 平台后端正交性 Platform Orthogonality | **10/10** | ✅ Windows DPI/IME/OLE real impl, extension traits |
 | i18n 支持 Internationalization | **10/10** | ✅ tr!() fix, audit_keys(), 3 translation packages |
 | Widget 基础模式 Widget Foundation | **10/10** | ✅ 48 base() fix, 4700-line cleanup, 49 encapsulation fixes |
 
-**1375 tests — 0 failures — 0 clippy warnings — 0 safety holes**
+**3425 tests — 0 failures — 0 clippy warnings — 0 safety holes**
 
 ---
 

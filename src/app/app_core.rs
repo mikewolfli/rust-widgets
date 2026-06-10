@@ -66,7 +66,7 @@ impl AppConfig {
 ///
 /// ## Minimal (no configuration)
 ///
-/// ```ignore
+/// ```rust,ignore
 /// use rust_widgets::app::App;
 ///
 /// let app = App::new();
@@ -83,7 +83,7 @@ impl AppConfig {
 ///
 /// ## With configuration and callbacks
 ///
-/// ```ignore
+/// ```rust,ignore
 /// use rust_widgets::app::{App, AppConfig};
 ///
 /// let app = App::with_config(
@@ -222,6 +222,6 @@ thread_local! {
 
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        eprintln!("[rust_widgets.app] stage={}", stage);
+        log::info!("[rust_widgets.app] stage={}", stage);
     }
 }

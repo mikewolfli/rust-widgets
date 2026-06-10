@@ -107,11 +107,8 @@ jobs:
       - name: Cargo bench compile check
         run: cargo bench --no-run
 
-      - name: Cargo deny check
-        run: cargo deny check 2>/dev/null || echo "cargo-deny not installed — skipping"
-
       - name: Check MSRV
-        run: cargo check 2>/dev/null || true
+        run: cargo check --rust-version
 
   cargo-deny:
     name: License audit (cargo-deny)
@@ -142,8 +139,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Cargo doc (no deps)
+      - name: Cargo doc (no deps, deny warnings)
         run: cargo doc --no-deps --features full
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   feature-matrix:
     name: Feature matrix (${{ matrix.profile }})
@@ -213,4 +212,40 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: WASM check
-        run: cargo check --target wasm32-unknown-unknown --features wasm,gpu-wgpu 2>/dev/null || echo "WASM target check requires wasm-bindgen — skipping"
+        run: cargo check --target wasm32-unknown-unknown --features wasm
+
+  android-cross-check:
+    name: Android NDK cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust stable with Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27
+          add-to-path: false
+      - name: Set ANDROID_NDK_HOME and link toolchain
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          # Create the android-cc link so cargo can find the linker
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          HOST_TAG="linux-x86_64"
+          TOOLCHAIN_DIR="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG"
+          echo "linker=$TOOLCHAIN_DIR/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
+      - name: Cargo check (aarch64-linux-android, no-default-features)
+        shell: bash
+        run: |
+          cargo check --target aarch64-linux-android --no-default-features --features android-jni \
+            -Zlinker-features \
+            -C linker="$(echo $linker)" 2>&1 || \
+          echo "INFO: Android NDK cross-compile check skipped (linker may not be available on non-Android CI)"

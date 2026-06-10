@@ -111,18 +111,22 @@ impl Draw for RadioButton {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw radio button
         let rect = self.geometry();
+        let style = self.style();
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
         let radius = rect.height.min(rect.width) / 4;
         // Draw outer circle
-        context.draw_circle(center, radius, Color::from_rgb(100u8, 100, 100));
+        let circle_color = style.border_color.unwrap_or(Color::from_rgb(100u8, 100, 100));
+        context.draw_circle(center, radius, circle_color);
         // Draw inner circle if checked
         if self.checked {
             let inner_radius = radius / 2;
-            context.fill_circle(center, inner_radius, Color::from_rgb(0u8, 120, 215));
+            let fill_color = style.background_color.unwrap_or(Color::from_rgb(0u8, 120, 215));
+            context.fill_circle(center, inner_radius, fill_color);
         }
         // Draw text label
+        let text_color = style.text_color.unwrap_or(Color::from_rgb(60u8, 60, 60));
         let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
-        context.draw_text(text_pos, &self.text, &Font::default(), Color::from_rgb(60u8, 60, 60));
+        context.draw_text(text_pos, &self.text, &Font::default(), text_color);
     }
 }
 

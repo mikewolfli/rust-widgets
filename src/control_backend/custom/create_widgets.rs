@@ -4,6 +4,8 @@ use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 use crate::widget::WidgetKind;
 
+/// Full ControlBackend implementation for CustomPaintControlBackend.
+/// Non-core methods inherit default implementations from the trait.
 impl ControlBackend for super::CustomPaintControlBackend {
     fn backend_name(&self) -> &'static str {
         "custom-paint-control-backend"
@@ -300,6 +302,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -385,6 +388,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_tool_bar(
         &self,
         parent: ObjectId,
@@ -412,6 +416,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_status_bar(
         &self,
         parent: ObjectId,
@@ -441,6 +446,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_dialog(
         &self,
         parent: ObjectId,
@@ -470,6 +476,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_message_box(
         &self,
         parent: ObjectId,
@@ -500,6 +507,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_file_dialog(
         &self,
         parent: ObjectId,
@@ -529,6 +537,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_color_dialog(
         &self,
         parent: ObjectId,
@@ -558,6 +567,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_font_dialog(
         &self,
         parent: ObjectId,
@@ -587,6 +597,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_popup_window(
         &self,
         parent: ObjectId,
@@ -616,6 +627,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_text_edit(
         &self,
         parent: ObjectId,
@@ -645,6 +657,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_rich_edit(
         &self,
         parent: ObjectId,
@@ -702,6 +715,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_list_view(
         &self,
         parent: ObjectId,
@@ -729,6 +743,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_tree_view(
         &self,
         parent: ObjectId,
@@ -810,6 +825,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_dock_panel(
         &self,
         parent: ObjectId,
@@ -866,6 +882,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_tab_widget(
         &self,
         parent: ObjectId,
@@ -893,6 +910,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_splitter(
         &self,
         parent: ObjectId,
@@ -920,6 +938,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_stack_widget(
         &self,
         parent: ObjectId,
@@ -947,6 +966,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_mdi_area(
         &self,
         parent: ObjectId,
@@ -974,6 +994,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_canvas(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -994,6 +1015,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_table(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1014,6 +1036,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_grid(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1034,6 +1057,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1083,6 +1107,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_check_list_box(
         &self,
         parent: ObjectId,
@@ -1110,6 +1135,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_double_spin_box(
         &self,
         parent: ObjectId,
@@ -1138,6 +1164,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         let widget_id = self.alloc_widget_id();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1158,6 +1185,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_wizard(
         &self,
         parent: ObjectId,
@@ -1187,6 +1215,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_date_picker(
         &self,
         parent: ObjectId,
@@ -1214,6 +1243,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_time_picker(
         &self,
         parent: ObjectId,
@@ -1241,6 +1271,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_date_time_picker(
         &self,
         parent: ObjectId,
@@ -1268,6 +1299,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_directory_dialog(
         &self,
         parent: ObjectId,
@@ -1297,6 +1329,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_data_view(
         &self,
         parent: ObjectId,
@@ -1325,6 +1358,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_property_grid(
         &self,
         parent: ObjectId,
@@ -1353,6 +1387,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_toolbox(
         &self,
         parent: ObjectId,
@@ -1380,6 +1415,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_collapsible_pane(
         &self,
         parent: ObjectId,
@@ -1410,6 +1446,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_dock_widget(
         &self,
         parent: ObjectId,
@@ -1439,6 +1476,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_view(
         &self,
         parent: ObjectId,
@@ -1466,6 +1504,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_activity_indicator(
         &self,
         parent: ObjectId,
@@ -1493,6 +1532,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_calendar(
         &self,
         parent: ObjectId,
@@ -1520,6 +1560,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_column_view(
         &self,
         parent: ObjectId,
@@ -1548,6 +1589,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_undo_view(
         &self,
         parent: ObjectId,
@@ -1576,6 +1618,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_command_link(
         &self,
         parent: ObjectId,
@@ -1605,6 +1648,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_lcd_number(
         &self,
         parent: ObjectId,
@@ -1633,6 +1677,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_font_combo_box(
         &self,
         parent: ObjectId,
@@ -1660,6 +1705,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_view(
         &self,
         parent: ObjectId,
@@ -1687,6 +1733,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_page(
         &self,
         parent: ObjectId,
@@ -1714,6 +1761,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_settings(
         &self,
         parent: ObjectId,
@@ -1741,6 +1789,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_download_item(
         &self,
         parent: ObjectId,
@@ -1768,6 +1817,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_cookie_store(
         &self,
         parent: ObjectId,
@@ -1795,6 +1845,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_web_channel(
         &self,
         parent: ObjectId,
@@ -1822,6 +1873,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_find_text_result(
         &self,
         parent: ObjectId,
@@ -1849,6 +1901,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_notification(
         &self,
         parent: ObjectId,
@@ -1876,6 +1929,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_script_dialog(
         &self,
         parent: ObjectId,
@@ -1903,6 +1957,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_web_engine_context_menu_request(
         &self,
         parent: ObjectId,
@@ -1930,6 +1985,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_action(
         &self,
         parent: ObjectId,
@@ -1959,6 +2015,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_tool_button(
         &self,
         parent: ObjectId,
@@ -1988,6 +2045,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_tool_box(
         &self,
         parent: ObjectId,
@@ -2010,11 +2068,12 @@ impl ControlBackend for super::CustomPaintControlBackend {
                 y,
                 width,
                 height,
-                widget_kind: WidgetKind::ToolBox,
+                widget_kind: WidgetKind::Toolbox,
             },
         );
         widget_id
     }
+    #[cfg(not(feature = "mini"))]
     fn create_context_menu(
         &self,
         parent: ObjectId,

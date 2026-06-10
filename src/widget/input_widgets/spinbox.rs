@@ -241,16 +241,17 @@ impl Draw for SpinBox {
         let button_width = 20;
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
+        let style = self.style();
+        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let default_font = Font::default();
+        let font = style.font.as_ref().unwrap_or(&default_font);
         // Draw background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(255, 255, 255),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
-        );
+        if let Some(border_color) = style.border_color {
+            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+        }
         // Draw up/down buttons
         let down_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32 * 2.0;
         let up_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32;
@@ -316,12 +317,7 @@ impl Draw for SpinBox {
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
-                &display_text,
-                &Font::default(),
-                Color::from_rgb(0, 0, 0),
-            );
+            context.draw_text(Point::new(text_x, text_y as i32), &display_text, &font, text_color);
         }
     }
 }

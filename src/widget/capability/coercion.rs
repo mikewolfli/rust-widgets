@@ -8,14 +8,21 @@ use chrono::{NaiveDate, Weekday};
 use super::CapabilityAccessError;
 use super::CapabilityValue;
 use crate::core::{Alignment, Orientation};
+#[cfg(not(feature = "mini"))]
 use crate::widget::advanced_widgets::date_edit::Date;
+#[cfg(not(feature = "mini"))]
 use crate::widget::advanced_widgets::time_edit::Time;
 use crate::widget::base_widgets::checkbox::CheckState;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::lcd_number::{LCDNumberMode, SegmentStyle};
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::slider::TickPosition;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
+#[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::tool_bar::ToolBarOrientation;
+#[cfg(not(feature = "mini"))]
 use crate::widget::view_widgets::data_grid::{ColumnFilter, SortSpec};
+#[cfg(not(feature = "mini"))]
 use crate::widget::view_widgets::list_view::{SelectionMode, ViewMode};
 use crate::widget::Widget;
 
@@ -103,6 +110,7 @@ pub fn expect_naive_date(value: CapabilityValue) -> Result<NaiveDate, Capability
     NaiveDate::parse_from_str(&text, "%Y-%m-%d").map_err(|_| CapabilityAccessError::TypeMismatch)
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split('-');
@@ -129,6 +137,7 @@ pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split(':');
@@ -185,6 +194,7 @@ pub fn expect_weekday(value: CapabilityValue) -> Result<Weekday, CapabilityAcces
 // Composite type extractors
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_sort_specs(value: CapabilityValue) -> Result<Vec<SortSpec>, CapabilityAccessError> {
     let text = expect_string(value)?;
     if text.trim().is_empty() {
@@ -216,6 +226,7 @@ pub fn expect_sort_specs(value: CapabilityValue) -> Result<Vec<SortSpec>, Capabi
     Ok(specs)
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_column_filters(
     value: CapabilityValue,
 ) -> Result<Vec<ColumnFilter>, CapabilityAccessError> {
@@ -238,6 +249,7 @@ pub fn expect_column_filters(
     Ok(filters)
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_selection_mode(
     value: CapabilityValue,
 ) -> Result<SelectionMode, CapabilityAccessError> {
@@ -271,6 +283,7 @@ pub fn expect_list_box_selection_mode(
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_view_mode(value: CapabilityValue) -> Result<ViewMode, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -286,6 +299,7 @@ pub fn expect_view_mode(value: CapabilityValue) -> Result<ViewMode, CapabilityAc
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_toolbar_orientation(
     value: CapabilityValue,
 ) -> Result<ToolBarOrientation, CapabilityAccessError> {
@@ -344,6 +358,7 @@ pub fn expect_orientation(value: CapabilityValue) -> Result<Orientation, Capabil
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -359,6 +374,7 @@ pub fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, Capa
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -374,6 +390,7 @@ pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, Capabili
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),

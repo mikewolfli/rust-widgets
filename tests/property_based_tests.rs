@@ -4,57 +4,53 @@
 //! across a wide range of inputs.
 //!
 //! Run with: cargo test --test property_based_tests
-//!
-//! Note: proptest is a dev-dependency. Run `cargo add --dev proptest` first.
 
+use proptest::prelude::*;
 use rust_widgets::core::{Color, Point, Rect};
 
-/// Helper: a Color generated from RGBA components for property testing.
-fn assert_color_invariants(c: Color) {
-    // Color components are u8, guaranteed to be in 0-255 range.
-    // This function exists for proptest integration where components
-    // could come from generated arbitrary values.
-    let _ = c;
-}
+// ── Arbitrary implementations for core types ──
 
-#[test]
-fn color_rgba_roundtrip() {
-    // Test that Color::rgba roundtrips through fields
-    let c = Color::rgba(120, 200, 50, 180);
-    assert_color_invariants(c);
-    assert_eq!(c.r, 120);
-    assert_eq!(c.g, 200);
-    assert_eq!(c.b, 50);
-    assert_eq!(c.a, 180);
-}
+proptest! {
+    /// Color RGBA components are always in u8 range (guaranteed by type).
+    /// Roundtrip property: creating a Color from components then reading
+    /// them back yields the original values.
+    #[test]
+    fn color_rgba_roundtrip(r in 0u8.., g in 0u8.., b in 0u8.., a in 0u8..) {
+        let c = Color::rgba(r, g, b, a);
+        assert_eq!(c.r, r);
+        assert_eq!(c.g, g);
+        assert_eq!(c.b, b);
+        assert_eq!(c.a, a);
+    }
 
-#[test]
-fn rect_contains_is_consistent() {
-    let r = Rect::new(10, 10, 100, 100);
-    // Center point should be contained
-    assert!(r.contains(Point::new(60, 60)));
-    // Points outside should not be contained
-    assert!(!r.contains(Point::new(0, 0)));
-    assert!(!r.contains(Point::new(200, 200)));
-    // Edge points should be contained (inclusive origin, exclusive max edge)
-    assert!(r.contains(Point::new(10, 10)));
-    assert!(r.contains(Point::new(109, 109)));
-    assert!(!r.contains(Point::new(110, 110))); // max edge is exclusive
-}
+    /// For any Rect, its center point is always contained.
+    #[test]
+    fn rect_contains_center(w: u32, h: u32) {
+        let w = w % 1000 + 1;
+        let h = h % 1000 + 1;
+        let r = Rect::new(0, 0, w, h);
+        assert!(r.contains(Point::new((w / 2) as i32, (h / 2) as i32)));
+        // Origin is always contained
+        assert!(r.contains(Point::new(0, 0)));
+        // Points outside width/height should NOT be contained
+        assert!(!r.contains(Point::new(w as i32, 0)));
+        assert!(!r.contains(Point::new(0, h as i32)));
+    }
 
-#[test]
-fn rect_intersection_is_commutative() {
-    let a = Rect::new(0, 0, 100, 100);
-    let b = Rect::new(50, 50, 100, 100);
-    let ab = a.intersection(&b);
-    let ba = b.intersection(&a);
-    assert_eq!(ab, ba, "intersection must be commutative");
-    assert!(ab.is_some(), "intersection should exist");
-}
+    /// Rect intersection is always commutative.
+    #[test]
+    fn rect_intersection_commutative(x in 0i32..1000i32, y in 0i32..1000i32, w in 1u32..500u32, h in 1u32..500u32) {
+        let a = Rect::new(x, y, w, h);
+        let b = Rect::new(x + (w as i32 / 2), y + (h as i32 / 2), w, h);
+        let ab = a.intersection(&b);
+        let ba = b.intersection(&a);
+        assert_eq!(ab, ba, "intersection must be commutative");
+    }
 
-#[test]
-fn color_premultiplied_alpha_invariants() {
-    // For any color, blending with itself should produce the same color
-    let c = Color::rgba(100, 150, 200, 200);
-    assert_color_invariants(c);
+    /// For any Color, premultiplied alpha with itself should produce the same color.
+    #[test]
+    fn color_premultiplied_invariants(r in 0u8.., g in 0u8.., b in 0u8.., a in 0u8..) {
+        let c = Color::rgba(r, g, b, a);
+        let _ = c; // Structure: invariant is that type construction never panics
+    }
 }

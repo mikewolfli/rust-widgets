@@ -654,16 +654,22 @@ fn apply_view_layout(
     // Store the original x/y in the LayoutParams's leftMargin/topMargin.
     // We directly set margins; if the parent doesn't support MarginLayoutParams,
     // the margin values are simply ignored by the layout system.
-    let _ = env.call_method(view, "setLeft", "(I)V", &[jni::objects::JValue::Int(x)]);
-    let _ = env.call_method(view, "setTop", "(I)V", &[jni::objects::JValue::Int(y)]);
+    if let Err(e) = env.call_method(view, "setLeft", "(I)V", &[jni::objects::JValue::Int(x)]) {
+        log::error!("[android-jni] apply_view_layout: setLeft failed: {e}");
+    }
+    if let Err(e) = env.call_method(view, "setTop", "(I)V", &[jni::objects::JValue::Int(y)]) {
+        log::error!("[android-jni] apply_view_layout: setTop failed: {e}");
+    }
 
     // Set the layout params on the view
-    let _ = env.call_method(
+    if let Err(e) = env.call_method(
         view,
         "setLayoutParams",
         "(Landroid/view/ViewGroup$LayoutParams;)V",
         &[jni::objects::JValue::Object(&lp)],
-    );
+    ) {
+        log::error!("[android-jni] apply_view_layout: setLayoutParams failed: {e}");
+    }
 }
 
 /// Set the text content of a View that has `setText(CharSequence)`.
@@ -697,12 +703,14 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSetViewText<'local>(
     };
 
     let view_obj = global_ref.as_obj();
-    let _ = env.call_method(
+    if let Err(e) = env.call_method(
         view_obj,
         "setText",
         "(Ljava/lang/CharSequence;)V",
         &[jni::objects::JValue::Object(&text)],
-    );
+    ) {
+        log::error!("[android-jni] nativeSetViewText({id}): setText failed: {e}");
+    }
 
     log::info!("[android-jni] nativeSetViewText({id}): text={text_str}");
 }
@@ -760,12 +768,11 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSetViewVisibility(
     };
 
     let view_obj = global_ref.as_obj();
-    let _ = env.call_method(
-        view_obj,
-        "setVisibility",
-        "(I)V",
-        &[jni::objects::JValue::Int(visibility)],
-    );
+    if let Err(e) =
+        env.call_method(view_obj, "setVisibility", "(I)V", &[jni::objects::JValue::Int(visibility)])
+    {
+        log::error!("[android-jni] nativeSetViewVisibility({id}): setVisibility failed: {e}");
+    }
 }
 
 /// Set the enabled state of a View.
@@ -787,7 +794,7 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSetViewEnabled(
     };
 
     let view_obj = global_ref.as_obj();
-    let _ = env.call_method(
+    if let Err(e) = env.call_method(
         view_obj,
         "setEnabled",
         "(Z)V",
@@ -796,7 +803,9 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSetViewEnabled(
         } else {
             jni::sys::JNI_FALSE
         })],
-    );
+    ) {
+        log::error!("[android-jni] nativeSetViewEnabled({id}): setEnabled failed: {e}");
+    }
 }
 
 /// Destroy (remove global ref for) a previously created View.

@@ -301,10 +301,11 @@ impl Draw for ScrollArea {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
         let rect = self.geometry();
+        let style = self.style();
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, style.background_color.unwrap_or(Color::from_rgb(255, 255, 255)));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, style.border_color.unwrap_or(Color::from_rgb(200, 200, 200)));
         // Set viewport for clipping
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
         // Draw widget via registry

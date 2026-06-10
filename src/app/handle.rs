@@ -340,7 +340,7 @@ impl WindowHandle {
     /// The layout is stored internally and used to reposition children.
     /// Only one layout can be active at a time; calling this again replaces it.
     ///
-    /// ```ignore
+    /// ```rust,ignore
     /// use rust_widgets::layout::{BoxLayout, Orientation};
     /// use rust_widgets::app::WidgetHandle;
     ///

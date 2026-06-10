@@ -62,6 +62,7 @@ impl Draw for Switch {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        let style = self.style();
 
         // Track dimensions
         let track_width = rect.width.max(44);
@@ -74,11 +75,11 @@ impl Draw for Switch {
 
         // Draw track
         let track_color = if !is_enabled {
-            Color::rgba(200, 200, 200, 128)
+            style.background_color.unwrap_or(Color::rgba(200, 200, 200, 128))
         } else if self.checked {
-            Color::rgba(52, 199, 89, 200) // iOS green
+            style.background_color.unwrap_or(Color::rgba(52, 199, 89, 200)) // iOS green
         } else {
-            Color::rgba(180, 180, 180, 200)
+            style.background_color.unwrap_or(Color::rgba(180, 180, 180, 200))
         };
         context.fill_rounded_rect(track_rect, track_height / 2, track_color);
 
@@ -95,7 +96,8 @@ impl Draw for Switch {
         context.fill_rounded_rect(knob_rect, knob_size / 2, knob_color);
 
         // Draw knob shadow/border
-        context.draw_rounded_rect_stroke(knob_rect, knob_size / 2, Color::rgba(0, 0, 0, 30), 1);
+        let knob_border_color = style.border_color.unwrap_or(Color::rgba(0, 0, 0, 30));
+        context.draw_rounded_rect_stroke(knob_rect, knob_size / 2, knob_border_color, 1);
     }
 }
 

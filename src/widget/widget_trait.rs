@@ -5,6 +5,7 @@ use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::EventHandler;
 use crate::platform::accessibility::AccessibleRole;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::style::css::CssParser;
 use crate::style::{Margin, Padding, WidgetStyle};
 use std::any::Any;
 
@@ -316,6 +317,16 @@ pub trait Widget: EventHandler + Any {
     /// Returns the preferred size hint for layout calculations.
     fn size_hint(&self) -> Size {
         self.size()
+    }
+
+    /// Apply CSS styles to this widget. The `css` text is parsed and rules matching
+    /// the widget's kind and optional class/id are applied to the widget's style.
+    fn apply_css(&mut self, css: &str, class: Option<&str>) -> Result<(), String> {
+        let kind_str = format!("{:?}", self.kind());
+        let mut style = self.style().clone();
+        CssParser::parse_and_apply(css, &kind_str, class, None, None, &mut style)?;
+        self.set_style(style);
+        Ok(())
     }
 
     /// Checks whether the given point falls within this widget's interactive area.

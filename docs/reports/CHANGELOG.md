@@ -148,6 +148,84 @@ All notable changes to this project are documented in this file.
   now available for forward-compatible style contracts.
 - Geometry callers can incrementally adopt primitive helpers without breaking existing `Rect` call sites.
 
+## [0.10.0] - 2026-06-10
+
+### Added
+
+- **WidgetKind cleanup**: Removed orphan/duplicate variants from the widget kind enum
+  for a cleaner, more maintainable categorisation.
+- **macOS + iOS native FFI wiring**: Full native platform FFI bridges for macOS
+  (AppKit/NSAccessibility) and iOS (UIKit/UIAccessibility), enabling native control
+  creation and accessibility event routing.
+- **i18n system (complete)**: Fully functional internationalisation with locale
+  loading, plural rules, and context-based message translation.
+- **StyleSheet engine**: CSS-like declarative style system with selector matching,
+  cascading, and computed property resolution.
+- **New layouts**:
+  - `FlexLayout` — flex-box style responsive layout
+  - `WrapLayout` — flow-based wrapping layout
+  - `KeyboardAwareLayout` — auto-offset layout for soft keyboard
+  - `ConstraintLayout` — anchor/constraint-based positioning
+  - `Center` — centred container layout
+  - `AspectRatio` — fixed-ratio sizing wrapper
+- **New infrastructure**:
+  - `App Lifecycle` — structured application lifecycle management
+  - `Undo/Redo` — full undo/redo framework with command stack and composite commands
+  - `Data Binding` — reactive model-to-view automatic synchronisation
+  - `Print framework` — cross-platform print and preview API
+  - `PDF export` — PDF document generation with form, image, and security support
+- **New widgets** (65+):
+  - Tooltip, SegmentedButton, NavigationStack, ProgressCircle, Icon
+  - Popover, MenuButton, DropdownMenu
+  - MaskedEdit, AutoCompleteEdit, MultiSelectComboBox
+  - RangeSlider, FloatingLabel
+  - TabView, SearchBar
+  - Cupertino* controls: CupertinoNavigationBar, CupertinoSegmentedControl,
+    CupertinoDatePicker
+  - SwipeToDismiss, Pager/PageView, RefreshControl
+  - ModalBottomSheet
+  - FindReplaceDialog, PropertiesPanel
+  - Charts: LineChart, BarChart, PieChart, Sparkline
+  - EditableComboBox, DateRangePicker
+  - AnimatedImage — frame-based animation widget with loop control
+  - HeroAnimation — shared-element transition animation widget
+  - BezierCurveEditor — interactive cubic Bézier curve editor
+  - ColorHistory — colour swatch history with selection/hover signals
+  - FontPreview — live font preview with configurable sample text
+  - ShortcutEditor — keyboard shortcut configuration editor
+  - InplaceEditor — click-to-edit text field with accept/cancel signals
+- **Platform backends**:
+  - `android` — full Android Platform trait implementation (state-driven)
+  - `wasm` — WASM platform module for web browser execution
+- **IME implementations**:
+  - `macOS` — NSTextInputContext-based IME bridge
+  - `Windows` — TSF-based IME bridge
+  - `Linux` — IBus-based IME bridge
+- **A11y enhancements**:
+  - `A11yRole` enum with 27 semantic roles (Button..Unknown)
+  - `A11yState` / `A11yNode` / `A11yTree` for screen reader tree management
+  - `A11yProvider` trait for cross-platform screen reader integration
+  - NSAccessibility protocol helpers (macOS) and UIA control type helpers (Windows)
+  - `DefaultA11yProvider` in-memory implementation with focus traversal
+- **Text shaping & rich text**:
+  - `TextShaper` / `SimpleTextShaper` — text measurement and glyph run shaping
+  - `RichText` / `TextSpan` / `TextStyle` — multi-span styled text rendering
+  - `TextOverflow` / `TextClamp` — ellipsis, clip, and multi-line clamp handling
+  - `GraphemeCluster` / `GraphemeProcessor` — Unicode emoji, combining marks, and ZWJ grapheme support
+- **Platform backend refactoring**:
+  - `macOS` (objc2) — `platform_impl.rs` split into `widget_creation.rs`, `menu_impl.rs`,
+    `widget_state.rs`, `clipboard_dnd.rs`, `dialog_creation.rs`, `native.rs` for maintainability
+  - `Linux` — `platform_impl.rs` split into `widget_creation.rs`, `menu_impl.rs`,
+    `widget_state.rs` for maintainability
+- **Render pipeline refactoring**:
+  - `render/pipeline/` split — `containers.rs` extracted from monolithic pipeline
+    into dedicated sub-module per widget family for maintainability
+- **Testing**: 3400+ test cases across all subsystems
+
+### Changed
+
+- Missing docs lint changed from `allow` to `warn` to surface documentation gaps.
+
 ## [0.5.19] - 2026-03-03
 
 ### Added

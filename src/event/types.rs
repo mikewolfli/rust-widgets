@@ -269,6 +269,46 @@ impl Event {
         Self::HolographicTouch { pos: Point::new(x, y), depth, touch_id }
     }
 
+    /// Creates a pointer press event.
+    pub fn pointer_press(pos: Point, button: u32, pressure: f32, tilt_x: f32, tilt_y: f32) -> Self {
+        Event::PointerPress { pos, button, pressure, tilt_x, tilt_y }
+    }
+
+    /// Creates a pointer move event.
+    pub fn pointer_move(pos: Point, pressure: f32, tilt_x: f32, tilt_y: f32) -> Self {
+        Event::PointerMove { pos, pressure, tilt_x, tilt_y }
+    }
+
+    /// Creates a pointer release event.
+    pub fn pointer_release(pos: Point, button: u32, pressure: f32) -> Self {
+        Event::PointerRelease { pos, button, pressure }
+    }
+
+    /// Creates a gamepad press event.
+    pub fn gamepad_press(button: u32) -> Self {
+        Event::GamepadPress { button }
+    }
+
+    /// Creates a gamepad release event.
+    pub fn gamepad_release(button: u32) -> Self {
+        Event::GamepadRelease { button }
+    }
+
+    /// Creates a gamepad axis event.
+    pub fn gamepad_axis(axis: u32, value: f32) -> Self {
+        Event::GamepadAxis { axis, value }
+    }
+
+    /// Creates a gamepad connected event.
+    pub fn gamepad_connected(id: u32) -> Self {
+        Event::GamepadConnected { id }
+    }
+
+    /// Creates a gamepad disconnected event.
+    pub fn gamepad_disconnected(id: u32) -> Self {
+        Event::GamepadDisconnected { id }
+    }
+
     /// Creates an orientation changed event.
     pub fn orientation_changed(orientation: ScreenOrientation) -> Self {
         Self::OrientationChanged { orientation }
@@ -546,6 +586,93 @@ mod tests {
                 assert_eq!(delta.y, -3);
             }
             _ => panic!("expected Drag"),
+        }
+    }
+
+    #[test]
+    fn pointer_press_constructor() {
+        let e = Event::pointer_press(Point::new(10, 20), 0, 0.5, 0.1, 0.2);
+        match e {
+            Event::PointerPress { pos, button, pressure, tilt_x, tilt_y } => {
+                assert_eq!(pos, Point::new(10, 20));
+                assert_eq!(button, 0);
+                assert!((pressure - 0.5).abs() < 1e-6);
+                assert!((tilt_x - 0.1).abs() < 1e-6);
+                assert!((tilt_y - 0.2).abs() < 1e-6);
+            }
+            _ => panic!("Expected PointerPress"),
+        }
+    }
+
+    #[test]
+    fn pointer_move_constructor() {
+        let e = Event::pointer_move(Point::new(30, 40), 0.8, -0.1, 0.3);
+        match e {
+            Event::PointerMove { pos, pressure, tilt_x, tilt_y } => {
+                assert_eq!(pos, Point::new(30, 40));
+                assert!((pressure - 0.8).abs() < 1e-6);
+            }
+            _ => panic!("Expected PointerMove"),
+        }
+    }
+
+    #[test]
+    fn pointer_release_constructor() {
+        let e = Event::pointer_release(Point::new(50, 60), 1, 0.0);
+        match e {
+            Event::PointerRelease { pos, button, pressure } => {
+                assert_eq!(pos, Point::new(50, 60));
+                assert_eq!(button, 1);
+            }
+            _ => panic!("Expected PointerRelease"),
+        }
+    }
+
+    #[test]
+    fn gamepad_press_constructor() {
+        let e = Event::gamepad_press(3);
+        match e {
+            Event::GamepadPress { button } => assert_eq!(button, 3),
+            _ => panic!("Expected GamepadPress"),
+        }
+    }
+
+    #[test]
+    fn gamepad_release_constructor() {
+        let e = Event::gamepad_release(7);
+        match e {
+            Event::GamepadRelease { button } => assert_eq!(button, 7),
+            _ => panic!("Expected GamepadRelease"),
+        }
+    }
+
+    #[test]
+    fn gamepad_axis_constructor() {
+        let e = Event::gamepad_axis(1, -0.5);
+        match e {
+            Event::GamepadAxis { axis, value } => {
+                assert_eq!(axis, 1);
+                assert!((value - (-0.5)).abs() < 1e-6);
+            }
+            _ => panic!("Expected GamepadAxis"),
+        }
+    }
+
+    #[test]
+    fn gamepad_connected_constructor() {
+        let e = Event::gamepad_connected(42);
+        match e {
+            Event::GamepadConnected { id } => assert_eq!(id, 42),
+            _ => panic!("Expected GamepadConnected"),
+        }
+    }
+
+    #[test]
+    fn gamepad_disconnected_constructor() {
+        let e = Event::gamepad_disconnected(99);
+        match e {
+            Event::GamepadDisconnected { id } => assert_eq!(id, 99),
+            _ => panic!("Expected GamepadDisconnected"),
         }
     }
 }

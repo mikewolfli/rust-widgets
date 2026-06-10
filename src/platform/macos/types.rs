@@ -88,6 +88,11 @@ pub(crate) fn widget_events() -> &'static Mutex<Vec<WidgetTriggerEvent>> {
 
 extern "C" fn on_menu_item(_this: &Object, _cmd: Sel, sender: id) {
     // Selector callback invoked by NSMenuItem actions.
+    // SAFETY: This function is called from Objective-C runtime on the main thread.
+    // sender is guaranteed by the ObjC runtime to be a valid NSMenuItem instance.
+    // msg_send! macros use valid selectors (representedObject, unsignedLongLongValue)
+    // that are standard on NSMenuItem. The panic::catch_unwind wrapper prevents
+    // unwinding across the FFI boundary, which would be UB.
     let result = std::panic::catch_unwind(|| unsafe {
         if sender == nil {
             return;
@@ -314,6 +319,13 @@ impl MacOSPlatform {
     pub(crate) fn add_to_parent_window(&self, parent: ObjectId, view: id) {
         if let Some(parent_handle) = self.get_handle(parent) {
             if let HandleKind::Window = parent_handle.kind {
+                // SAFETY: parent_handle is validated by get_handle() and confirmed to be a
+                // Window kind before entering this block. Self::as_id() converts the stored
+                // usize back to a valid ObjC id that was registered by register_handle().
+                // NSWindow::contentView() and addSubview_() use selectors proven valid by
+                // the cocoa crate. The view parameter is a valid id created earlier in the
+                // calling function (e.g., create_button) and is retained by the parent
+                // window's view hierarchy after this call.
                 unsafe {
                     let content_view = NSWindow::contentView(Self::as_id(parent_handle));
                     content_view.addSubview_(view);
@@ -362,6 +374,12 @@ impl MacOSPlatform {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        // SAFETY: handle has been validated by the kind check above (must be ListBox).
+        // Self::as_id(handle) converts the stored usize back to a valid ObjC id that
+        // was registered by register_handle(). setStringValue: is a valid selector on
+        // NSTextField (used as a list box surrogate). NSString::alloc(nil).init_str()
+        // produces a valid NSString - nil alloc is handled by init_str returning nil
+        // which is safe to message (cocoa/objc handles nil messaging gracefully).
         unsafe {
             let ns_text = NSString::alloc(nil).init_str(&text);
             let _: () = msg_send![Self::as_id(handle), setStringValue: ns_text];

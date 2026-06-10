@@ -142,6 +142,7 @@ impl EventHandler for CheckBox {
 impl Draw for CheckBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        let style = self.style();
         let checkbox_size = 16; // Standard checkbox size
                                 // Calculate checkbox rectangle
         let checkbox_rect = Rect::new(
@@ -150,27 +151,34 @@ impl Draw for CheckBox {
             checkbox_size as u32,
             checkbox_size as u32,
         );
+        let enabled = self.base.is_enabled();
         // Draw checkbox background
-        let bg_color = if !self.base.is_enabled() {
-            Color::from_rgb(240, 240, 240)
-        } else {
-            Color::from_rgb(255, 255, 255)
-        };
+        let bg_color = style.background_color.unwrap_or_else(|| {
+            if !enabled {
+                Color::from_rgb(240, 240, 240)
+            } else {
+                Color::from_rgb(255, 255, 255)
+            }
+        });
         context.fill_rect(checkbox_rect, bg_color);
         // Draw checkbox border
-        let border_color = if !self.base.is_enabled() {
-            Color::from_rgb(180, 180, 180)
-        } else {
-            Color::from_rgb(100, 100, 100)
-        };
+        let border_color = style.border_color.unwrap_or_else(|| {
+            if !enabled {
+                Color::from_rgb(180, 180, 180)
+            } else {
+                Color::from_rgb(100, 100, 100)
+            }
+        });
         context.draw_rect(checkbox_rect, border_color);
         // Draw checkmark or partial check
         if self.state != CheckState::Unchecked {
-            let check_color = if !self.base.is_enabled() {
-                Color::from_rgb(150, 150, 150)
-            } else {
-                Color::from_rgb(0, 120, 215) // Blue checkmark
-            };
+            let check_color = style.text_color.unwrap_or_else(|| {
+                if !enabled {
+                    Color::from_rgb(150, 150, 150)
+                } else {
+                    Color::from_rgb(0, 120, 215) // Blue checkmark
+                }
+            });
             match self.state {
                 CheckState::Checked => {
                     // Draw a compact check glyph.
@@ -200,11 +208,13 @@ impl Draw for CheckBox {
         }
         // Draw text next to the checkbox
         if !self.text.is_empty() {
-            let text_color = if !self.base.is_enabled() {
-                Color::from_rgb(150, 150, 150)
-            } else {
-                Color::from_rgb(0, 0, 0)
-            };
+            let text_color = style.text_color.unwrap_or_else(|| {
+                if !enabled {
+                    Color::from_rgb(150, 150, 150)
+                } else {
+                    Color::from_rgb(0, 0, 0)
+                }
+            });
             let text_point = Point {
                 x: checkbox_rect.x + checkbox_rect.width as i32 + 4,
                 y: checkbox_rect.y + checkbox_rect.height as i32 / 2,

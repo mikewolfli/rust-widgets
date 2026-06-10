@@ -1,20 +1,35 @@
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
+#[cfg(not(feature = "mini"))]
 pub mod collapsible_pane;
+#[cfg(not(feature = "mini"))]
 pub mod dockwidget;
 pub mod groupbox;
+#[cfg(not(feature = "mini"))]
 pub mod mdiarea;
 pub mod scrollarea;
+#[cfg(not(feature = "mini"))]
 pub mod splitter;
+#[cfg(not(feature = "mini"))]
 pub mod stackedwidget;
+#[cfg(not(feature = "mini"))]
 pub mod tabwidget;
+pub mod tile_view;
+#[cfg(not(feature = "mini"))]
 pub mod toolbox;
 // Re-export container widgets
+#[cfg(not(feature = "mini"))]
 pub use collapsible_pane::CollapsiblePane;
+#[cfg(not(feature = "mini"))]
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
+#[cfg(not(feature = "mini"))]
 pub use mdiarea::MdiArea;
 pub use scrollarea::ScrollArea;
+#[cfg(not(feature = "mini"))]
 pub use splitter::Splitter;
+#[cfg(not(feature = "mini"))]
 pub use stackedwidget::StackedWidget;
+#[cfg(not(feature = "mini"))]
 pub use tabwidget::TabWidget;
+#[cfg(not(feature = "mini"))]
 pub use toolbox::ToolBox;

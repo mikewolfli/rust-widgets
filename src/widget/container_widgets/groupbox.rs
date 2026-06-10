@@ -154,14 +154,15 @@ impl Draw for GroupBox {
         // Draw base widget
         let rect = self.geometry();
         let title_rect = self.title_rect();
+        let style = self.style();
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, style.border_color.unwrap_or(Color::from_rgb(200, 200, 200)));
         // Draw title background to hide border
         let title_bg_width = title_rect.width + 20;
         let title_bg_x = title_rect.x - 10;
         context.fill_rect(
             Rect::new(title_bg_x, rect.y, title_bg_width, 2),
-            Color::from_rgb(255, 255, 255),
+            style.background_color.unwrap_or(Color::from_rgb(255, 255, 255)),
         );
         // Draw checkbox if checkable
         if self.checkable {
@@ -198,7 +199,7 @@ impl Draw for GroupBox {
         // Draw title text
         if !self.title.is_empty() {
             let text_color = if self.base.is_enabled() {
-                Color::from_rgb(0, 0, 0)
+                style.text_color.unwrap_or(Color::from_rgb(0, 0, 0))
             } else {
                 Color::from_rgb(150, 150, 150)
             };

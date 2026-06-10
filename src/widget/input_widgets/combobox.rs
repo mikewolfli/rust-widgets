@@ -242,20 +242,19 @@ impl Draw for ComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
         let rect = self.geometry();
+        let style = self.style();
         let padding = 4;
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(255, 255, 255),
-        );
+        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
-        );
+        if let Some(border_color) = style.border_color {
+            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+        }
         // Draw dropdown arrow
+        let arrow_color = style.text_color.unwrap_or(Color::from_rgb(100, 100, 100));
         let arrow_size = 8;
         let arrow_x_f = rect.x as f32 + rect.width as f32 - padding as f32 - arrow_size as f32;
         let arrow_y_f = rect.y as f32 + rect.height as f32 / 2.0;
@@ -264,35 +263,27 @@ impl Draw for ComboBox {
         context.draw_line(
             Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
             Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
             Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            arrow_color,
         );
         // Draw current text
+        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let font = style.font.clone().unwrap_or_default();
         let current_text = self.current_text();
         if !current_text.is_empty() {
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
-                &current_text,
-                &Font::default(),
-                Color::from_rgb(0, 0, 0),
-            );
+            context.draw_text(Point::new(text_x, text_y as i32), &current_text, &font, text_color);
         } else if self.items.is_empty() {
             // Draw placeholder
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
-                "(Empty)",
-                &Font::default(),
-                Color::from_rgb(150, 150, 150),
-            );
+            context.draw_text(Point::new(text_x, text_y as i32), "(Empty)", &font, text_color);
         }
     }
 }

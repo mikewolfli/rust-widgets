@@ -306,15 +306,16 @@ impl Draw for ScrollBar {
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = self.slider_size();
+        let style = self.style();
         // Draw background
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(240, 240, 240),
+            style.background_color.unwrap_or(Color::from_rgb(240, 240, 240)),
         );
         // Draw border
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
+            style.border_color.unwrap_or(Color::from_rgb(200, 200, 200)),
         );
         // Draw slider
         match self.orientation {

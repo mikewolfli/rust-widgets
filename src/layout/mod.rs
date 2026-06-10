@@ -1,23 +1,35 @@
 //! Layout managers.
 pub mod absolute;
+pub mod aspect_ratio;
 pub mod box_layout;
+pub mod center;
+pub mod constraint;
+pub mod flex;
 pub mod flow;
 pub mod form;
 pub mod grid;
 pub mod inspector;
+pub mod keyboard_aware;
 pub mod splitter;
 pub mod stack;
 pub mod uniform_grid;
+pub mod wrap;
 pub use crate::core::Orientation;
 use crate::core::{ObjectId, Point, Rect, Size};
 pub use absolute::*;
+pub use aspect_ratio::*;
 pub use box_layout::*;
+pub use center::*;
+pub use constraint::*;
+pub use flex::*;
 pub use flow::*;
 pub use form::*;
 pub use grid::*;
+pub use keyboard_aware::*;
 pub use splitter::*;
 pub use stack::*;
 pub use uniform_grid::*;
+pub use wrap::*;
 /// Space allocation preference used by layout items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePolicy {

@@ -77,10 +77,13 @@ use std::collections::HashMap;
 
 use crate::core::Rect;
 
-use super::{
-    view_widgets::data_grid::DataGrid, view_widgets::tree_table::TreeTable,
-    view_widgets::virtual_table::VirtualTable, Widget, WidgetKind,
-};
+#[cfg(not(feature = "mini"))]
+use super::view_widgets::data_grid::DataGrid;
+#[cfg(not(feature = "mini"))]
+use super::view_widgets::tree_table::TreeTable;
+#[cfg(not(feature = "mini"))]
+use super::view_widgets::virtual_table::VirtualTable;
+use super::{Widget, WidgetKind};
 
 pub mod types;
 pub use types::*;
@@ -242,12 +245,15 @@ impl WidgetFactory {
     }
 
     fn capability_for_widget(&self, widget: &dyn Widget) -> Option<&WidgetCapability> {
+        #[cfg(not(feature = "mini"))]
         if widget_as::<DataGrid>(widget).is_some() {
             return self.capability("data_grid");
         }
+        #[cfg(not(feature = "mini"))]
         if widget_as::<VirtualTable>(widget).is_some() {
             return self.capability("virtual_table");
         }
+        #[cfg(not(feature = "mini"))]
         if widget_as::<TreeTable>(widget).is_some() {
             return self.capability("tree_table");
         }

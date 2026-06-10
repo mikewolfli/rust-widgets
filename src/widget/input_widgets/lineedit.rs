@@ -348,19 +348,31 @@ impl Draw for LineEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
         let rect = self.geometry();
+        let style = self.style();
         let padding = 4;
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
+        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(255, 255, 255),
+            bg,
         );
         // Draw border
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
-        );
+        if let Some(border_color) = style.border_color {
+            if style.border_width > 0 {
+                context.draw_rect_stroke(
+                    Rect::new(rect.x, rect.y, rect.width, rect.height),
+                    border_color,
+                    style.border_width,
+                );
+            } else {
+                context.draw_rect(
+                    Rect::new(rect.x, rect.y, rect.width, rect.height),
+                    border_color,
+                );
+            }
+        }
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
@@ -368,11 +380,13 @@ impl Draw for LineEdit {
             &self.display_text()
         };
         if !display_text.is_empty() {
+            let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+            let font = style.font.clone().unwrap_or_default();
             context.draw_text(
                 Point::new(text_x, text_y as i32),
                 display_text,
-                &Font::default(),
-                Color::from_rgb(0, 0, 0),
+                &font,
+                text_color,
             );
         }
         // Draw cursor if focused

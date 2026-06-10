@@ -146,16 +146,15 @@ impl Draw for ProgressBar {
         // Draw base widget
         let rect = self.geometry();
         let progress = self.progress();
+        let style = self.style();
+        let bg = style.background_color.unwrap_or(Color::from_rgb(240, 240, 240));
+        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
         // Draw background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(240, 240, 240),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(200, 200, 200),
-        );
+        if let Some(border_color) = style.border_color {
+            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+        }
         // Draw progress bar
         match self.orientation {
             Orientation::Horizontal => {
@@ -190,7 +189,7 @@ impl Draw for ProgressBar {
                 Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2),
                 &text,
                 &Font::default(),
-                Color::from_rgb(0, 0, 0),
+                text_color,
             );
         }
     }

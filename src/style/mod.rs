@@ -1,8 +1,11 @@
 //! Style system primitives.
 pub mod animation;
 pub mod animation_group;
+pub mod css;
+pub mod css_watcher;
 pub mod gradient;
 pub mod selector;
+pub mod stylesheet;
 pub mod theme;
 pub mod theme_state;
 use crate::core::{Color, Font, Size};
@@ -20,8 +23,10 @@ use crate::core::{Color, Font, Size};
 // Each step falls through to the next level if unset.
 pub use animation::*;
 pub use animation_group::*;
+pub use css::*;
 pub use gradient::*;
 pub use selector::*;
+pub use stylesheet::*;
 pub use theme::*;
 pub use theme_state::*;
 /// Per-side padding values around widget content.
@@ -233,6 +238,8 @@ pub struct WidgetStyle {
     /// Optional minimum touch-target size override (BLUE8 P4-4).
     /// When set, hit testing expands the effective area to this size.
     pub touch_target: Option<Size>,
+    /// Optional opacity (0.0 = transparent, 1.0 = opaque). Set via CSS `opacity`.
+    pub opacity: Option<f32>,
 }
 impl WidgetStyle {
     /// Sets the background color.
@@ -282,6 +289,11 @@ impl WidgetStyle {
         self.background_gradient = Some(g);
         self
     }
+    /// Sets the opacity (CSS `opacity`).
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = Some(opacity.clamp(0.0, 1.0));
+        self
+    }
 
     /// Create a child style by inheriting non-set properties from a parent style.
     /// Properties that are `None` in `self` fall back to the parent's values.
@@ -309,6 +321,7 @@ impl WidgetStyle {
             margin: self.margin.clone(),
             shadow: self.shadow.clone().or(parent.shadow.clone()),
             touch_target: self.touch_target.or(parent.touch_target),
+            opacity: self.opacity.or(parent.opacity),
         }
     }
 
@@ -340,6 +353,9 @@ impl WidgetStyle {
         }
         if self.touch_target.is_none() {
             self.touch_target = other.touch_target;
+        }
+        if self.opacity.is_none() {
+            self.opacity = other.opacity;
         }
     }
 }

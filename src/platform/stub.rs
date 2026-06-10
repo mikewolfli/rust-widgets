@@ -2,12 +2,14 @@
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::state::BackendState;
 use crate::platform::types::*;
+#[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Handle kind discriminator for stub widget records.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub(crate) enum StubHandleKind {
     Window,
     Button,

@@ -37,6 +37,23 @@ impl UpdateBatcher {
         self.last_batch = Some(std::time::Instant::now());
         tracker.regions.into_iter().map(|r| r.rect).collect()
     }
+    /// Flush pending updates and render only dirty regions.
+    pub fn flush_clipped(
+        &mut self,
+        ctx: &mut crate::render::RenderContext,
+        render_all: impl FnMut(&mut crate::render::RenderContext),
+    ) {
+        let rects = self.flush();
+        if rects.is_empty() {
+            return;
+        }
+        let mut tracker = DirtyRegionTracker::new();
+        for rect in rects {
+            tracker.add(rect);
+        }
+        super::render_dirty_regions(&mut tracker, ctx, render_all);
+    }
+
     pub fn clear(&mut self) {
         self.pending_updates.clear();
     }

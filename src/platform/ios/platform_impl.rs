@@ -62,7 +62,16 @@ impl Platform for IosMobilePlatform {
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(IosHandleKind::Window, title, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::Window, title, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let window = super::native::create_ui_window(mtm, title, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(window) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_button(
@@ -77,7 +86,16 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::Button, text, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::Button, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let button = super::native::create_ui_button(mtm, text, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(button) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_checkbox(
@@ -92,7 +110,16 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::CheckBox, text, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::CheckBox, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let checkbox = super::native::create_ui_checkbox(mtm, text, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(checkbox) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_line_edit(
@@ -107,7 +134,16 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::LineEdit, text, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::LineEdit, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let line_edit = super::native::create_ui_line_edit(mtm, text, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(line_edit) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_label(
@@ -122,7 +158,16 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::Label, text, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::Label, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let label = super::native::create_ui_label(mtm, text, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(label) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_radio_button(
@@ -137,35 +182,80 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::RadioButton, text, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::RadioButton, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let radio = super::native::create_ui_radio_button(mtm, text, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(radio) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::Slider, "Slider", x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::Slider, "Slider", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let slider = super::native::create_ui_slider(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(slider) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::ProgressBar, "ProgressBar", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let progress = super::native::create_ui_progress_bar(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(progress) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::ComboBox, "ComboBox", x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::ComboBox, "ComboBox", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let combo = super::native::create_ui_combo_box(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(combo) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::ListBox, "ListBox", x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::ListBox, "ListBox", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let list_box = super::native::create_ui_list_box(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(list_box) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+        }
+
+        id
     }
 
     fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {

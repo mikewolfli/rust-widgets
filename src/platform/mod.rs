@@ -1,12 +1,17 @@
 //! Platform abstraction for desktop/embedded/mobile families.
 
 // Platform backend implementations (one per target)
+/// Android platform backend (state-driven).
+#[cfg(target_os = "android")]
+pub mod android;
 /// Android JNI bridge (native view creation via JNI, feature-gated).
 #[cfg(feature = "android-jni")]
 pub mod android_jni;
+#[cfg(any(target_os = "ohos", feature = "harmony"))]
 pub mod harmony;
 #[cfg(target_os = "ios")]
 pub mod ios;
+#[cfg(any(target_os = "linux", doc))]
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -18,6 +23,10 @@ pub mod mobile;
 pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+/// WASM/WebAssembly platform backend (state-driven).
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
@@ -35,8 +44,17 @@ pub mod detector;
 pub mod holographic;
 /// IME bridge trait, types, and mock implementation.
 pub mod ime;
+/// Real Linux IME bridge (IBus integration).
+#[cfg(target_os = "linux")]
+pub mod ime_linux;
+/// Real macOS IME bridge (NSTextInputContext integration).
+#[cfg(target_os = "macos")]
+pub mod ime_macos;
 /// Platform-specific IME stubs (macOS, Windows).
 pub mod ime_stubs;
+/// Real Windows IME bridge (TSF integration).
+#[cfg(target_os = "windows")]
+pub mod ime_windows;
 pub(crate) mod runtime;
 pub mod state;
 mod stub;

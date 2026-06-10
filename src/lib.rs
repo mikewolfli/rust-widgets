@@ -4,10 +4,43 @@
 // Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
 // BLUE11 R4.7: Documentation completeness
 // Note: Missing docs warnings silenced to reduce noise. Docs added for public API items.
-#![allow(missing_docs)]
+#![warn(missing_docs)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::all))]
+// Conditional no_std for mini builds (BLUE13 Phase 3)
+#![cfg_attr(feature = "mini", no_std)]
+#[cfg(feature = "mini")]
+extern crate alloc;
+
+// ── BLUE13 Phase 3: Conditional no_std bridge for mini builds ──
+// Vec/String/Box/BTreeMap are available via alloc under no_std.
+// HashMap and Mutex are aliased for mini to avoid cfg noise in 200+ source files.
+#[cfg(feature = "mini")]
+pub(crate) use alloc::boxed::Box;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::collections::BTreeMap;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::format;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::string::String;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::string::ToString;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::vec;
+#[cfg(feature = "mini")]
+pub(crate) use alloc::vec::Vec;
+#[cfg(feature = "mini")]
+pub(crate) use core::cell::Cell;
+#[cfg(feature = "mini")]
+pub(crate) use core::cell::RefCell;
+
+// ── Type alias bridge: Mini uses BTreeMap (sorted, alloc-compatible)
+//    instead of HashMap; RefCell instead of Mutex (single-threaded).
+#[cfg(feature = "mini")]
+pub(crate) type HashMap<K, V> = BTreeMap<K, V>;
+#[cfg(feature = "mini")]
+pub(crate) type Mutex<T> = RefCell<T>;
 
 /// Action/command system.
 pub mod action;
@@ -23,6 +56,8 @@ pub mod clipboard;
 pub mod control_backend;
 /// Core types and shared contracts.
 pub mod core;
+/// Reactive data binding system — Model → View automatic synchronization.
+pub mod data_binding;
 /// Embedded system optimizations and support.
 #[cfg(feature = "embedded")]
 pub mod embedded;
@@ -39,6 +74,7 @@ pub mod gpu;
 #[cfg(feature = "desktop")]
 pub mod i18n;
 /// Declarative JSON window engine (QML-like).
+#[cfg(not(feature = "mini"))]
 pub mod json;
 /// Layout managers.
 pub mod layout;
@@ -70,6 +106,8 @@ pub mod test;
 /// Desktop-only: Theme management.
 #[cfg(feature = "desktop")]
 pub mod theme;
+/// Undo/Redo framework for undoable commands and cross-widget undo/redo.
+pub mod undo;
 /// Generic utility modules (asset watcher, helpers, etc.).
 pub mod util;
 /// Web view and engine components.
@@ -125,7 +163,7 @@ pub fn quit() {
 }
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        eprintln!(
+        log::info!(
             "[rust_widgets.runtime] stage={} profile={} backend={} route={}",
             stage,
             runtime_profile_name(),
@@ -169,29 +207,53 @@ fn runtime_profile_name() -> &'static str {
     "embedded"
 }
 
+/// Embedded-mini: LVGL-style ultra-lightweight bare-metal runtime.
+#[cfg(all(
+    feature = "profile-embedded-mini",
+    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
+))]
+fn runtime_profile_name() -> &'static str {
+    "embedded-mini"
+}
+
+/// Embedded: stripped-down render-engine-only runtime.
+#[cfg(all(
+    feature = "embedded",
+    not(any(
+        feature = "desktop",
+        feature = "tablet",
+        feature = "mobile",
+        feature = "profile-embedded-mini"
+    ))
+))]
+fn runtime_profile_name() -> &'static str {
+    "embedded"
+}
+
 /// Fallback (no device feature selected).
 #[cfg(not(any(
     feature = "desktop",
     feature = "tablet",
     feature = "mobile",
-    feature = "embedded"
+    feature = "embedded",
+    feature = "profile-embedded-mini"
 )))]
 fn runtime_profile_name() -> &'static str {
     "unknown"
 }
-#[cfg(not(feature = "embedded"))]
+#[cfg(not(any(feature = "embedded", feature = "profile-embedded-mini")))]
 fn runtime_route_name() -> &'static str {
     "native-platform"
 }
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "profile-embedded-mini"))]
 fn runtime_route_name() -> &'static str {
     "embedded-render-engine"
 }
-#[cfg(not(feature = "embedded"))]
+#[cfg(not(any(feature = "embedded", feature = "profile-embedded-mini")))]
 fn init_runtime_backend() {
     platform::init();
 }
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "embedded", feature = "profile-embedded-mini"))]
 fn init_runtime_backend() {
     render_engine::default_render_engine().init();
 }

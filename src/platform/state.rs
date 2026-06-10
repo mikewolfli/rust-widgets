@@ -2,12 +2,14 @@
 use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
 use crate::core::ObjectId;
 /// Generic widget state record owned by backend state model.
+#[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
     pub kind: K,
@@ -31,7 +33,7 @@ pub struct WidgetRecord<K> {
     pub height: u32,
 }
 /// Thread-safe state model split from native handle adapters.
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub struct BackendState<K> {
     next_id: AtomicU64,
     widgets: Mutex<HashMap<ObjectId, WidgetRecord<K>>>,

@@ -358,6 +358,8 @@ impl Draw for Slider {
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = 16;
+        let style = self.style();
+        let groove_color = style.background_color.unwrap_or(Color::from_rgb(200, 200, 200));
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
@@ -371,7 +373,7 @@ impl Draw for Slider {
                         rect.width as f32,
                         groove_height as f32,
                     ),
-                    Color::from_rgb(200, 200, 200),
+                    groove_color,
                 );
                 // Draw slider handle
                 context.fill_rect(
@@ -383,6 +385,18 @@ impl Draw for Slider {
                     ),
                     Color::from_rgb(0, 120, 215),
                 );
+                // Draw handle border
+                if let Some(border_color) = style.border_color {
+                    context.draw_rect(
+                        Rect::from_f32(
+                            slider_pos - slider_size as f32 / 2.0,
+                            rect.y as f32,
+                            slider_size as f32,
+                            rect.height as f32,
+                        ),
+                        border_color,
+                    );
+                }
                 // Draw ticks if enabled
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_height = 6;
@@ -424,7 +438,7 @@ impl Draw for Slider {
                         groove_width as f32,
                         rect.height as f32,
                     ),
-                    Color::from_rgb(200, 200, 200),
+                    groove_color,
                 );
                 // Draw slider handle
                 context.fill_rect(
@@ -436,6 +450,18 @@ impl Draw for Slider {
                     ),
                     Color::from_rgb(0, 120, 215),
                 );
+                // Draw handle border
+                if let Some(border_color) = style.border_color {
+                    context.draw_rect(
+                        Rect::from_f32(
+                            rect.x as f32,
+                            slider_pos - slider_size as f32 / 2.0,
+                            rect.width as f32,
+                            slider_size as f32,
+                        ),
+                        border_color,
+                    );
+                }
                 // Draw ticks if enabled
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_width = 6;

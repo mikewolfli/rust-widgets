@@ -1,0 +1,27 @@
+name: Benchmarks
+on: [push, pull_request]
+jobs:
+  benchmark:
+    name: Performance benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks (event, layout, signal)
+        run: cargo bench --bench event_bench --bench layout_bench --bench signal_bench -- --quick
+
+      - name: Run benchmark script (all 5 benches)
+        run: bash benches/run_benchmarks.sh
+
+      - name: Upload benchmark summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-summary
+          path: target/benchmark_summary.txt

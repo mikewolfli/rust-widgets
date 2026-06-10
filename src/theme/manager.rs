@@ -213,3 +213,47 @@ impl Default for Theme {
         }
     }
 }
+
+impl Theme {
+    /// Creates a dark theme preset with Material Dark-inspired colors.
+    ///
+    /// This complements the light `Theme::default()` for dark/light mode switching.
+    /// Fonts, spacing, and borders are identical to the default light theme.
+    pub fn dark() -> Self {
+        Self {
+            name: "dark".to_string(),
+            colors: Colors {
+                background: Color { r: 18, g: 18, b: 18, a: 255 },
+                foreground: Color { r: 225, g: 225, b: 225, a: 255 },
+                primary: Color { r: 100, g: 181, b: 246, a: 255 },
+                secondary: Color { r: 130, g: 130, b: 130, a: 255 },
+                accent: Color { r: 255, g: 171, b: 64, a: 255 },
+                error: Color { r: 239, g: 83, b: 80, a: 255 },
+                warning: Color { r: 255, g: 213, b: 79, a: 255 },
+                success: Color { r: 129, g: 199, b: 132, a: 255 },
+                disabled: Color { r: 80, g: 80, b: 80, a: 255 },
+                info: Color::INFO,
+            },
+            fonts: Fonts {
+                regular: Font::simple("Arial", 14.0),
+                bold: Font::bold("Arial", 14.0),
+                italic: Font {
+                    family: "Arial".to_string(),
+                    size: 14.0,
+                    weight: Font::REGULAR_WEIGHT,
+                    bold: false,
+                    italic: true,
+                },
+                monospace: Font::simple("Courier New", 12.0),
+                caption: Font::simple("Arial", 11.0),
+                body: Font::simple("Arial", 14.0),
+                title: Font::bold("Arial", 16.0),
+                headline: Font::bold("Arial", 20.0),
+                display: Font::bold("Arial", 28.0),
+            },
+            spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
+            borders: Borders { width: 1, radius: 4, shadow: true },
+            overrides: ThemeOverrides { styles: HashMap::new() },
+        }
+    }
+}

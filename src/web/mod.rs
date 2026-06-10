@@ -6,14 +6,18 @@ mod navigation;
 mod plugins;
 mod privacy;
 mod web_core;
+#[cfg(not(feature = "mini"))]
 mod web_engine;
+#[cfg(not(feature = "mini"))]
 mod web_view;
 pub use history::*;
 pub use js_engine::*;
 pub use navigation::*;
 pub use plugins::*;
 pub use privacy::*;
+#[cfg(not(feature = "mini"))]
 pub use web_engine::*;
+#[cfg(not(feature = "mini"))]
 pub use web_view::*;
 
 #[cfg(test)]

@@ -24,9 +24,9 @@
 //! └──────────────────────────────────────────────────────────────────┘
 //!
 //! Reference: AT-SPI2 D-Bus Protocol Specification
-//!   https://gitlab.gnome.org/GNOME/at-spi2-core/-/blob/main/docs/at-spi-dbus-dev.md
+//!   <https://gitlab.gnome.org/GNOME/at-spi2-core/-/blob/main/docs/at-spi-dbus-dev.md>
 
-use super::{AccessibilityBridge, AccessibleRole};
+use super::AccessibilityBridge;
 use crate::core::ObjectId;
 use std::collections::HashMap;
 use std::sync::Mutex;

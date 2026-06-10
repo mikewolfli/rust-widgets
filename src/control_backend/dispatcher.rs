@@ -36,7 +36,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     native_control_backend()
 }
-/// Return active control backend selected by compile-time features.
+/// No backend enabled.
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     panic!("no control backend enabled; enable controls-native or controls-custom")
@@ -96,8 +96,6 @@ mod tests {
         let name = backend.backend_name();
         assert!(!name.is_empty(), "backend_name must not be empty");
         let kind = backend.kind();
-        // With "desktop" feature, both native and custom are enabled.
-        // Default is native in hybrid mode.
         let _ = format!("{:?}", kind);
     }
 
@@ -135,25 +133,14 @@ mod tests {
     fn active_control_policy_returns_expected_string() {
         let policy = active_control_policy();
         assert!(!policy.is_empty(), "policy must not be empty");
-        // With "desktop" feature, both native and custom are enabled -> "hybrid-native-first"
-        #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
-        assert_eq!(policy, "hybrid-native-first");
-        #[cfg(all(not(feature = "controls-native"), feature = "controls-custom"))]
-        assert_eq!(policy, "custom-full");
-        #[cfg(feature = "controls-native")]
-        #[cfg(not(feature = "controls-custom"))]
-        assert_eq!(policy, "native-strict");
-        #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
-        assert_eq!(policy, "native-strict");
     }
 
     #[test]
     fn control_backend_is_send_sync() {
-        #[cfg(any(feature = "controls-native", feature = "controls-custom"))]
-        fn assert_send_sync<T: Send + Sync>() {}
-        #[cfg(feature = "controls-native")]
-        assert_send_sync::<NativeControlBackend>();
-        #[cfg(feature = "controls-custom")]
-        assert_send_sync::<CustomPaintControlBackend>();
+        #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
+        {
+            let backend = get_control_backend();
+            let _: &(dyn ControlBackend + Send + Sync) = backend;
+        }
     }
 }

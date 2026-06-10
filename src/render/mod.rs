@@ -43,9 +43,8 @@ mod backend;
 // Visual command pipeline for all widget types
 mod pipeline;
 // Web rendering
-// NOTE: Not re-exported via `pub use web::*;` yet because the types
-// (WebEngine, WebView) are stubs gated behind module-level `#[allow(dead_code)]`
-// and require integration wiring before they are ready for public consumption.
+// Types (WebEngine, WebView) are re-exported below for use by the render pipeline.
+// The web module no longer has dead_code gating; all types are properly wired.
 #[cfg(feature = "desktop")]
 pub mod web;
 // Projection/presentation-mode rendering (BLUE8 P4-5b, gated behind `projection`)
@@ -63,6 +62,18 @@ pub mod quality;
 #[cfg(test)]
 mod tests;
 pub mod text_cache;
+
+// Text shaping (pre-layout measurement)
+pub mod text_shaper;
+
+// Rich text rendering (multi-span styled text)
+pub mod rich_text;
+
+// Text overflow handling (ellipsis, clip, multi-line clamp)
+pub mod text_overflow;
+
+// Unicode grapheme cluster support (emoji, combining marks, ZWJ)
+pub mod grapheme;
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
@@ -87,6 +98,18 @@ pub(crate) use backend::software_render_config_test_lock;
 
 // Pixel ops
 pub use pipeline::{blend_pixel, fill_pixels};
+
+// Text shaping
+pub use text_shaper::{ShapedGlyphRun, SimpleTextShaper, TextShaper};
+
+// Rich text
+pub use rich_text::{RichText, TextSpan, TextStyle};
+
+// Text overflow
+pub use text_overflow::{apply_text_clamp, apply_text_overflow, TextClamp, TextOverflow};
+
+// Grapheme support
+pub use grapheme::{GraphemeCluster, GraphemeProcessor};
 
 // GPU — re-export only when feature is active
 #[cfg(feature = "gpu-wgpu")]

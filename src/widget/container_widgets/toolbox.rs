@@ -75,7 +75,7 @@ impl ToolBox {
     /// Creates a tool box.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ToolBox, geometry, "ToolBox"),
+            base: BaseWidget::new(WidgetKind::Toolbox, geometry, "ToolBox"),
             items: Vec::new(),
             current_index: 0,
             orientation: Orientation::Vertical,
@@ -375,7 +375,7 @@ mod tests {
         assert!(tb.is_visible(), "should be visible");
         assert!(tb.is_enabled(), "should be enabled");
         assert_eq!(tb.geometry(), Rect::new(0, 0, 200, 160));
-        assert_eq!(tb.kind(), WidgetKind::ToolBox);
+        assert_eq!(tb.kind(), WidgetKind::Toolbox);
         assert!(tb.registry().is_none(), "registry should be None by default");
     }
 
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn toolbox_kind() {
         let tb = ToolBox::new(Rect::new(0, 0, 200, 160));
-        assert_eq!(tb.kind(), WidgetKind::ToolBox);
+        assert_eq!(tb.kind(), WidgetKind::Toolbox);
     }
 
     #[test]

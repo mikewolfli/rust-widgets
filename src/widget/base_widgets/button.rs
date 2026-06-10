@@ -3,7 +3,9 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+#[cfg(not(feature = "mini"))]
+use crate::widget::Image;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Button interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
@@ -15,6 +17,7 @@ pub enum ButtonState {
 pub struct Button {
     base: BaseWidget,
     text: String,
+    #[cfg(not(feature = "mini"))]
     icon: Option<Image>,
     pressed: bool,
     default_button: bool,
@@ -30,6 +33,7 @@ impl Button {
         Self {
             base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
             text,
+            #[cfg(not(feature = "mini"))]
             icon: None,
             pressed: false,
             default_button: false,
@@ -98,11 +102,13 @@ impl Button {
         self.base.request_redraw();
     }
     /// Sets the icon displayed on the button.
+    #[cfg(not(feature = "mini"))]
     pub fn set_icon(&mut self, icon: Image) {
         self.icon = Some(icon);
         self.base.request_redraw();
     }
     /// Returns a reference to the button icon, if set.
+    #[cfg(not(feature = "mini"))]
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
@@ -196,35 +202,53 @@ impl EventHandler for Button {
 }
 impl Draw for Button {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Button rendering logic will be implemented in the render module
-        // For now, just draw a simple rectangle
+        // Button rendering with style integration (BLUE13 R1.3)
+        // Reads style fields (background_color, text_color, border_color, etc.)
+        // falling back to state-based defaults when style values are not set.
         let rect = self.geometry();
         let state = self.state();
-        match state {
-            ButtonState::Normal => {
-                context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-                context.draw_rect(rect, Color::from_rgb(200, 200, 200));
-            }
-            ButtonState::Pressed => {
-                context.fill_rect(rect, Color::from_rgb(200, 200, 200));
-                context.draw_rect(rect, Color::from_rgb(150, 150, 150));
-            }
-            ButtonState::Disabled => {
-                context.fill_rect(rect, Color::from_rgb(220, 220, 220));
-                context.draw_rect(rect, Color::from_rgb(180, 180, 180));
+        let style = self.style();
+
+        // ── Background ──
+        let bg = style.background_color.unwrap_or_else(|| match state {
+            ButtonState::Normal => Color::from_rgb(240, 240, 240),
+            ButtonState::Pressed => Color::from_rgb(200, 200, 200),
+            ButtonState::Disabled => Color::from_rgb(220, 220, 220),
+        });
+        if style.border_radius > 0 {
+            context.fill_rounded_rect(rect, style.border_radius, bg);
+        } else {
+            context.fill_rect(rect, bg);
+        }
+
+        // ── Border ──
+        if let Some(border_color) = style.border_color {
+            if style.border_radius > 0 && style.border_width > 0 {
+                context.draw_rounded_rect_stroke(
+                    rect,
+                    style.border_radius,
+                    border_color,
+                    style.border_width,
+                );
+            } else if style.border_width > 0 {
+                context.draw_rect_stroke(rect, border_color, style.border_width);
             }
         }
-        // Draw text
+
+        // ── Text ──
         if !self.text.is_empty() {
-            let text_color = if state == ButtonState::Disabled {
-                Color::from_rgb(150, 150, 150)
-            } else {
-                Color::from_rgb(0, 0, 0)
-            };
+            let text_color = style.text_color.unwrap_or_else(|| {
+                if state == ButtonState::Disabled {
+                    Color::from_rgb(150, 150, 150)
+                } else {
+                    Color::from_rgb(0, 0, 0)
+                }
+            });
+            let font = style.font.clone().unwrap_or_default();
             context.draw_text(
                 Point { x: rect.x + 6, y: rect.y + rect.height as i32 / 2 },
                 &self.text,
-                &self.font().cloned().unwrap_or_default(),
+                &font,
                 text_color,
             );
         }
@@ -236,6 +260,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Point, Rect, Size};
     use crate::event::Event;
+    #[cfg(not(feature = "mini"))]
     use crate::widget::Image;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -245,6 +270,7 @@ mod tests {
         Button::new("Click".into(), Rect::new(10, 20, 120, 36))
     }
 
+    #[cfg(not(feature = "mini"))]
     fn make_image() -> Image {
         Image {
             data: vec![0u8; 64],
@@ -259,6 +285,7 @@ mod tests {
     }
 
     // ── 1. Button creation ─────────────────────────────────────────────
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn button_creation_text_geometry_defaults_icon() {
         let b = make_button();
@@ -443,6 +470,7 @@ mod tests {
         assert!(b.text().is_empty());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn set_icon_and_default_icon() {
         let mut b = make_button();

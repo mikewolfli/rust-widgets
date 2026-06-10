@@ -1,5 +1,4 @@
 use crate::core::Color;
-use chrono::Timelike;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -176,7 +175,12 @@ impl ThemeStateManager {
     }
     fn should_use_dark(&self) -> bool {
         if let Some((start, end)) = self.auto_switch_threshold {
-            let hour = chrono::Local::now().hour() as u8;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            // UTC hour (approximate - good enough for dark mode toggle)
+            let hour = ((now / 3600) % 24) as u8;
             hour >= start && hour < end
         } else {
             false

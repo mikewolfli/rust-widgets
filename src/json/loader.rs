@@ -29,9 +29,13 @@ use crate::json::{
 };
 use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
-    Button, CheckBox, ColorDialog, ComboBox, FileDialog, FontDialog, GridWidget, GroupBox, Label,
-    LineEdit, ListBox, ListView, MessageBox, ProgressBar, RadioButton, ScrollArea, ScrollBar,
-    Slider, SpinBox, TabWidget, TextEdit, Widget,
+    Button, CheckBox, ComboBox, GroupBox, Label, LineEdit, ListBox, ProgressBar, RadioButton,
+    ScrollArea, ScrollBar, Slider, SpinBox, Widget,
+};
+#[cfg(not(feature = "mini"))]
+use crate::widget::{
+    ColorDialog, CommandLink, Dial, FileDialog, FontComboBox, FontDialog, GridWidget, LCDNumber,
+    ListView, MessageBox, Splitter, TabWidget, TextEdit, ToolBox,
 };
 use crate::window::Window;
 use crate::{
@@ -465,6 +469,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(le))
             }
+            #[cfg(not(feature = "mini"))]
             "textedit" => {
                 let mut te = TextEdit::new(geometry);
                 if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
@@ -671,6 +676,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(gb))
             }
+            #[cfg(not(feature = "mini"))]
             "tabwidget" => {
                 let mut tw = TabWidget::new(geometry);
                 if let Some(index) = obj.get("current_index").and_then(|v| v.as_u64()) {
@@ -715,6 +721,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(tw))
             }
+            #[cfg(not(feature = "mini"))]
             "grid" => {
                 let mut grid = GridWidget::new(geometry);
                 if let Some(rows) = obj.get("rows").and_then(|v| v.as_u64()) {
@@ -758,6 +765,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(sb))
             }
+            #[cfg(not(feature = "mini"))]
             "listview" => Ok(Box::new(ListView::new(geometry))),
             "scrollarea" => {
                 let mut sa = ScrollArea::new(geometry);
@@ -841,6 +849,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(frame))
             }
+            #[cfg(not(feature = "mini"))]
             "messagebox" => {
                 let mut mb = MessageBox::new(geometry);
                 if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
@@ -872,6 +881,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(mb))
             }
+            #[cfg(not(feature = "mini"))]
             "filedialog" => {
                 let mut fd = FileDialog::new(geometry);
                 if let Some(mode) = obj.get("mode").and_then(|v| v.as_str()) {
@@ -900,6 +910,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(fd))
             }
+            #[cfg(not(feature = "mini"))]
             "colordialog" => {
                 let mut cd = ColorDialog::new(geometry);
                 if let Some(alpha) = obj.get("alpha").and_then(|v| v.as_bool()) {
@@ -912,6 +923,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(cd))
             }
+            #[cfg(not(feature = "mini"))]
             "fontdialog" => {
                 let mut fd = FontDialog::new(geometry);
                 if let Some(_font_str) = obj.get("value").and_then(|v| v.as_str()) {
@@ -1110,6 +1122,7 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "checkbox" => WidgetKind::CheckBox,
         "radiobutton" => WidgetKind::RadioButton,
         "lineedit" => WidgetKind::LineEdit,
+        #[cfg(not(feature = "mini"))]
         "textedit" => WidgetKind::TextEdit,
         "combobox" => WidgetKind::ComboBox,
         "listbox" => WidgetKind::ListBox,
@@ -1117,10 +1130,13 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "scrollbar" => WidgetKind::ScrollBar,
         "progressbar" => WidgetKind::ProgressBar,
         "groupbox" => WidgetKind::Panel,
+        #[cfg(not(feature = "mini"))]
         "tabwidget" => WidgetKind::TabWidget,
+        #[cfg(not(feature = "mini"))]
         "grid" => WidgetKind::GridWidget,
         "panel" => WidgetKind::Panel,
         "spinbox" => WidgetKind::SpinBox,
+        #[cfg(not(feature = "mini"))]
         "listview" => WidgetKind::ListView,
         "scrollarea" => WidgetKind::ScrollArea,
         "frame" => WidgetKind::Frame,
@@ -1397,6 +1413,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_tabwidget_with_properties() {
         let json = r#"{"window": {"id": "w", "title": "Tabs", "width": 500, "height": 400, "layout": {"type": "vbox", "children": [{"tabwidget": {"id": "tw", "current_index": 0, "tab_position": "north", "closable": true, "movable": false}}]}}}"#;
@@ -1404,6 +1421,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_textedit_with_readonly() {
         let json = r#"{"window": {"id": "w", "title": "Text", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"textedit": {"id": "te", "value": "Multi\nline", "read_only": true, "word_wrap": true}}]}}}"#;
@@ -1425,6 +1443,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_filedialog_with_mode() {
         let json = r#"{"window": {"id": "w", "title": "Dialog", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"filedialog": {"id": "fd", "mode": "save_file", "directory": "/tmp"}}]}}}"#;
@@ -1432,6 +1451,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_colordialog_with_color() {
         let json = r##"{"window": {"id": "w", "title": "Color", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"colordialog": {"id": "cd", "value": "#ff0000", "alpha": true}}]}}}"##;
@@ -1439,6 +1459,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_messagebox_with_icon() {
         let json = r#"{"window": {"id": "w", "title": "Msg", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"messagebox": {"id": "mb", "title": "Warning", "text": "Are you sure?", "icon": "warning"}}]}}}"#;
@@ -1446,6 +1467,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn load_listview_widget() {
         let json = r#"{"window": {"id": "w", "title": "ListView", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"listview": {"id": "lv"}}]}}}"#;

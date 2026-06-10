@@ -1,6 +1,5 @@
 //! Custom drawing trait for widgets that want to render their own content.
 
-use super::Widget;
 use crate::render::RenderContext;
 
 /// Custom drawing trait for widgets that want to render their own content.
@@ -16,11 +15,8 @@ pub trait Draw {
         true
     }
     /// Optional: Request a redraw of the widget.
-    /// Default implementation calls request_redraw() on the widget.
-    fn request_custom_redraw(&self)
-    where
-        Self: Widget,
-    {
-        self.request_redraw();
+    /// Override in concrete types that implement Widget to call self.request_redraw().
+    fn request_custom_redraw(&self) {
+        // No-op default (concrete types implementing Widget can override)
     }
 }

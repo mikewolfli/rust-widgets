@@ -33,6 +33,10 @@ impl Platform for WindowsPlatform {
         self.state.set_visible(widget_id, true);
         #[cfg(target_os = "windows")]
         if let Some(hwnd) = self.get_native_handle(widget_id) {
+            // SAFETY: hwnd is guaranteed valid by get_native_handle() which only returns
+            // handles registered via bind_native_handle(). ShowWindow and UpdateWindow are
+            // safe to call on a valid HWND per MSDN documentation. The window is owned by
+            // this platform instance and the HWND remains valid for the lifetime of the widget.
             unsafe {
                 use winapi::um::winuser::{ShowWindow, UpdateWindow, SW_SHOW};
                 ShowWindow(hwnd, SW_SHOW);
@@ -64,6 +68,10 @@ impl Platform for WindowsPlatform {
         let _ = self.state.set_text(widget_id, text);
         #[cfg(target_os = "windows")]
         if let Some(hwnd) = self.get_native_handle(widget_id) {
+            // SAFETY: hwnd is a valid HWND from get_native_handle(). SetWindowTextW
+            // accepts a null-terminated wide string (guaranteed by to_wide() which appends
+            // a null terminator). Per MSDN, SetWindowTextW is thread-safe for distinct
+            // windows and the buffer is read-only during the call.
             unsafe {
                 use winapi::um::winuser::SetWindowTextW;
                 let text_wide = Self::to_wide(text);
@@ -235,6 +243,10 @@ impl Platform for WindowsPlatform {
             notify::ensure_window_class_registered();
             let class_name = Self::to_wide("RustWidgetsWindowClass");
             let title_wide = Self::to_wide(title);
+            // SAFETY: GetModuleHandleW with a null module name returns the handle to
+            // the calling process's executable (HINSTANCE). This is safe per MSDN and
+            // the return value is only used as the hInstance parameter for CreateWindowExW.
+            // A null module name is explicitly documented to be valid.
             let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
             let hwnd = unsafe {
                 CreateWindowExW(
@@ -253,7 +265,11 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
-                log::error!("[rust_widgets][windows] create_window failed for title='{}'", title);
+                log::error!(
+                    "[rust_widgets][windows] create_window failed for title='{}' (GetLastError={})",
+                    title,
+                    unsafe { winapi::um::errhandlingapi::GetLastError() }
+                );
                 return 0;
             }
             let widget_id =
@@ -308,6 +324,11 @@ impl Platform for WindowsPlatform {
                 )
             };
             if hwnd.is_null() {
+                log::error!(
+                    "[rust_widgets][windows] create_button failed for text='{}' (GetLastError={})",
+                    text,
+                    unsafe { winapi::um::errhandlingapi::GetLastError() }
+                );
                 return 0;
             }
             let widget_id =

@@ -20,7 +20,7 @@ use crate::widget::{Draw, Widget};
 /// matches the widget's real pixel output exactly.
 ///
 /// # Usage
-/// ```ignore
+/// ```rust,ignore
 /// // render_widget_to_svg takes a `&mut impl Draw` and a geometry `Rect`:
 /// let svg = render_widget_to_svg(&mut my_widget, Rect::new(0, 0, 100, 50));
 /// ```
@@ -38,11 +38,11 @@ pub fn render_to_svg<W: Draw + Widget>(widget: &mut W) -> String {
 /// matches the widget's real pixel output exactly.
 ///
 /// # Usage
-/// ```ignore
+/// ```rust,ignore
 /// // render_widget_to_svg takes a `&mut impl Draw` and a geometry `Rect`:
 /// let svg = render_widget_to_svg(&mut my_widget, Rect::new(0, 0, 100, 50));
 /// ```
-pub fn render_widget_to_svg<T: Draw>(widget: &mut T, geometry: Rect) -> String {
+pub fn render_widget_to_svg<T: Draw + ?Sized>(widget: &mut T, geometry: Rect) -> String {
     let size = Size::new(geometry.width, geometry.height);
     let mut backend = SvgPaintBackend::new(size);
     backend.begin_frame(crate::core::Color::WHITE);

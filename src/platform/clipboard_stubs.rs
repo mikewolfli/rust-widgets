@@ -98,7 +98,7 @@ pub mod windows {
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     use winapi::shared::minwindef::{FALSE, UINT};
     use winapi::um::winbase::GlobalAlloc;
-    use winapi::um::winbase::{GlobalLock, GlobalUnlock, GHND};
+    use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock, GHND};
     use winapi::um::winuser::CF_UNICODETEXT;
     use winapi::um::winuser::{CloseClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 
@@ -114,7 +114,9 @@ pub mod windows {
             if ptr.is_null() {
                 return None;
             }
-            let wide_slice = std::slice::from_raw_parts(ptr as *const u16, 1024);
+            let byte_size = GlobalSize(h_mem);
+            let char_count = byte_size / 2;
+            let wide_slice = std::slice::from_raw_parts(ptr as *const u16, char_count as usize);
             let nul_pos = wide_slice.iter().position(|&c| c == 0).unwrap_or(0);
             let result = String::from_utf16_lossy(&wide_slice[..nul_pos]);
             GlobalUnlock(h_mem);

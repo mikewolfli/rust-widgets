@@ -15,7 +15,9 @@
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSBackingStoreType, NSButton, NSButtonType, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSBackingStoreType, NSButton, NSButtonType, NSSlider, NSTextField, NSWindow, NSWindowStyleMask,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use std::collections::HashMap;
@@ -64,6 +66,11 @@ pub(crate) fn create_ns_window(
         | NSWindowStyleMask::Miniaturizable
         | NSWindowStyleMask::Resizable;
     let rect = make_rect(x, y, width, height);
+    // SAFETY: NSWindow::initWithContentRect_styleMask_backing_defer is called with
+    // a valid MainThreadMarker, ensuring this runs on the main thread. The alloc
+    // is obtained from mtm which guarantees the correct memory allocation context.
+    // The returned Retained<NSWindow> is always non-null (objc2 init methods return
+    // a valid retained object on success, or panic on allocation failure).
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             mtm.alloc(),
@@ -87,6 +94,9 @@ pub(crate) fn create_ns_button(
     height: u32,
 ) -> Retained<NSButton> {
     let rect = make_rect(x, y, width, height);
+    // SAFETY: NSButton::initWithFrame runs on the main thread (guaranteed by mtm).
+    // objc2 init methods return Retained<T> which ensures the object is valid.
+    // No additional error checking is needed since objc2 handles memory management.
     let button = unsafe { NSButton::initWithFrame(mtm.alloc(), rect) };
     button.setTitle(&NSString::from_str(text));
     button.setButtonType(NSButtonType::MomentaryLight);
@@ -102,6 +112,8 @@ pub(crate) fn create_ns_checkbox(
     height: u32,
 ) -> Retained<NSButton> {
     let rect = make_rect(x, y, width, height);
+    // SAFETY: NSButton::initWithFrame is called on the main thread (via mtm).
+    // Retained<T> guarantees a valid object; objc2 panics on alloc failure.
     let button = unsafe { NSButton::initWithFrame(mtm.alloc(), rect) };
     button.setTitle(&NSString::from_str(text));
     button.setButtonType(NSButtonType::Switch);
@@ -117,8 +129,43 @@ pub(crate) fn create_ns_radio(
     height: u32,
 ) -> Retained<NSButton> {
     let rect = make_rect(x, y, width, height);
+    // SAFETY: NSButton::initWithFrame on main thread (mtm guard).
+    // Retained<T> from objc2 ensures a valid object is returned.
     let button = unsafe { NSButton::initWithFrame(mtm.alloc(), rect) };
     button.setTitle(&NSString::from_str(text));
     button.setButtonType(NSButtonType::Radio);
     button
+}
+
+pub(crate) fn create_ns_label(
+    mtm: MainThreadMarker,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSTextField> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSTextField::initWithFrame called on main thread via mtm.
+    // objc2 guarantees the returned Retained<NSTextField> is a valid object.
+    let label = unsafe { NSTextField::initWithFrame(mtm.alloc(), rect) };
+    label.setStringValue(&NSString::from_str(text));
+    label.setEditable(false);
+    label.setBezeled(false);
+    label.setDrawsBackground(false);
+    label
+}
+
+pub(crate) fn create_ns_slider(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSSlider> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSSlider::initWithFrame on main thread (mtm guard).
+    // objc2 init methods reliably return a valid Retained<NSSlider>.
+    let slider = unsafe { NSSlider::initWithFrame(mtm.alloc(), rect) };
+    slider
 }

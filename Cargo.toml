@@ -20,76 +20,150 @@ unexpected_cfgs = "allow"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+# ═══════════════════════════════════════════════════════════════════════
+# Feature System — three independent axes (pick one from each):
+#   1. Device Profile (pick ONE)
+#   2. OS Backend    (pick ONE or auto)
+#   3. Capability    (arbitrary composition)
+# ═══════════════════════════════════════════════════════════════════════
+
 [features]
-# ── Device-class profiles (pick ONE; `desktop` is the default) ──
+# ── Default is full desktop ──
 default = ["desktop"]
-## Full desktop PC: native platform, i18n, theme, bindings, touch, GPU.
-desktop = ["desktop-runtime", "gpu-wgpu", "quality-management", "controls-native", "controls-custom", "advanced-widgets", "print", "pdf", "chart"]
-## Tablet: touch-enabled, GPU-accelerated, native + custom controls.
-tablet = ["touch", "gpu-wgpu", "quality-management", "controls-native", "controls-custom"]
-## Mobile phone: touch-enabled, GPU-accelerated, mobile API bindings, native + custom controls.
-mobile = ["touch", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom"]
-## Embedded/stripped: no touch, no i18n, software-only render.
-embedded = []
 
-# ── Interaction features (composable atop device profiles) ──
-## Touch events + 11 gesture recognizers (Tap, DoubleTap, LongPress, Swipe,
-## Pan, Fling, TwoFingerTap, TwoFingerSwipe, LongPressDrag, Pinch, Rotate).
+# ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
+
+## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF, A11y.
+desktop = [
+    "os-auto", "desktop-runtime", "wgpu", "touch", "i18n",
+    "chart", "print", "pdf", "a11y",
+    "quality-management", "advanced-widgets",
+    "controls-native", "controls-custom",
+    "dep:chrono", "dep:serde", "dep:serde_json",
+]
+
+## Tablet: touch-first, GPU, native controls, no desktop extras.
+tablet = [
+    "os-auto", "wgpu", "touch", "i18n",
+    "quality-management", "controls-native", "controls-custom",
+]
+
+## Mobile: touch, GPU, mobile API, native controls.
+mobile = [
+    "os-auto", "wgpu", "touch", "i18n",
+    "quality-management", "mobile-api",
+    "controls-native", "controls-custom",
+]
+
+## Embedded: software raster, no GPU, no touch, low memory.
+embedded = ["software", "controls-custom"]
+
+## LVGL-style mini: ~15 core widgets, software raster, no alloc-heavy deps.
+mini = ["software", "controls-custom", "dep:heapless", "dep:hashbrown", "dep:spin"]
+
+
+# ── Axis 2: OS BACKENDS (composable; `os-auto` picks by target_os) ──
+
+os-auto = []
+macos = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-core-graphics"]
+macos-legacy = ["dep:cocoa", "dep:objc", "dep:objc-foundation"]
+ios = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-ui-kit"]
+windows = []
+linux-gtk = ["dep:gtk"]
+linux-wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-cursor"]
+linux-a11y = ["dep:zbus", "dep:pollster"]
+android = ["dep:jni"]
+wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
+harmony = []
+
+
+# ── Axis 3: CAPABILITIES (arbitrary composition) ──
+
 touch = []
-## Laser holographic keyboard/screen (Z-axis depth events).
-holographic = []
-## Projection/remote-control (air gestures, pointer input).
-projection = []
-
-# ── Runtime / platform backend features ──
-desktop-runtime = []
-gpu-wgpu = ["wgpu"]
-quality-management = []
-mobile-api = []
-gtk-native = ["dep:gtk"]
-wayland-native = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-cursor"]
-controls-native = []
-objc2-macos = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-core-graphics"]
-ios-uikit-ffi = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-ui-kit"]
-controls-custom = []
-
-# ── WASM platform support (browser via wasm-bindgen + web-sys) ──
-wasm = ["dep:wasm-bindgen", "dep:web-sys"]
-
-# ── Android JNI bridge (optional, creates real native views on Android) ──
-android-jni = ["dep:jni"]
-
-# ── Optional content modules ──
+gpu = ["dep:wgpu"]
+wgpu = ["gpu"]
+software = []
+i18n = []
+chart = []
 print = []
 pdf = []
-chart = []
-advanced-widgets = []
+a11y = []
+holographic = []
+projection = []
 
-# ── Unstable / experimental features ──
+
+# ── INTERNAL FEATURES (used by profiles, not user-facing) ──
+
+desktop-runtime = ["dep:notify", "dep:crossbeam-channel"]
+quality-management = []
+mobile-api = []
+controls-native = []
+controls-custom = []
+advanced-widgets = ["dep:dirs"]
 unstable-pipeline-routing = []
 unstable-special-widgets = []
 
-linux-a11y = ["zbus"]
 
-# ── Meta-feature: everything that can coexist ──
-# NOTE: device-class features (desktop/tablet/mobile/embedded) are
-# mutually exclusive and NOT combined here. Pick one device profile
-# and compose with interaction add-ons as needed.
-full = ["desktop", "touch", "holographic", "projection", "wayland-native", "gtk-native", "objc2-macos", "ios-uikit-ffi", "android-jni", "mobile-api", "wasm", "print", "pdf", "chart", "advanced-widgets", "unstable-pipeline-routing", "unstable-special-widgets"]
+# ── BACKWARD-COMPAT ALIASES ──
+# Old feature names used in #[cfg(feature = "...")] throughout the codebase.
+# These forward to the new names above.
+
+# Old OS backends
+objc2-macos = ["macos"]
+cocoa-legacy = ["macos-legacy"]
+ios-uikit-ffi = ["ios"]
+gtk-native = ["linux-gtk"]
+wayland-native = ["linux-wayland"]
+android-jni = ["android"]
+
+# Old capability names
+gpu-wgpu = ["gpu", "dep:pollster"]
+
+
+# ── META FEATURES ──
+
+## Everything (not for production — pick a specific device profile).
+full = [
+    "desktop",
+    "macos", "macos-legacy", "ios", "linux-gtk", "linux-wayland",
+    "linux-a11y", "android", "wasm", "harmony",
+    "holographic", "projection",
+    "unstable-pipeline-routing", "unstable-special-widgets",
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-wasm-bindgen = { version = "0.2", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "Node", "Event", "MouseEvent", "KeyboardEvent", "console"], optional = true }
-serde_json = "1.0"
-threadpool = "1.8"
-crossbeam-channel = "0.5"
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
 font8x8 = "0.2.7"
-pollster = "0.3"
-chrono = "0.4"
-notify = "6.1"
-dirs = "5.0"
+pollster = { version = "0.3", optional = true }
+chrono = { version = "0.4", optional = true }
+notify = { version = "6.1", optional = true }
+dirs = { version = "5.0", optional = true }
 log = "0.4"
+
+wgpu = { version = "29.0.3", optional = true }
+
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "Element", "HtmlElement", "Node",
+    "Event", "MouseEvent", "KeyboardEvent", "console",
+    "HtmlCanvasElement", "CanvasRenderingContext2d",
+    "Clipboard", "Navigator", "Location",
+], optional = true }
+
+jni = { version = "0.21", features = ["invocation"], optional = true }
+
+heapless = { version = "0.8", optional = true }
+hashbrown = { version = "0.15", optional = true, default-features = false, features = ["alloc"] }
+spin = { version = "0.9", optional = true }
+
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
@@ -99,13 +173,13 @@ winapi = { version = "0.3", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc = "0.2"
-objc-foundation = "0.1"
+objc = { version = "0.2", optional = true }
+objc-foundation = { version = "0.1", optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-app-kit = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
-cocoa = "0.24"
+cocoa = { version = "0.24", optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6", optional = true }
@@ -120,31 +194,40 @@ wayland-cursor = { version = "0.31", optional = true }
 zbus = { version = "5", optional = true }
 
 [target.'cfg(target_os = "harmony")'.dependencies]
-# HarmonyOS support is in early evaluation stage. Custom FFI bindings
-# will be required for native control creation and event handling.
-# This section is reserved for future implementation.
 
-[dependencies.wgpu]
-version = "29.0.3"
-optional = true
-
-[dependencies.jni]
-version = "0.21"
-features = ["invocation"]
-optional = true
 
 [dev-dependencies]
 criterion = "0.8.2"
 tempfile = "3.8"
+proptest = "1.6"
 
 [package.metadata.docs.rs]
 features = ["full", "touch", "holographic", "projection"]
 rustc-args = ["--cfg", "docsrs"]
 
+[badges]
+maintenance = { status = "actively-developed" }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+[profile.release-embedded]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release-mini]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
 
 [[bench]]
 name = "render_bench"
@@ -165,3 +248,7 @@ harness = false
 [[bench]]
 name = "event_bench"
 harness = false
+
+[[example]]
+name = "widget_gallery"
+path = "tools/widget_gallery.rs"

@@ -7,7 +7,7 @@ use crate::core::{Color, Point, Rect};
 
 /// Format a [`Color`] as an SVG-compatible `rgba()` CSS string.
 ///
-/// ```ignore
+/// ```rust,ignore
 /// assert_eq!(color_to_rgba(&Color::RED), "rgba(255,0,0,1.00)");
 /// ```
 pub fn color_to_rgba(c: &Color) -> String {

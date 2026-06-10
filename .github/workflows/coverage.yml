@@ -1,0 +1,61 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test suite (all features)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo test (all features, verbose)
+        run: cargo test --all-features --verbose
+        continue-on-error: false
+
+      - name: Cargo test (default features, verbose)
+        run: cargo test --verbose
+
+      - name: Cargo test (embedded profile, verbose)
+        run: cargo test --no-default-features --features embedded --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            target/debug/*.d
+            target/debug/.fingerprint/**
+          retention-days: 7
+
+  test-other-profiles:
+    name: Test profiles (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [tablet, mobile]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo test (${{ matrix.profile }})
+        run: cargo test --no-default-features --features "${{ matrix.profile }}" --verbose

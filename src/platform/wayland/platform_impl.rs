@@ -120,7 +120,7 @@ impl Platform for WaylandPlatform {
         // Meanwhile, this thread blocks waiting for the quit signal.
         let mut event_loop = EventLoop::new();
         #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-        if let Some(pump) = super::create_event_loop_pump() {
+        if let Some(pump) = create_event_loop_pump() {
             event_loop.set_native_pump(pump);
         }
         event_loop.start();

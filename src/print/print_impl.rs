@@ -1,5 +1,6 @@
 //! Printing and print preview support.
 use crate::core::{Rect, Size};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -423,7 +424,7 @@ impl Printer {
             document.draw_page(page, &mut context);
             context.end_page();
         }
-        let job = PrintJob { page_size: self.page_size, commands: context.commands };
+        let job = PrintJobPayload { page_size: self.page_size, commands: context.commands };
         self.backend.submit(&job)
     }
     /// Get active print backend name.
@@ -436,7 +437,7 @@ impl Default for Printer {
         Self::new()
     }
 }
-struct PrintJob {
+struct PrintJobPayload {
     /// Page size used while recording drawing commands.
     page_size: Size,
     /// Flattened draw command stream with page-break markers.
@@ -468,7 +469,7 @@ impl PrintBackend {
             PrintBackend::Memory => "memory",
         }
     }
-    fn submit(&self, job: &PrintJob) -> Result<(), String> {
+    fn submit(&self, job: &PrintJobPayload) -> Result<(), String> {
         match self {
             PrintBackend::System => submit_system_print_job(job),
             PrintBackend::Memory => {
@@ -499,13 +500,13 @@ impl PrintBackend {
         }
     }
 }
-fn submit_system_print_job(job: &PrintJob) -> Result<(), String> {
+fn submit_system_print_job(job: &PrintJobPayload) -> Result<(), String> {
     let path = write_print_job_file(job)?;
     let result = run_print_command(&path);
     let _ = fs::remove_file(&path);
     result
 }
-fn write_print_job_file(job: &PrintJob) -> Result<PathBuf, String> {
+fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
     let mut path = std::env::temp_dir();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -564,6 +565,257 @@ fn run_print_command(path: &Path) -> Result<(), String> {
         Err("system print backend is not supported on this platform".to_string())
     }
 }
+// ────────────────────────────────────────────────────────────────
+// Print framework types (PrintOrientation, PrintSettings, PrintJob,
+// PrintPage, PrintManager, and platform helpers)
+// ────────────────────────────────────────────────────────────────
+
+/// Print orientation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintOrientation {
+    /// Portrait orientation (vertical).
+    Portrait,
+    /// Landscape orientation (horizontal).
+    Landscape,
+}
+
+impl PrintOrientation {
+    /// Return the page dimensions swapped for landscape.
+    pub fn apply(&self, size: Size) -> Size {
+        match self {
+            PrintOrientation::Portrait => size,
+            PrintOrientation::Landscape => Size { width: size.height, height: size.width },
+        }
+    }
+}
+
+/// Settings for a print job.
+#[derive(Debug, Clone)]
+pub struct PrintSettings {
+    /// Page orientation (Portrait or Landscape).
+    pub orientation: PrintOrientation,
+    /// Number of copies to print.
+    pub copies: u32,
+    /// Optional page range string, e.g. "1-5,8,11-13".
+    pub page_range: Option<String>,
+    /// Whether copies are collated (grouped by full document).
+    pub collate: bool,
+    /// Color mode: "color", "grayscale", or "monochrome".
+    pub color_mode: String,
+}
+
+impl Default for PrintSettings {
+    fn default() -> Self {
+        Self {
+            orientation: PrintOrientation::Portrait,
+            copies: 1,
+            page_range: None,
+            collate: true,
+            color_mode: "color".to_string(),
+        }
+    }
+}
+
+impl PrintSettings {
+    /// Create a new `PrintSettings` with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply these settings to a [`PrintPagination`] builder.
+    pub fn apply_to_pagination(&self, total_pages: u32) -> PrintPagination {
+        let mut pagination = PrintPagination::new();
+        pagination.set_copies(self.copies);
+        pagination.set_collate(self.collate);
+        if let Some(ref range_spec) = self.page_range {
+            let _ = pagination.set_ranges_from_spec(range_spec);
+        }
+        if total_pages > 0 {
+            // Default to all pages if no range specified
+            if pagination.selected_pages(total_pages).is_empty() && self.page_range.is_none() {
+                pagination.set_range(1, total_pages);
+            }
+        }
+        pagination
+    }
+}
+
+/// A single printable page with its content commands.
+#[derive(Debug, Clone)]
+pub struct PrintPage {
+    /// Page number (1-based).
+    pub number: u32,
+    /// Recorded drawing commands.
+    pub commands: Vec<String>,
+    /// Page dimensions in points.
+    pub size: Size,
+}
+
+impl PrintPage {
+    /// Create a new page with the given number, size, and command set.
+    pub fn new(number: u32, size: Size, commands: Vec<String>) -> Self {
+        Self { number, size, commands }
+    }
+
+    /// Return the number of recorded draw commands.
+    pub fn command_count(&self) -> usize {
+        self.commands.len()
+    }
+}
+
+/// Status of a submitted print job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintJobStatus {
+    /// Job is queued and waiting to be processed.
+    Queued,
+    /// Job is currently being printed.
+    Printing,
+    /// Job completed successfully.
+    Completed,
+    /// Job was cancelled by the user.
+    Cancelled,
+    /// Job failed with an error.
+    Failed,
+}
+
+/// A print job tracked by the system.
+#[derive(Debug, Clone)]
+pub struct PrintJob {
+    /// Unique job identifier.
+    pub id: u64,
+    /// Settings used when the job was created.
+    pub settings: PrintSettings,
+    /// Current status of the job.
+    pub status: PrintJobStatus,
+    /// Pages belonging to this job.
+    pub pages: Vec<PrintPage>,
+    /// Total number of pages in the document.
+    pub total_pages: u32,
+}
+
+impl PrintJob {
+    /// Create a new print job.
+    pub fn new(id: u64, settings: PrintSettings, pages: Vec<PrintPage>, total_pages: u32) -> Self {
+        Self { id, settings, status: PrintJobStatus::Queued, pages, total_pages }
+    }
+
+    /// Return a human-readable summary of the job.
+    pub fn summary(&self) -> String {
+        format!(
+            "PrintJob #{}: {} pages, {:?}, copies={}, color={}",
+            self.id,
+            self.total_pages,
+            self.settings.orientation,
+            self.settings.copies,
+            self.settings.color_mode,
+        )
+    }
+}
+
+/// Manages print jobs and coordinates printing.
+#[derive(Debug)]
+pub struct PrintManager {
+    /// Monotonically increasing job counter.
+    next_id: u64,
+    /// Active jobs indexed by id.
+    jobs: HashMap<u64, PrintJob>,
+}
+
+impl PrintManager {
+    /// Create a new `PrintManager`.
+    pub fn new() -> Self {
+        Self { next_id: 1, jobs: HashMap::new() }
+    }
+
+    /// Create a new print job with the given settings and page data.
+    /// Returns the newly created job.
+    pub fn create_job(
+        &mut self,
+        settings: PrintSettings,
+        pages: Vec<PrintPage>,
+        total_pages: u32,
+    ) -> PrintJob {
+        let id = self.next_id;
+        self.next_id += 1;
+        let job = PrintJob::new(id, settings, pages, total_pages);
+        self.jobs.insert(id, job.clone());
+        job
+    }
+
+    /// Cancel a queued or printing job by its ID.
+    /// Returns `true` if the job was found and cancelled.
+    pub fn cancel_job(&mut self, job_id: u64) -> bool {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status == PrintJobStatus::Queued || job.status == PrintJobStatus::Printing {
+                job.status = PrintJobStatus::Cancelled;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Return the current status of a job.
+    pub fn job_status(&self, job_id: u64) -> Option<PrintJobStatus> {
+        self.jobs.get(&job_id).map(|job| job.status)
+    }
+
+    /// Return a reference to a job by ID.
+    pub fn get_job(&self, job_id: u64) -> Option<&PrintJob> {
+        self.jobs.get(&job_id)
+    }
+
+    /// Return all tracked jobs.
+    pub fn all_jobs(&self) -> Vec<&PrintJob> {
+        self.jobs.values().collect()
+    }
+}
+
+impl Default for PrintManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Platform-specific: show a system print dialog.
+/// On non-desktop platforms this returns an error message.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub fn print_page_dialog() -> Result<bool, String> {
+    // State-only implementation: on desktop targets we acknowledge the dialog
+    // exists but do not attach a native window handle. Real implementations
+    // would call the platform's print dialog API (NSPrintPanel, GtkPrintUnixDialog, etc.).
+    log::info!("[print] print_page_dialog() called — native dialog integration pending");
+    Ok(true)
+}
+
+/// Platform-specific: show a system print dialog (fallback for unsupported platforms).
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn print_page_dialog() -> Result<bool, String> {
+    Err("print dialog is not supported on this platform".to_string())
+}
+
+/// Platform-specific: submit rendered content to the system printer.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub fn print_to_printer(content: &str, _settings: &PrintSettings) -> Result<(), String> {
+    // State-only implementation: write a temporary file with the rendered
+    // content and attempt to submit via system print commands.
+    let mut path = std::env::temp_dir();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("clock error: {err}"))?
+        .as_millis();
+    path.push(format!("rust_widgets_print_output_{ts}.txt"));
+    fs::write(&path, content).map_err(|err| format!("write print output failed: {err}"))?;
+    let result = run_print_command(&path);
+    let _ = fs::remove_file(&path);
+    result
+}
+
+/// Platform-specific: submit rendered content to the system printer (fallback).
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn print_to_printer(_content: &str, _settings: &PrintSettings) -> Result<(), String> {
+    Err("system printer is not supported on this platform".to_string())
+}
+
 /// In-memory print context that records drawing commands.
 pub struct MemoryPrintContext {
     page_size: Size,
@@ -696,5 +948,100 @@ mod tests {
         pagination.set_page_filter(PageFilter::Even);
         let pages = pagination.selected_pages(8);
         assert_eq!(pages, vec![1, 3, 5]);
+    }
+
+    // ── Print framework tests ─────────────────────────────────────
+
+    #[test]
+    fn print_manager_creates_and_tracks_jobs() {
+        let mut manager = PrintManager::new();
+        let settings = PrintSettings::new();
+        let pages = vec![PrintPage::new(
+            1,
+            Size { width: 595, height: 842 },
+            vec!["text:Hello@10,10:12".into()],
+        )];
+        let job = manager.create_job(settings, pages, 1);
+        assert_eq!(job.id, 1);
+        assert_eq!(job.status, PrintJobStatus::Queued);
+        assert_eq!(manager.job_status(1), Some(PrintJobStatus::Queued));
+        assert!(manager.get_job(1).is_some());
+    }
+
+    #[test]
+    fn print_manager_cancels_queued_job() {
+        let mut manager = PrintManager::new();
+        let settings = PrintSettings::new();
+        let pages = vec![
+            PrintPage::new(1, Size { width: 595, height: 842 }, Vec::new()),
+            PrintPage::new(2, Size { width: 595, height: 842 }, Vec::new()),
+        ];
+        let job = manager.create_job(settings, pages, 2);
+        assert_eq!(job.id, 1);
+        assert!(manager.cancel_job(1));
+        assert_eq!(manager.job_status(1), Some(PrintJobStatus::Cancelled));
+        // Cancelling again should return false (already cancelled)
+        assert!(!manager.cancel_job(1));
+    }
+
+    #[test]
+    fn print_manager_cancel_nonexistent_job_returns_false() {
+        let mut manager = PrintManager::new();
+        assert!(!manager.cancel_job(99));
+        assert_eq!(manager.job_status(99), None);
+    }
+
+    #[test]
+    fn print_orientation_swaps_dimensions_for_landscape() {
+        let portrait = Size { width: 595, height: 842 };
+        let landscape = PrintOrientation::Landscape.apply(portrait);
+        assert_eq!(landscape.width, 842);
+        assert_eq!(landscape.height, 595);
+        // Portrait leaves dimensions unchanged
+        let same = PrintOrientation::Portrait.apply(portrait);
+        assert_eq!(same.width, 595);
+        assert_eq!(same.height, 842);
+    }
+
+    #[test]
+    fn print_settings_defaults() {
+        let settings = PrintSettings::new();
+        assert_eq!(settings.orientation, PrintOrientation::Portrait);
+        assert_eq!(settings.copies, 1);
+        assert!(settings.collate);
+        assert_eq!(settings.color_mode, "color");
+        assert!(settings.page_range.is_none());
+    }
+
+    #[test]
+    fn print_settings_apply_to_pagination() {
+        let mut settings = PrintSettings::new();
+        settings.copies = 3;
+        settings.collate = true;
+        let pagination = settings.apply_to_pagination(5);
+        // With no page_range specified, should use all pages
+        let pages = pagination.selected_pages(5);
+        assert!(!pages.is_empty());
+    }
+
+    #[test]
+    fn print_job_summary_includes_details() {
+        let settings = PrintSettings::new();
+        let pages = vec![];
+        let job = PrintJob::new(7, settings, pages, 10);
+        let summary = job.summary();
+        assert!(summary.contains("#7"));
+        assert!(summary.contains("10 pages"));
+        assert!(summary.contains("Portrait"));
+    }
+
+    #[test]
+    fn print_page_tracks_content() {
+        let commands = vec!["text:Hello@10,10:12".into(), "rect:0,0,100,50:1".into()];
+        let page = PrintPage::new(3, Size { width: 800, height: 600 }, commands);
+        assert_eq!(page.number, 3);
+        assert_eq!(page.command_count(), 2);
+        assert_eq!(page.size.width, 800);
+        assert_eq!(page.size.height, 600);
     }
 }
