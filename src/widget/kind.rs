@@ -99,8 +99,6 @@ pub enum WidgetKind {
     #[cfg(not(feature = "mini"))]
     DockWidget,
     #[cfg(not(feature = "mini"))]
-    WebView,
-    #[cfg(not(feature = "mini"))]
     ActivityIndicator,
     #[cfg(not(feature = "mini"))]
     Calendar,
@@ -202,9 +200,6 @@ pub enum WidgetKind {
     /// Floating action button.
     #[cfg(not(feature = "mini"))]
     FAB,
-    /// Pull-to-refresh control for scrollable views.
-    #[cfg(not(feature = "mini"))]
-    PullToRefresh,
     /// Bottom sheet modal panel.
     #[cfg(not(feature = "mini"))]
     BottomSheet,

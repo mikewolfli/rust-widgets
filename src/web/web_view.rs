@@ -4,7 +4,7 @@
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
-//! - `WidgetKind::WebView`
+//! - `WidgetKind::WebEngineView`
 //! - Initial URL is `"about:blank"` (instead of empty string)
 //! - `reload()` skips reloading if the URL is `"about:blank"`
 //! - Does NOT expose `set_plugins_enabled` or `set_private_browsing` (unlike the engine variant)
@@ -24,7 +24,9 @@ pub struct WebViewEnhanced {
 
 impl WebViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
-        Self { core: WebViewCore::new(WidgetKind::WebView, geometry, "WebView", "about:blank") }
+        Self {
+            core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebView", "about:blank"),
+        }
     }
 
     // -- Accessors that delegate to core --

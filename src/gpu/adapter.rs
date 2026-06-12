@@ -5,8 +5,8 @@
 //! 2. Integrated GPU - Balanced performance
 //! 3. CPU Software Rendering (CPU) - Fallback mode
 //!
-//! # Example
-//! ```no_run
+//! # Example (requires `gpu-wgpu` feature + async runtime)
+//! ```ignore
 //! use rust_widgets::gpu::adapter::{AdapterSelector, AdapterSelectionStrategy};
 //!
 //! let selector = AdapterSelector::new();

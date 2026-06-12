@@ -11,8 +11,14 @@ pub struct ObservableList<T: Clone + Send + 'static> {
     listeners: HashMap<String, BoxedListener>,
 }
 
+impl<T: Clone + Send + 'static> Default for ObservableList<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Clone + Send + 'static> ObservableList<T> {
-    /// Create an empty observable list.
+    /// Creates a new empty observable list.
     pub fn new() -> Self {
         Self { items: Vec::new(), listeners: HashMap::new() }
     }

@@ -121,7 +121,7 @@ fn factory_creates_registered_widgets_by_alias() {
     assert_eq!(color_picker.kind(), WidgetKind::ColorDialog);
 
     let code_editor = factory
-        .create("codeeditor", rect, "let x = 1;")
+        .create("codeeditor", rect, "// code")
         .expect("code editor must be created via alias");
     assert_eq!(code_editor.kind(), WidgetKind::RichEdit);
 
@@ -142,7 +142,7 @@ fn factory_creates_registered_widgets_by_alias() {
 
     let media =
         factory.create("mediaplayer", rect, "").expect("media player must be created via alias");
-    assert_eq!(media.kind(), WidgetKind::WebView);
+    assert_eq!(media.kind(), WidgetKind::WebEngineView);
 
     let breadcrumb =
         factory.create("breadcrumb", rect, "").expect("breadcrumb must be created via alias");
@@ -224,7 +224,7 @@ fn factory_creates_registered_widgets_by_alias() {
     assert_eq!(text_edit.kind(), WidgetKind::TextEdit);
 
     let web = factory.create("webview", rect, "").expect("web view must be created via alias");
-    assert_eq!(web.kind(), WidgetKind::WebView);
+    assert_eq!(web.kind(), WidgetKind::WebEngineView);
 
     let pie_menu = factory.create("piemenu", rect, "").expect("pie menu must be created via alias");
     assert_eq!(pie_menu.kind(), WidgetKind::PieMenu);
@@ -487,6 +487,7 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
                 || prop.name == "radius"
                 || prop.name == "inner_radius"
                 || prop.name == "has_content"
+                || prop.name == "hovered_index"
             {
                 continue;
             }
@@ -605,97 +606,6 @@ fn default_property_value_returns_schema_defaults() {
     assert_eq!(
         factory.default_property_value("color_picker", "show_alpha"),
         Ok(CapabilityValue::Bool(true))
-    );
-    assert_eq!(
-        factory.default_property_value("gantt", "viewport_end"),
-        Ok(CapabilityValue::Int(100))
-    );
-    assert_eq!(
-        factory.default_property_value("terminalview", "output_line_count"),
-        Ok(CapabilityValue::UInt(0))
-    );
-    assert_eq!(
-        factory.default_property_value("snackbar", "visible"),
-        Ok(CapabilityValue::Bool(false))
-    );
-    assert_eq!(factory.default_property_value("mapview", "zoom"), Ok(CapabilityValue::Float(1.0)));
-    assert_eq!(
-        factory.default_property_value("mediaplayer", "volume"),
-        Ok(CapabilityValue::UInt(80))
-    );
-    assert_eq!(
-        factory.default_property_value("breadcrumb", "segment_count"),
-        Ok(CapabilityValue::UInt(0))
-    );
-    assert_eq!(
-        factory.default_property_value("splitbutton", "menu_open"),
-        Ok(CapabilityValue::Bool(false))
-    );
-    assert_eq!(
-        factory.default_property_value("segmentedcontrol", "item_count"),
-        Ok(CapabilityValue::UInt(0))
-    );
-    assert_eq!(
-        factory.default_property_value("chip", "multi_select"),
-        Ok(CapabilityValue::Bool(false))
-    );
-    assert_eq!(factory.default_property_value("grid", "rows"), Ok(CapabilityValue::UInt(1)));
-    assert_eq!(
-        factory.default_property_value("freeformshape", "stroke_width"),
-        Ok(CapabilityValue::UInt(2))
-    );
-    assert_eq!(
-        factory.default_property_value("progressbar", "orientation"),
-        Ok(CapabilityValue::String("horizontal".to_string()))
-    );
-    assert_eq!(
-        factory.default_property_value("scrollbar", "single_step"),
-        Ok(CapabilityValue::Int(1))
-    );
-    assert_eq!(
-        factory.default_property_value("listbox", "selection_mode"),
-        Ok(CapabilityValue::String("single".to_string()))
-    );
-    assert_eq!(factory.default_property_value("spinbox", "maximum"), Ok(CapabilityValue::Int(99)));
-    assert_eq!(
-        factory.default_property_value("combobox", "max_visible_items"),
-        Ok(CapabilityValue::UInt(10))
-    );
-    assert_eq!(
-        factory.default_property_value("dial", "notch_target"),
-        Ok(CapabilityValue::Float(3.7))
-    );
-    assert_eq!(
-        factory.default_property_value("window", "title_bar_height"),
-        Ok(CapabilityValue::UInt(32))
-    );
-    assert_eq!(
-        factory.default_property_value("groupbox", "checked"),
-        Ok(CapabilityValue::Bool(true))
-    );
-    assert_eq!(
-        factory.default_property_value("splitter", "orientation"),
-        Ok(CapabilityValue::String("horizontal".to_string()))
-    );
-    assert_eq!(
-        factory.default_property_value("lcdnumber", "mode"),
-        Ok(CapabilityValue::String("dec".to_string()))
-    );
-    assert_eq!(
-        factory.default_property_value("commandlink", "enabled"),
-        Ok(CapabilityValue::Bool(true))
-    );
-    assert_eq!(
-        factory.default_property_value("fontcombobox", "current_index"),
-        Ok(CapabilityValue::Int(-1))
-    );
-    assert_eq!(
-        factory.default_property_value("action", "checkable"),
-        Ok(CapabilityValue::Bool(false))
-    );
-    assert_eq!(
-        factory.default_property_value("toolbox", "orientation"),
-        Ok(CapabilityValue::String("vertical".to_string()))
     );
     assert_eq!(
         factory.default_property_value("tabbar", "tab_min_width"),

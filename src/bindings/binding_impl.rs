@@ -369,7 +369,14 @@ pub extern "C" fn rw_set_widget_geometry(
     })
 }
 #[no_mangle]
-pub extern "C" fn rw_get_widget_geometry(
+/// Retrieves the geometry of a widget identified by `widget_id`.
+///
+/// # Safety
+///
+/// All output pointer arguments must be either null or point to valid,
+/// properly aligned memory regions suitable for writing the respective
+/// geometry values (`c_int` for x/y, `c_uint` for width/height).
+pub unsafe extern "C" fn rw_get_widget_geometry(
     widget_id: u64,
     x_out: *mut c_int,
     y_out: *mut c_int,
@@ -481,7 +488,14 @@ pub extern "C" fn rw_get_clipboard_text() -> *const c_char {
     })
 }
 #[no_mangle]
-pub extern "C" fn rw_begin_drag(
+/// Begins a drag operation from the given source widget.
+///
+/// # Safety
+///
+/// `mime_type` must be a null-terminated C string pointing to valid memory.
+/// If `payload` is non-null and `payload_len > 0`, `payload` must point to
+/// a valid memory region of at least `payload_len` bytes.
+pub unsafe extern "C" fn rw_begin_drag(
     source: u64,
     mime_type: *const c_char,
     payload: *const u8,
@@ -497,7 +511,14 @@ pub extern "C" fn rw_begin_drag(
     })
 }
 #[no_mangle]
-pub extern "C" fn rw_poll_drop_event(
+/// Polls for a pending drop event and writes its fields through output pointers.
+///
+/// # Safety
+///
+/// All output pointer arguments must be either null or point to valid,
+/// properly aligned memory. `mime_out` and `payload_out` must point to
+/// locations where allocated C strings / byte arrays can be stored.
+pub unsafe extern "C" fn rw_poll_drop_event(
     source_out: *mut u64,
     target_out: *mut u64,
     mime_out: *mut *mut c_char,

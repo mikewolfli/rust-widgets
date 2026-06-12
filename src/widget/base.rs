@@ -115,7 +115,7 @@ impl BaseWidget {
         &self.children
     }
     pub fn add_child(&mut self, child: ObjectId) {
-        let _ = self.children.push(child);
+        self.children.push(child);
     }
     pub fn remove_child(&mut self, child: ObjectId) {
         self.children.retain(|&id| id != child);

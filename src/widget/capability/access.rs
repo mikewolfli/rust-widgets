@@ -39,8 +39,18 @@ use crate::widget::base_widgets::checkbox::CheckBox;
 use crate::widget::base_widgets::checkbox::CheckState;
 use crate::widget::base_widgets::label::Label;
 use crate::widget::base_widgets::radiobutton::RadioButton;
+#[cfg(not(feature = "mini"))]
+use crate::widget::base_widgets::toggle_button::{ToggleButton, ToggleButtonState};
 use crate::widget::capability::coercion::*;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+#[cfg(not(feature = "mini"))]
+use crate::widget::chart_widgets::bar_chart::BarChart;
+#[cfg(not(feature = "mini"))]
+use crate::widget::chart_widgets::line_chart::LineChart;
+#[cfg(not(feature = "mini"))]
+use crate::widget::chart_widgets::pie_chart::PieChart;
+#[cfg(not(feature = "mini"))]
+use crate::widget::chart_widgets::sparkline::Sparkline;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::collapsible_pane::CollapsiblePane;
 #[cfg(not(feature = "mini"))]
@@ -48,6 +58,8 @@ use crate::widget::container_widgets::dockwidget::DockWidget;
 use crate::widget::container_widgets::groupbox::GroupBox;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::mdiarea::MdiArea;
+#[cfg(not(feature = "mini"))]
+use crate::widget::container_widgets::pager_page_view::PagerPageView;
 use crate::widget::container_widgets::scrollarea::{ScrollArea, ScrollBarPolicy};
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::splitter::Splitter;
@@ -55,8 +67,13 @@ use crate::widget::container_widgets::splitter::Splitter;
 use crate::widget::container_widgets::stackedwidget::StackedWidget;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::tabwidget::TabWidget;
+use crate::widget::container_widgets::tile_view::TileView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::toolbox::ToolBox;
+#[cfg(not(feature = "mini"))]
+use crate::widget::cupertino::core::CupertinoSlider;
+#[cfg(not(feature = "mini"))]
+use crate::widget::cupertino::core::MaterialNavigationRail;
 #[cfg(not(feature = "mini"))]
 use crate::widget::dialog::file_dialog::FileDialog;
 #[cfg(not(feature = "mini"))]
@@ -69,20 +86,49 @@ use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::popup_window::PopupWindow;
 #[cfg(not(feature = "mini"))]
 use crate::widget::dialog::progress_dialog::ProgressDialog;
+use crate::widget::display_widgets::arc::Arc;
+use crate::widget::display_widgets::image_view::ImageView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::lcd_number::{LCDNumber, LCDNumberMode, SegmentStyle};
+use crate::widget::display_widgets::line::{Line, LineOrientation};
+use crate::widget::display_widgets::meter::Meter;
+use crate::widget::display_widgets::mini_chart::{ChartType, MiniChart};
 use crate::widget::display_widgets::progressbar::ProgressBar;
+use crate::widget::display_widgets::roller::Roller;
 use crate::widget::display_widgets::scrollbar::ScrollBar;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
+use crate::widget::display_widgets::spinner::Spinner;
+use crate::widget::display_widgets::switch::Switch;
 use crate::widget::input_widgets::combobox::ComboBox;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::command_link::CommandLink;
+use crate::widget::input_widgets::dropdown::Dropdown;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::font_combo_box::FontComboBox;
+use crate::widget::input_widgets::keyboard::{Keyboard, KeyboardLayout};
 use crate::widget::input_widgets::lineedit::LineEdit;
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
+#[cfg(not(feature = "mini"))]
+use crate::widget::input_widgets::search_bar::SearchBar;
+#[cfg(not(feature = "mini"))]
+use crate::widget::input_widgets::shortcut_editor::ShortcutEditor;
 use crate::widget::input_widgets::spinbox::SpinBox;
+use crate::widget::input_widgets::textarea::TextArea;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::animated_image::AnimatedImage;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::audio_visualizer::AudioVisualizer;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::camera_preview::CameraPreview;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::hero_animation::HeroAnimation;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::lottie_widget::LottieWidget;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::rive_widget::RiveWidget;
+#[cfg(not(feature = "mini"))]
+use crate::widget::media_widgets::video_player::VideoPlayer;
 #[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::action::Action;
 #[cfg(not(feature = "mini"))]
@@ -90,9 +136,21 @@ use crate::widget::menu_toolbar::menu::Menu;
 #[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 #[cfg(not(feature = "mini"))]
+use crate::widget::menu_toolbar::status_bar::StatusBar;
+#[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
 #[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::tool_bar::ToolBarOrientation;
+#[cfg(not(feature = "mini"))]
+use crate::widget::menu_toolbar::tool_button::ToolButton;
+#[cfg(not(feature = "mini"))]
+use crate::widget::misc_widgets::barcode_scanner::BarcodeScanner;
+#[cfg(not(feature = "mini"))]
+use crate::widget::misc_widgets::bezier_curve_editor::BezierCurveEditor;
+#[cfg(not(feature = "mini"))]
+use crate::widget::nav_widgets::tab_view::TabView;
+#[cfg(not(feature = "mini"))]
+use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 #[cfg(not(feature = "mini"))]
 use crate::widget::special_widgets::breadcrumb::Breadcrumb;
 #[cfg(not(feature = "mini"))]
@@ -112,17 +170,15 @@ use crate::widget::special_widgets::map_view::MapView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::special_widgets::media_player::MediaPlayer;
 #[cfg(not(feature = "mini"))]
-use crate::widget::special_widgets::segmented_control::SegmentedControl;
-#[cfg(not(feature = "mini"))]
-use crate::widget::special_widgets::snackbar::Snackbar;
-#[cfg(not(feature = "mini"))]
-use crate::widget::special_widgets::split_button::SplitButton;
-#[cfg(not(feature = "mini"))]
 use crate::widget::special_widgets::terminal_view::TerminalView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::view_widgets::data_grid::{ColumnFilter, DataGrid, SortSpec};
 #[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::image_gallery::ImageGallery;
+#[cfg(not(feature = "mini"))]
 use crate::widget::view_widgets::list_view::{ListView, SelectionMode, ViewMode};
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::property_grid::PropertyGrid;
 #[cfg(not(feature = "mini"))]
 use crate::widget::view_widgets::table_widget::TableWidget;
 #[cfg(not(feature = "mini"))]
@@ -1672,23 +1728,7 @@ pub fn read_widget_property_value(
             }
             _ => Err(CapabilityAccessError::UnsupportedOnWidget),
         },
-        WidgetKind::StatusBar => match property_name {
-            "message" => {
-                if let Some(sb) = widget_as::<Snackbar>(widget) {
-                    Ok(CapabilityValue::String(sb.message().to_string()))
-                } else {
-                    Err(CapabilityAccessError::UnsupportedOnWidget)
-                }
-            }
-            "visible" => {
-                if let Some(sb) = widget_as::<Snackbar>(widget) {
-                    Ok(CapabilityValue::Bool(sb.is_visible()))
-                } else {
-                    Err(CapabilityAccessError::UnsupportedOnWidget)
-                }
-            }
-            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
-        },
+
         WidgetKind::Canvas => match property_name {
             "center_x" => {
                 if let Some(mv) = widget_as::<MapView>(widget) {
@@ -1720,7 +1760,7 @@ pub fn read_widget_property_value(
             }
             _ => Err(CapabilityAccessError::UnsupportedOnWidget),
         },
-        WidgetKind::WebView => match property_name {
+        WidgetKind::WebEngineView => match property_name {
             "url" => {
                 if let Some(wv) = widget_as::<WebView>(widget) {
                     Ok(CapabilityValue::String(wv.url().to_string()))
@@ -1764,44 +1804,30 @@ pub fn read_widget_property_value(
             }
             _ => Err(CapabilityAccessError::UnsupportedOnWidget),
         },
-        WidgetKind::ToolButton => match property_name {
-            "text" => {
-                if let Some(sb) = widget_as::<SplitButton>(widget) {
-                    Ok(CapabilityValue::String(sb.text().to_string()))
-                } else {
-                    Err(CapabilityAccessError::UnsupportedOnWidget)
-                }
-            }
-            "action_count" => {
-                if let Some(sb) = widget_as::<SplitButton>(widget) {
-                    Ok(CapabilityValue::UInt(sb.actions().len() as u64))
-                } else {
-                    Err(CapabilityAccessError::UnsupportedOnWidget)
-                }
-            }
-            "menu_open" => {
-                if let Some(sb) = widget_as::<SplitButton>(widget) {
-                    Ok(CapabilityValue::Bool(sb.menu_open()))
-                } else {
-                    Err(CapabilityAccessError::UnsupportedOnWidget)
-                }
-            }
-            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
-        },
+
         WidgetKind::ToggleButton => match property_name {
-            "item_count" => {
-                if let Some(sc) = widget_as::<SegmentedControl>(widget) {
-                    Ok(CapabilityValue::UInt(sc.items().len() as u64))
+            "text" => {
+                if let Some(tb) = widget_as::<ToggleButton>(widget) {
+                    Ok(CapabilityValue::String(tb.text().to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
             }
-            "selected_index" => {
-                if let Some(sc) = widget_as::<SegmentedControl>(widget) {
-                    match sc.selected_index() {
-                        Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
-                        None => Ok(CapabilityValue::Null),
-                    }
+            "checked" => {
+                if let Some(tb) = widget_as::<ToggleButton>(widget) {
+                    Ok(CapabilityValue::Bool(tb.is_checked()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "state" => {
+                if let Some(tb) = widget_as::<ToggleButton>(widget) {
+                    let s = match tb.state() {
+                        ToggleButtonState::Normal => "normal",
+                        ToggleButtonState::Checked => "checked",
+                        ToggleButtonState::Disabled => "disabled",
+                    };
+                    Ok(CapabilityValue::String(s.to_string()))
                 } else {
                     Err(CapabilityAccessError::UnsupportedOnWidget)
                 }
@@ -2161,6 +2187,532 @@ pub fn read_widget_property_value(
             }
             _ => Err(CapabilityAccessError::UnsupportedOnWidget),
         },
+        // ── Always-available widget reads (not mini-gated) ─────────
+        WidgetKind::Arc => match property_name {
+            "value" => {
+                if let Some(w) = widget_as::<Arc>(widget) {
+                    Ok(CapabilityValue::UInt(w.value() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Spinner => match property_name {
+            "active" => {
+                if let Some(w) = widget_as::<Spinner>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_active()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "thickness" => {
+                if let Some(w) = widget_as::<Spinner>(widget) {
+                    Ok(CapabilityValue::UInt(w.thickness() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "speed" => {
+                if let Some(w) = widget_as::<Spinner>(widget) {
+                    Ok(CapabilityValue::Float(w.speed() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "size_ratio" => {
+                if let Some(w) = widget_as::<Spinner>(widget) {
+                    Ok(CapabilityValue::Float(w.size_ratio() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Roller => match property_name {
+            "selected_index" => {
+                if let Some(w) = widget_as::<Roller>(widget) {
+                    Ok(CapabilityValue::UInt(w.selected_index() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "visible_count" => {
+                if let Some(w) = widget_as::<Roller>(widget) {
+                    Ok(CapabilityValue::UInt(w.visible_count() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "item_count" => {
+                if let Some(w) = widget_as::<Roller>(widget) {
+                    Ok(CapabilityValue::UInt(w.options().len() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Dropdown => match property_name {
+            "text" => {
+                if let Some(w) = widget_as::<Dropdown>(widget) {
+                    match w.selected_text() {
+                        Some(t) => Ok(CapabilityValue::String(t.to_string())),
+                        None => Ok(CapabilityValue::String(String::new())),
+                    }
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "selected_index" => {
+                if let Some(w) = widget_as::<Dropdown>(widget) {
+                    Ok(CapabilityValue::UInt(w.selected_index() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "item_count" => {
+                if let Some(w) = widget_as::<Dropdown>(widget) {
+                    Ok(CapabilityValue::UInt(w.items().len() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "expanded" => {
+                if let Some(w) = widget_as::<Dropdown>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_expanded()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::TextArea => match property_name {
+            "text" => {
+                if let Some(w) = widget_as::<TextArea>(widget) {
+                    Ok(CapabilityValue::String(w.text().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "placeholder" => {
+                if let Some(w) = widget_as::<TextArea>(widget) {
+                    Ok(CapabilityValue::String(w.placeholder().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "read_only" => {
+                if let Some(w) = widget_as::<TextArea>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_read_only()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Keyboard => match property_name {
+            "layout" => {
+                if let Some(w) = widget_as::<Keyboard>(widget) {
+                    let s = match w.layout() {
+                        KeyboardLayout::Qwerty => "qwerty",
+                        KeyboardLayout::Numeric => "numeric",
+                    };
+                    Ok(CapabilityValue::String(s.to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "lowercase" => {
+                if let Some(w) = widget_as::<Keyboard>(widget) {
+                    Ok(CapabilityValue::Bool(w.lowercase()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Switch => match property_name {
+            "checked" => {
+                if let Some(w) = widget_as::<Switch>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_checked()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Line => match property_name {
+            "orientation" => {
+                if let Some(w) = widget_as::<Line>(widget) {
+                    let s = match w.orientation() {
+                        LineOrientation::Horizontal => "horizontal",
+                        LineOrientation::Vertical => "vertical",
+                    };
+                    Ok(CapabilityValue::String(s.to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Meter => match property_name {
+            "value" => {
+                if let Some(w) = widget_as::<Meter>(widget) {
+                    Ok(CapabilityValue::UInt(w.value() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::MiniChart => match property_name {
+            "chart_type" => {
+                if let Some(w) = widget_as::<MiniChart>(widget) {
+                    let s = match w.chart_type() {
+                        ChartType::Line => "line",
+                        ChartType::Bar => "bar",
+                    };
+                    Ok(CapabilityValue::String(s.to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::ImageView => match property_name {
+            "scaled" => {
+                if let Some(w) = widget_as::<ImageView>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_scaled()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::TileView => match property_name {
+            "current_page" => {
+                if let Some(w) = widget_as::<TileView>(widget) {
+                    Ok(CapabilityValue::UInt(w.current_page() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "page_count" => {
+                if let Some(w) = widget_as::<TileView>(widget) {
+                    Ok(CapabilityValue::UInt(w.page_count() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (menu/toolbar) ───────────────────────────
+        WidgetKind::ToolButton => match property_name {
+            "text" => {
+                if let Some(w) = widget_as::<ToolButton>(widget) {
+                    Ok(CapabilityValue::String(w.text().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "checked" => {
+                if let Some(w) = widget_as::<ToolButton>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_checked()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::StatusBar => match property_name {
+            "message" => {
+                if let Some(w) = widget_as::<StatusBar>(widget) {
+                    Ok(CapabilityValue::String(w.message().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (input) ────────────────────────────────────
+        WidgetKind::SearchBar => match property_name {
+            "text" => {
+                if let Some(w) = widget_as::<SearchBar>(widget) {
+                    Ok(CapabilityValue::String(w.text().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "placeholder" => {
+                if let Some(w) = widget_as::<SearchBar>(widget) {
+                    Ok(CapabilityValue::String(w.placeholder().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::ShortcutEditor => match property_name {
+            "filter_text" => {
+                if let Some(w) = widget_as::<ShortcutEditor>(widget) {
+                    Ok(CapabilityValue::String(w.filter_text().to_string()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (navigation) ───────────────────────────────
+        WidgetKind::TabView => match property_name {
+            "selected_index" => {
+                if let Some(w) = widget_as::<TabView>(widget) {
+                    Ok(CapabilityValue::UInt(w.current_index() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::MaterialNavigationRail => match property_name {
+            "selected_index" => {
+                if let Some(w) = widget_as::<MaterialNavigationRail>(widget) {
+                    Ok(CapabilityValue::UInt(w.selected() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (container) ─────────────────────────────────
+        WidgetKind::PagerPageView => match property_name {
+            "current_page" => {
+                if let Some(w) = widget_as::<PagerPageView>(widget) {
+                    Ok(CapabilityValue::UInt(w.current_page() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (overlay) ───────────────────────────────────
+        WidgetKind::SwipeToDismiss => match property_name {
+            "is_dismissed" => {
+                if let Some(w) = widget_as::<SwipeToDismiss>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_dismissed()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (chart) ─────────────────────────────────────
+        WidgetKind::LineChart => match property_name {
+            "stroke_width" => {
+                if let Some(w) = widget_as::<LineChart>(widget) {
+                    Ok(CapabilityValue::Float(w.stroke_width() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::Sparkline => match property_name {
+            "stroke_width" => {
+                if let Some(w) = widget_as::<Sparkline>(widget) {
+                    Ok(CapabilityValue::Float(w.stroke_width() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::BarChart => match property_name {
+            "bar_spacing" => {
+                if let Some(w) = widget_as::<BarChart>(widget) {
+                    Ok(CapabilityValue::Float(w.bar_spacing() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::PieChart => match property_name {
+            "donut" => {
+                if let Some(w) = widget_as::<PieChart>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_donut()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (media/animation) ───────────────────────────
+        WidgetKind::AnimatedImage => match property_name {
+            "playing" => {
+                if let Some(w) = widget_as::<AnimatedImage>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_playing()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::HeroAnimation => match property_name {
+            "animation_progress" => {
+                if let Some(w) = widget_as::<HeroAnimation>(widget) {
+                    Ok(CapabilityValue::Float(w.progress() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::LottieWidget => match property_name {
+            "playing" => {
+                if let Some(w) = widget_as::<LottieWidget>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_playing()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::RiveWidget => match property_name {
+            "is_playing" => {
+                if let Some(w) = widget_as::<RiveWidget>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_playing()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::VideoPlayer => match property_name {
+            "is_playing" => {
+                if let Some(w) = widget_as::<VideoPlayer>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_playing()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "volume" => {
+                if let Some(w) = widget_as::<VideoPlayer>(widget) {
+                    Ok(CapabilityValue::Float(w.volume() as f64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (view) ──────────────────────────────────────
+        WidgetKind::ImageGallery => match property_name {
+            "current_index" => {
+                if let Some(w) = widget_as::<ImageGallery>(widget) {
+                    Ok(CapabilityValue::UInt(w.current_index() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (view / property) ───────────────────────────
+        WidgetKind::PropertyGrid => match property_name {
+            "property_count" => {
+                if let Some(w) = widget_as::<PropertyGrid>(widget) {
+                    Ok(CapabilityValue::UInt(w.property_count() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "selected_index" => {
+                if let Some(w) = widget_as::<PropertyGrid>(widget) {
+                    match w.selected_index() {
+                        Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                        None => Ok(CapabilityValue::Null),
+                    }
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
+        // ── New widgets (misc) ──────────────────────────────────────
+        WidgetKind::AudioVisualizer => match property_name {
+            "bar_count" => {
+                if let Some(w) = widget_as::<AudioVisualizer>(widget) {
+                    Ok(CapabilityValue::UInt(w.bar_count() as u64))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::CameraPreview => match property_name {
+            "is_active" => {
+                if let Some(w) = widget_as::<CameraPreview>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_active()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::BarcodeScanner => match property_name {
+            "is_scanning" => {
+                if let Some(w) = widget_as::<BarcodeScanner>(widget) {
+                    Ok(CapabilityValue::Bool(w.is_scanning()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::BezierCurveEditor => match property_name {
+            "snap_to_grid" => {
+                if let Some(w) = widget_as::<BezierCurveEditor>(widget) {
+                    Ok(CapabilityValue::Bool(w.snap_to_grid()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+        WidgetKind::CupertinoSlider => match property_name {
+            "value" => {
+                if let Some(w) = widget_as::<CupertinoSlider>(widget) {
+                    Ok(CapabilityValue::Float(w.value().into()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "min" => {
+                if let Some(w) = widget_as::<CupertinoSlider>(widget) {
+                    Ok(CapabilityValue::Float(w.min().into()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            "max" => {
+                if let Some(w) = widget_as::<CupertinoSlider>(widget) {
+                    Ok(CapabilityValue::Float(w.max().into()))
+                } else {
+                    Err(CapabilityAccessError::UnsupportedOnWidget)
+                }
+            }
+            _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+        },
+
         _ => Err(CapabilityAccessError::UnsupportedOnWidget),
     }
 }
@@ -3184,28 +3736,7 @@ pub fn write_widget_property_value(
                 Err(CapabilityAccessError::UnsupportedOnWidget)
             }
         }
-        WidgetKind::StatusBar => {
-            if let Some(snackbar) = widget_as_mut::<Snackbar>(widget) {
-                match property_name {
-                    "message" => {
-                        let message = expect_string(value)?;
-                        snackbar.show(message);
-                        Ok(())
-                    }
-                    "visible" => {
-                        if expect_bool(value)? {
-                            snackbar.show(snackbar.message().to_string());
-                        } else {
-                            snackbar.dismiss();
-                        }
-                        Ok(())
-                    }
-                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
-                }
-            } else {
-                Err(CapabilityAccessError::UnsupportedOnWidget)
-            }
-        }
+
         WidgetKind::Canvas => {
             if let Some(map_view) = widget_as_mut::<MapView>(widget) {
                 match property_name {
@@ -3231,7 +3762,7 @@ pub fn write_widget_property_value(
                 Err(CapabilityAccessError::UnsupportedOnWidget)
             }
         }
-        WidgetKind::WebView => {
+        WidgetKind::WebEngineView => {
             if let Some(media_player) = widget_as_mut::<MediaPlayer>(widget) {
                 match property_name {
                     "source" => match value {
@@ -3276,31 +3807,7 @@ pub fn write_widget_property_value(
                 Err(CapabilityAccessError::UnsupportedOnWidget)
             }
         }
-        WidgetKind::ToolButton => {
-            if let Some(split_button) = widget_as_mut::<SplitButton>(widget) {
-                match property_name {
-                    "text" => {
-                        split_button.set_text(expect_string(value)?);
-                        Ok(())
-                    }
-                    "menu_open" => {
-                        if expect_bool(value)? {
-                            split_button.open_menu();
-                        } else {
-                            split_button.close_menu();
-                        }
-                        Ok(())
-                    }
-                    "row_height" => {
-                        split_button.set_row_height(expect_u32(value)?);
-                        Ok(())
-                    }
-                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
-                }
-            } else {
-                Err(CapabilityAccessError::UnsupportedOnWidget)
-            }
-        }
+
         WidgetKind::CheckListBox => {
             if let Some(chip) = widget_as_mut::<Chip>(widget) {
                 match property_name {
@@ -3382,6 +3889,624 @@ pub fn write_widget_property_value(
                 Err(CapabilityAccessError::UnsupportedOnWidget)
             }
         }
+        // ── Always-available widget writes (not mini-gated) ────────
+        WidgetKind::ToggleButton => {
+            if let Some(w) = widget_as_mut::<ToggleButton>(widget) {
+                match property_name {
+                    "text" => {
+                        w.set_text(expect_string(value)?);
+                        Ok(())
+                    }
+                    "checked" => {
+                        w.set_checked(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Arc => {
+            if let Some(w) = widget_as_mut::<Arc>(widget) {
+                match property_name {
+                    "value" => {
+                        w.set_value(expect_u32(value)?);
+                        Ok(())
+                    }
+                    "thickness" => {
+                        w.set_thickness(expect_u32(value)?);
+                        Ok(())
+                    }
+                    "sweep_angle" => {
+                        w.set_sweep_angle(expect_u32(value)? as u16);
+                        Ok(())
+                    }
+                    "indeterminate" => {
+                        w.set_indeterminate(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Spinner => {
+            if let Some(w) = widget_as_mut::<Spinner>(widget) {
+                match property_name {
+                    "active" => {
+                        w.set_active(expect_bool(value)?);
+                        Ok(())
+                    }
+                    "thickness" => {
+                        w.set_thickness(expect_u32(value)?);
+                        Ok(())
+                    }
+                    "speed" => {
+                        w.set_speed(expect_f32(value)?);
+                        Ok(())
+                    }
+                    "size_ratio" => {
+                        w.set_size_ratio(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Roller => {
+            if let Some(w) = widget_as_mut::<Roller>(widget) {
+                match property_name {
+                    "selected_index" => {
+                        w.set_selected_index(expect_usize(value)?);
+                        Ok(())
+                    }
+                    "visible_count" => {
+                        w.set_visible_count(expect_u32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Dropdown => {
+            if let Some(w) = widget_as_mut::<Dropdown>(widget) {
+                match property_name {
+                    "selected_index" => {
+                        w.set_selected_index(expect_usize(value)?);
+                        Ok(())
+                    }
+                    "expanded" => {
+                        w.set_expanded(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::TextArea => {
+            if let Some(w) = widget_as_mut::<TextArea>(widget) {
+                match property_name {
+                    "text" => {
+                        w.set_text(expect_string(value)?);
+                        Ok(())
+                    }
+                    "placeholder" => {
+                        w.set_placeholder(expect_string(value)?);
+                        Ok(())
+                    }
+                    "read_only" => {
+                        w.set_read_only(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Keyboard => {
+            if let Some(w) = widget_as_mut::<Keyboard>(widget) {
+                match property_name {
+                    "layout" => {
+                        let s = expect_string(value)?;
+                        let layout = match s.as_str() {
+                            "qwerty" => KeyboardLayout::Qwerty,
+                            "numeric" => KeyboardLayout::Numeric,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        w.set_layout(layout);
+                        Ok(())
+                    }
+                    "lowercase" => {
+                        w.set_lowercase(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Switch => {
+            if let Some(w) = widget_as_mut::<Switch>(widget) {
+                match property_name {
+                    "checked" => {
+                        w.set_checked(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Line => {
+            if let Some(w) = widget_as_mut::<Line>(widget) {
+                match property_name {
+                    "orientation" => {
+                        let s = expect_string(value)?;
+                        let ori = match s.as_str() {
+                            "horizontal" => LineOrientation::Horizontal,
+                            "vertical" => LineOrientation::Vertical,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        w.set_orientation(ori);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Meter => {
+            if let Some(w) = widget_as_mut::<Meter>(widget) {
+                match property_name {
+                    "value" => {
+                        w.set_value(expect_u32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::MiniChart => {
+            if let Some(w) = widget_as_mut::<MiniChart>(widget) {
+                match property_name {
+                    "chart_type" => {
+                        let s = expect_string(value)?;
+                        let ct = match s.as_str() {
+                            "line" => ChartType::Line,
+                            "bar" => ChartType::Bar,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        w.set_chart_type(ct);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::ImageView => {
+            if let Some(w) = widget_as_mut::<ImageView>(widget) {
+                match property_name {
+                    "scaled" => {
+                        w.set_scaled(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::TileView => {
+            if let Some(w) = widget_as_mut::<TileView>(widget) {
+                match property_name {
+                    "current_page" => {
+                        w.set_current_page(expect_u32(value)?);
+                        Ok(())
+                    }
+                    "page_count" => {
+                        w.set_page_count(expect_u32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (menu/toolbar) ───────────────────────────
+        WidgetKind::ToolButton => {
+            if let Some(w) = widget_as_mut::<ToolButton>(widget) {
+                match property_name {
+                    "text" => {
+                        w.set_text(expect_string(value)?);
+                        Ok(())
+                    }
+                    "checked" => {
+                        w.set_checked(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::StatusBar => {
+            if let Some(w) = widget_as_mut::<StatusBar>(widget) {
+                match property_name {
+                    "message" => {
+                        w.show_message(expect_string(value)?, 0);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (input) ────────────────────────────────────
+        WidgetKind::SearchBar => {
+            if let Some(w) = widget_as_mut::<SearchBar>(widget) {
+                match property_name {
+                    "text" => {
+                        w.set_text(expect_string(value)?);
+                        Ok(())
+                    }
+                    "placeholder" => {
+                        w.set_placeholder(expect_string(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::ShortcutEditor => {
+            if let Some(w) = widget_as_mut::<ShortcutEditor>(widget) {
+                match property_name {
+                    "filter_text" => {
+                        let text = expect_string(value)?;
+                        w.set_filter(&text);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (navigation) ───────────────────────────────
+        WidgetKind::TabView => {
+            if let Some(w) = widget_as_mut::<TabView>(widget) {
+                match property_name {
+                    "selected_index" => {
+                        w.set_current_index(expect_usize(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::MaterialNavigationRail => {
+            if let Some(w) = widget_as_mut::<MaterialNavigationRail>(widget) {
+                match property_name {
+                    "selected_index" => {
+                        w.set_selected(expect_usize(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (container) ─────────────────────────────────
+        WidgetKind::PagerPageView => {
+            if let Some(w) = widget_as_mut::<PagerPageView>(widget) {
+                match property_name {
+                    "current_page" => {
+                        w.set_current_page(expect_usize(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (overlay) ───────────────────────────────────
+        WidgetKind::SwipeToDismiss => {
+            if let Some(_w) = widget_as_mut::<SwipeToDismiss>(widget) {
+                match property_name {
+                    "is_dismissed" => Err(CapabilityAccessError::UnsupportedOnWidget),
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (chart) ─────────────────────────────────────
+        WidgetKind::LineChart => {
+            if let Some(w) = widget_as_mut::<LineChart>(widget) {
+                match property_name {
+                    "stroke_width" => {
+                        w.set_stroke_width(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::Sparkline => {
+            if let Some(w) = widget_as_mut::<Sparkline>(widget) {
+                match property_name {
+                    "stroke_width" => {
+                        w.set_stroke_width(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::BarChart => {
+            if let Some(w) = widget_as_mut::<BarChart>(widget) {
+                match property_name {
+                    "bar_spacing" => {
+                        w.set_bar_spacing(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::PieChart => {
+            if let Some(w) = widget_as_mut::<PieChart>(widget) {
+                match property_name {
+                    "donut" => {
+                        w.set_donut_mode(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (media/animation) ───────────────────────────
+        WidgetKind::AnimatedImage => {
+            if let Some(w) = widget_as_mut::<AnimatedImage>(widget) {
+                match property_name {
+                    "playing" => {
+                        if expect_bool(value)? {
+                            w.play();
+                        } else {
+                            w.pause();
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::HeroAnimation => {
+            if let Some(w) = widget_as_mut::<HeroAnimation>(widget) {
+                match property_name {
+                    "animation_progress" => {
+                        w.set_progress(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::LottieWidget => {
+            if let Some(w) = widget_as_mut::<LottieWidget>(widget) {
+                match property_name {
+                    "playing" => {
+                        if expect_bool(value)? {
+                            w.play();
+                        } else {
+                            w.pause();
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::RiveWidget => {
+            if let Some(w) = widget_as_mut::<RiveWidget>(widget) {
+                match property_name {
+                    "is_playing" => {
+                        if expect_bool(value)? {
+                            w.play();
+                        } else {
+                            w.pause();
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::VideoPlayer => {
+            if let Some(w) = widget_as_mut::<VideoPlayer>(widget) {
+                match property_name {
+                    "is_playing" => {
+                        if expect_bool(value)? {
+                            w.play();
+                        } else {
+                            w.pause();
+                        }
+                        Ok(())
+                    }
+                    "volume" => {
+                        w.set_volume(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (view) ──────────────────────────────────────
+        WidgetKind::ImageGallery => {
+            if let Some(w) = widget_as_mut::<ImageGallery>(widget) {
+                match property_name {
+                    "current_index" => {
+                        w.set_current_index(expect_usize(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (view / property) ───────────────────────────
+        WidgetKind::PropertyGrid => {
+            if let Some(w) = widget_as_mut::<PropertyGrid>(widget) {
+                match property_name {
+                    "selected_index" => {
+                        match value {
+                            CapabilityValue::Null => w.set_selected_index(None),
+                            other => w.set_selected_index(Some(expect_usize(other)?)),
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
+        // ── New widgets (misc) ──────────────────────────────────────
+        WidgetKind::AudioVisualizer => {
+            if let Some(w) = widget_as_mut::<AudioVisualizer>(widget) {
+                match property_name {
+                    "bar_count" => {
+                        w.set_bar_count(expect_usize(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::CameraPreview => {
+            if let Some(w) = widget_as_mut::<CameraPreview>(widget) {
+                match property_name {
+                    "is_active" => {
+                        if expect_bool(value)? {
+                            w.start_preview();
+                        } else {
+                            w.stop_preview();
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::BarcodeScanner => {
+            if let Some(w) = widget_as_mut::<BarcodeScanner>(widget) {
+                match property_name {
+                    "is_scanning" => {
+                        if expect_bool(value)? {
+                            w.start_scanning();
+                        } else {
+                            w.stop_scanning();
+                        }
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::BezierCurveEditor => {
+            if let Some(w) = widget_as_mut::<BezierCurveEditor>(widget) {
+                match property_name {
+                    "snap_to_grid" => {
+                        w.set_snap_to_grid(expect_bool(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+        WidgetKind::CupertinoSlider => {
+            if let Some(w) = widget_as_mut::<CupertinoSlider>(widget) {
+                match property_name {
+                    "value" => {
+                        w.set_value(expect_f32(value)?);
+                        Ok(())
+                    }
+                    "min" => {
+                        w.set_min(expect_f32(value)?);
+                        Ok(())
+                    }
+                    "max" => {
+                        w.set_max(expect_f32(value)?);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::UnsupportedOnWidget),
+                }
+            } else {
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+        }
+
         _ => Err(CapabilityAccessError::UnsupportedOnWidget),
     }
 }
@@ -3853,6 +4978,7 @@ pub fn default_widget_property_value(
         WidgetKind::Chart => match property_name {
             "task_count" => CapabilityValue::UInt(0),
             "selected_id" => CapabilityValue::Null,
+            "selected_marker_id" => CapabilityValue::Null,
             "viewport_start" => CapabilityValue::Int(0),
             "viewport_end" => CapabilityValue::Int(100),
             _ => return None,
@@ -3867,12 +4993,7 @@ pub fn default_widget_property_value(
             "input_line" => CapabilityValue::String(String::new()),
             _ => return None,
         },
-        WidgetKind::StatusBar => match property_name {
-            "message" => CapabilityValue::String(String::new()),
-            "visible" => CapabilityValue::Bool(false),
-            "action_label" => CapabilityValue::Null,
-            _ => return None,
-        },
+
         WidgetKind::Canvas => match property_name {
             "center_x" => CapabilityValue::Float(0.0),
             "center_y" => CapabilityValue::Float(0.0),
@@ -3881,7 +5002,11 @@ pub fn default_widget_property_value(
             "selected_marker_id" => CapabilityValue::Null,
             _ => return None,
         },
-        WidgetKind::WebView => match property_name {
+        WidgetKind::Carousel => match property_name {
+            "page_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::WebEngineView => match property_name {
             "url" => CapabilityValue::String("about:blank".to_string()),
             "loading" => CapabilityValue::Bool(false),
             "title" => CapabilityValue::String(String::new()),
@@ -3896,19 +5021,17 @@ pub fn default_widget_property_value(
             "fullscreen" => CapabilityValue::Bool(false),
             _ => return None,
         },
+
         WidgetKind::Panel => match property_name {
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             _ => return None,
         },
-        WidgetKind::ToolButton => match property_name {
-            "text" => CapabilityValue::String(String::new()),
-            "action_count" => CapabilityValue::UInt(0),
-            "menu_open" => CapabilityValue::Bool(false),
-            "row_height" => CapabilityValue::UInt(22),
-            _ => return None,
-        },
+
         WidgetKind::ToggleButton => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "checked" => CapabilityValue::Bool(false),
+            "state" => CapabilityValue::String("normal".to_string()),
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "selected_id" => CapabilityValue::Null,
@@ -3935,6 +5058,74 @@ pub fn default_widget_property_value(
             "fill_rgba" => CapabilityValue::String("#C8DCFFFF".to_string()),
             "stroke_rgba" => CapabilityValue::String("#5078C8FF".to_string()),
             "stroke_width" => CapabilityValue::UInt(2),
+            _ => return None,
+        },
+        // ── Always-available widget defaults (not mini-gated) ─────
+        WidgetKind::Arc => match property_name {
+            "value" => CapabilityValue::UInt(0),
+            "minimum" => CapabilityValue::UInt(0),
+            "maximum" => CapabilityValue::UInt(100),
+            "thickness" => CapabilityValue::UInt(10),
+            "sweep_angle" => CapabilityValue::UInt(360),
+            "indeterminate" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Spinner => match property_name {
+            "active" => CapabilityValue::Bool(true),
+            "thickness" => CapabilityValue::UInt(4),
+            "speed" => CapabilityValue::Float(1.0),
+            "size_ratio" => CapabilityValue::Float(0.8),
+            _ => return None,
+        },
+        WidgetKind::Roller => match property_name {
+            "selected_index" => CapabilityValue::UInt(0),
+            "visible_count" => CapabilityValue::UInt(5),
+            "item_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::Dropdown => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "selected_index" => CapabilityValue::UInt(0),
+            "item_count" => CapabilityValue::UInt(0),
+            "expanded" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::TextArea => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "placeholder" => CapabilityValue::String(String::new()),
+            "read_only" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Keyboard => match property_name {
+            "layout" => CapabilityValue::String("qwerty".to_string()),
+            "lowercase" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::Switch => match property_name {
+            "checked" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Line => match property_name {
+            "orientation" => CapabilityValue::String("horizontal".to_string()),
+            _ => return None,
+        },
+        WidgetKind::Meter => match property_name {
+            "value" => CapabilityValue::UInt(0),
+            "minimum" => CapabilityValue::UInt(0),
+            "maximum" => CapabilityValue::UInt(100),
+            _ => return None,
+        },
+        WidgetKind::MiniChart => match property_name {
+            "chart_type" => CapabilityValue::String("line".to_string()),
+            _ => return None,
+        },
+        WidgetKind::ImageView => match property_name {
+            "scaled" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::TileView => match property_name {
+            "current_page" => CapabilityValue::UInt(0),
+            "page_count" => CapabilityValue::UInt(1),
             _ => return None,
         },
         // ── Dialog widgets ──────────────────────────────────
@@ -4033,6 +5224,384 @@ pub fn default_widget_property_value(
             "maximum" => CapabilityValue::Null,
             _ => return None,
         },
+        // ── Group A widgets (non-mini) ─────────────────────
+        WidgetKind::SearchBox => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "placeholder" => CapabilityValue::String("Search...".to_string()),
+            _ => return None,
+        },
+        WidgetKind::Badge => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "count" => CapabilityValue::Int(0),
+            _ => return None,
+        },
+        WidgetKind::SkeletonLoader => match property_name {
+            "active" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::FAB => match property_name {
+            "icon" => CapabilityValue::String("+".to_string()),
+            _ => return None,
+        },
+        WidgetKind::BottomSheet => match property_name {
+            "expanded" => CapabilityValue::Bool(false),
+            "peek_height" => CapabilityValue::Float(100.0),
+            _ => return None,
+        },
+        WidgetKind::BottomNavigationBar => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::NavigationDrawer => match property_name {
+            "open" => CapabilityValue::Bool(false),
+            "width" => CapabilityValue::Float(250.0),
+            _ => return None,
+        },
+        WidgetKind::AppBar => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::MobileDatePicker => match property_name {
+            "selected_date" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::Divider => match property_name {
+            "orientation" => CapabilityValue::String("horizontal".to_string()),
+            "thickness" => CapabilityValue::Float(1.0),
+            _ => return None,
+        },
+        WidgetKind::Stepper => match property_name {
+            "value" => CapabilityValue::Int(0),
+            "minimum" => CapabilityValue::Int(0),
+            "maximum" => CapabilityValue::Int(100),
+            "step" => CapabilityValue::Int(1),
+            _ => return None,
+        },
+        WidgetKind::Rating => match property_name {
+            "value" => CapabilityValue::Float(0.0),
+            "max" => CapabilityValue::UInt(5),
+            _ => return None,
+        },
+        WidgetKind::Avatar => match property_name {
+            "initials" => CapabilityValue::String(String::new()),
+            "image_source" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::EmptyState => match property_name {
+            "message" => CapabilityValue::String("No data".to_string()),
+            "description" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::ColorHistory => match property_name {
+            "color_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::ColorWell => match property_name {
+            "color" => CapabilityValue::String("#FF0000FF".to_string()),
+            _ => return None,
+        },
+        WidgetKind::TagInput => match property_name {
+            "tags" => CapabilityValue::String(String::new()),
+            "placeholder" => CapabilityValue::String("Add tag...".to_string()),
+            _ => return None,
+        },
+        WidgetKind::ImePreedit => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "cursor_position" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::InplaceEditor => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "editing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::QRCode => match property_name {
+            "data" => CapabilityValue::String(String::new()),
+            "size" => CapabilityValue::UInt(256),
+            _ => return None,
+        },
+        WidgetKind::MasonryLayout => match property_name {
+            "column_count" => CapabilityValue::UInt(2),
+            "item_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::MaterialSnackbar => match property_name {
+            "message" => CapabilityValue::String(String::new()),
+            "action_text" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::AdaptiveScaffold => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::WizardDialog => match property_name {
+            "current_step" => CapabilityValue::UInt(0),
+            "step_count" => CapabilityValue::UInt(0),
+            "can_go_back" => CapabilityValue::Bool(false),
+            "can_go_forward" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::SafeArea => match property_name {
+            "top_inset" => CapabilityValue::Float(0.0),
+            "bottom_inset" => CapabilityValue::Float(0.0),
+            "left_inset" => CapabilityValue::Float(0.0),
+            "right_inset" => CapabilityValue::Float(0.0),
+            _ => return None,
+        },
+        WidgetKind::CupertinoAlertDialog => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "message" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::CupertinoSlider => match property_name {
+            "value" => CapabilityValue::Float(0.0),
+            "min" => CapabilityValue::Float(0.0),
+            "max" => CapabilityValue::Float(1.0),
+            _ => return None,
+        },
+        WidgetKind::Tooltip => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "visible" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::SegmentedButton => match property_name {
+            "selected_index" => CapabilityValue::UInt(0),
+            "segment_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::NavigationStack => match property_name {
+            "page_count" => CapabilityValue::UInt(0),
+            "current_page" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::ProgressCircle => match property_name {
+            "value" => CapabilityValue::Float(0.0),
+            "thickness" => CapabilityValue::Float(4.0),
+            "indeterminate" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Icon => match property_name {
+            "icon_name" => CapabilityValue::String(String::new()),
+            "size" => CapabilityValue::Float(24.0),
+            _ => return None,
+        },
+        WidgetKind::DropdownMenu => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::UInt(0),
+            "expanded" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::MaskedEdit => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "mask" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::MenuButton => match property_name {
+            "text" => CapabilityValue::String("Menu".to_string()),
+            "item_count" => CapabilityValue::UInt(0),
+            "expanded" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Popover => match property_name {
+            "visible" => CapabilityValue::Bool(false),
+            "text" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::AutoCompleteEdit => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "suggestion_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::MultiSelectComboBox => match property_name {
+            "selected_count" => CapabilityValue::UInt(0),
+            "expanded" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::RangeSlider => match property_name {
+            "min_value" => CapabilityValue::Float(0.0),
+            "max_value" => CapabilityValue::Float(100.0),
+            "lower" => CapabilityValue::Float(25.0),
+            "upper" => CapabilityValue::Float(75.0),
+            _ => return None,
+        },
+        WidgetKind::FloatingLabel => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "placeholder" => CapabilityValue::String(String::new()),
+            "focused" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::FontPreview => match property_name {
+            "font_family" => CapabilityValue::String("Arial".to_string()),
+            "font_size" => CapabilityValue::Float(16.0),
+            "preview_text" => CapabilityValue::String("The quick brown fox...".to_string()),
+            _ => return None,
+        },
+        WidgetKind::CupertinoNavigationBar => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "large_title" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::CupertinoSegmentedControl => match property_name {
+            "selected_index" => CapabilityValue::UInt(0),
+            "segment_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::RefreshControl => match property_name {
+            "refreshing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::ModalBottomSheet => match property_name {
+            "visible" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::FindReplaceDialog => match property_name {
+            "find_text" => CapabilityValue::String(String::new()),
+            "replace_text" => CapabilityValue::String(String::new()),
+            "match_case" => CapabilityValue::Bool(false),
+            "wrap_around" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::PropertiesPanel => match property_name {
+            "property_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::CupertinoDatePicker => match property_name {
+            "selected_date" => CapabilityValue::String("2025-01-01".to_string()),
+            _ => return None,
+        },
+        WidgetKind::EditableComboBox => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "item_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::DateRangePicker => match property_name {
+            "start_date" => CapabilityValue::String(String::new()),
+            "end_date" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+
+        // ── New widgets (menu/toolbar) ───────────────────────────
+        WidgetKind::ToolButton => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "checked" => CapabilityValue::Bool(false),
+            "menu_open" => CapabilityValue::Bool(false),
+            "action_count" => CapabilityValue::UInt(0),
+            "row_height" => CapabilityValue::UInt(24),
+            _ => return None,
+        },
+        WidgetKind::StatusBar => match property_name {
+            "message" => CapabilityValue::String(String::new()),
+            "visible" => CapabilityValue::Bool(false),
+            "action_label" => CapabilityValue::Null,
+            _ => return None,
+        },
+
+        // ── New widgets (input) ────────────────────────────────────
+        WidgetKind::SearchBar => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "placeholder" => CapabilityValue::String("Search...".to_string()),
+            _ => return None,
+        },
+        WidgetKind::ShortcutEditor => match property_name {
+            "filter_text" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+
+        // ── New widgets (navigation) ───────────────────────────────
+        WidgetKind::TabView => match property_name {
+            "selected_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::MaterialNavigationRail => match property_name {
+            "selected_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+
+        // ── New widgets (container) ─────────────────────────────────
+        WidgetKind::PagerPageView => match property_name {
+            "current_page" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+
+        // ── New widgets (overlay) ───────────────────────────────────
+        WidgetKind::SwipeToDismiss => match property_name {
+            "is_dismissed" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+
+        // ── New widgets (chart) ─────────────────────────────────────
+        WidgetKind::LineChart => match property_name {
+            "stroke_width" => CapabilityValue::Float(2.0),
+            _ => return None,
+        },
+        WidgetKind::Sparkline => match property_name {
+            "stroke_width" => CapabilityValue::Float(1.5),
+            _ => return None,
+        },
+        WidgetKind::BarChart => match property_name {
+            "bar_spacing" => CapabilityValue::Float(0.2),
+            _ => return None,
+        },
+        WidgetKind::PieChart => match property_name {
+            "donut" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+
+        // ── New widgets (media/animation) ───────────────────────────
+        WidgetKind::AnimatedImage => match property_name {
+            "playing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::HeroAnimation => match property_name {
+            "animation_progress" => CapabilityValue::Float(0.0),
+            _ => return None,
+        },
+        WidgetKind::LottieWidget => match property_name {
+            "playing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::RiveWidget => match property_name {
+            "is_playing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::VideoPlayer => match property_name {
+            "is_playing" => CapabilityValue::Bool(false),
+            "volume" => CapabilityValue::Float(0.8),
+            _ => return None,
+        },
+
+        // ── New widgets (view) ──────────────────────────────────────
+        WidgetKind::ImageGallery => match property_name {
+            "current_index" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+
+        // ── New widgets (view / property) ───────────────────────────
+        WidgetKind::PropertyGrid => match property_name {
+            "property_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::Null,
+            _ => return None,
+        },
+
+        // ── New widgets (misc) ──────────────────────────────────────
+        WidgetKind::AudioVisualizer => match property_name {
+            "bar_count" => CapabilityValue::UInt(64),
+            _ => return None,
+        },
+        WidgetKind::CameraPreview => match property_name {
+            "is_active" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::BarcodeScanner => match property_name {
+            "is_scanning" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::BezierCurveEditor => match property_name {
+            "snap_to_grid" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+
         _ => return None,
     };
 

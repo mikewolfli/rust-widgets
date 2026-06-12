@@ -470,7 +470,7 @@ impl From<WidgetKind> for AccessibleRole {
             WidgetKind::Badge => AccessibleRole::Label,
             WidgetKind::SkeletonLoader => AccessibleRole::Label,
             WidgetKind::FAB => AccessibleRole::Button,
-            WidgetKind::PullToRefresh => AccessibleRole::Group,
+            WidgetKind::RefreshControl => AccessibleRole::Group,
             WidgetKind::BottomSheet => AccessibleRole::Group,
             WidgetKind::BottomNavigationBar => AccessibleRole::TabGroup,
             WidgetKind::NavigationDrawer => AccessibleRole::Group,
@@ -561,7 +561,7 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::Chip
             | WidgetKind::Badge
             | WidgetKind::SkeletonLoader
-            | WidgetKind::PullToRefresh
+            | WidgetKind::RefreshControl
             | WidgetKind::BottomSheet
             | WidgetKind::NavigationDrawer
             | WidgetKind::AppBar

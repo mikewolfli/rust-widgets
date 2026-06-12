@@ -39,7 +39,11 @@ impl CupertinoSegmentedControl {
     pub fn set_segments(&mut self, segments: Vec<String>) {
         self.segments = segments;
         if self.selected_index >= self.segments.len().max(1) {
-            self.selected_index = if self.segments.is_empty() { 0 } else { 0 };
+            self.selected_index = if self.segments.is_empty() {
+                0
+            } else {
+                self.selected_index.min(self.segments.len() - 1)
+            };
         }
         self.base.request_redraw();
     }

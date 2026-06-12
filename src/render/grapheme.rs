@@ -192,7 +192,7 @@ impl GraphemeProcessor {
             return false;
         }
         // Must contain at least one ZWJ
-        let has_zwj = chars.iter().any(|&c| c == '\u{200D}');
+        let has_zwj = chars.contains(&'\u{200D}');
         if !has_zwj {
             return false;
         }

@@ -79,7 +79,6 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::Toolbox
             | WidgetKind::CollapsiblePane
             | WidgetKind::DockWidget
-            | WidgetKind::WebView
             | WidgetKind::ColumnView
             | WidgetKind::UndoView
             | WidgetKind::CommandLink
@@ -103,7 +102,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::Badge
             | WidgetKind::SkeletonLoader
             | WidgetKind::FAB
-            | WidgetKind::PullToRefresh
+            | WidgetKind::RefreshControl
             | WidgetKind::BottomSheet
             | WidgetKind::BottomNavigationBar
             | WidgetKind::NavigationDrawer
@@ -151,7 +150,6 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::TabView
             | WidgetKind::SearchBar
             | WidgetKind::ShortcutEditor
-            | WidgetKind::RefreshControl
             | WidgetKind::ModalBottomSheet
             | WidgetKind::LineChart
             | WidgetKind::Sparkline
@@ -282,7 +280,6 @@ mod tests {
             WidgetKind::Toolbox,
             WidgetKind::CollapsiblePane,
             WidgetKind::DockWidget,
-            WidgetKind::WebView,
             WidgetKind::ColumnView,
             WidgetKind::UndoView,
             WidgetKind::CommandLink,
@@ -308,7 +305,6 @@ mod tests {
             WidgetKind::Badge,
             WidgetKind::SkeletonLoader,
             WidgetKind::FAB,
-            WidgetKind::PullToRefresh,
             WidgetKind::BottomSheet,
             WidgetKind::BottomNavigationBar,
             WidgetKind::NavigationDrawer,
@@ -442,7 +438,6 @@ mod tests {
             WidgetKind::StackedWidget,
             WidgetKind::CollapsiblePane,
             WidgetKind::DockWidget,
-            WidgetKind::WebView,
             WidgetKind::ActivityIndicator,
             WidgetKind::Calendar,
             WidgetKind::ColumnView,
@@ -480,7 +475,6 @@ mod tests {
             WidgetKind::Badge,
             WidgetKind::SkeletonLoader,
             WidgetKind::FAB,
-            WidgetKind::PullToRefresh,
             WidgetKind::BottomSheet,
             WidgetKind::BottomNavigationBar,
             WidgetKind::NavigationDrawer,

@@ -43,7 +43,7 @@ impl WebView {
 
     /// Return the widget kind constant.
     pub fn widget_kind(&self) -> WidgetKind {
-        WidgetKind::WebView
+        WidgetKind::WebEngineView
     }
 
     /// Update the display rectangle.

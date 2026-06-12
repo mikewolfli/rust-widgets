@@ -188,7 +188,6 @@ fn all_widget_kinds_have_non_empty_debug_repr() {
         WidgetKind::StackedWidget,
         WidgetKind::CollapsiblePane,
         WidgetKind::DockWidget,
-        WidgetKind::WebView,
         WidgetKind::ActivityIndicator,
         WidgetKind::Calendar,
         WidgetKind::ColumnView,

@@ -15,7 +15,7 @@
 //! ```
 
 use crate::core::Color;
-use crate::style::{PseudoState, StyleSheet, WidgetStyle};
+use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
 
 /// A CSS-parsed selector that stores raw selector parts as strings.
 /// Used for matching during CSS rule application.
@@ -78,10 +78,14 @@ impl CssParser {
     /// Parse CSS text into a `StyleSheet` with `StyleRule` entries.
     /// Each rule stores its selector and property declarations.
     pub fn parse(css: &str) -> Result<StyleSheet, String> {
-        let sheet = StyleSheet::new();
+        let mut sheet = StyleSheet::new();
         let rules = Self::parse_rules(css)?;
         for rule in &rules {
             store_declarations(&rule.selector_text, rule.declarations.clone());
+            // Add a StyleRule entry using Universal selector so the parsed
+            // rules are reflected in sheet.rules().
+            let rule_entry = StyleRule::new(Selector::Universal, &rule.selector_text);
+            sheet.add_rule(rule_entry);
         }
         Ok(sheet)
     }
@@ -149,12 +153,12 @@ impl CssParser {
             if part.is_empty() {
                 continue;
             }
-            if part.starts_with('.') {
-                selectors.push(CssSelector::Class(part[1..].to_string()));
-            } else if part.starts_with('#') {
-                selectors.push(CssSelector::Id(part[1..].to_string()));
-            } else if part.starts_with(':') {
-                if let Some(state) = Self::parse_pseudo_state(&part[1..]) {
+            if let Some(class_name) = part.strip_prefix('.') {
+                selectors.push(CssSelector::Class(class_name.to_string()));
+            } else if let Some(id_name) = part.strip_prefix('#') {
+                selectors.push(CssSelector::Id(id_name.to_string()));
+            } else if let Some(state_name) = part.strip_prefix(':') {
+                if let Some(state) = Self::parse_pseudo_state(state_name) {
                     selectors.push(CssSelector::State(state));
                 }
             } else if part == "*" {

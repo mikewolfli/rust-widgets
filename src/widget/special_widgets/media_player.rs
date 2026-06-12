@@ -30,7 +30,7 @@ impl MediaPlayer {
     /// Creates empty media player.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::WebView, geometry, "MediaPlayer"),
+            base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "MediaPlayer"),
             source: None,
             playing: false,
             duration_ms: 0,

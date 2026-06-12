@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn test_web_view_core_new() {
         let core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn test_web_view_core_set_url() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn test_web_view_core_duplicate_url() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "https://example.com",
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn test_web_view_core_load_url() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn test_web_view_core_load_html() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn test_web_view_core_load_data() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn test_web_view_core_go_back_forward() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn test_web_view_core_reload() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn test_web_view_core_stop() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn test_web_view_core_set_title() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn test_web_view_core_evaluate_javascript_disabled() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn test_web_view_core_evaluate_javascript_enabled() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn test_web_view_core_clear_browsing_data_cookies_only() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn test_web_view_core_clear_browsing_data_history_only() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn test_web_view_core_handle_key_event_back() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn test_web_view_core_handle_key_event_forward() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn test_web_view_core_handle_key_event_reload() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn test_web_view_core_handle_key_event_ctrl_r() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test_webview",
             "about:blank",
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn test_web_view_core_navigation_state_changes() {
         let mut core = WebViewCore::new(
-            WidgetKind::WebView,
+            WidgetKind::WebEngineView,
             Rect::new(10, 10, 640, 480),
             "nav_test",
             "about:blank",
@@ -851,8 +851,12 @@ mod tests {
 
     #[test]
     fn test_web_view_core_signals_are_initialized() {
-        let core =
-            WebViewCore::new(WidgetKind::WebView, Rect::new(0, 0, 800, 600), "signals_test", "");
+        let core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "signals_test",
+            "",
+        );
         // Signals should exist and be ready to connect
         let _ = &core.loading_started;
         let _ = &core.loading_finished;

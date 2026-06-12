@@ -2568,7 +2568,7 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
 #[cfg(not(feature = "mini"))]
 pub(crate) fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::WebView,
+        kind: WidgetKind::WebEngineView,
         canonical_name: "media_player",
         aliases: &["mediaplayer"],
         properties: MEDIA_PLAYER_PROPERTIES,
@@ -2858,7 +2858,7 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
 #[cfg(not(feature = "mini"))]
 pub(crate) fn web_view_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::WebView,
+        kind: WidgetKind::WebEngineView,
         canonical_name: "web_view",
         aliases: &["webview"],
         properties: WEB_VIEW_PROPERTIES,
@@ -2891,6 +2891,403 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
 
 #[cfg(not(feature = "mini"))]
 #[cfg(not(feature = "mini"))]
+// ── Always-available widget property arrays ────────────────────────
+// These are NOT gated behind `#[cfg(not(feature = "mini"))]`.
+#[cfg(not(feature = "mini"))]
+pub(crate) const TOGGLE_BUTTON_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "checked",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "state",
+        value_kind: PropertyValueKind::Enum,
+        readable: true,
+        writable: false,
+    },
+];
+
+pub(crate) const ARC_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "minimum",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "maximum",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "thickness",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "sweep_angle",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "indeterminate",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const SPINNER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "active",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "thickness",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "speed",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "size_ratio",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const ROLLER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "visible_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+pub(crate) const DROPDOWN_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "expanded",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const TEXT_AREA_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "placeholder",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "read_only",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const KEYBOARD_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "layout",
+        value_kind: PropertyValueKind::Enum,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "lowercase",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const SWITCH_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "checked",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+pub(crate) const LINE_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "orientation",
+    value_kind: PropertyValueKind::Enum,
+    readable: true,
+    writable: true,
+}];
+
+pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "minimum",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "maximum",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+pub(crate) const MINI_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "chart_type",
+    value_kind: PropertyValueKind::Enum,
+    readable: true,
+    writable: true,
+}];
+
+pub(crate) const MINI_CANVAS_PROPERTIES: &[PropertySchema] = &[];
+
+pub(crate) const IMAGE_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "scaled",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+pub(crate) const TILE_VIEW_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "current_page",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "page_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+// ── Always-available widget capability functions ──────────────────
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn toggle_button_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ToggleButton,
+        canonical_name: "toggle_button",
+        aliases: &["togglebutton", "toggle"],
+        properties: TOGGLE_BUTTON_PROPERTIES,
+        events: &["toggled", "checked_changed", "pressed", "released"],
+        commands: &["set_checked", "toggle", "set_text"],
+    }
+}
+
+pub(crate) fn arc_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Arc,
+        canonical_name: "arc",
+        aliases: &["arc_widget", "circular_progress"],
+        properties: ARC_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_value", "set_range"],
+    }
+}
+
+pub(crate) fn spinner_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Spinner,
+        canonical_name: "spinner",
+        aliases: &["spinner_widget", "loading_spinner"],
+        properties: SPINNER_PROPERTIES,
+        events: &[],
+        commands: &["set_active", "set_speed", "set_thickness", "set_size_ratio"],
+    }
+}
+
+pub(crate) fn roller_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Roller,
+        canonical_name: "roller",
+        aliases: &["roller_widget", "scroll_wheel"],
+        properties: ROLLER_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_options", "set_selected_index", "set_visible_count"],
+    }
+}
+
+pub(crate) fn dropdown_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Dropdown,
+        canonical_name: "dropdown",
+        aliases: &["dropdown_widget", "combo"],
+        properties: DROPDOWN_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_items", "set_selected_index", "set_expanded", "toggle"],
+    }
+}
+
+pub(crate) fn text_area_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TextArea,
+        canonical_name: "text_area",
+        aliases: &["textarea", "multiline_edit"],
+        properties: TEXT_AREA_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_text", "set_placeholder", "set_read_only", "insert", "delete_char"],
+    }
+}
+
+pub(crate) fn keyboard_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Keyboard,
+        canonical_name: "keyboard",
+        aliases: &["keyboard_widget", "virtual_keyboard"],
+        properties: KEYBOARD_PROPERTIES,
+        events: &["key_pressed", "enter_pressed", "backspace_pressed", "space_pressed"],
+        commands: &["set_layout", "set_lowercase", "toggle_shift"],
+    }
+}
+
+pub(crate) fn switch_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Switch,
+        canonical_name: "switch",
+        aliases: &["switch_widget", "toggle_switch"],
+        properties: SWITCH_PROPERTIES,
+        events: &["toggled"],
+        commands: &["set_checked", "toggle"],
+    }
+}
+
+pub(crate) fn line_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Line,
+        canonical_name: "line",
+        aliases: &["line_widget", "divider"],
+        properties: LINE_PROPERTIES,
+        events: &[],
+        commands: &["set_orientation"],
+    }
+}
+
+pub(crate) fn meter_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Meter,
+        canonical_name: "meter",
+        aliases: &["meter_widget", "gauge"],
+        properties: METER_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_value", "set_range"],
+    }
+}
+
+pub(crate) fn mini_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MiniChart,
+        canonical_name: "mini_chart",
+        aliases: &["minichart", "mini_chart_widget", "sparkline"],
+        properties: MINI_CHART_PROPERTIES,
+        events: &[],
+        commands: &["set_chart_type", "set_data", "set_range"],
+    }
+}
+
+pub(crate) fn image_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ImageView,
+        canonical_name: "image_view",
+        aliases: &["imageview", "image_viewer"],
+        properties: IMAGE_VIEW_PROPERTIES,
+        events: &[],
+        commands: &["set_image", "set_scaled"],
+    }
+}
+
+pub(crate) fn mini_canvas_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MiniCanvas,
+        canonical_name: "mini_canvas",
+        aliases: &["minicanvas", "canvas"],
+        properties: MINI_CANVAS_PROPERTIES,
+        events: &["clicked", "mouse_pressed", "mouse_released"],
+        commands: &["fill_rect", "draw_rect", "draw_line", "fill_circle", "clear"],
+    }
+}
+
+pub(crate) fn tile_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TileView,
+        canonical_name: "tile_view",
+        aliases: &["tileview", "page_view"],
+        properties: TILE_VIEW_PROPERTIES,
+        events: &["page_changed"],
+        commands: &["set_current_page", "set_page_count"],
+    }
+}
+
 pub(crate) fn date_time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateTimePicker,
@@ -2899,5 +3296,2005 @@ pub(crate) fn date_time_edit_capability() -> WidgetCapability {
         properties: DATE_TIME_EDIT_PROPERTIES,
         events: &["datetime_changed"],
         commands: &["set_datetime", "set_display_format", "set_calendar_popup"],
+    }
+}
+
+// ── Group A property arrays (non-mini) ─────────────────────────
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CANVAS_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "center_x",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "center_y",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "zoom",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "selected_marker_id",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: false,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SEARCH_BOX_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "placeholder",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "count",
+        value_kind: PropertyValueKind::Int,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SKELETON_LOADER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "active",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const FAB_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "icon",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BOTTOM_SHEET_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "expanded",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "peek_height",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BOTTOM_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const NAVIGATION_DRAWER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "open",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "width",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "title",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MOBILE_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "selected_date",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const DIVIDER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "orientation",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "thickness",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const STEPPER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::Int,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "minimum",
+        value_kind: PropertyValueKind::Int,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "maximum",
+        value_kind: PropertyValueKind::Int,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "step",
+        value_kind: PropertyValueKind::Int,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const RATING_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "max",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const AVATAR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "initials",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "image_source",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const EMPTY_STATE_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "message",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "description",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const COLOR_HISTORY_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "color_count",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: false,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const COLOR_WELL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "color",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const TAG_INPUT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "tags",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "placeholder",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const IME_PREEDIT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "cursor_position",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const INPLACE_EDITOR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "editing",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const QR_CODE_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "data",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "size",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MASONRY_LAYOUT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "column_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MATERIAL_SNACKBAR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "message",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "action_text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const ADAPTIVE_SCAFFOLD_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "title",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const WIZARD_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "current_step",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "step_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "can_go_back",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "can_go_forward",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SAFE_AREA_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "top_inset",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "bottom_inset",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "left_inset",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "right_inset",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CUPERTINO_ALERT_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "message",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CUPERTINO_SLIDER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "min",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "max",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const TOOLTIP_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "visible",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SEGMENTED_BUTTON_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "segment_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const NAVIGATION_STACK_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "page_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "current_page",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const PROGRESS_CIRCLE_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "value",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "thickness",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "indeterminate",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const ICON_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "icon_name",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "size",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const DROPDOWN_MENU_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "expanded",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MASKED_EDIT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "mask",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MENU_BUTTON_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "expanded",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const POPOVER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "visible",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "suggestion_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "selected_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "expanded",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const RANGE_SLIDER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "min_value",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "max_value",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "lower",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "upper",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const FLOATING_LABEL_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "placeholder",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "focused",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const FONT_PREVIEW_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "font_family",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "font_size",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "preview_text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CUPERTINO_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "title",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "large_title",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CUPERTINO_SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "segment_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const REFRESH_CONTROL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "refreshing",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MODAL_BOTTOM_SHEET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "visible",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const FIND_REPLACE_DIALOG_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "find_text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "replace_text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "match_case",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "wrap_around",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const PROPERTIES_PANEL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "property_count",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: false,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CUPERTINO_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "selected_date",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "item_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const DATE_RANGE_PICKER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "start_date",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "end_date",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn canvas_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Canvas,
+        canonical_name: "canvas",
+        aliases: &["canvas_widget", "drawing_surface"],
+        properties: CANVAS_PROPERTIES,
+        events: &["clicked", "mouse_pressed", "mouse_released"],
+        commands: &["set_zoom", "set_center", "clear"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Chart,
+        canonical_name: "chart",
+        aliases: &["chart_widget", "chart_surface"],
+        properties: CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &[],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn search_box_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SearchBox,
+        canonical_name: "search_box",
+        aliases: &["searchbox", "search"],
+        properties: SEARCH_BOX_PROPERTIES,
+        events: &["changed", "search_submitted"],
+        commands: &["set_text", "set_placeholder", "clear"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn badge_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Badge,
+        canonical_name: "badge",
+        aliases: &["badge_widget", "notification_badge"],
+        properties: BADGE_PROPERTIES,
+        events: &[],
+        commands: &["set_text", "set_count"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn skeleton_loader_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SkeletonLoader,
+        canonical_name: "skeleton_loader",
+        aliases: &["skeletonloader", "skeleton", "shimmer"],
+        properties: SKELETON_LOADER_PROPERTIES,
+        events: &[],
+        commands: &["set_active"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn fab_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FAB,
+        canonical_name: "fab",
+        aliases: &["floating_action_button", "action_button"],
+        properties: FAB_PROPERTIES,
+        events: &["clicked"],
+        commands: &["set_icon"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::BottomSheet,
+        canonical_name: "bottom_sheet",
+        aliases: &["bottomsheet", "sheet"],
+        properties: BOTTOM_SHEET_PROPERTIES,
+        events: &["expanded_changed"],
+        commands: &["set_expanded", "set_peek_height"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::BottomNavigationBar,
+        canonical_name: "bottom_navigation_bar",
+        aliases: &["bottomnavigationbar", "bottom_nav", "bottomnav"],
+        properties: BOTTOM_NAVIGATION_BAR_PROPERTIES,
+        events: &["selected_changed"],
+        commands: &["set_selected_index", "set_items"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::NavigationDrawer,
+        canonical_name: "navigation_drawer",
+        aliases: &["navigationdrawer", "nav_drawer", "drawer"],
+        properties: NAVIGATION_DRAWER_PROPERTIES,
+        events: &["open_changed"],
+        commands: &["set_open", "set_width"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn app_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AppBar,
+        canonical_name: "app_bar",
+        aliases: &["appbar", "top_app_bar"],
+        properties: APP_BAR_PROPERTIES,
+        events: &[],
+        commands: &["set_title"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MobileDatePicker,
+        canonical_name: "mobile_date_picker",
+        aliases: &["mobiledatepicker", "date_picker"],
+        properties: MOBILE_DATE_PICKER_PROPERTIES,
+        events: &["date_changed"],
+        commands: &["set_selected_date"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn divider_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Divider,
+        canonical_name: "divider",
+        aliases: &["divider_widget", "separator"],
+        properties: DIVIDER_PROPERTIES,
+        events: &[],
+        commands: &["set_orientation", "set_thickness"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn stepper_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Stepper,
+        canonical_name: "stepper",
+        aliases: &["stepper_widget", "step_control"],
+        properties: STEPPER_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_value", "set_range", "set_step"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn rating_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Rating,
+        canonical_name: "rating",
+        aliases: &["rating_widget", "star_rating"],
+        properties: RATING_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_value", "set_max"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn avatar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Avatar,
+        canonical_name: "avatar",
+        aliases: &["avatar_widget", "user_avatar"],
+        properties: AVATAR_PROPERTIES,
+        events: &[],
+        commands: &["set_initials", "set_image"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn empty_state_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::EmptyState,
+        canonical_name: "empty_state",
+        aliases: &["emptystate", "empty_placeholder"],
+        properties: EMPTY_STATE_PROPERTIES,
+        events: &[],
+        commands: &["set_message", "set_description"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn color_history_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ColorHistory,
+        canonical_name: "color_history",
+        aliases: &["colorhistory", "color_swatch"],
+        properties: COLOR_HISTORY_PROPERTIES,
+        events: &["color_selected"],
+        commands: &[],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn color_well_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ColorWell,
+        canonical_name: "color_well",
+        aliases: &["colorwell", "color_swatch"],
+        properties: COLOR_WELL_PROPERTIES,
+        events: &["clicked"],
+        commands: &["set_color"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn tag_input_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TagInput,
+        canonical_name: "tag_input",
+        aliases: &["taginput", "tag_editor", "chip_input"],
+        properties: TAG_INPUT_PROPERTIES,
+        events: &["tags_changed"],
+        commands: &["add_tag", "remove_tag", "set_placeholder"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn ime_preedit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ImePreedit,
+        canonical_name: "ime_preedit",
+        aliases: &["imepreedit", "preedit"],
+        properties: IME_PREEDIT_PROPERTIES,
+        events: &[],
+        commands: &["set_text", "set_cursor_position"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn inplace_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::InplaceEditor,
+        canonical_name: "inplace_editor",
+        aliases: &["inplaceeditor", "inline_editor"],
+        properties: INPLACE_EDITOR_PROPERTIES,
+        events: &["edit_completed"],
+        commands: &["set_text", "start_editing", "finish_editing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn qr_code_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::QRCode,
+        canonical_name: "qr_code",
+        aliases: &["qrcode", "qr"],
+        properties: QR_CODE_PROPERTIES,
+        events: &[],
+        commands: &["set_data", "set_size"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn masonry_layout_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MasonryLayout,
+        canonical_name: "masonry_layout",
+        aliases: &["masonrylayout", "waterfall_layout"],
+        properties: MASONRY_LAYOUT_PROPERTIES,
+        events: &[],
+        commands: &["set_column_count"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn material_snackbar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MaterialSnackbar,
+        canonical_name: "material_snackbar",
+        aliases: &["materialsnackbar"],
+        properties: MATERIAL_SNACKBAR_PROPERTIES,
+        events: &["action_pressed", "dismissed"],
+        commands: &["show", "dismiss", "set_message", "set_action_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AdaptiveScaffold,
+        canonical_name: "adaptive_scaffold",
+        aliases: &["adaptivescaffold", "scaffold"],
+        properties: ADAPTIVE_SCAFFOLD_PROPERTIES,
+        events: &[],
+        commands: &["set_title"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::WizardDialog,
+        canonical_name: "wizard_dialog",
+        aliases: &["wizarddialog", "wizard"],
+        properties: WIZARD_DIALOG_PROPERTIES,
+        events: &["finished", "cancelled"],
+        commands: &["set_current_step", "next", "back", "finish"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn safe_area_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SafeArea,
+        canonical_name: "safe_area",
+        aliases: &["safearea", "safe_area_insets"],
+        properties: SAFE_AREA_PROPERTIES,
+        events: &[],
+        commands: &["set_insets"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn cupertino_alert_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoAlertDialog,
+        canonical_name: "cupertino_alert_dialog",
+        aliases: &["cupertinoalertdialog", "ios_alert"],
+        properties: CUPERTINO_ALERT_DIALOG_PROPERTIES,
+        events: &["confirmed", "cancelled"],
+        commands: &["set_title", "set_message"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn cupertino_slider_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoSlider,
+        canonical_name: "cupertino_slider",
+        aliases: &["cupertinoslider", "ios_slider"],
+        properties: CUPERTINO_SLIDER_PROPERTIES,
+        events: &["value_changed"],
+        commands: &["set_value", "set_min", "set_max"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn tooltip_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Tooltip,
+        canonical_name: "tooltip",
+        aliases: &["tooltip_widget", "hover_tip"],
+        properties: TOOLTIP_PROPERTIES,
+        events: &[],
+        commands: &["set_text", "show", "hide"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn segmented_button_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SegmentedButton,
+        canonical_name: "segmented_button",
+        aliases: &["segmentedbutton", "segmented_btn"],
+        properties: SEGMENTED_BUTTON_PROPERTIES,
+        events: &["selected_changed"],
+        commands: &["set_selected_index"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn navigation_stack_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::NavigationStack,
+        canonical_name: "navigation_stack",
+        aliases: &["navigationstack", "nav_stack"],
+        properties: NAVIGATION_STACK_PROPERTIES,
+        events: &["page_changed"],
+        commands: &["push", "pop", "set_current_page"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn progress_circle_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ProgressCircle,
+        canonical_name: "progress_circle",
+        aliases: &["progresscircle", "circular_progress"],
+        properties: PROGRESS_CIRCLE_PROPERTIES,
+        events: &[],
+        commands: &["set_value", "set_thickness", "set_indeterminate"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn icon_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Icon,
+        canonical_name: "icon",
+        aliases: &["icon_widget", "icon_display"],
+        properties: ICON_PROPERTIES,
+        events: &[],
+        commands: &["set_icon_name", "set_size"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DropdownMenu,
+        canonical_name: "dropdown_menu",
+        aliases: &["dropdownmenu"],
+        properties: DROPDOWN_MENU_PROPERTIES,
+        events: &["selected_changed"],
+        commands: &["set_selected_index", "set_expanded"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn masked_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MaskedEdit,
+        canonical_name: "masked_edit",
+        aliases: &["maskededit", "masked_input"],
+        properties: MASKED_EDIT_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_text", "set_mask"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn menu_button_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MenuButton,
+        canonical_name: "menu_button",
+        aliases: &["menubutton", "dropdown_button"],
+        properties: MENU_BUTTON_PROPERTIES,
+        events: &["selected_changed"],
+        commands: &["set_text", "set_expanded"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn popover_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Popover,
+        canonical_name: "popover",
+        aliases: &["popover_widget", "popup_card"],
+        properties: POPOVER_PROPERTIES,
+        events: &[],
+        commands: &["set_visible", "set_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AutoCompleteEdit,
+        canonical_name: "auto_complete_edit",
+        aliases: &["autocompleteedit", "autocomplete"],
+        properties: AUTO_COMPLETE_EDIT_PROPERTIES,
+        events: &["changed", "selected"],
+        commands: &["set_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MultiSelectComboBox,
+        canonical_name: "multi_select_combo_box",
+        aliases: &["multiselectcombobox", "multi_combo"],
+        properties: MULTI_SELECT_COMBO_BOX_PROPERTIES,
+        events: &["selection_changed"],
+        commands: &["set_expanded"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn range_slider_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RangeSlider,
+        canonical_name: "range_slider",
+        aliases: &["rangeslider", "dual_slider"],
+        properties: RANGE_SLIDER_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_lower", "set_upper", "set_range"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn floating_label_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FloatingLabel,
+        canonical_name: "floating_label",
+        aliases: &["floatinglabel", "floating_input"],
+        properties: FLOATING_LABEL_PROPERTIES,
+        events: &["changed", "focused"],
+        commands: &["set_text", "set_placeholder", "set_focused"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn font_preview_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FontPreview,
+        canonical_name: "font_preview",
+        aliases: &["fontpreview", "font_viewer"],
+        properties: FONT_PREVIEW_PROPERTIES,
+        events: &[],
+        commands: &["set_font_family", "set_font_size", "set_preview_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn cupertino_navigation_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoNavigationBar,
+        canonical_name: "cupertino_navigation_bar",
+        aliases: &["cupertinonavbar", "ios_nav_bar"],
+        properties: CUPERTINO_NAVIGATION_BAR_PROPERTIES,
+        events: &["back_pressed"],
+        commands: &["set_title", "set_large_title"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn cupertino_segmented_control_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoSegmentedControl,
+        canonical_name: "cupertino_segmented_control",
+        aliases: &["cupertinosegmented", "ios_segmented"],
+        properties: CUPERTINO_SEGMENTED_CONTROL_PROPERTIES,
+        events: &["value_changed"],
+        commands: &["set_selected_index"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn refresh_control_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RefreshControl,
+        canonical_name: "refresh_control",
+        aliases: &["refreshcontrol", "pull_to_refresh"],
+        properties: REFRESH_CONTROL_PROPERTIES,
+        events: &["refreshed"],
+        commands: &["set_refreshing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ModalBottomSheet,
+        canonical_name: "modal_bottom_sheet",
+        aliases: &["modalbottomsheet", "modal_sheet"],
+        properties: MODAL_BOTTOM_SHEET_PROPERTIES,
+        events: &["dismissed"],
+        commands: &["set_visible", "show", "dismiss"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FindReplaceDialog,
+        canonical_name: "find_replace_dialog",
+        aliases: &["findreplacedialog", "find_replace"],
+        properties: FIND_REPLACE_DIALOG_PROPERTIES,
+        events: &["find", "replace", "replace_all"],
+        commands: &["set_find_text", "set_replace_text", "set_match_case", "set_wrap_around"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn properties_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PropertiesPanel,
+        canonical_name: "properties_panel",
+        aliases: &["propertiespanel", "property_panel"],
+        properties: PROPERTIES_PANEL_PROPERTIES,
+        events: &["property_changed"],
+        commands: &[],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoDatePicker,
+        canonical_name: "cupertino_date_picker",
+        aliases: &["cupertinodatepicker", "ios_date_picker"],
+        properties: CUPERTINO_DATE_PICKER_PROPERTIES,
+        events: &["date_changed"],
+        commands: &["set_selected_date"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::EditableComboBox,
+        canonical_name: "editable_combo_box",
+        aliases: &["editablecombobox", "editable_combo"],
+        properties: EDITABLE_COMBO_BOX_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn date_range_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DateRangePicker,
+        canonical_name: "date_range_picker",
+        aliases: &["daterangepicker", "range_picker"],
+        properties: DATE_RANGE_PICKER_PROPERTIES,
+        events: &["range_changed"],
+        commands: &["set_start_date", "set_end_date"],
+    }
+}
+
+// ── New widget properties (non-mini) ────────────────────────────
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const RICH_EDIT_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "text",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CAROUSEL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "page_count",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: false,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const MATERIAL_NAVIGATION_RAIL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "selected_index",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const TAB_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "selected_index",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SEARCH_BAR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "placeholder",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SHORTCUT_EDITOR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "filter_text",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SWIPE_TO_DISMISS_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "is_dismissed",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: false,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const PAGER_PAGE_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "current_page",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const LINE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "stroke_width",
+    value_kind: PropertyValueKind::Float,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const SPARKLINE_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "stroke_width",
+    value_kind: PropertyValueKind::Float,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BAR_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "bar_spacing",
+    value_kind: PropertyValueKind::Float,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const PIE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "donut",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const ANIMATED_IMAGE_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "playing",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const HERO_ANIMATION_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "animation_progress",
+    value_kind: PropertyValueKind::Float,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BEZIER_CURVE_EDITOR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "snap_to_grid",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "playing",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "is_playing",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const VIDEO_PLAYER_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "is_playing",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "volume",
+        value_kind: PropertyValueKind::Float,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const IMAGE_GALLERY_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "current_index",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "bar_count",
+    value_kind: PropertyValueKind::UInt,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const CAMERA_PREVIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "is_active",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const BARCODE_SCANNER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "is_scanning",
+    value_kind: PropertyValueKind::Bool,
+    readable: true,
+    writable: true,
+}];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const TOOL_BUTTON_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "text",
+        value_kind: PropertyValueKind::String,
+        readable: true,
+        writable: true,
+    },
+    PropertySchema {
+        name: "checked",
+        value_kind: PropertyValueKind::Bool,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) const STATUS_BAR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
+    name: "message",
+    value_kind: PropertyValueKind::String,
+    readable: true,
+    writable: true,
+}];
+
+// ── New widget capability functions (non-mini) ──────────────────
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn rich_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RichEdit,
+        canonical_name: "rich_edit",
+        aliases: &["richedit", "rich_text_editor"],
+        properties: RICH_EDIT_PROPERTIES,
+        events: &["text_changed"],
+        commands: &["set_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn carousel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Carousel,
+        canonical_name: "carousel",
+        aliases: &["carousel_widget", "swipe_view"],
+        properties: CAROUSEL_PROPERTIES,
+        events: &["page_changed"],
+        commands: &[],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn material_navigation_rail_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MaterialNavigationRail,
+        canonical_name: "material_navigation_rail",
+        aliases: &["materialnavigationrail", "nav_rail", "navigation_rail"],
+        properties: MATERIAL_NAVIGATION_RAIL_PROPERTIES,
+        events: &["selected_changed"],
+        commands: &["set_selected_index"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn tab_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TabView,
+        canonical_name: "tab_view",
+        aliases: &["tabview", "page_tab_view"],
+        properties: TAB_VIEW_PROPERTIES,
+        events: &["tab_changed"],
+        commands: &["set_selected_index"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn search_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SearchBar,
+        canonical_name: "search_bar",
+        aliases: &["searchbar", "search_field"],
+        properties: SEARCH_BAR_PROPERTIES,
+        events: &["text_changed", "search_submitted"],
+        commands: &["set_text", "set_placeholder"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ShortcutEditor,
+        canonical_name: "shortcut_editor",
+        aliases: &["shortcuteditor", "keyboard_shortcut_editor"],
+        properties: SHORTCUT_EDITOR_PROPERTIES,
+        events: &["shortcut_changed"],
+        commands: &["set_filter_text"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SwipeToDismiss,
+        canonical_name: "swipe_to_dismiss",
+        aliases: &["swipetodismiss", "swipe_dismiss"],
+        properties: SWIPE_TO_DISMISS_PROPERTIES,
+        events: &["dismissed"],
+        commands: &[],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn pager_page_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PagerPageView,
+        canonical_name: "pager_page_view",
+        aliases: &["pagerpageview", "pager_view", "page_view"],
+        properties: PAGER_PAGE_VIEW_PROPERTIES,
+        events: &["page_changed"],
+        commands: &["set_current_page"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn line_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LineChart,
+        canonical_name: "line_chart",
+        aliases: &["linechart", "line_graph"],
+        properties: LINE_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_stroke_width"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn sparkline_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Sparkline,
+        canonical_name: "sparkline",
+        aliases: &["sparkline_chart", "spark_line"],
+        properties: SPARKLINE_PROPERTIES,
+        events: &[],
+        commands: &["set_stroke_width"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn bar_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::BarChart,
+        canonical_name: "bar_chart",
+        aliases: &["barchart", "bar_graph"],
+        properties: BAR_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_bar_spacing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn pie_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PieChart,
+        canonical_name: "pie_chart",
+        aliases: &["piechart", "pie_graph"],
+        properties: PIE_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_donut"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn animated_image_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AnimatedImage,
+        canonical_name: "animated_image",
+        aliases: &["animatedimage", "anim_image"],
+        properties: ANIMATED_IMAGE_PROPERTIES,
+        events: &["finished"],
+        commands: &["set_playing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn hero_animation_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::HeroAnimation,
+        canonical_name: "hero_animation",
+        aliases: &["heroanimation", "hero"],
+        properties: HERO_ANIMATION_PROPERTIES,
+        events: &["animation_completed"],
+        commands: &["set_animation_progress"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::BezierCurveEditor,
+        canonical_name: "bezier_curve_editor",
+        aliases: &["beziercurveeditor", "curve_editor"],
+        properties: BEZIER_CURVE_EDITOR_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_snap_to_grid"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn lottie_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LottieWidget,
+        canonical_name: "lottie_widget",
+        aliases: &["lottiewidget", "lottie"],
+        properties: LOTTIE_WIDGET_PROPERTIES,
+        events: &["finished"],
+        commands: &["set_playing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn rive_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RiveWidget,
+        canonical_name: "rive_widget",
+        aliases: &["rivewidget", "rive"],
+        properties: RIVE_WIDGET_PROPERTIES,
+        events: &["finished"],
+        commands: &["set_playing"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn video_player_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::VideoPlayer,
+        canonical_name: "video_player",
+        aliases: &["videoplayer", "video"],
+        properties: VIDEO_PLAYER_PROPERTIES,
+        events: &["finished"],
+        commands: &["set_playing", "set_volume"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn image_gallery_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ImageGallery,
+        canonical_name: "image_gallery",
+        aliases: &["imagegallery", "gallery"],
+        properties: IMAGE_GALLERY_PROPERTIES,
+        events: &["image_changed"],
+        commands: &["set_current_index"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn audio_visualizer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AudioVisualizer,
+        canonical_name: "audio_visualizer",
+        aliases: &["audiovisualizer", "audio_viz"],
+        properties: AUDIO_VISUALIZER_PROPERTIES,
+        events: &[],
+        commands: &["set_bar_count"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn camera_preview_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CameraPreview,
+        canonical_name: "camera_preview",
+        aliases: &["camerapreview", "camera"],
+        properties: CAMERA_PREVIEW_PROPERTIES,
+        events: &[],
+        commands: &["set_active"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::BarcodeScanner,
+        canonical_name: "barcode_scanner",
+        aliases: &["barcodescanner", "scanner"],
+        properties: BARCODE_SCANNER_PROPERTIES,
+        events: &["barcode_detected"],
+        commands: &["set_scanning"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn tool_button_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ToolButton,
+        canonical_name: "tool_button",
+        aliases: &["toolbutton", "toolbar_button"],
+        properties: TOOL_BUTTON_PROPERTIES,
+        events: &["clicked", "toggled"],
+        commands: &["set_text", "set_checked"],
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn status_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::StatusBar,
+        canonical_name: "status_bar",
+        aliases: &["statusbar", "status"],
+        properties: STATUS_BAR_PROPERTIES,
+        events: &["message_changed"],
+        commands: &["set_message"],
+    }
+}
+
+/// Property grid properties: property_count (read-only), selected_index (r/w).
+pub(crate) const PROPERTY_GRID_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema {
+        name: "property_count",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: false,
+    },
+    PropertySchema {
+        name: "selected_index",
+        value_kind: PropertyValueKind::UInt,
+        readable: true,
+        writable: true,
+    },
+];
+
+#[cfg(not(feature = "mini"))]
+pub(crate) fn property_grid_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PropertyGrid,
+        canonical_name: "property_grid",
+        aliases: &["propertygrid", "inspector"],
+        properties: PROPERTY_GRID_PROPERTIES,
+        events: &["selected"],
+        commands: &["add_property", "set_value", "clear", "set_selected_index"],
     }
 }

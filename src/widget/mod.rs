@@ -207,9 +207,9 @@ pub use media_widgets::video_player::VideoPlayer;
 #[cfg(not(feature = "mini"))]
 pub use overlay_widgets::fab::FAB;
 #[cfg(not(feature = "mini"))]
-pub use overlay_widgets::pull_to_refresh::PullToRefresh;
-#[cfg(not(feature = "mini"))]
 pub use overlay_widgets::refresh_control::RefreshControl;
+#[cfg(not(feature = "mini"))]
+pub type PullToRefresh = RefreshControl;
 #[cfg(not(feature = "mini"))]
 pub use overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 // Re-export cupertino widgets
@@ -236,12 +236,15 @@ pub use misc_widgets::qr_code::QRCode;
 pub use misc_widgets::segmented_button::{Segment, SegmentedButton};
 // Re-export web widgets
 #[cfg(not(feature = "mini"))]
-pub use web_widgets::{web_engine::WebEngine, web_view::WebView};
+pub use web_widgets::web_engine::WebEngine;
+/// Type alias for backward compatibility — `WebView` is now `WebEngineView`.
+#[cfg(not(feature = "mini"))]
+pub type WebView = WebEngineView;
 #[cfg(not(feature = "mini"))]
 pub use web_widgets::{
     WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
     WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog,
-    WebEngineSettings, WebEngineWebChannel,
+    WebEngineSettings, WebEngineView, WebEngineWebChannel,
 };
 // Re-export advanced widgets
 #[cfg(not(feature = "mini"))]

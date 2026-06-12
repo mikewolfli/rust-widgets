@@ -1499,7 +1499,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
                 y,
                 width,
                 height,
-                widget_kind: WidgetKind::WebView,
+                widget_kind: WidgetKind::WebEngineView,
             },
         );
         widget_id

@@ -3,6 +3,7 @@
 /// # Examples
 ///
 /// ```
+/// # use rust_widgets::binding;
 /// # use rust_widgets::data_binding::Binding;
 /// let count = binding!(0);
 /// assert_eq!(count.get(), 0);
@@ -21,6 +22,7 @@ macro_rules! binding {
 /// # Examples
 ///
 /// ```
+/// # use rust_widgets::computed;
 /// # use rust_widgets::data_binding::Computed;
 /// let mut double = computed!(|| 2 * 21, 0);
 /// assert_eq!(double.get(), 42);

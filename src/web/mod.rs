@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn test_mod_web_core_types_accessible() {
         let core = web_core::WebViewCore::new(
-            crate::widget::WidgetKind::WebView,
+            crate::widget::WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
             "test",
             "about:blank",
