@@ -267,40 +267,6 @@ impl Keyboard {
             key.label.clone()
         }
     }
-
-    /// Compute the rectangle for a key at the given (row, col).
-    #[allow(dead_code)]
-    fn key_rect(&self, row: usize, col: usize) -> Option<Rect> {
-        let rect = self.geometry();
-        if row >= self.keys.len() {
-            return None;
-        }
-        let row_keys = &self.keys[row];
-        if col >= row_keys.len() {
-            return None;
-        }
-
-        let total_ratio: f32 = row_keys.iter().map(|k| k.width_ratio).sum();
-        let row_count = self.keys.len() as f32;
-        let row_height = rect.height as f32 / row_count;
-        let row_width = rect.width as f32;
-
-        let mut cursor_x = rect.x as f32;
-        for (c, key) in row_keys.iter().enumerate() {
-            let key_w = row_width * key.width_ratio / total_ratio;
-            if c == col {
-                let key_rect = Rect::from_f32(
-                    cursor_x,
-                    rect.y as f32 + row as f32 * row_height,
-                    key_w,
-                    row_height,
-                );
-                return Some(key_rect);
-            }
-            cursor_x += key_w;
-        }
-        None
-    }
 }
 
 impl Widget for Keyboard {
@@ -669,20 +635,6 @@ mod tests {
         // Press again to toggle back.
         kbd.handle_event(&Event::MouseDown((shift_pos, 1)));
         assert!(!kbd.is_shifted());
-    }
-
-    #[test]
-    fn keyboard_key_rect_computation() {
-        let kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
-        // Row height = 160 / 4 = 40.
-        // Row 0 total ratio = 10 * 1.0 = 10.0.
-        // Each key width = 320 * 1.0 / 10.0 = 32.
-        // First key at (0, 0) → rect (0, 0, 32, 40).
-        let r = kbd.key_rect(0, 0).unwrap();
-        assert_eq!(r.x, 0);
-        assert_eq!(r.y, 0);
-        assert_eq!(r.width, 32);
-        assert_eq!(r.height, 40);
     }
 
     #[test]

@@ -165,18 +165,6 @@ impl RangeSlider {
         self.range_changed.emit((self.lower_value, self.upper_value));
     }
 
-    /// Returns the pixel position for a given value on the track (horizontal).
-    #[allow(dead_code)]
-    fn value_to_pos_horizontal(&self, rect: &Rect) -> i32 {
-        let track_width = (rect.width as f64) - 20.0; // account for handle radius
-        if (self.max_value - self.min_value).abs() < f64::EPSILON {
-            return rect.x + 10;
-        }
-        let ratio = (self.lower_value - self.min_value) / (self.max_value - self.min_value);
-        // use the parameter for whichever value we need
-        rect.x + 10 + (track_width * ratio) as i32
-    }
-
     /// Converts a value to pixel position on the track.
     fn value_to_pixel(&self, value: f64, rect: &Rect) -> i32 {
         let handle_radius = 8i32;

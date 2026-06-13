@@ -128,19 +128,6 @@ impl HeroAnimation {
         self.is_animating
     }
 
-    /// Computes the interpolated rectangle between source and target based on progress.
-    #[allow(dead_code)]
-    fn interpolated_rect(&self) -> Option<Rect> {
-        let src = self.source_widget.as_ref()?.geometry();
-        let tgt = self.target_widget.as_ref()?.geometry();
-        let t = self.animation_progress;
-        let x = src.x as f32 + (tgt.x as f32 - src.x as f32) * t;
-        let y = src.y as f32 + (tgt.y as f32 - src.y as f32) * t;
-        let w = src.width as f32 + (tgt.width as f32 - src.width as f32) * t;
-        let h = src.height as f32 + (tgt.height as f32 - src.height as f32) * t;
-        Some(Rect::new(x as i32, y as i32, w as u32, h as u32))
-    }
-
     /// Returns the interpolated opacity (1.0 at endpoints, may dip in middle for cross-fade).
     fn interpolated_opacity(&self) -> f32 {
         let t = self.animation_progress;
@@ -444,26 +431,6 @@ mod tests {
         assert_eq!(ha.duration(), 500);
         ha.set_duration(0); // clamps to 1
         assert_eq!(ha.duration(), 1);
-    }
-
-    #[test]
-    fn hero_animation_interpolated_rect() {
-        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
-        ha.set_source(Box::new(crate::widget::base_widgets::button::Button::new(
-            "Src".to_string(),
-            Rect::new(0, 0, 100, 50),
-        )));
-        ha.set_target(Box::new(crate::widget::base_widgets::button::Button::new(
-            "Tgt".to_string(),
-            Rect::new(200, 100, 200, 100),
-        )));
-
-        let r = ha.interpolated_rect().unwrap();
-        assert_eq!(r, Rect::new(0, 0, 100, 50)); // at progress 0.0
-
-        ha.set_progress(0.5);
-        let r = ha.interpolated_rect().unwrap();
-        assert_eq!(r, Rect::new(100, 50, 150, 75)); // halfway interpolation
     }
 
     #[test]

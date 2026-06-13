@@ -20,9 +20,6 @@ pub struct TextArea {
     max_length: usize,
     /// Whether the widget is read-only.
     read_only: bool,
-    /// Whether to wrap long lines (reserved for future use).
-    #[allow(dead_code)]
-    word_wrap: bool,
     /// Placeholder text when empty.
     placeholder: String,
     /// Whether this widget currently holds keyboard focus.
@@ -41,7 +38,6 @@ impl TextArea {
             cursor_pos,
             max_length: 0,
             read_only: false,
-            word_wrap: true,
             placeholder: String::new(),
             focused: false,
             changed: GenericSignal::new(),

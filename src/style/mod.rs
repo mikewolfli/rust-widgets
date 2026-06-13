@@ -29,7 +29,6 @@ pub use selector::*;
 pub use stylesheet::*;
 pub use theme::*;
 pub use theme_state::*;
-/// Per-side padding values around widget content.
 /// Whether the user prefers reduced motion (BLUE11 R7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReducedMotionPreference {
@@ -76,7 +75,7 @@ impl Padding {
     }
 }
 /// Per-side outer spacing values around a widget.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Margin {
     /// Top margin.
     pub top: u32,

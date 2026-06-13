@@ -76,80 +76,6 @@ impl<T, const N: usize> Default for FixedSizeQueue<T, N> {
         Self::new()
     }
 }
-pub struct RingBuffer<T> {
-    buffer: Vec<Option<T>>,
-    head: usize,
-    tail: usize,
-    len: usize,
-}
-impl<T> RingBuffer<T> {
-    pub fn new(capacity: usize) -> Self {
-        Self { buffer: (0..capacity).map(|_| None).collect(), head: 0, tail: 0, len: 0 }
-    }
-    pub fn push(&mut self, item: T) -> Result<(), QueueError> {
-        if self.len >= self.buffer.len() {
-            return Err(QueueError::Full);
-        }
-        self.buffer[self.tail] = Some(item);
-        self.tail = (self.tail + 1) % self.buffer.len();
-        self.len += 1;
-        Ok(())
-    }
-    pub fn push_overwrite(&mut self, item: T) -> Option<T> {
-        let overwritten = if self.len >= self.buffer.len() {
-            let old = self.buffer[self.head].take();
-            self.head = (self.head + 1) % self.buffer.len();
-            old
-        } else {
-            self.len += 1;
-            None
-        };
-        self.buffer[self.tail] = Some(item);
-        self.tail = (self.tail + 1) % self.buffer.len();
-        overwritten
-    }
-    pub fn pop(&mut self) -> Option<T> {
-        if self.len == 0 {
-            return None;
-        }
-        let item = self.buffer[self.head].take();
-        self.head = (self.head + 1) % self.buffer.len();
-        self.len -= 1;
-        item
-    }
-    pub fn peek(&self) -> Option<&T> {
-        if self.len == 0 {
-            None
-        } else {
-            self.buffer[self.head].as_ref()
-        }
-    }
-    pub fn len(&self) -> usize {
-        self.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-    pub fn is_full(&self) -> bool {
-        self.len >= self.buffer.len()
-    }
-    pub fn capacity(&self) -> usize {
-        self.buffer.len()
-    }
-    pub fn clear(&mut self) {
-        for item in &mut self.buffer {
-            *item = None;
-        }
-        self.head = 0;
-        self.tail = 0;
-        self.len = 0;
-    }
-}
-impl<T> Default for RingBuffer<T> {
-    fn default() -> Self {
-        Self::new(DEFAULT_QUEUE_CAPACITY)
-    }
-}
 pub struct PriorityEntry<T> {
     pub item: T,
     pub priority: u8,
@@ -211,11 +137,13 @@ impl<T> Default for PriorityQueue<T> {
         Self::new()
     }
 }
+#[cfg(not(feature = "mini"))]
 pub struct BlockingQueue<T> {
     queue: Mutex<VecDeque<T>>,
     condvar: Condvar,
     closed: Mutex<bool>,
 }
+#[cfg(not(feature = "mini"))]
 impl<T> BlockingQueue<T> {
     pub fn new() -> Self {
         Self {
@@ -293,11 +221,13 @@ impl<T> BlockingQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
+#[cfg(not(feature = "mini"))]
 impl<T> Default for BlockingQueue<T> {
     fn default() -> Self {
         Self::new()
     }
 }
+#[cfg(not(feature = "mini"))]
 pub struct BoundedQueue<T> {
     queue: Mutex<VecDeque<T>>,
     condvar_not_full: Condvar,
@@ -305,6 +235,7 @@ pub struct BoundedQueue<T> {
     capacity: usize,
     closed: Mutex<bool>,
 }
+#[cfg(not(feature = "mini"))]
 impl<T> BoundedQueue<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -402,17 +333,6 @@ mod tests {
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));
         assert_eq!(queue.pop(), None);
-    }
-    #[test]
-    fn test_ring_buffer() {
-        let mut buffer = RingBuffer::new(3);
-        buffer.push(1).unwrap();
-        buffer.push(2).unwrap();
-        buffer.push(3).unwrap();
-        assert!(buffer.push(4).is_err());
-        let overwritten = buffer.push_overwrite(4);
-        assert_eq!(overwritten, Some(1));
-        assert_eq!(buffer.pop(), Some(2));
     }
     #[test]
     fn test_priority_queue() {
