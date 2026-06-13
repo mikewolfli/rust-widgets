@@ -45,6 +45,7 @@ __pycache__/
 *.gcno
 lcov.info
 coverage/
+demo/control/target
 
 # Test outputs
 **/test_output/

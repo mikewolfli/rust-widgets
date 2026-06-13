@@ -164,39 +164,55 @@ thread_local! {
 ///
 /// Call this when a widget is destroyed to prevent callback leaks
 /// from thread-local storage.
+///
+/// Uses `try_borrow_mut` to avoid panicking when called re-entrantly
+/// (e.g. during callback dispatch when a handle is dropped).
 pub fn remove_callbacks(id: ObjectId) {
     CLICK_CALLBACKS.with(|map| {
-        map.borrow_mut().remove(&id);
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
     });
     VALUE_CALLBACKS.with(|map| {
-        map.borrow_mut().remove(&id);
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
     });
 }
 
 /// Dispatch a trigger event to the registered callback for `widget_id`.
 /// Returns `true` if a callback was found and invoked.
+///
+/// The callback is **removed** from the map before invocation and then
+/// **re-inserted** afterwards, so that re-entrant calls to
+/// `remove_callbacks` (from a handle Drop inside the callback) do not
+/// panic on a double borrow.
 pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
     match kind {
-        WidgetTriggerKind::Clicked | WidgetTriggerKind::Unknown => CLICK_CALLBACKS.with(|map| {
-            let mut map = map.borrow_mut();
-            if let Some(cb) = map.get_mut(&widget_id) {
+        WidgetTriggerKind::Clicked | WidgetTriggerKind::Unknown => {
+            let cb = CLICK_CALLBACKS.with(|map| map.borrow_mut().remove(&widget_id));
+            if let Some(cb) = cb {
                 (cb.borrow_mut())();
+                CLICK_CALLBACKS.with(|map| {
+                    map.borrow_mut().insert(widget_id, cb);
+                });
                 true
             } else {
                 false
             }
-        }),
+        }
         WidgetTriggerKind::ValueChanged | WidgetTriggerKind::SelectionChanged => {
             let text = crate::get_widget_text(widget_id);
-            VALUE_CALLBACKS.with(|map| {
-                let mut map = map.borrow_mut();
-                if let Some(cb) = map.get_mut(&widget_id) {
-                    (cb.borrow_mut())(text);
-                    true
-                } else {
-                    false
-                }
-            })
+            let cb = VALUE_CALLBACKS.with(|map| map.borrow_mut().remove(&widget_id));
+            if let Some(cb) = cb {
+                (cb.borrow_mut())(text);
+                VALUE_CALLBACKS.with(|map| {
+                    map.borrow_mut().insert(widget_id, cb);
+                });
+                true
+            } else {
+                false
+            }
         }
         WidgetTriggerKind::Closed => {
             // Clean up callbacks when a widget is closed/destroyed.

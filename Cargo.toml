@@ -34,7 +34,7 @@ default = ["desktop"]
 
 ## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF, A11y.
 desktop = [
-    "os-auto", "desktop-runtime", "wgpu", "touch", "i18n",
+    "os-auto", "macos", "desktop-runtime", "wgpu", "touch", "i18n",
     "chart", "print", "pdf", "a11y",
     "quality-management", "advanced-widgets",
     "controls-native", "controls-custom",
