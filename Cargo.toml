@@ -11,7 +11,7 @@ readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.87"
-include = ["src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "language/**/*", "tools/widget_gallery.rs", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
+include = ["build.rs", "src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "language/**/*", "tools/widget_gallery.rs", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
 
 [lints.rust]
 unexpected_cfgs = "allow"
