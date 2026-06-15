@@ -182,7 +182,7 @@ mod tests {
         // Verify the sheet was registered.
         {
             let mgr = global_stylesheet_manager();
-            assert!(mgr.len() >= 1, "manager should have at least 1 sheet after first poll");
+            assert!(!mgr.is_empty(), "manager should have at least 1 sheet after first poll");
         }
 
         // Modify the file.

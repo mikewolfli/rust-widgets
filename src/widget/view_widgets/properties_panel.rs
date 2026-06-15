@@ -488,10 +488,8 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = Arc::clone(&count);
         panel.property_changed.connect(move |pair: Arc<(String, PropertyValue)>| {
-            if pair.0 == "name" {
-                if matches!(pair.1, PropertyValue::Text(ref s) if s == "Bob") {
-                    count_clone.fetch_add(1, Ordering::SeqCst);
-                }
+            if pair.0 == "name" && matches!(pair.1, PropertyValue::Text(ref s) if s == "Bob") {
+                count_clone.fetch_add(1, Ordering::SeqCst);
             }
         });
 
@@ -562,7 +560,10 @@ mod tests {
             "hello"
         );
         assert_eq!(PropertiesPanel::value_display_text(&PropertyValue::Number(42.0)), "42");
-        assert_eq!(PropertiesPanel::value_display_text(&PropertyValue::Number(3.14)), "3.14");
+        assert_eq!(
+            PropertiesPanel::value_display_text(&PropertyValue::Number(std::f64::consts::PI)),
+            "3.14"
+        );
         assert_eq!(PropertiesPanel::value_display_text(&PropertyValue::Bool(true)), "true");
         assert_eq!(PropertiesPanel::value_display_text(&PropertyValue::Bool(false)), "false");
         assert_eq!(
@@ -594,7 +595,7 @@ mod tests {
         // The layout is: y = geom.y - scroll_offset (0 - 0 = 0)
         // First there's a category header (General) at y=0, then the property row at y=ROW_HEIGHT
         panel.handle_event(&Event::MousePress {
-            pos: Point::new(VALUE_COL_LEFT as i32 + 4, ROW_HEIGHT as i32 + ROW_HEIGHT as i32 / 2),
+            pos: Point::new(VALUE_COL_LEFT + 4, ROW_HEIGHT as i32 + ROW_HEIGHT as i32 / 2),
             button: 1,
         });
 

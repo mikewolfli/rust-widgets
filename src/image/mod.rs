@@ -150,7 +150,7 @@ impl Image {
 #[cfg(test)]
 /// Helper: create a solid-color 24-bit BMP with the given dimensions.
 fn make_red_bmp(width: u32, height: u32) -> Vec<u8> {
-    let row_size = ((width * 24 + 31) / 32) * 4;
+    let row_size = (width * 24).div_ceil(32) * 4;
     let pixel_data_size = row_size * height;
     let file_size = 54 + pixel_data_size;
 
@@ -177,9 +177,7 @@ fn make_red_bmp(width: u32, height: u32) -> Vec<u8> {
         }
         // Row padding to 4-byte boundary
         let padding = (row_size - width * 3) as usize;
-        for _ in 0..padding {
-            bmp.push(0x00);
-        }
+        bmp.extend(vec![0x00; padding]);
     }
     bmp
 }

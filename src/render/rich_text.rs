@@ -167,9 +167,7 @@ mod tests {
     fn test_rich_text_add_span_with_different_style() {
         let mut rt = RichText::new();
         rt.add_text("Normal ");
-        let mut style = TextStyle::default();
-        style.bold = true;
-        style.font_size = 18.0;
+        let style = TextStyle { bold: true, font_size: 18.0, ..Default::default() };
         rt.add_span("Bold", style);
         assert_eq!(rt.spans.len(), 2);
         assert_eq!(rt.plain_text(), "Normal Bold");
@@ -197,8 +195,7 @@ mod tests {
         let shaper = SimpleTextShaper::new();
         let mut rt = RichText::new();
         rt.add_text("A");
-        let mut big = TextStyle::default();
-        big.font_size = 28.0;
+        let big = TextStyle { font_size: 28.0, ..Default::default() };
         rt.add_span("B", big);
         let (w, h) = rt.measure(&shaper);
         // Height should come from the bigger font size span

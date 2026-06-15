@@ -298,7 +298,7 @@ mod tests {
         let clusters = GraphemeProcessor::split_graphemes("Hello");
         assert_eq!(clusters.len(), 5);
         for (i, cluster) in clusters.iter().enumerate() {
-            let expected = vec!["H", "e", "l", "l", "o"];
+            let expected = ["H", "e", "l", "l", "o"];
             assert_eq!(cluster.content, expected[i]);
             assert_eq!(cluster.char_count, 1);
         }

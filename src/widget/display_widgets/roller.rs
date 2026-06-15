@@ -419,11 +419,11 @@ mod tests {
         let mut roller = make_roller();
         let rect = roller.geometry();
         let item_h = roller.item_height() as i32;
-        let center_y = rect.y as i32 + (rect.height as i32) / 2;
+        let center_y = rect.y + (rect.height as i32) / 2;
 
         // Click one item above center.
         roller.handle_event(&Event::MousePress {
-            pos: Point::new(rect.x as i32 + 10, center_y - item_h),
+            pos: Point::new(rect.x + 10, center_y - item_h),
             button: 1,
         });
         // Should have moved one index up (if available).
@@ -432,7 +432,7 @@ mod tests {
         roller.set_selected_index(2);
         // Click one item below center → index 3.
         roller.handle_event(&Event::MousePress {
-            pos: Point::new(rect.x as i32 + 10, center_y + item_h),
+            pos: Point::new(rect.x + 10, center_y + item_h),
             button: 1,
         });
         assert_eq!(roller.selected_index(), 3);

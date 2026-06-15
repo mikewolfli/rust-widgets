@@ -304,7 +304,7 @@ mod tests {
         let f = frame.unwrap();
         assert_eq!(f.width, 320);
         assert_eq!(f.height, 240);
-        assert!(f.data.len() > 0);
+        assert!(!f.data.is_empty());
     }
 
     #[test]

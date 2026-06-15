@@ -448,7 +448,7 @@ mod tests {
         drawer.open();
 
         // Click on item at index 1 ("Search") - header=60, item_height=48, item 1 starts at y=108
-        let target_y = 60 + 1 * 48 + 24;
+        let target_y = 60 + 48 + 24;
         drawer.handle_event(&Event::MousePress { pos: Point::new(20, target_y), button: 1 });
         // Not yet selected on press
         assert_eq!(drawer.selected_index(), 0);

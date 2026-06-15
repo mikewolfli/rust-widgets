@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_round_trip_via_comment_format() {
-        let security = PdfSecurity {
+        let _security = PdfSecurity {
             user_password: Some("test123".to_string()),
             owner_password: None,
             print_permission: false,
@@ -398,7 +398,7 @@ mod tests {
             annotation_permission: true,
         };
         #[cfg(not(feature = "pdf-encryption"))]
-        let serialized = serialize_security_diagnostics_entries(&security);
+        let serialized = serialize_security_diagnostics_entries(&_security);
 
         #[cfg(not(feature = "pdf-encryption"))]
         {
