@@ -115,7 +115,7 @@ impl LottieColor {
         let animated = LottieAnimated::from_json(val);
         let v = animated.at_frame(0.0);
         Self {
-            r: v.get(0).copied().unwrap_or(0.0),
+            r: v.first().copied().unwrap_or(0.0),
             g: v.get(1).copied().unwrap_or(0.0),
             b: v.get(2).copied().unwrap_or(0.0),
             a: v.get(3).copied().unwrap_or(1.0),
@@ -243,7 +243,7 @@ impl LottieLayer {
 
         // Parse shapes array.
         let shapes = if let Some(shapes_arr) = layer_val.get("shapes").and_then(|v| v.as_array()) {
-            shapes_arr.iter().filter_map(|s| Self::parse_shape(s)).collect()
+            shapes_arr.iter().filter_map(Self::parse_shape).collect()
         } else {
             Vec::new()
         };
@@ -456,7 +456,7 @@ impl LottieWidget {
 
         // Parse layers.
         self.layers = if let Some(layers_arr) = parsed.get("layers").and_then(|v| v.as_array()) {
-            layers_arr.iter().filter_map(|l| LottieLayer::from_json(l)).collect()
+            layers_arr.iter().filter_map(LottieLayer::from_json).collect()
         } else {
             Vec::new()
         };

@@ -3,7 +3,7 @@
 use crate::image::format::{ImageData, ImageFormat, DecodedImage};
 
 /// Type of video frame in the compression sequence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrameType {
     /// Intra-coded frame (keyframe).
     IFrame,
@@ -12,14 +12,11 @@ pub enum FrameType {
     /// Bidirectionally predicted frame.
     BFrame,
     /// Unknown frame type.
+    #[default]
     Unknown,
 }
 
-impl Default for FrameType {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
+
 
 /// A single video frame with timestamp and pixel data.
 #[derive(Debug, Clone)]

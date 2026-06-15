@@ -163,7 +163,9 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                         let elapsed =
                             now_ms.saturating_sub(self.start_time.unwrap_or(now_ms)).max(1) as f32;
                         let velocity = dist / elapsed;
-                        if dist >= 30.0 && velocity >= 0.5 {
+                        if dist >= super::SWIPE_MIN_DISTANCE
+                            && velocity >= super::SWIPE_MIN_VELOCITY
+                        {
                             Some(Event::TwoFingerSwipe {
                                 centroid_start: start,
                                 centroid_end: end,

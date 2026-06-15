@@ -119,11 +119,13 @@ impl ConstraintLayout {
                     target_rect.x.saturating_add_unsigned(target_rect.width) + constraint.offset;
             }
             ConstraintType::RightToLeft => {
-                let right_edge = target_rect.x.saturating_add_unsigned(target_rect.width);
+                // Align widget right edge to target LEFT edge
+                let left_edge = target_rect.x;
                 widget_rect.x =
-                    right_edge.saturating_sub_unsigned(widget_rect.width) + constraint.offset;
+                    left_edge.saturating_sub_unsigned(widget_rect.width) + constraint.offset;
             }
             ConstraintType::RightToRight => {
+                // Align widget right edge to target RIGHT edge
                 let right_edge = target_rect.x.saturating_add_unsigned(target_rect.width);
                 widget_rect.x =
                     right_edge.saturating_sub_unsigned(widget_rect.width) + constraint.offset;
@@ -136,11 +138,13 @@ impl ConstraintLayout {
                     target_rect.y.saturating_add_unsigned(target_rect.height) + constraint.offset;
             }
             ConstraintType::BottomToTop => {
-                let bottom_edge = target_rect.y.saturating_add_unsigned(target_rect.height);
+                // Align widget bottom edge to target TOP edge
+                let top_edge = target_rect.y;
                 widget_rect.y =
-                    bottom_edge.saturating_sub_unsigned(widget_rect.height) + constraint.offset;
+                    top_edge.saturating_sub_unsigned(widget_rect.height) + constraint.offset;
             }
             ConstraintType::BottomToBottom => {
+                // Align widget bottom edge to target BOTTOM edge
                 let bottom_edge = target_rect.y.saturating_add_unsigned(target_rect.height);
                 widget_rect.y =
                     bottom_edge.saturating_sub_unsigned(widget_rect.height) + constraint.offset;

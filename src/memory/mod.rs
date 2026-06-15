@@ -69,7 +69,7 @@ impl ArenaAllocator {
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
-        let aligned_offset = (self.offset + align - 1) & !(align - 1);
+        let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
         let new_offset = aligned_offset + size;
         if new_offset > self.layout.size() {
             return None;

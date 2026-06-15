@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Generic widget state record owned by backend state model.
 #[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.

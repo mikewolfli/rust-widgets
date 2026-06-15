@@ -10,6 +10,8 @@ mod web_core;
 mod web_engine;
 #[cfg(not(feature = "mini"))]
 mod web_view;
+#[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+mod webkit_backend;
 pub use history::*;
 pub use js_engine::*;
 pub use navigation::*;
@@ -19,6 +21,8 @@ pub use privacy::*;
 pub use web_engine::*;
 #[cfg(not(feature = "mini"))]
 pub use web_view::*;
+#[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+pub use webkit_backend::*;
 
 #[cfg(test)]
 mod tests {
@@ -110,12 +114,14 @@ mod tests {
         assert!(blocked);
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn test_mod_web_engine_enhanced_accessible() {
         let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
         assert_eq!(engine.url(), "");
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn test_mod_web_view_enhanced_accessible() {
         let view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));

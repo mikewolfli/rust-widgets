@@ -66,7 +66,9 @@ pub mod virtual_keyboard;
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
 pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
 pub use crate::platform::runtime::RuntimeGuiMode;
+#[cfg(not(feature = "mini"))]
 pub use crate::platform::runtime::{capabilities, get_platform, init, quit, run};
+#[cfg(not(feature = "mini"))]
 pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
 #[cfg(feature = "mobile-api")]
 pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_name};
@@ -78,6 +80,7 @@ pub use crate::platform::types::*;
 /// When the platform has an accessibility bridge, this connects focus
 /// changes to `notify_focus_changed` so screen readers can track focus.
 /// This is a no-op when no bridge is available.
+#[cfg(not(feature = "mini"))]
 pub fn wire_focus_manager_to_a11y(fm: &mut crate::event::focus::FocusManager) {
     let platform = get_platform();
     if let Some(bridge) = platform.accessibility_bridge() {

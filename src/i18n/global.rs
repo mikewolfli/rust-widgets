@@ -2,12 +2,31 @@
 use crate::compat::Mutex;
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
+use crate::i18n::types::TranslationFile;
+/// Embedded English translations as a compile-time fallback.
+const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 /// Global i18n manager instance using Mutex for thread-safe access
 static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
-/// Initialize the i18n system
+/// Initialize the i18n system, loading the embedded English translations.
 pub fn init() {
     let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some(I18nManager::new());
+    let mut manager = I18nManager::new();
+    // Load embedded en.json as the default locale
+    match serde_json::from_str::<TranslationFile>(EMBEDDED_EN_JSON) {
+        Ok(translation_file) => {
+            let language = translation_file.language.clone();
+            manager.set_language(&language);
+            manager.inject_translations(language, translation_file);
+            log::info!(
+                "[i18n] Loaded embedded English translations ({} translation files)",
+                manager.translation_count()
+            );
+        }
+        Err(e) => {
+            log::error!("[i18n] Failed to parse embedded en.json: {}", e);
+        }
+    }
+    *guard = Some(manager);
 }
 /// Initialize the i18n system with options
 pub fn init_with_options(options: InitOptions) -> InitReport {
@@ -21,7 +40,14 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|ext| ext == "json") {
-                    match manager.load_translations(path.to_str().unwrap_or("")) {
+                    let path_str = match path.to_str() {
+                        Some(p) => p,
+                        None => {
+                            report.errors.push(format!("Non-UTF-8 path: {:?}", path));
+                            continue;
+                        }
+                    };
+                    match manager.load_translations(path_str) {
                         Ok(()) => {
                             report.files_loaded += 1;
                             if diagnostics {
@@ -70,5 +96,22 @@ pub fn check_and_reload_all() -> Vec<crate::i18n::types::ReloadEvent> {
         manager.check_and_reload()
     } else {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_init_loads_english() {
+        init();
+        let count = {
+            let mgr = get_manager();
+            mgr.as_ref().map(|m| m.translation_count()).unwrap_or(0)
+        };
+        assert!(count > 0, "init should load English translations");
+        // Reset global state so other tests don't see loaded translations
+        // (drop the manager guard first, then acquire the lock again for reset)
+        *GLOBAL_I18N.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 }

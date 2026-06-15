@@ -142,7 +142,7 @@ impl RiveAnimationData {
         let shapes = if let Some(shapes_arr) = val.get("shapes").and_then(|v| v.as_array()) {
             shapes_arr
                 .iter()
-                .filter_map(|s| {
+                .map(|s| {
                     let shape_type_str = s.get("ty").and_then(|v| v.as_str()).unwrap_or("rect");
                     let shape_type = match shape_type_str {
                         "circle" => RiveShapeType::Circle,
@@ -164,7 +164,7 @@ impl RiveAnimationData {
                     let scale_amp = s.get("sa").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let rot_amp = s.get("ra").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let color_shift = s.get("cs").and_then(|v| v.as_bool()).unwrap_or(false);
-                    Some(RiveAnimatedShape {
+                    RiveAnimatedShape {
                         shape_type,
                         x,
                         y,
@@ -179,7 +179,7 @@ impl RiveAnimationData {
                         scale_amplitude: scale_amp,
                         rotation_amplitude: rot_amp,
                         color_shift,
-                    })
+                    }
                 })
                 .collect()
         } else {

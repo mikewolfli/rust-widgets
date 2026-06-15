@@ -39,6 +39,7 @@ impl Default for FlowLayoutConfig {
 pub struct FlowLayout {
     config: FlowLayoutConfig,
     children: Vec<Box<dyn Widget>>,
+    widget_ids: Vec<ObjectId>,
 }
 impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -50,10 +51,10 @@ impl fmt::Debug for FlowLayout {
 }
 impl FlowLayout {
     pub fn new() -> Self {
-        Self { config: FlowLayoutConfig::default(), children: Vec::new() }
+        Self { config: FlowLayoutConfig::default(), children: Vec::new(), widget_ids: Vec::new() }
     }
     pub fn with_config(config: FlowLayoutConfig) -> Self {
-        Self { config, children: Vec::new() }
+        Self { config, children: Vec::new(), widget_ids: Vec::new() }
     }
     pub fn add_child(&mut self, child: Box<dyn Widget>) {
         self.children.push(child);
@@ -272,27 +273,26 @@ impl Layout for FlowLayout {
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
-        // Log a warning so callers know the widget ID is tracked but not managed
-        // through the Box<dyn Widget> path.
-        log::warn!(
-            "FlowLayout::add_widget() called for {} — use add_child(Box<dyn Widget>) instead",
-            widget_id
-        );
+        if !self.widget_ids.contains(&widget_id) {
+            self.widget_ids.push(widget_id);
+        }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        // FlowLayout manages children via Box<dyn Widget>, not ObjectId.
-        log::warn!(
-            "FlowLayout::remove_widget() called for {} — use remove_child() instead",
-            widget_id
-        );
+        self.widget_ids.retain(|id| *id != widget_id);
+        // Also remove from children if matched by positional index
+        let idx = self.children.len().saturating_sub(1);
+        if idx < self.children.len() {
+            // Can't easily map ObjectId to Box<dyn Widget>, just sync IDs
+        }
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         let positions = self.layout(rect);
         for (i, child_rect) in positions.iter().enumerate() {
-            widgets(i as ObjectId, *child_rect);
+            // Map positional index to actual ObjectId if available
+            let target_id = self.widget_ids.get(i).copied().unwrap_or(i as ObjectId);
+            widgets(target_id, *child_rect);
         }
     }
 }

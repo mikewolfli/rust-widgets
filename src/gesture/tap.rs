@@ -40,7 +40,9 @@ impl GestureRecognizer for TapGesture {
                 let start = self.start_pos?;
                 let start_time = self.start_time?;
                 let dt = now_ms.saturating_sub(start_time);
-                if dt < 300 && super::distance(start, *pos) < MAX_STATIONARY_DISTANCE {
+                if dt < super::TAP_TIMEOUT_MS
+                    && super::distance(start, *pos) < MAX_STATIONARY_DISTANCE
+                {
                     let result = Event::Tap { pos: *pos };
                     self.reset();
                     return Some(result);

@@ -1,5 +1,5 @@
 /// Represents a keyboard shortcut (key combination).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Shortcut {
     /// Main key (e.g., 'A', 'F1', 'Enter').
     pub key: Key,
@@ -106,7 +106,7 @@ impl std::fmt::Display for Shortcut {
     }
 }
 /// Keyboard keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Key {
     /// No key.
     None,
@@ -356,7 +356,7 @@ impl std::fmt::Display for Key {
     }
 }
 /// Modifier keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Modifiers(u8);
 impl Modifiers {
     pub const NONE: Self = Self(0);

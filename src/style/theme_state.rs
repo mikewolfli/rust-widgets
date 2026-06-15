@@ -6,7 +6,7 @@ use core::cell::RefCell;
 /// Callback type for theme mode change notifications.
 pub type ModeChangedCallback = Rc<RefCell<Option<Box<dyn FnMut(ThemeMode)>>>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub enum WidgetState {
     #[default]
     Normal,

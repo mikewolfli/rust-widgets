@@ -146,7 +146,7 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
             if width == 0 || height == 0 {
                 return Err("Invalid PNG dimensions".into());
             }
-        } else if chunk_type == b"PLTE" && chunk_len % 3 == 0 {
+        } else if chunk_type == b"PLTE" && chunk_len.is_multiple_of(3) {
             palette.clear();
             for i in 0..chunk_len / 3 {
                 let off = pos + 8 + i * 3;
@@ -170,17 +170,14 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
 
     let row_len_raw = (width as usize
         * bit_depth as usize
-        * if color_type == 0 {
-            1
-        } else if color_type == 3 {
+        * if color_type == 0 || color_type == 3 {
             1
         } else if color_type == 4 {
             2
         } else {
             3
-        }
-        + 7)
-        / 8;
+        })
+    .div_ceil(8);
     let stride = 1 + row_len_raw; // filter byte + data
 
     // Determine output format and reconstruct
@@ -403,7 +400,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
         let seg_data = &data[pos + 4..pos + seg_len];
 
         match marker {
-            0xC0 | 0xC1 | 0xC2 => {
+            0xC0..=0xC2 => {
                 // SOF0/SOF1/SOF2
                 if seg_data.len() >= 6 {
                     let precision = seg_data[0];
@@ -504,16 +501,14 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     // ── Entropy decode and IDCT ──
     let mcu_width = components.iter().map(|c| c.h_sampling).max().unwrap_or(1) as u32 * 8;
     let mcu_height = components.iter().map(|c| c.v_sampling).max().unwrap_or(1) as u32 * 8;
-    let mcus_x = (width + mcu_width - 1) / mcu_width;
-    let mcus_y = (height + mcu_height - 1) / mcu_height;
+    let mcus_x = width.div_ceil(mcu_width);
+    let mcus_y = height.div_ceil(mcu_height);
 
     // Allocate component buffers
     let mut comp_bufs: Vec<Vec<Vec<i16>>> = Vec::new();
     for comp in &components {
-        let cw = ((width + (1 << comp.h_sampling) * 8 - 1) / ((1 << comp.h_sampling) * 8))
-            * ((1 << comp.h_sampling) * 8);
-        let ch = ((height + (1 << comp.v_sampling) * 8 - 1) / ((1 << comp.v_sampling) * 8))
-            * ((1 << comp.v_sampling) * 8);
+        let cw = width.div_ceil((1 << comp.h_sampling) * 8) * ((1 << comp.h_sampling) * 8);
+        let ch = height.div_ceil((1 << comp.v_sampling) * 8) * ((1 << comp.v_sampling) * 8);
         comp_bufs.push(vec![vec![0i16; cw as usize * ch as usize]; 1]);
     }
 
@@ -535,12 +530,10 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             for (ci, comp) in components.iter().enumerate() {
                 let qt = quant_tables[comp.quant_table as usize]
                     .ok_or_else(|| format!("Missing quantization table {}", comp.quant_table))?;
-                let dc_table = dc_huff
-                    [sos_components.get(ci).map(|s| s.1 as usize).unwrap_or(0) as usize]
+                let dc_table = dc_huff[sos_components.get(ci).map(|s| s.1 as usize).unwrap_or(0)]
                     .as_ref()
                     .ok_or("Missing DC Huffman table")?;
-                let ac_table = ac_huff
-                    [sos_components.get(ci).map(|s| s.2 as usize).unwrap_or(0) as usize]
+                let ac_table = ac_huff[sos_components.get(ci).map(|s| s.2 as usize).unwrap_or(0)]
                     .as_ref()
                     .ok_or("Missing AC Huffman table")?;
 
@@ -554,10 +547,10 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
 
                         // DC coefficient
                         if let Some((cat, _extra_bits)) =
-                            decode_huff_symbol(&scan_data, &mut bit_pos, dc_table)
+                            decode_huff_symbol(scan_data, &mut bit_pos, dc_table)
                         {
                             if cat > 0 {
-                                let mag = receive_extended(&scan_data, &mut bit_pos, cat as usize);
+                                let mag = receive_extended(scan_data, &mut bit_pos, cat as usize);
                                 dc_pred[ci] += mag;
                             }
                             block[0] = dc_pred[ci];
@@ -567,7 +560,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                         let mut k = 1;
                         while k < 64 {
                             if let Some((symbol, _extra_bits)) =
-                                decode_huff_symbol(&scan_data, &mut bit_pos, ac_table)
+                                decode_huff_symbol(scan_data, &mut bit_pos, ac_table)
                             {
                                 if symbol == 0 {
                                     // EOB
@@ -580,7 +573,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                                     if k >= 64 {
                                         break;
                                     }
-                                    let mag = receive_extended(&scan_data, &mut bit_pos, cat);
+                                    let mag = receive_extended(scan_data, &mut bit_pos, cat);
                                     block[ZIGZAG[k]] = mag;
                                 }
                                 k += 1;
@@ -599,8 +592,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                         idct_8x8(&block, &mut pixels);
 
                         // Store to component buffer
-                        let cw = ((width + (1 << comp.h_sampling) * 8 - 1)
-                            / ((1 << comp.h_sampling) * 8))
+                        let cw = width.div_ceil((1 << comp.h_sampling) * 8)
                             * ((1 << comp.h_sampling) * 8);
                         let buf_width = cw as usize;
                         for yy in 0..8 {
@@ -623,8 +615,8 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
 
     // Convert to RGB
     let mut pixels = vec![0u8; (width * height * 4) as usize];
-    let buf_width = ((width + mcu_width - 1) / mcu_width * mcu_width) as usize;
-    let _buf_height = ((height + mcu_height - 1) / mcu_height * mcu_height) as usize;
+    let buf_width = (width.div_ceil(mcu_width) * mcu_width) as usize;
+    let _buf_height = (height.div_ceil(mcu_height) * mcu_height) as usize;
 
     for y in 0..height as usize {
         for x in 0..width as usize {
@@ -632,19 +624,19 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             let bidx = y * buf_width + x;
 
             let y_val = comp_bufs
-                .get(0)
-                .and_then(|b| b.get(0))
+                .first()
+                .and_then(|b| b.first())
                 .and_then(|row| row.get(bidx))
                 .copied()
                 .unwrap_or(128) as i32;
             let cb_val = comp_bufs
                 .get(1)
-                .and_then(|b| b.get(0))
+                .and_then(|b| b.first())
                 .and_then(|row| if bidx < row.len() { Some(row[bidx]) } else { None })
                 .unwrap_or(128) as i32;
             let cr_val = comp_bufs
                 .get(2)
-                .and_then(|b| b.get(0))
+                .and_then(|b| b.first())
                 .and_then(|row| if bidx < row.len() { Some(row[bidx]) } else { None })
                 .unwrap_or(128) as i32;
 
@@ -757,7 +749,7 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
             for u in 0..8 {
                 let cu = if u == 0 { 1 } else { 2 };
                 let val = input[y * 8 + u];
-                sum += val * cu * icosph(u as usize, x);
+                sum += val * cu * icosph(u, x);
             }
             tmp[y * 8 + x] = sum;
         }
@@ -770,7 +762,7 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
             for v in 0..8 {
                 let cv = if v == 0 { 1 } else { 2 };
                 let val = tmp[v * 8 + x];
-                sum += val * cv * icosph(v as usize, y);
+                sum += val * cv * icosph(v, y);
             }
             output[y * 8 + x] = sum / 4;
         }
@@ -813,7 +805,7 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
     let height = raw_height_signed.unsigned_abs();
     let _top_down = raw_height_signed < 0;
     let bit_count = u16::from_le_bytes([data[28], data[29]]);
-    let row_size = ((width as u32 * bit_count as u32 + 31) / 32 * 4) as usize;
+    let row_size = (width * bit_count as u32).div_ceil(32) as usize * 4;
 
     let pixel_data = if pixel_offset + row_size * height as usize <= data.len() {
         &data[pixel_offset..]
@@ -1036,8 +1028,8 @@ fn decode_ico(data: &[u8]) -> Result<DecodedImage, String> {
     let entry_off = 6;
     let _w = data[entry_off] as u32;
     let _h = data[entry_off + 1] as u32;
-    let width = if _w == 0 { 256u32 } else { _w as u32 };
-    let height = if _h == 0 { 256u32 } else { _h as u32 };
+    let width = if _w == 0 { 256u32 } else { _w };
+    let height = if _h == 0 { 256u32 } else { _h };
     let pixels = vec![0u8; width as usize * height as usize * 4];
     let mut img = DecodedImage::new(ImageFormat::Ico, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
@@ -1210,8 +1202,7 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
         pixels.push(a);
 
         // Update index
-        let hash =
-            ((r as usize * 3 + g as usize * 5 + b as usize * 7 + a as usize * 11) & 63) as usize;
+        let hash = (r as usize * 3 + g as usize * 5 + b as usize * 7 + a as usize * 11) & 63;
         index[hash] = [r, g, b, a];
     }
 
@@ -1293,7 +1284,7 @@ fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
     let (vw, vh) = if let Some(vb) = svg_tag.to_lowercase().find("viewbox=\"") {
         let rest = &svg_tag[vb + 9..];
         let nums: Vec<f32> = rest
-            .split(|c: char| c == ' ' || c == ',' || c == '"')
+            .split(|c: char| [' ', ',', '"'].contains(&c))
             .filter_map(|s| s.parse::<f32>().ok())
             .collect();
         if nums.len() >= 4 {

@@ -112,7 +112,7 @@ impl JsonLoader {
         if widget_type.eq_ignore_ascii_case("spacer") {
             let stretch = obj.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
             if let Some(pid) = parent_id {
-                add_spacer_to_layout(stretch, pid, registry);
+                add_spacer_to_layout(stretch, pid);
             }
             return Ok(0);
         }
@@ -134,7 +134,7 @@ impl JsonLoader {
                                 let stretch =
                                     child_val.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1)
                                         as u32;
-                                add_spacer_to_layout(stretch, layout_parent, registry);
+                                add_spacer_to_layout(stretch, layout_parent);
                                 continue;
                             }
 
@@ -154,7 +154,6 @@ impl JsonLoader {
                                     child_id,
                                     attrs.stretch,
                                     layout_parent,
-                                    registry,
                                 );
                             }
                         }
@@ -162,7 +161,7 @@ impl JsonLoader {
                 }
             }
 
-            store_layout(layout_parent, layout, registry);
+            store_layout(layout_parent, layout);
             return Ok(layout_parent);
         }
 
@@ -358,7 +357,7 @@ impl JsonLoader {
                                         .and_then(|v| v.as_u64())
                                         .unwrap_or(1)
                                         as u32;
-                                    add_spacer_to_layout(stretch, widget_id, registry);
+                                    add_spacer_to_layout(stretch, widget_id);
                                     continue;
                                 }
 
@@ -378,7 +377,6 @@ impl JsonLoader {
                                         child_id,
                                         attrs.stretch,
                                         widget_id,
-                                        registry,
                                     );
                                 }
                             }
@@ -387,7 +385,7 @@ impl JsonLoader {
                 }
             }
 
-            store_layout(widget_id, layout, registry);
+            store_layout(widget_id, layout);
         }
 
         Ok(widget_id)

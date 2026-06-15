@@ -41,41 +41,56 @@ impl ErrorId {
     pub const NOT_IMPLEMENTED: Self = Self(1);
     pub const UNSUPPORTED_OPERATION: Self = Self(2);
     pub const INVALID_ARGUMENT: Self = Self(3);
+    pub const GENERAL: Self = Self(999);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const NULL_POINTER: Self = Self(4);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const OUT_OF_MEMORY: Self = Self(5);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const LOCK_POISONED: Self = Self(6);
 
     // --- Widget (100‑199) ---
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const WIDGET_NOT_FOUND: Self = Self(101);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const WIDGET_INVALID_STATE: Self = Self(102);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const WIDGET_DEPRECATED: Self = Self(103);
 
     // --- Platform (200‑299) ---
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const PLATFORM_UNSUPPORTED: Self = Self(200);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const PLATFORM_INIT_FAILED: Self = Self(201);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const CLIPBOARD_FAILED: Self = Self(202);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const DRAG_DROP_FAILED: Self = Self(203);
 
     // --- Render (300‑399) ---
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const RENDER_CONTEXT_INVALID: Self = Self(300);
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const RENDER_PIPELINE_FAILED: Self = Self(301);
 
     // --- I/O (400‑499) ---
     /// Reserved — not yet wired.
+    #[allow(dead_code)]
     pub const I18N_LOAD_FAILED: Self = Self(400);
     pub const FILE_NOT_FOUND: Self = Self(401);
 }
@@ -115,10 +130,9 @@ impl RwError {
         Self::new(ErrorId::NOT_IMPLEMENTED, format!("not implemented: {}", feature.into()))
     }
 
-    /// Create a new error from a message string (uses SUCCESS code —
-    /// prefer [`RwError::new`] when a specific [`ErrorId`] is known).
+    /// Create a new error from a message string.
     pub fn msg(message: impl Into<String>) -> Self {
-        Self::new(ErrorId::SUCCESS, message)
+        Self::new(ErrorId::GENERAL, message)
     }
 
     /// Convert panic info (from `catch_unwind`) into an `RwError`.
@@ -128,7 +142,7 @@ impl RwError {
             .map(|s| s.to_string())
             .or_else(|| panic_info.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| String::from("unknown panic"));
-        Self::new(ErrorId::NOT_IMPLEMENTED, msg)
+        Self::new(ErrorId::GENERAL, msg)
     }
 }
 
@@ -216,5 +230,10 @@ mod tests {
         let e = RwError::not_implemented("feature");
         assert!(e.to_string().contains("not implemented"));
         assert!(e.to_string().contains("feature"));
+    }
+    #[test]
+    fn rw_error_msg_not_success() {
+        let e = RwError::msg("test");
+        assert_ne!(e.id, ErrorId::SUCCESS);
     }
 }

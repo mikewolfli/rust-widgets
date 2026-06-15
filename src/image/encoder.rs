@@ -79,8 +79,8 @@ fn build_huff_table<const N: usize>(bits: &[u8; 16], huffval: &[u8; N]) -> [Huff
     let mut table = [HuffCode { code: 0, len: 0 }; 256];
     let mut code: u16 = 0;
     let mut idx = 0;
-    for k in 0..16 {
-        for _ in 0..bits[k] {
+    for (k, &bits_k) in bits.iter().enumerate() {
+        for _ in 0..bits_k {
             let val = huffval[idx] as usize;
             table[val] = HuffCode { code, len: (k + 1) as u8 };
             code += 1;
@@ -172,42 +172,39 @@ fn amplitude_bits(val: i32, cat: u8) -> u16 {
 /// Compute the forward DCT for an 8x8 block in-place.
 fn fdct(block: &mut [f32; 64]) {
     const PI: f32 = std::f32::consts::PI;
-    const INV_SQRT2: f32 = 0.7071067811865476; // 1/√2
+    const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
     // Apply 1D DCT to rows
     for y in 0..8 {
         let off = y * 8;
-        let mut row = [0f32; 8];
-        row.copy_from_slice(&block[off..off + 8]);
+        let row: [f32; 8] = block[off..off + 8].try_into().unwrap();
         let mut tmp = [0f32; 8];
-        for k in 0..8 {
+        for (k, tmp_k) in tmp.iter_mut().enumerate() {
             let mut sum = 0f32;
-            for n in 0..8 {
-                sum += row[n] * (PI * (2.0 * n as f32 + 1.0) * k as f32 / 16.0).cos();
+            for (n, &row_n) in row.iter().enumerate() {
+                sum += row_n * (PI * (2.0 * n as f32 + 1.0) * k as f32 / 16.0).cos();
             }
             let ck = if k == 0 { INV_SQRT2 } else { 1.0 };
-            tmp[k] = sum * ck * 0.5;
+            *tmp_k = sum * ck * 0.5;
         }
         block[off..off + 8].copy_from_slice(&tmp);
     }
 
     // Apply 1D DCT to columns
     for x in 0..8 {
-        let mut col = [0f32; 8];
-        for n in 0..8 {
-            col[n] = block[n * 8 + x];
-        }
+        let col: [f32; 8] =
+            (0..8).map(|n| block[n * 8 + x]).collect::<Vec<_>>().try_into().unwrap();
         let mut tmp = [0f32; 8];
-        for k in 0..8 {
+        for (k, tmp_k) in tmp.iter_mut().enumerate() {
             let mut sum = 0f32;
-            for n in 0..8 {
-                sum += col[n] * (PI * (2.0 * n as f32 + 1.0) * k as f32 / 16.0).cos();
+            for (n, &col_n) in col.iter().enumerate() {
+                sum += col_n * (PI * (2.0 * n as f32 + 1.0) * k as f32 / 16.0).cos();
             }
             let ck = if k == 0 { INV_SQRT2 } else { 1.0 };
-            tmp[k] = sum * ck * 0.5;
+            *tmp_k = sum * ck * 0.5;
         }
-        for n in 0..8 {
-            block[n * 8 + x] = tmp[n];
+        for (n, &val) in tmp.iter().enumerate() {
+            block[n * 8 + x] = val;
         }
     }
 }
@@ -292,10 +289,10 @@ fn encode_jpeg(image: &DecodedImage) -> Result<Vec<u8>, String> {
     }
 
     // Pad to multiples of 8 for MCU blocks
-    let mcu_w = (w + 7) / 8 * 8;
-    let mcu_h = (h + 7) / 8 * 8;
-    let blocks_x = (mcu_w / 8) as usize;
-    let blocks_y = (mcu_h / 8) as usize;
+    let mcu_w = w.div_ceil(8) * 8;
+    let mcu_h = h.div_ceil(8) * 8;
+    let blocks_x = mcu_w / 8;
+    let blocks_y = mcu_h / 8;
     // Convert RGB -> YCbCr with edge padding
     let mut y_plane = vec![0i16; mcu_w * mcu_h];
     let mut cb_plane = vec![0i16; mcu_w * mcu_h];
@@ -600,14 +597,14 @@ fn encode_bmp(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let w = image.width;
     let h = image.height;
 
-    let row_size = ((w * 3 + 3) / 4) * 4;
+    let row_size = (w * 3).div_ceil(4) * 4;
     let pixel_data_size = row_size * h;
     let file_size = 14 + 40 + pixel_data_size;
 
     let mut out = Vec::with_capacity(file_size as usize);
     // BMP header
     out.extend_from_slice(b"BM");
-    out.extend_from_slice(&(file_size as u32).to_le_bytes());
+    out.extend_from_slice(&file_size.to_le_bytes());
     out.extend_from_slice(&[0u8; 4]); // reserved
     out.extend_from_slice(&(54u32).to_le_bytes()); // pixel offset
 
@@ -625,7 +622,7 @@ fn encode_bmp(image: &DecodedImage) -> Result<Vec<u8>, String> {
         row.fill(0);
         for x in 0..w {
             let off = ((y * w + x) * 4) as usize;
-            let bgr_off = (x as usize * 3) as usize;
+            let bgr_off = x as usize * 3;
             row[bgr_off] = pixels.get(off + 2).copied().unwrap_or(0); // B
             row[bgr_off + 1] = pixels.get(off + 1).copied().unwrap_or(0); // G
             row[bgr_off + 2] = pixels.get(off).copied().unwrap_or(0); // R
@@ -673,21 +670,22 @@ fn encode_qoi(image: &DecodedImage) -> Result<Vec<u8>, String> {
                 out.push(0xC0 | (run as u8 - 1));
                 run = 0;
             }
-            let hash = ((r as usize * 3 + g as usize * 5 + b as usize * 7 + a as usize * 11) & 63)
-                as usize;
+            let hash = (r as usize * 3 + g as usize * 5 + b as usize * 7 + a as usize * 11) & 63;
             if index[hash] == px {
                 out.push(hash as u8); // QOI_OP_INDEX
             } else if a == prev[3] {
                 let dr = r.wrapping_sub(prev[0]).wrapping_add(2) as i8;
                 let dg = g.wrapping_sub(prev[1]).wrapping_add(2) as i8;
                 let db = b.wrapping_sub(prev[2]).wrapping_add(2) as i8;
-                if dr >= 0 && dr < 4 && dg >= 0 && dg < 4 && db >= 0 && db < 4 {
+                if (0..4).contains(&dr) && (0..4).contains(&dg) && (0..4).contains(&db) {
                     out.push(0x40 | ((dr as u8) << 4) | ((dg as u8) << 2) | db as u8);
                 } else {
                     let dg2 = g.wrapping_sub(prev[1]).wrapping_add(32) as i8;
                     let dr_dg = r.wrapping_sub(g).wrapping_add(8) as i8;
                     let db_dg = b.wrapping_sub(g).wrapping_add(8) as i8;
-                    if dg2 >= 0 && dg2 < 64 && dr_dg >= 0 && dr_dg < 16 && db_dg >= 0 && db_dg < 16
+                    if (0..64).contains(&dg2)
+                        && (0..16).contains(&dr_dg)
+                        && (0..16).contains(&db_dg)
                     {
                         out.push(0x80 | dg2 as u8);
                         out.push((dr_dg as u8) << 4 | (db_dg as u8));

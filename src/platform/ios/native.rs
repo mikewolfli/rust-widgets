@@ -9,7 +9,13 @@
 #![cfg(target_os = "ios")]
 #![cfg(feature = "ios-uikit-ffi")]
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+
+use objc2::msg_send;
 use objc2::rc::Retained;
+use objc2::runtime::Object;
 use objc2::MainThreadMarker;
 use objc2_foundation::{CGPoint, CGRect, CGSize, NSString};
 use objc2_ui_kit::{
@@ -17,9 +23,7 @@ use objc2_ui_kit::{
     UITableView, UITableViewStyle, UITextField, UIView, UIViewController, UIWindow,
 };
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
-use std::sync::Mutex;
+// ─── Native view pointer storage ───
 
 /// Wrapper around `*mut c_void` that implements Send and Sync.
 #[derive(Clone, Copy)]
@@ -27,7 +31,7 @@ struct NativePtr(*mut std::ffi::c_void);
 unsafe impl Send for NativePtr {}
 unsafe impl Sync for NativePtr {}
 
-/// Thread-local storage for native widget handles.
+/// Thread-safe storage for native widget handles.
 static NATIVE_VIEWS: LazyLock<Mutex<HashMap<u64, NativePtr>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -43,12 +47,171 @@ pub(crate) fn remove_native_view(widget_id: u64) {
     NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
 }
 
+// ─── Button target retention storage ───
+
+/// Stores `ButtonTarget` instances so they are not deallocated.
+/// iOS `UIControl.addTarget:action:forControlEvents:` does NOT retain
+/// the target, so we must keep a reference alive.
+static BUTTON_TARGETS: LazyLock<Mutex<HashMap<u64, Retained<ButtonTarget>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Remove and release the button target for the given widget.
+pub(crate) fn remove_button_target(widget_id: u64) {
+    BUTTON_TARGETS.lock().unwrap().remove(&widget_id);
+}
+
+// ─── Parent-child relationship tracking ───
+
+/// Maps child widget IDs to their parent window IDs.
+static PARENT_MAP: LazyLock<Mutex<HashMap<u64, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn set_parent(widget_id: u64, parent_id: u64) {
+    PARENT_MAP.lock().unwrap().insert(widget_id, parent_id);
+}
+
+#[allow(dead_code)]
+pub(crate) fn get_parent(widget_id: u64) -> Option<u64> {
+    PARENT_MAP.lock().unwrap().get(&widget_id).copied()
+}
+
+// ─── View hierarchy management ───
+
+/// Add a widget's native view as a subview of its parent window.
+///
+/// Looks up the parent window from `NATIVE_VIEWS` using the parent ID,
+/// then calls `addSubview:` with the child widget's native view on the
+/// window's root view controller's view.
+pub(crate) fn add_as_subview(widget_id: u64, parent_id: u64) {
+    let views = NATIVE_VIEWS.lock().unwrap();
+    let Some(parent_ptr) = views.get(&parent_id).map(|p| p.0) else {
+        return;
+    };
+    let Some(child_ptr) = views.get(&widget_id).map(|c| c.0) else {
+        return;
+    };
+    drop(views);
+
+    unsafe {
+        // Get the root view controller's view from the parent window.
+        // UIWindow::rootViewController returns a UIViewController whose `view`
+        // property is the content view where subviews should be added.
+        let parent: *mut Object = parent_ptr as *mut Object;
+        let root_vc: *mut Object = msg_send![parent, rootViewController];
+        if root_vc.is_null() {
+            return;
+        }
+        let content_view: *mut Object = msg_send![root_vc, view];
+        if content_view.is_null() {
+            return;
+        }
+        // Add the child view as a subview of the content view.
+        let child: *mut Object = child_ptr as *mut Object;
+        let _: () = msg_send![content_view, addSubview: child];
+    }
+}
+
+// ─── Button action/target event queue ───
+
+use std::collections::VecDeque;
+
+/// Global queue of button tap events (widget IDs that were tapped).
+static BUTTON_EVENT_QUEUE: LazyLock<Mutex<VecDeque<u64>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+/// Drain all pending button tap events from the queue.
+pub(crate) fn drain_button_events() -> Vec<u64> {
+    let mut queue = BUTTON_EVENT_QUEUE.lock().unwrap();
+    queue.drain(..).collect()
+}
+
+// ─── Objective-C button target class ───
+
+use objc2::declare_class;
+use objc2::runtime::NSObject;
+use objc2::sel;
+
+/// A lightweight Objective-C helper class that holds a widget ID
+/// and forwards `buttonTapped:` messages to the Rust event queue.
+///
+/// One instance is created per UIButton and stored as the button's
+/// target. When tapped, `handle_tap` pushes the widget ID into
+/// `BUTTON_EVENT_QUEUE` for the Rust platform to drain.
+declare_class!(
+    struct ButtonTarget {
+        widget_id: u64,
+    }
+
+    unsafe impl ClassType for ButtonTarget {
+        type Super = NSObject;
+    }
+
+    unsafe impl ButtonTarget {
+        #[sel(buttonTapped:)]
+        fn handle_tap(&self, _sender: &NSObject) {
+            BUTTON_EVENT_QUEUE.lock().unwrap().push_back(self.widget_id);
+        }
+    }
+);
+
+impl ButtonTarget {
+    /// Create a new `ButtonTarget` with the given widget ID.
+    fn new(mtm: MainThreadMarker, widget_id: u64) -> Retained<Self> {
+        // SAFETY: Allocating and initializing on the main thread (mtm).
+        // `set_ivar` sets the `widget_id` ivar declared by `declare_class!`.
+        let obj = unsafe { mtm.alloc() };
+        let obj = obj.set_ivar(widget_id);
+        // SAFETY: `init` from NSObject returns a valid retained object.
+        unsafe { obj.init() }
+    }
+}
+
+/// Wire a UIButton's touch-up-inside event to fire our Rust callback.
+///
+/// Creates a `ButtonTarget` instance holding the widget ID, sets it as
+/// the button's target, and connects `buttonTapped:` as the action
+/// selector for `UIControlEventTouchUpInside` (value 64).
+pub(crate) fn wire_button_action(widget_id: u64) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let target = ButtonTarget::new(mtm, widget_id);
+    let action_sel = sel!(buttonTapped:);
+
+    // SAFETY: `ptr` is a valid UIButton (stored via Retained::into_raw).
+    // `target` is a valid NSObject subclass with the `buttonTapped:` method.
+    // `UIControlEventTouchUpInside = 1 << 6 = 64`.
+    unsafe {
+        let button: *mut Object = ptr as *mut Object;
+        let _: () = msg_send![button,
+            addTarget: &*target
+            action: action_sel
+            forControlEvents: 64u64
+        ];
+    }
+
+    // Store the target so it stays alive for the button's lifetime.
+    // iOS `addTarget:action:forControlEvents:` does NOT retain the
+    // target, so we must keep a reference alive in our own storage.
+    // The target is released when `remove_button_target` is called
+    // (which should happen when the widget is destroyed).
+    BUTTON_TARGETS.lock().unwrap().insert(widget_id, target);
+}
+
+// ─── Geometry helpers ───
+
 fn make_rect(x: i32, y: i32, width: u32, height: u32) -> CGRect {
     CGRect::new(
         CGPoint::new(x as f64, y as f64),
         CGSize::new(width.max(1) as f64, height.max(1) as f64),
     )
 }
+
+// ─── Widget creation functions ───
 
 /// Create a native UIWindow.
 pub(crate) fn create_ui_window(

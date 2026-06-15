@@ -5,9 +5,9 @@
 //! - Integrated GPU: Frame time + memory bandwidth monitoring
 //! - CPU Software: CPU frame time + thread utilization monitoring
 use super::adapter::GpuDeviceType;
+use crate::compat::Instant;
 use alloc::collections::VecDeque;
 use core::time::Duration;
-use std::time::Instant;
 /// Performance monitoring strategy based on hardware type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceMonitorStrategy {

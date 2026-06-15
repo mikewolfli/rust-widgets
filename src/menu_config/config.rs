@@ -68,6 +68,11 @@ impl MenuConfig {
         }
     }
     fn detect_gpu_memory() -> u32 {
+        if let Ok(val) = std::env::var("RUST_WIDGETS_GPU_MEMORY_MB") {
+            if let Ok(mb) = val.parse::<u32>() {
+                return mb;
+            }
+        }
         512
     }
     fn estimate_gpu_performance(gpu_type: &GpuType, memory_mb: u32) -> u32 {
@@ -86,12 +91,49 @@ impl MenuConfig {
         }
     }
     fn detect_system_memory() -> u64 {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+                for line in content.lines() {
+                    if let Some(rest) = line.strip_prefix("MemTotal:") {
+                        let val_str: String = rest.chars().take_while(|c| c.is_ascii_digit() || c.is_whitespace()).collect();
+                        if let Ok(kb) = val_str.trim().parse::<u64>() {
+                            return kb / 1024;
+                        }
+                    }
+                }
+            }
+        }
         4096
     }
     fn estimate_cpu_performance() -> u32 {
-        50
+        match std::thread::available_parallelism() {
+            Ok(count) => {
+                let cores = count.get();
+                match cores {
+                    0..=2 => 30,
+                    3..=4 => 50,
+                    5..=8 => 70,
+                    _ => 90,
+                }
+            }
+            Err(_) => 50,
+        }
     }
     fn detect_battery_status() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+                for entry in entries.flatten() {
+                    let status_path = entry.path().join("status");
+                    if let Ok(status) = std::fs::read_to_string(&status_path) {
+                        if status.trim() == "Discharging" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
         false
     }
     fn apply_hardware_defaults(&mut self) {

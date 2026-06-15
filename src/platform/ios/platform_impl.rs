@@ -69,6 +69,7 @@ impl Platform for IosMobilePlatform {
             let window = super::native::create_ui_window(mtm, title, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(window) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            // Windows are top-level; no subview addition needed.
         }
 
         id
@@ -93,6 +94,9 @@ impl Platform for IosMobilePlatform {
             let button = super::native::create_ui_button(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(button) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
+            super::native::wire_button_action(id);
         }
 
         id
@@ -117,6 +121,8 @@ impl Platform for IosMobilePlatform {
             let checkbox = super::native::create_ui_checkbox(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(checkbox) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -141,6 +147,8 @@ impl Platform for IosMobilePlatform {
             let line_edit = super::native::create_ui_line_edit(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(line_edit) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -165,6 +173,8 @@ impl Platform for IosMobilePlatform {
             let label = super::native::create_ui_label(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(label) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -189,6 +199,8 @@ impl Platform for IosMobilePlatform {
             let radio = super::native::create_ui_radio_button(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(radio) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -205,6 +217,8 @@ impl Platform for IosMobilePlatform {
             let slider = super::native::create_ui_slider(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(slider) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -221,6 +235,8 @@ impl Platform for IosMobilePlatform {
             let progress = super::native::create_ui_progress_bar(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(progress) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -237,6 +253,8 @@ impl Platform for IosMobilePlatform {
             let combo = super::native::create_ui_combo_box(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(combo) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id
@@ -253,6 +271,8 @@ impl Platform for IosMobilePlatform {
             let list_box = super::native::create_ui_list_box(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(list_box) as *mut std::ffi::c_void;
             super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
         }
 
         id

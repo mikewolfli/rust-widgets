@@ -1,4 +1,6 @@
 #[cfg(feature = "controls-custom")]
+use crate::compat::OnceLock;
+#[cfg(feature = "controls-custom")]
 use crate::control_backend::custom::CustomPaintControlBackend;
 #[cfg(feature = "controls-native")]
 use crate::control_backend::native::NativeControlBackend;
@@ -8,9 +10,6 @@ use crate::control_backend::trait_def::ControlBackend;
 #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
 use crate::control_backend::types::ControlRoutePreference;
 use crate::widget::WidgetKind;
-#[cfg(feature = "controls-custom")]
-#[cfg(not(feature = "mini"))]
-use std::sync::OnceLock;
 
 #[cfg(feature = "controls-native")]
 fn native_control_backend() -> &'static NativeControlBackend {

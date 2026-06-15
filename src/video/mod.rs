@@ -6,11 +6,17 @@ pub mod frame;
 pub mod metadata;
 pub mod player;
 
+#[cfg(feature = "video-codecs")]
+pub mod ffmpeg_decoder;
+
 pub use decoder::{FrameBufferDecoder, MjpegDecoder, VideoDecoder};
 pub use format::ContainerFormat;
 pub use frame::VideoFrame;
 pub use metadata::VideoMetadata;
 pub use player::PlaybackState;
+
+#[cfg(feature = "video-codecs")]
+pub use ffmpeg_decoder::{decode_frames, FfmpegDecoder};
 
 use crate::signal::Signal;
 
@@ -28,6 +34,10 @@ pub struct VideoEngine {
 
 impl VideoEngine {
     /// Open a video file from raw bytes. Detects container format automatically.
+    ///
+    /// When the `video-codecs` feature is enabled, non-MJPEG formats are
+    /// decoded via FFmpeg (real decoding).  With the feature disabled, the
+    /// synthetic `FrameBufferDecoder` fallback is used.
     pub fn open(data: Vec<u8>) -> Result<Self, String> {
         let format = format::detect_container_format(&data);
         let decoder: Box<dyn VideoDecoder + Send> = match format {
@@ -35,6 +45,9 @@ impl VideoEngine {
                 return Err("Unknown video container format".into());
             }
             ContainerFormat::Mjpeg => Box::new(MjpegDecoder::new(data, format)),
+            #[cfg(feature = "video-codecs")]
+            _ => Box::new(FfmpegDecoder::new(data)?),
+            #[cfg(not(feature = "video-codecs"))]
             _ => Box::new(FrameBufferDecoder::new(data, format)),
         };
         let metadata = decoder.metadata().clone();

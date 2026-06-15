@@ -14,7 +14,7 @@ use super::paint::{PaintBackend, SoftwarePaintBackend};
 ///
 /// A `BatchId` is created when a batch is recorded and can later be
 /// used to replay that batch without re-recording the individual commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BatchId(pub u64);
 
 impl BatchId {

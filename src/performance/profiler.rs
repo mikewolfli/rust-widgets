@@ -1,7 +1,6 @@
 use crate::compat::HashMap;
+use crate::compat::Instant;
 use core::time::Duration;
-#[cfg(not(feature = "mini"))]
-use std::time::Instant;
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileEntry {
     pub start: Instant,

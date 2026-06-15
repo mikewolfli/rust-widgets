@@ -214,7 +214,8 @@ impl PluginManager {
         results
     }
     pub fn clear(&mut self) {
-        for (_, mut plugin) in self.plugins.drain() {
+        let plugins = core::mem::take(&mut self.plugins);
+        for (_, mut plugin) in plugins {
             if plugin.info().state == PluginState::Enabled {
                 plugin.on_disable();
             }

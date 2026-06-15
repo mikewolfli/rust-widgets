@@ -2,14 +2,13 @@
 use super::event_queue::EventSender;
 use super::types::Event;
 use crate::compat::HashMap;
+use crate::compat::Instant;
 use crate::compat::Mutex;
 use crate::core::ObjectId;
 use alloc::sync::Arc;
 use core::time::Duration;
 #[cfg(not(feature = "mini"))]
 use std::thread;
-#[cfg(not(feature = "mini"))]
-use std::time::Instant;
 struct TimerEntry {
     interval: Duration,
     repeating: bool,
@@ -32,11 +31,15 @@ fn recover_lock<T>(
 /// Emits timer events into the event queue for one-shot and repeating timers.
 pub struct TimerManager {
     state: Arc<Mutex<TimerState>>,
+    #[cfg(not(feature = "mini"))]
     thread_handle: Option<thread::JoinHandle<()>>,
+    #[cfg(feature = "mini")]
+    thread_handle: Option<()>,
 }
 
 impl TimerManager {
     /// Create a timer manager bound to an event sender.
+    #[cfg(not(feature = "mini"))]
     pub fn new(sender: EventSender) -> Self {
         let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
 
@@ -86,6 +89,13 @@ impl TimerManager {
         Self { state, thread_handle: Some(thread_handle) }
     }
 
+    /// Create a timer manager (mini stub — single-threaded, no background thread).
+    #[cfg(feature = "mini")]
+    pub fn new(_sender: EventSender) -> Self {
+        let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
+        Self { state, thread_handle: None }
+    }
+
     /// Start or replace a timer for `(target, id)`.
     pub fn start_timer(
         &self,
@@ -120,12 +130,21 @@ impl TimerManager {
     }
 
     /// Remove all active timers.
+    #[cfg(not(feature = "mini"))]
     pub fn clear(&self) {
         let mut guard = self.state.lock().unwrap_or_else(recover_lock);
         guard.timers.clear();
     }
+
+    /// Remove all active timers (mini stub).
+    #[cfg(feature = "mini")]
+    pub fn clear(&self) {
+        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        guard.timers.clear();
+    }
 }
 
+#[cfg(not(feature = "mini"))]
 impl Drop for TimerManager {
     fn drop(&mut self) {
         {

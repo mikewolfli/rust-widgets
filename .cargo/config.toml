@@ -4,6 +4,9 @@ test-all = "test --all-features -q"
 lint = "clippy --all-features --all-targets -- -D warnings"
 fmt-check = "fmt --all -- --check"
 
+# System dependencies installation helpers
+install-deps = "run -p rust_widgets -- build.rs --help 2>/dev/null; echo 'See scripts/ for platform-specific install scripts'"
+
 # MIRI configuration for unsafe code audit (BLUE11 R3.9)
 [target.'cfg(miri)']
 runner = "cargo miri run"

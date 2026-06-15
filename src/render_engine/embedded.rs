@@ -1,18 +1,15 @@
 //! Embedded runtime state, task queue, and shared engine internals.
 
+use crate::compat::Condvar;
 use crate::compat::HashMap;
+use crate::compat::Instant;
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
+use crate::compat::OnceLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
-#[cfg(not(feature = "mini"))]
-use std::sync::Condvar;
-#[cfg(not(feature = "mini"))]
-use std::sync::OnceLock;
-#[cfg(not(feature = "mini"))]
-use std::time::Instant;
 
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
 const MIN_EMBEDDED_TARGET_FPS: u32 = 1;
@@ -76,6 +73,7 @@ pub(crate) struct EmbeddedEngineShared {
     next_task_id: AtomicU64,
     frame_count: AtomicU64,
     state: Mutex<EmbeddedRuntimeState>,
+    #[cfg(not(feature = "mini"))]
     wake_signal: Condvar,
 }
 
@@ -86,6 +84,7 @@ impl EmbeddedEngineShared {
             next_task_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
             state: Mutex::new(EmbeddedRuntimeState::new()),
+            #[cfg(not(feature = "mini"))]
             wake_signal: Condvar::new(),
         }
     }
@@ -97,6 +96,7 @@ impl EmbeddedEngineShared {
     fn set_target_fps(&self, fps: u32) -> u32 {
         let mut state = self.lock_state();
         state.target_fps = clamp_embedded_target_fps(fps);
+        #[cfg(not(feature = "mini"))]
         self.wake_signal.notify_all();
         state.target_fps
     }
@@ -113,6 +113,7 @@ impl EmbeddedEngineShared {
         state.initialized = true;
     }
 
+    #[cfg(not(feature = "mini"))]
     pub(crate) fn run_loop(&self) {
         {
             let mut state = self.lock_state();
@@ -153,11 +154,39 @@ impl EmbeddedEngineShared {
         }
     }
 
+    #[cfg(feature = "mini")]
+    pub(crate) fn run_loop(&self) {
+        // mini: no-thread embedded loop — process tasks inline, no sleep/wait
+        {
+            let mut state = self.lock_state();
+            if state.running {
+                return;
+            }
+            state.running = true;
+        }
+        loop {
+            let (tasks, still_running) = {
+                let mut state = self.lock_state();
+                let still_running = state.running;
+                let tasks = state.pending_tasks.drain(..).collect::<Vec<_>>();
+                (tasks, still_running)
+            };
+            if !still_running {
+                break;
+            }
+            let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
+            for task in tasks {
+                task.run(frame_index);
+            }
+        }
+    }
+
     pub(crate) fn quit(&self) {
         let mut state = self.lock_state();
         state.running = false;
         state.pending_tasks.clear();
         drop(state);
+        #[cfg(not(feature = "mini"))]
         self.wake_signal.notify_all();
     }
 
@@ -289,6 +318,13 @@ pub struct EmbeddedEngineStats {
     pub target_fps: u32,
 }
 
+#[cfg(not(feature = "mini"))]
+pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
+    static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
+    SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()
+}
+
+#[cfg(feature = "mini")]
 pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
     SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()

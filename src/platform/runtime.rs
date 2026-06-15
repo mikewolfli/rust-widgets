@@ -1,20 +1,6 @@
-#[cfg(any(
-    feature = "embedded",
-    all(
-        not(feature = "embedded"),
-        not(any(
-            target_os = "windows",
-            target_os = "macos",
-            target_os = "linux",
-            target_os = "ios"
-        ))
-    ),
-    all(
-        target_os = "macos",
-        not(feature = "embedded"),
-        not(any(feature = "macos", feature = "macos-legacy"))
-    )
-))]
+use crate::compat::OnceLock;
+#[cfg(not(feature = "mini"))]
+#[allow(unused_imports)]
 use crate::core::PlatformFamily;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;
@@ -33,21 +19,9 @@ pub use crate::platform::types::*;
 use crate::platform::wayland::WaylandPlatform;
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
-#[cfg(any(
-    feature = "embedded",
-    all(
-        not(feature = "embedded"),
-        not(any(target_os = "windows", target_os = "macos", target_os = "linux"))
-    ),
-    all(
-        target_os = "macos",
-        not(feature = "embedded"),
-        not(any(feature = "macos", feature = "macos-legacy"))
-    )
-))]
-use crate::platform::StubPlatform;
 #[cfg(not(feature = "mini"))]
-use std::sync::OnceLock;
+#[allow(unused_imports)]
+use crate::platform::StubPlatform;
 
 // ---------------------------------------------------------------------------
 // Linux runtime auto-detection: Wayland vs X11/GTK
@@ -71,12 +45,12 @@ fn is_wayland_session() -> bool {
 // Platform constructor (auto-detect on Linux)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "embedded")]
+#[cfg(all(not(feature = "mini"), feature = "embedded"))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(StubPlatform::new("embedded-runtime-stub", PlatformFamily::Embedded))
 }
 
-#[cfg(all(target_os = "windows", not(feature = "embedded")))]
+#[cfg(all(not(feature = "mini"), target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(WindowsPlatform::new())
 }
@@ -84,6 +58,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// Select macOS backend via the bridge (BLUE11 R1.5).
 /// The bridge dispatches to objc2 or cocoa based on feature flags.
 #[cfg(all(
+    not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
     any(feature = "macos", feature = "macos-legacy")
@@ -94,6 +69,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 
 /// macOS fallback when no macos/macos-legacy backend feature is active.
 #[cfg(all(
+    not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
     not(any(feature = "macos", feature = "macos-legacy"))
@@ -105,7 +81,12 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// Linux runtime auto-detection:
 ///   - Wayland session → WaylandPlatform (when wayland-native feature enabled)
 ///   - Otherwise → LinuxPlatform (GTK or state-backed)
-#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native"
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     if is_wayland_session() {
         Box::new(WaylandPlatform::new())
@@ -115,18 +96,24 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// Linux without wayland-native feature → always use LinuxPlatform.
-#[cfg(all(target_os = "linux", not(feature = "embedded"), not(feature = "wayland-native")))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "linux",
+    not(feature = "embedded"),
+    not(feature = "wayland-native")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
 }
 
 /// iOS state-backed platform backend.
-#[cfg(all(target_os = "ios", not(feature = "embedded")))]
+#[cfg(all(not(feature = "mini"), target_os = "ios", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(IosMobilePlatform::new())
 }
 
 #[cfg(all(
+    not(feature = "mini"),
     not(feature = "embedded"),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
@@ -138,29 +125,35 @@ fn create_native_platform() -> Box<dyn Platform> {
 // Global platform singleton
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
 
 /// Returns the process-global platform backend instance.
+#[cfg(not(feature = "mini"))]
 pub fn get_platform() -> &'static dyn Platform {
     PLATFORM.get_or_init(create_native_platform).as_ref()
 }
 
 /// Initializes the platform backend.
+#[cfg(not(feature = "mini"))]
 pub fn init() {
     get_platform().init();
 }
 
 /// Runs the platform main loop.
+#[cfg(not(feature = "mini"))]
 pub fn run() {
     get_platform().run();
 }
 
 /// Requests platform main loop shutdown.
+#[cfg(not(feature = "mini"))]
 pub fn quit() {
     get_platform().quit();
 }
 
 /// Returns runtime capabilities for the active backend.
+#[cfg(not(feature = "mini"))]
 pub fn capabilities() -> PlatformCapabilities {
     get_platform().capabilities()
 }
@@ -209,11 +202,13 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
 }
 
 /// Resolve GUI mode for the active process-global backend.
+#[cfg(not(feature = "mini"))]
 pub fn runtime_gui_mode() -> RuntimeGuiMode {
     runtime_gui_mode_for(get_platform())
 }
 
 /// Returns logical DPI scale factor for the active backend.
+#[cfg(not(feature = "mini"))]
 pub fn dpi_scale_factor() -> f32 {
     get_platform().dpi_scale_factor()
 }

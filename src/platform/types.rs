@@ -423,6 +423,7 @@ pub trait MobilePlatformExtension: Send + Sync {
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
 }
 
+#[derive(Debug)]
 pub(crate) struct MenuNodeState {
     pub(crate) text: String,
 }

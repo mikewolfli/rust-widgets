@@ -581,6 +581,107 @@ pub type SharedJsEngine = Arc<Mutex<dyn JsEngine>>;
 pub fn create_simple_engine() -> SharedJsEngine {
     Arc::new(Mutex::new(SimpleJsEngine::new()))
 }
+
+// ── BoaJS Engine (feature-gated) ─────────────────────────────────────────
+
+/// Convert a boa JsValue to our cross-engine JsValue type.
+#[cfg(feature = "js-engine")]
+fn js_value_to_ours(v: &boa_engine::JsValue, context: &mut boa_engine::Context) -> JsValue {
+    if v.is_undefined() {
+        JsValue::Undefined
+    } else if v.is_null() {
+        JsValue::Null
+    } else if let Some(n) = v.as_number() {
+        JsValue::Number(n)
+    } else if let Some(s) = v.as_string() {
+        JsValue::String(s.to_std_string_escaped())
+    } else if v.is_boolean() {
+        JsValue::Boolean(v.as_boolean().unwrap_or(false))
+    } else {
+        JsValue::String(v.to_string(context).map(|s| s.to_std_string_escaped()).unwrap_or_default())
+    }
+}
+
+/// Convert our JsValue to a boa JsValue.
+#[cfg(feature = "js-engine")]
+fn our_value_to_boa(v: &JsValue) -> boa_engine::JsValue {
+    match v {
+        JsValue::Null | JsValue::Undefined => boa_engine::JsValue::undefined(),
+        JsValue::Number(n) => boa_engine::JsValue::from(*n),
+        JsValue::String(s) => boa_engine::JsValue::from(boa_engine::JsString::from(s.as_str())),
+        JsValue::Boolean(b) => boa_engine::JsValue::from(*b),
+        // Remaining types (Array, Object, Function, Ident, FunctionDef) are
+        // not representable in the boa engine and map to undefined.
+        _ => boa_engine::JsValue::undefined(),
+    }
+}
+
+/// Real JavaScript engine powered by `boa_engine`.
+/// Gated behind `#[cfg(feature = "js-engine")]`.
+#[cfg(feature = "js-engine")]
+pub struct BoaJsEngine {
+    context: boa_engine::Context,
+}
+
+#[cfg(feature = "js-engine")]
+impl BoaJsEngine {
+    /// Create a new BoaJS engine with a fresh global context.
+    pub fn new() -> Self {
+        Self { context: boa_engine::Context::default() }
+    }
+
+    /// Evaluate JavaScript source code.
+    pub fn evaluate(&mut self, source: &str) -> Result<JsValue, String> {
+        let result = self
+            .context
+            .eval(boa_engine::Source::from_bytes(source))
+            .map_err(|e| format!("JS error: {}", e))?;
+        Ok(js_value_to_ours(&result, &mut self.context))
+    }
+
+    /// Evaluate JavaScript and return the result as a string.
+    pub fn evaluate_to_string(&mut self, source: &str) -> Result<String, String> {
+        let value = self.evaluate(source)?;
+        Ok(value.to_string())
+    }
+
+    /// Register a Rust function that can be called from JavaScript.
+    pub fn register_function(
+        &mut self,
+        name: &str,
+        func: boa_engine::NativeFunction,
+    ) -> Result<(), String> {
+        let name = boa_engine::JsString::from(name);
+        self.context
+            .register_global_builtin_callable(name, 0, func)
+            .map_err(|e| format!("Failed to register function: {}", e))?;
+        Ok(())
+    }
+
+    /// Get the value of a global variable.
+    pub fn get_global(&mut self, name: &str) -> Option<JsValue> {
+        let global = self.context.global_object();
+        let key = boa_engine::JsString::from(name);
+        let val = global.get(key, &mut self.context).ok()?;
+        Some(js_value_to_ours(&val, &mut self.context))
+    }
+
+    /// Set a global variable.
+    pub fn set_global(&mut self, name: &str, value: JsValue) {
+        let global = self.context.global_object();
+        let key = boa_engine::JsString::from(name);
+        let val = our_value_to_boa(&value);
+        global.set(key, val, false, &mut self.context).ok();
+    }
+}
+
+#[cfg(feature = "js-engine")]
+impl Default for BoaJsEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,5 +763,40 @@ mod tests {
         let mut context = JsContext::new();
         let result = engine.evaluate("console.log('hello')", &mut context).unwrap();
         assert_eq!(result, JsValue::String("hello".to_string()));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "js-engine")]
+mod boa_tests {
+    use super::*;
+
+    #[test]
+    fn test_boa_evaluate_number() {
+        let mut engine = BoaJsEngine::new();
+        let result = engine.evaluate("42").unwrap();
+        assert_eq!(result, JsValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_boa_evaluate_string() {
+        let mut engine = BoaJsEngine::new();
+        let result = engine.evaluate_to_string("'hello' + ' world'").unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_boa_evaluate_function() {
+        let mut engine = BoaJsEngine::new();
+        let result = engine.evaluate("function add(a,b) { return a + b; } add(2,3)").unwrap();
+        assert_eq!(result, JsValue::Number(5.0));
+    }
+
+    #[test]
+    fn test_boa_set_and_get_global() {
+        let mut engine = BoaJsEngine::new();
+        engine.set_global("x", JsValue::Number(99.0));
+        let result = engine.evaluate("x * 2").unwrap();
+        assert_eq!(result, JsValue::Number(198.0));
     }
 }

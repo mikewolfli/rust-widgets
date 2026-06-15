@@ -1,10 +1,8 @@
+use crate::compat::Condvar;
+use crate::compat::Instant;
 use crate::compat::Mutex;
 use alloc::collections::VecDeque;
 use core::time::Duration;
-#[cfg(not(feature = "mini"))]
-use std::sync::Condvar;
-#[cfg(not(feature = "mini"))]
-use std::time::Instant;
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {

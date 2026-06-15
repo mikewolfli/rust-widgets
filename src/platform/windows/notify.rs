@@ -4,11 +4,11 @@
 //! backend. All functions are `#[cfg(target_os = "windows")]`-gated to prevent
 //! unused warnings on non-Windows build targets.
 
+use crate::compat::OnceLock;
 use crate::core::ObjectId;
 use crate::platform::windows::types::{WindowsHandleKind, WindowsPlatform};
 use crate::platform::WidgetTriggerEvent;
 use crate::platform::WidgetTriggerKind;
-use std::sync::OnceLock;
 
 /// Registers the `RustWidgetsWindowClass` window class via `RegisterClassW`.
 /// Safe to call multiple times — registration happens exactly once.

@@ -118,10 +118,22 @@ impl Image {
         Ok(Self::from_raw(flipped, self.inner.width, self.inner.height))
     }
 
-    /// Convert color space.
+    /// Convert color space with actual pixel data transformation.
     pub fn convert_color_space(&self, target: ColorSpace) -> Result<Self, String> {
+        use crate::image::color::convert_between_color_spaces;
         let mut img = self.clone();
-        img.inner.color_space = target;
+        if img.inner.color_space != target {
+            let rgba = self.to_rgba8();
+            let (converted, w, h) = convert_between_color_spaces(
+                rgba,
+                self.inner.width,
+                self.inner.height,
+                self.inner.color_space,
+                target,
+            )?;
+            img = Self::from_raw(converted, w, h);
+            img.inner.color_space = target;
+        }
         Ok(img)
     }
 

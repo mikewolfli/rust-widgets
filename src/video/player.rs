@@ -1,9 +1,10 @@
 //! Playback state machine for video/audio.
 
 /// Playback state for media engines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlaybackState {
     /// No media loaded or stopped.
+    #[default]
     Stopped,
     /// Currently playing.
     Playing,
@@ -15,12 +16,6 @@ pub enum PlaybackState {
     Ended,
 }
 
-impl Default for PlaybackState {
-    fn default() -> Self {
-        Self::Stopped
-    }
-}
-
 impl PlaybackState {
     /// Returns true if the player is actively playing.
     pub fn is_active(&self) -> bool {
@@ -29,7 +24,7 @@ impl PlaybackState {
 
     /// Returns true if playback can be resumed.
     pub fn can_resume(&self) -> bool {
-        matches!(self, PlaybackState::Paused | PlaybackState::Stopped)
+        matches!(self, PlaybackState::Paused)
     }
 
     /// Returns a human-readable label.

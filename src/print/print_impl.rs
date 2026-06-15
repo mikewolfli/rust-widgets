@@ -778,12 +778,28 @@ impl Default for PrintManager {
 
 /// Platform-specific: show a system print dialog.
 /// On non-desktop platforms this returns an error message.
+///
+/// Logs the event and optionally prompts the user via the console.
+/// Returns `Ok(true)` if accepted, `Ok(false)` if cancelled.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn print_page_dialog() -> Result<bool, String> {
-    // State-only implementation: on desktop targets we acknowledge the dialog
-    // exists but do not attach a native window handle. Real implementations
-    // would call the platform's print dialog API (NSPrintPanel, GtkPrintUnixDialog, etc.).
     log::info!("[print] print_page_dialog() called — native dialog integration pending");
+    // Check if we have an interactive terminal available.
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+        use std::io::{self, Write};
+        print!("Print? (y/n): ");
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_ok() {
+            let trimmed = input.trim().to_lowercase();
+            if trimmed == "y" || trimmed == "yes" {
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+    }
+    // Default: assume accepted on desktop platforms.
     Ok(true)
 }
 
@@ -794,19 +810,36 @@ pub fn print_page_dialog() -> Result<bool, String> {
 }
 
 /// Platform-specific: submit rendered content to the system printer.
+///
+/// Writes content to a temporary file and submits via system print command.
+/// On error, includes the specific failure reason in the error message.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-pub fn print_to_printer(content: &str, _settings: &PrintSettings) -> Result<(), String> {
-    // State-only implementation: write a temporary file with the rendered
-    // content and attempt to submit via system print commands.
+pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), String> {
+    if content.is_empty() {
+        return Err("cannot print empty content".to_string());
+    }
     let mut path = std::env::temp_dir();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
     path.push(format!("rw_print_output_{ts}.txt"));
-    fs::write(&path, content).map_err(|err| format!("write print output failed: {err}"))?;
+    if let Err(err) = fs::write(&path, content) {
+        return Err(format!("failed to write print temporary file at {}: {err}", path.display()));
+    }
     let result = run_print_command(&path);
-    let _ = fs::remove_file(&path);
+    if let Err(ref e) = result {
+        log::warn!(
+            "[print] print_to_printer: system print command failed for {} (copies={}, color={}): {}",
+            path.display(),
+            settings.copies,
+            settings.color_mode,
+            e
+        );
+    }
+    if let Err(err) = fs::remove_file(&path) {
+        log::warn!("[print] failed to clean up temp file {}: {err}", path.display());
+    }
     result
 }
 

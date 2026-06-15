@@ -207,7 +207,6 @@ fn all_widget_kinds_have_non_empty_debug_repr() {
         WidgetKind::WebEngineContextMenuRequest,
         WidgetKind::Action,
         WidgetKind::ToolButton,
-        WidgetKind::Toolbox,
         WidgetKind::FreeformShape,
         WidgetKind::TabBar,
         WidgetKind::PieMenu,

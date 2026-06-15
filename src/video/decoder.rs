@@ -64,7 +64,8 @@ impl FrameBufferDecoder {
 
         let fps = self.metadata.frame_rate.max(1.0);
         let ts = frame_index as f64 / fps;
-        let frame_type = if frame_index % 30 == 0 { FrameType::IFrame } else { FrameType::PFrame };
+        let frame_type =
+            if frame_index.is_multiple_of(30) { FrameType::IFrame } else { FrameType::PFrame };
         VideoFrame::with_type(ts, pixels, w, h, frame_type)
     }
 }
@@ -121,7 +122,8 @@ impl MjpegDecoder {
             let (start, end) = frame_offsets[0];
             Self::decode_dimensions(&data[start..end]).unwrap_or((320, 240))
         } else {
-            (0, 0)
+            log::warn!("[MjpegDecoder] No JPEG frames detected, using default size 320x240");
+            (320, 240)
         };
 
         let frame_rate = 24.0;
@@ -160,7 +162,7 @@ impl MjpegDecoder {
                     i += 1;
                 }
                 // If no EOI found, use rest of data
-                if frames.last().map_or(true, |&(s, _)| s != start) {
+                if frames.last().is_none_or(|&(s, _)| s != start) {
                     frames.push((start, data.len()));
                     break;
                 }
@@ -368,8 +370,9 @@ mod tests {
     #[test]
     fn test_mjpeg_decoder_create_empty() {
         let decoder = MjpegDecoder::new(vec![], ContainerFormat::Mjpeg);
-        assert_eq!(decoder.metadata().width, 0);
-        assert_eq!(decoder.metadata().height, 0);
+        // When no frames are detected, the decoder falls back to 320x240
+        assert_eq!(decoder.metadata().width, 320);
+        assert_eq!(decoder.metadata().height, 240);
         assert_eq!(decoder.metadata().total_frames, 0);
     }
 

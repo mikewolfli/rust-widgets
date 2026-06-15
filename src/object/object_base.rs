@@ -1,8 +1,9 @@
 use super::PropertyValue;
 use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::core::{CoreObject, MutexExt, ObjectId};
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Lightweight object identity and dynamic property container.
 #[derive(Debug, Clone)]

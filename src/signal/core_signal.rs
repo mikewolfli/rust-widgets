@@ -3,20 +3,15 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Slot execution priority. Higher-priority slots fire before lower-priority ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Priority {
     /// High priority — fired first.
     High,
     /// Normal priority — default.
+    #[default]
     Normal,
     /// Low priority — fired last.
     Low,
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl Priority {
@@ -29,7 +24,7 @@ impl Priority {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 /// Opaque connection handle used to disconnect a slot.
 pub struct ConnectionHandle(pub u64);
 
@@ -247,12 +242,12 @@ impl<T: Clone + Send + 'static> Signal<T> {
         // 1. Drain all entries under the write lock.
         let entries: Vec<(ConnectionHandle, SlotEntry<T>)> = {
             let mut slots = self.inner.slots.write().expect("signal lock poisoned");
-            slots.drain().collect()
+            core::mem::take(&mut *slots).into_iter().collect()
         };
 
         // 2. Sort by priority (High first, Low last).
         let mut entries = entries;
-        entries.sort_by(|a, b| a.1.priority.rank().cmp(&b.1.priority.rank()));
+        entries.sort_by_key(|a| a.1.priority.rank());
 
         // 3. Invoke callbacks outside the lock — safe for re-entrant signals.
         let mut to_reinsert = Vec::new();

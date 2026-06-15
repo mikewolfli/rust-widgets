@@ -15,6 +15,7 @@
 //! );
 //! ```
 
+use alloc::sync::Arc;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -23,7 +24,13 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub enum AssetEvent {
     /// A watched file was modified or created.
-    FileChanged { path: PathBuf },
+    FileChanged {
+        path: PathBuf,
+        /// The OS-level event kind.
+        kind: EventKind,
+        /// Monotonic timestamp.
+        timestamp: std::time::SystemTime,
+    },
     /// The underlying watcher reported an error for a given path.
     WatchError { path: PathBuf, error: String },
 }
@@ -60,16 +67,36 @@ impl AssetWatcher {
     where
         P: Fn(&Path) -> bool + Send + 'static,
     {
+        self.watch_internal(dir, false, filter)
+    }
+
+    /// Start watching `directory` with recursive option.
+    /// Only files passing `filter` will produce events.
+    pub fn watch<F>(&mut self, directory: &Path, recursive: bool, filter: F) -> Result<(), String>
+    where
+        F: Fn(&Path) -> bool + Send + Sync + 'static,
+    {
+        let filter = Arc::new(filter);
+        self.watch_internal(directory, recursive, move |p| filter(p))
+    }
+
+    /// Internal implementation shared by `watch_directory` and `watch`.
+    fn watch_internal<P>(&mut self, dir: &Path, recursive: bool, filter: P) -> Result<(), String>
+    where
+        P: Fn(&Path) -> bool + Send + 'static,
+    {
         let sender = self.sender.clone();
         let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
                     if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        if let Some(path) = event.paths.first() {
+                        for path in &event.paths {
                             if filter(path) {
-                                if let Err(e) =
-                                    sender.send(AssetEvent::FileChanged { path: path.clone() })
-                                {
+                                if let Err(e) = sender.send(AssetEvent::FileChanged {
+                                    path: path.to_path_buf(),
+                                    kind: event.kind,
+                                    timestamp: std::time::SystemTime::now(),
+                                }) {
                                     log::error!("[asset] Watcher send failed: {:?}", e);
                                 }
                             }
@@ -77,16 +104,19 @@ impl AssetWatcher {
                     }
                 }
                 Err(e) => {
-                    log::error!("[asset] Watcher error: {:?}", e);
+                    if let Err(log_err) = sender
+                        .send(AssetEvent::WatchError { path: PathBuf::new(), error: e.to_string() })
+                    {
+                        log::error!("[asset] Watcher error send failed: {:?}", log_err);
+                    }
                 }
             },
             Config::default(),
         )
         .map_err(|e| format!("Failed to create asset watcher: {}", e))?;
 
-        watcher
-            .watch(dir, RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch directory: {}", e))?;
+        let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        watcher.watch(dir, mode).map_err(|e| format!("Failed to watch directory: {}", e))?;
 
         self.watcher = Some(watcher);
         Ok(())
@@ -99,6 +129,11 @@ impl AssetWatcher {
             events.push(event);
         }
         events
+    }
+
+    /// Drain all pending events (alias for consistency).
+    pub fn drain(&self) -> Vec<AssetEvent> {
+        self.poll_events()
     }
 
     /// Get a reference to the underlying event receiver.
@@ -118,7 +153,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
 
     #[test]
     fn asset_watcher_create_and_drop() {
@@ -135,13 +169,17 @@ mod tests {
         // Send an event via the sender and receive it via poll_events.
         watcher
             .sender
-            .send(AssetEvent::FileChanged { path: PathBuf::from("test.png") })
+            .send(AssetEvent::FileChanged {
+                path: PathBuf::from("test.png"),
+                kind: EventKind::Create(notify::event::CreateKind::File),
+                timestamp: std::time::SystemTime::now(),
+            })
             .expect("send should succeed");
 
         let events = watcher.poll_events();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            AssetEvent::FileChanged { path } => {
+            AssetEvent::FileChanged { path, .. } => {
                 assert_eq!(path, &PathBuf::from("test.png"));
             }
             other => panic!("Expected FileChanged, got {:?}", other),
@@ -177,7 +215,7 @@ mod tests {
         std::fs::write(&file_path, "hello").map_err(|e| e.to_string())?;
 
         // Give the notify backend a moment to deliver the event.
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
         // Because the predicate returns false, the channel should be empty.
         let events = watcher.poll_events();
@@ -192,5 +230,54 @@ mod tests {
         assert!(calls > 0, "Expected at least one filter call, got {}", calls);
 
         Ok(())
+    }
+
+    #[test]
+    fn asset_watcher_create_drain_no_panics() {
+        let watcher = AssetWatcher::new();
+        let events = watcher.drain();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn asset_watcher_watch_delivers_file_changed_event() {
+        let dir = std::env::temp_dir().join(format!("asset_watcher_filter_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut watcher = AssetWatcher::new();
+        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "txt")).unwrap();
+
+        let test_file = dir.join("test.txt");
+        std::fs::write(&test_file, b"hello").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let events = watcher.drain();
+        let matched = events.iter().any(
+            |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("test.txt")),
+        );
+        assert!(matched, "Expected FileChanged event for test.txt, got {events:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn asset_watcher_watch_filter_blocks_unmatched() {
+        let dir = std::env::temp_dir().join(format!("asset_watcher_filter_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut watcher = AssetWatcher::new();
+        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "json")).unwrap();
+
+        let txt_file = dir.join("ignored.txt");
+        std::fs::write(&txt_file, b"ignored").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let events = watcher.drain();
+        let matched = events.iter().any(
+            |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("ignored.txt")),
+        );
+        assert!(!matched, "Filtered file should not produce event, got {events:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

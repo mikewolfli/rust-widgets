@@ -409,7 +409,7 @@ fn svg_to_pdf_operators(svg: &str) -> String {
                     }
                 }
                 // Approximate circle with 4 cubic b\u00e9zier curves
-                let k = r * 0.5522847498; // 4/3 * (sqrt(2)-1)
+                let k = r * 0.552_284_8; // 4/3 * (sqrt(2)-1)
                 pdf.push_str(&format!(
                     "{} {} m {} {} {} {} {} {} c \
                      {} {} {} {} {} {} c \

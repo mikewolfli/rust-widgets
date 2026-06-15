@@ -1,7 +1,7 @@
 //! Widget kind enum — discrete categories supported by the widget model layer.
 
 /// Discrete widget categories supported by the widget model layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WidgetKind {
     /// Top-level window.
     Window,

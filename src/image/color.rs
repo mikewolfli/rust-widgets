@@ -1,6 +1,6 @@
 //! Color space conversions for image data.
 
-use crate::image::format::ImageData;
+use crate::image::format::{ColorSpace, ImageData};
 
 /// Convert RGBA8 pixel data to grayscale using luminosity weights.
 pub fn to_grayscale(
@@ -117,6 +117,73 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
         (c, 0.0, x)
     };
     (((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8)
+}
+
+/// Convert between color spaces with actual pixel data transformation.
+pub fn convert_between_color_spaces(
+    data: ImageData,
+    width: u32,
+    height: u32,
+    source: ColorSpace,
+    target: ColorSpace,
+) -> Result<(ImageData, u32, u32), String> {
+    if source == target {
+        return Ok((data, width, height));
+    }
+
+    // Get RGBA8 bytes for processing
+    let rgba = match &data {
+        ImageData::Rgba8(d) => d.clone(),
+        _ => data.as_bytes().to_vec(),
+    };
+    let total_pixels = (width * height) as usize;
+
+    match (source, target) {
+        (ColorSpace::Srgb, ColorSpace::LinearRgb) => {
+            // sRGB to linear: gamma expansion
+            let mut linear = Vec::with_capacity(rgba.len());
+            for i in 0..total_pixels {
+                let off = i * 4;
+                if off + 3 < rgba.len() {
+                    linear.push(srgb_to_linear(rgba[off]));
+                    linear.push(srgb_to_linear(rgba[off + 1]));
+                    linear.push(srgb_to_linear(rgba[off + 2]));
+                    linear.push(rgba[off + 3]); // alpha passthrough
+                }
+            }
+            Ok((ImageData::Rgba8(linear), width, height))
+        }
+        (ColorSpace::LinearRgb, ColorSpace::Srgb) => {
+            // Linear to sRGB: gamma compression
+            let mut srgb = Vec::with_capacity(rgba.len());
+            for i in 0..total_pixels {
+                let off = i * 4;
+                if off + 3 < rgba.len() {
+                    srgb.push(linear_to_srgb(rgba[off]));
+                    srgb.push(linear_to_srgb(rgba[off + 1]));
+                    srgb.push(linear_to_srgb(rgba[off + 2]));
+                    srgb.push(rgba[off + 3]); // alpha passthrough
+                }
+            }
+            Ok((ImageData::Rgba8(srgb), width, height))
+        }
+        (_, ColorSpace::Grayscale) => to_grayscale(data, width, height),
+        _ => Err(format!("Unsupported color space conversion: {source:?} -> {target:?}")),
+    }
+}
+
+/// Convert a single sRGB channel value (0-255) to linear.
+fn srgb_to_linear(c: u8) -> u8 {
+    let v = c as f32 / 255.0;
+    let linear = if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    (linear * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Convert a single linear channel value (0-255) to sRGB.
+fn linear_to_srgb(c: u8) -> u8 {
+    let v = c as f32 / 255.0;
+    let srgb = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (srgb * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]

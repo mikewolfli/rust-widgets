@@ -257,10 +257,10 @@ impl Rect {
     /// Creates a rectangle from f32 coordinates (rounded to nearest integer).
     pub fn from_f32(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
-            x: x.round() as i32,
-            y: y.round() as i32,
-            width: width.round().max(0.0) as u32,
-            height: height.round().max(0.0) as u32,
+            x: x.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            y: y.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            width: width.round().max(0.0).min(u32::MAX as f32) as u32,
+            height: height.round().max(0.0).min(u32::MAX as f32) as u32,
         }
     }
     /// Creates a rectangle from f32 coordinates (truncated to integer).
@@ -304,10 +304,10 @@ impl Rect {
     /// Creates a rectangle from f64 coordinates (rounded to nearest integer).
     pub fn from_f64(x: f64, y: f64, width: f64, height: f64) -> Self {
         Self {
-            x: x.round() as i32,
-            y: y.round() as i32,
-            width: width.round().max(0.0) as u32,
-            height: height.round().max(0.0) as u32,
+            x: x.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: y.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            width: width.round().max(0.0).min(u32::MAX as f64) as u32,
+            height: height.round().max(0.0).min(u32::MAX as f64) as u32,
         }
     }
     /// Creates a rectangle from f64 coordinates (truncated to integer).

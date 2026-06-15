@@ -120,6 +120,11 @@ impl I18nManager {
         }
         Ok(())
     }
+    /// Inject translations directly (from embedded data, no file I/O).
+    /// This bypasses file path tracking and hot reload for the embedded locale.
+    pub fn inject_translations(&mut self, language: String, file: TranslationFile) {
+        self.translations.insert(language, file);
+    }
     /// Set current language
     pub fn set_language(&mut self, language: &str) {
         self.current_language = language.to_string();

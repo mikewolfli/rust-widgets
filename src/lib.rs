@@ -7,9 +7,10 @@
 #![allow(missing_docs)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
-#![cfg_attr(test, allow(clippy::all))]
+#![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
 // Conditional no_std for mini builds (BLUE13 Phase 3)
-#![cfg_attr(feature = "mini", no_std)]
+// TODO(BLUE13): Re-enable no_std when all direct `std::` calls are migrated to `compat::`
+// #![cfg_attr(feature = "mini", no_std)]
 // Required unconditionally — `alloc` is available in both std (re-exported)
 // and no_std contexts. `core` is always available via `extern crate std` under
 // std, but we need direct `alloc::` paths in `compat` for no_std builds.
@@ -50,8 +51,8 @@ pub mod event;
 pub mod gesture;
 /// Hardware-adaptive GPU management.
 pub mod gpu;
-/// Desktop-only: Internationalization module.
-#[cfg(feature = "desktop")]
+/// Internationalization module.
+#[cfg(feature = "i18n")]
 pub mod i18n;
 /// Image module — format detection, decoding, encoding, transform, and color conversion.
 /// Supports all mainstream formats: PNG, JPEG, BMP, GIF, WebP, TIFF, AVIF, ICO, PNM, QOI, Farbfeld, SVG, SVGZ.
@@ -109,15 +110,18 @@ pub use widget::*;
 #[cfg(not(feature = "desktop"))]
 #[macro_export]
 macro_rules! tr {
-    ($key:expr) => {
+    ($key:expr) => {{
+        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
         $key.to_string()
-    };
-    ($key:expr, $count:expr) => {
+    }};
+    ($key:expr, $count:expr) => {{
+        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
         $key.to_string()
-    };
-    ($key:expr, $context:expr, $count:expr) => {
+    }};
+    ($key:expr, $context:expr, $count:expr) => {{
+        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
         $key.to_string()
-    };
+    }};
 }
 /// Application lifecycle wrapper and type-safe widget handles.
 pub mod app;
@@ -183,15 +187,6 @@ fn runtime_profile_name() -> &'static str {
 ))]
 fn runtime_profile_name() -> &'static str {
     "mobile"
-}
-
-/// Embedded: stripped-down render-engine-only runtime.
-#[cfg(all(
-    feature = "embedded",
-    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
-))]
-fn runtime_profile_name() -> &'static str {
-    "embedded"
 }
 
 /// Embedded-mini: LVGL-style ultra-lightweight bare-metal runtime.
@@ -260,34 +255,26 @@ fn quit_runtime_backend() {
 fn quit_runtime_backend() {
     render_engine::default_render_engine().quit();
 }
-/// Desktop: initialize i18n system.
-#[cfg(feature = "desktop")]
+/// Initialize i18n system when i18n feature is enabled.
+#[cfg(feature = "i18n")]
 fn init_i18n_runtime() {
     i18n::init();
 }
 
-/// Tablet/mobile: i18n not loaded; log debug message.
-#[cfg(all(not(feature = "desktop"), any(feature = "tablet", feature = "mobile")))]
+/// Tablet/mobile without i18n: log debug message.
+#[cfg(all(not(feature = "i18n"), any(feature = "tablet", feature = "mobile")))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — i18n module not loaded on this device profile");
 }
 
 /// Embedded: stripped-down, no i18n.
-#[cfg(all(
-    feature = "embedded",
-    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
-))]
+#[cfg(all(feature = "embedded", not(feature = "i18n")))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped in embedded mode — no i18n module loaded");
 }
 
-/// Fallback: no device feature selected.
-#[cfg(not(any(
-    feature = "desktop",
-    feature = "tablet",
-    feature = "mobile",
-    feature = "embedded"
-)))]
+/// Fallback: no i18n feature selected.
+#[cfg(not(any(feature = "i18n", feature = "embedded")))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }

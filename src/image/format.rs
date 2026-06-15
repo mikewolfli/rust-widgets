@@ -1,9 +1,10 @@
 //! Image format enumeration with all mainstream formats.
 
 /// All supported image formats for decoding and encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageFormat {
     /// Unknown/unrecognized format.
+    #[default]
     Unknown,
     /// Raw RGBA pixel data (8 bits per channel).
     Rgba8,
@@ -100,12 +101,6 @@ impl ImageFormat {
     /// Returns true if this is a vector format (SVG/SVGZ).
     pub fn is_vector(&self) -> bool {
         matches!(self, ImageFormat::Svg | ImageFormat::Svgz)
-    }
-}
-
-impl Default for ImageFormat {
-    fn default() -> Self {
-        Self::Unknown
     }
 }
 
@@ -265,9 +260,10 @@ pub struct ExifData {
 }
 
 /// Parsed color space information.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorSpace {
     /// sRGB (default).
+    #[default]
     Srgb,
     /// Adobe RGB.
     AdobeRgb,
@@ -283,12 +279,6 @@ pub enum ColorSpace {
     Cmyk,
     /// Unknown color space.
     Unknown,
-}
-
-impl Default for ColorSpace {
-    fn default() -> Self {
-        Self::Srgb
-    }
 }
 
 /// Decoded image with metadata.

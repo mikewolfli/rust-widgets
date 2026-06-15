@@ -10,9 +10,10 @@ use crate::style::WidgetStyle;
 
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
-use std::sync::OnceLock;
+use crate::compat::OnceLock;
 
 /// A registered stylesheet with its raw CSS text and priority.
+#[derive(Debug)]
 struct RegisteredSheet {
     /// Name for debugging.
     name: String,
@@ -27,6 +28,7 @@ struct RegisteredSheet {
 /// Manages a set of named CSS stylesheets with associated priorities.
 /// When applying styles, sheets are processed in ascending priority order
 /// so that higher-priority sheets can override lower-priority ones.
+#[derive(Debug)]
 pub struct StyleSheetManager {
     sheets: Vec<RegisteredSheet>,
 }

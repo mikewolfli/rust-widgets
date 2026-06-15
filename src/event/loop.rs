@@ -50,7 +50,11 @@ pub struct EventLoop {
     /// Shared flag indicating if the loop is running.
     running: Arc<Mutex<bool>>,
     /// Processing thread handle.
+    #[cfg(not(feature = "mini"))]
     thread_handle: Option<thread::JoinHandle<()>>,
+    /// Processing thread handle (mini stub).
+    #[cfg(feature = "mini")]
+    thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
     /// Runtime timer manager emitting `Event::Timer` into this loop queue.
@@ -82,6 +86,7 @@ impl EventLoop {
     }
 
     /// Starts the event loop in a separate thread.
+    #[cfg(not(feature = "mini"))]
     pub fn start(&mut self) {
         if *self.running.lock().unwrap_or_else(recover_lock) {
             return;
@@ -99,6 +104,8 @@ impl EventLoop {
                 if let Some(ref pump) = native_pump {
                     pump();
                 }
+                // Phase 0a: Drain any pending scheduled tasks
+                crate::event::types::drain_tasks();
                 // Phase 1a: Drain all available events, process normal/high immediately,
                 // buffer idle events for budgeted processing.
                 let mut had_work = false;
@@ -169,46 +176,24 @@ impl EventLoop {
                     }
                 }
 
-                // Phase 2: If no events were available, block until one arrives.
-                // This prevents busy-waiting when the queue is truly empty.
+                // Phase 2: If no events were dispatched, sleep briefly to avoid
+                // busy-waiting. The idle budget already consumed any idle work.
                 if !had_work {
-                    if let Some((target, event, priority)) =
-                        queue.lock().unwrap_or_else(recover_lock).dequeue_blocking()
-                    {
-                        // Idle events from blocking dequeue are processed immediately
-                        // (only one, so no budget concern)
-                        #[cfg(feature = "touch")]
-                        let maybe_gesture_event = if event.is_touch() {
-                            gesture_engine.process(&event, now_ms())
-                        } else {
-                            None
-                        };
-
-                        if let Some(ref dispatch) = dispatch_fn {
-                            dispatch(target, &event);
-                            #[cfg(feature = "touch")]
-                            if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(target, gesture);
-                            }
-                        } else {
-                            // Fallback: consume values when no dispatch function is set
-                            let _ = target;
-                            let _ = event;
-                            let _ = priority;
-                            #[cfg(feature = "touch")]
-                            let _ = maybe_gesture_event;
-                        }
-                    }
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         });
         self.thread_handle = Some(handle);
     }
 
+    /// Starts the event loop (no-op under mini/embedded).
+    #[cfg(feature = "mini")]
+    pub fn start(&mut self) {
+        *self.running.lock().unwrap_or_else(|p| p.into_inner()) = true;
+    }
+
     /// Stops the event loop.
-    ///
-    /// Posts a wake-up event to unblock the event loop thread from
-    /// `dequeue_blocking()` before joining it.
+    #[cfg(not(feature = "mini"))]
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(recover_lock) = false;
         self.timer_manager.clear();
@@ -221,6 +206,13 @@ impl EventLoop {
                 log::error!("[event-loop] Thread join failed: {:?}", e);
             }
         }
+    }
+
+    /// Stops the event loop (mini stub).
+    #[cfg(feature = "mini")]
+    pub fn stop(&mut self) {
+        *self.running.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        self.timer_manager.clear();
     }
 
     /// Posts an event to the event loop.

@@ -1,9 +1,9 @@
 //! Application lifecycle management — foreground/background state tracking,
 //! state save/restore, and lifecycle event notification.
 
+use crate::compat::Instant;
 #[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
 
 /// Application lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

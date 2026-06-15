@@ -160,8 +160,8 @@ impl HardwareInputManager {
                     scale: 1.0,
                     rotation: 0.0,
                     velocity: (
-                        dx as f32 / duration.as_secs_f32(),
-                        dy as f32 / duration.as_secs_f32(),
+                        dx as f32 / duration.as_secs_f32().max(1e-6),
+                        dy as f32 / duration.as_secs_f32().max(1e-6),
                     ),
                 });
             }

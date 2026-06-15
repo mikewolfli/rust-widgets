@@ -41,7 +41,6 @@ pub mod web_widgets;
 pub mod svg;
 pub mod window;
 pub use window::Window;
-// Legacy module aliases for backward compatibility paths.
 
 // Re-export base types
 pub use base::BaseWidget;
@@ -126,8 +125,6 @@ pub use container_widgets::stepper::Stepper;
 // Re-export display widgets
 pub use display_widgets::arc::Arc;
 pub use display_widgets::image_view::ImageView;
-#[cfg(not(feature = "mini"))]
-pub use display_widgets::lcd_number::LCDNumber as LcdNumber;
 #[cfg(not(feature = "mini"))]
 pub use display_widgets::lcd_number::LCDNumber;
 pub use display_widgets::line::{Line, LineOrientation};

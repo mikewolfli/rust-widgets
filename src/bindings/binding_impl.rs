@@ -1,13 +1,12 @@
 //! Stable C ABI for foreign language bindings.
 use crate::compat::HashMap;
 use crate::compat::Mutex;
+use crate::compat::OnceLock;
 use crate::control_backend::get_control_backend;
 use crate::{c_try, c_try_void};
 use alloc::boxed::Box;
 use alloc::ffi::CString;
 use core::ffi::{c_char, c_float, c_int, c_uint, CStr};
-#[cfg(not(feature = "mini"))]
-use std::sync::OnceLock;
 type CBool = bool;
 /// Global node-handle registry used by Harmony native bridge callbacks.
 fn harmony_node_registry() -> &'static Mutex<HashMap<u64, u64>> {
@@ -1007,18 +1006,6 @@ pub extern "C" fn rw_java_binding_status() -> c_uint {
 #[no_mangle]
 pub extern "C" fn rw_java_jni_skeleton_version() -> c_uint {
     c_try!({ 1 })
-}
-#[no_mangle]
-pub extern "C" fn rw_python_reserved() -> c_uint {
-    c_try!({ rw_python_binding_status() })
-}
-#[no_mangle]
-pub extern "C" fn rw_cpp_reserved() -> c_uint {
-    c_try!({ rw_cpp_binding_status() })
-}
-#[no_mangle]
-pub extern "C" fn rw_java_reserved() -> c_uint {
-    c_try!({ rw_java_binding_status() })
 }
 #[no_mangle]
 /// # Safety

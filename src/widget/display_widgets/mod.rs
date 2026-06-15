@@ -26,9 +26,11 @@ pub mod mini_chart;
 #[cfg(not(feature = "mini"))]
 pub mod progress_circle;
 pub mod progressbar;
+#[cfg(not(feature = "mini"))]
 pub mod rating;
 pub mod roller;
 pub mod scrollbar;
+#[cfg(not(feature = "mini"))]
 pub mod skeleton_loader;
 pub mod slider;
 pub mod spinner;

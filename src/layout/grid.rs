@@ -108,19 +108,36 @@ impl Layout for GridLayout {
         }
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        let cell_width = rect
+        let available_width = rect
             .width
             .saturating_sub(self.margin * 2)
-            .saturating_sub((self.cols - 1) * self.spacing)
-            / self.cols;
-        let cell_height = rect
+            .saturating_sub((self.cols - 1) * self.spacing);
+        let available_height = rect
             .height
             .saturating_sub(self.margin * 2)
-            .saturating_sub((self.rows - 1) * self.spacing)
-            / self.rows;
+            .saturating_sub((self.rows - 1) * self.spacing);
+
+        // Calculate column widths proportionally by stretch factor
+        let total_col_stretch = self.cols * self.column_stretch;
+        let total_row_stretch = self.rows * self.row_stretch;
+
         for row in 0..self.rows {
             for col in 0..self.cols {
                 if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
+                    // Proportional width/height based on stretch
+                    let cell_width = if total_col_stretch > 0 {
+                        (available_width as u64 * self.column_stretch as u64
+                            / total_col_stretch as u64) as u32
+                    } else {
+                        available_width / self.cols
+                    };
+                    let cell_height = if total_row_stretch > 0 {
+                        (available_height as u64 * self.row_stretch as u64
+                            / total_row_stretch as u64) as u32
+                    } else {
+                        available_height / self.rows
+                    };
+
                     let x =
                         rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
                     let y =

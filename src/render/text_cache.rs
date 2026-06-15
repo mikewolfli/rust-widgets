@@ -1,7 +1,7 @@
 use crate::compat::HashMap;
 use crate::core::{Color, Rect, Size};
 use core::hash::{Hash, Hasher};
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TextKey {
     pub text: String,
     pub font_family: String,
@@ -24,16 +24,6 @@ impl TextKey {
         self
     }
 }
-impl PartialEq for TextKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.text == other.text
-            && self.font_family == other.font_family
-            && self.font_size == other.font_size
-            && self.font_weight == other.font_weight
-            && self.color == other.color
-    }
-}
-impl Eq for TextKey {}
 impl Hash for TextKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.text.hash(state);

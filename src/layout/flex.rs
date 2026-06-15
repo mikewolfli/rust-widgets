@@ -179,7 +179,7 @@ impl FlexLayout {
     }
 
     /// Compute resolved sizes for items and return (main_sizes, total_flex_grow, total_main).
-    fn compute_main_sizes(&self, available_main: i32) -> (Vec<i32>, f32, i32) {
+    fn compute_main_sizes(&self, available_main: i32, gap: i32) -> (Vec<i32>, f32, i32) {
         let count = self.items.len();
         if count == 0 {
             return (Vec::new(), 0.0, 0);
@@ -203,7 +203,7 @@ impl FlexLayout {
             total_intrinsic += main;
         }
 
-        let gaps = (count.saturating_sub(1)) as i32 * self.gap;
+        let gaps = (count.saturating_sub(1)) as i32 * gap;
         let remaining = available_main - total_intrinsic - gaps;
 
         let mut main_sizes: Vec<i32> = Vec::with_capacity(count);
@@ -287,6 +287,7 @@ impl FlexLayout {
         total_used: i32,
         available_main: i32,
         start_main: i32,
+        gap: i32,
     ) -> Vec<i32> {
         let count = main_sizes.len();
         if count == 0 {
@@ -304,7 +305,7 @@ impl FlexLayout {
                     JustifyContent::Center => leftover / 2,
                     _ => 0,
                 };
-                (offset, self.gap)
+                (offset, gap)
             }
             JustifyContent::SpaceBetween => {
                 let gap = if count > 1 { leftover / (count as i32 - 1) } else { 0 };
@@ -370,10 +371,17 @@ impl FlexLayout {
     }
 
     /// Compute the rects for all items within the content area.
-    fn compute_rects(&self, content_rect: Rect) -> Vec<(Option<ObjectId>, Rect)> {
+    /// `scaled_gap` overrides `self.gap` when Some (used for HiDPI/context-aware scaling).
+    fn compute_rects(
+        &self,
+        content_rect: Rect,
+        scaled_gap: Option<i32>,
+    ) -> Vec<(Option<ObjectId>, Rect)> {
         if self.items.is_empty() {
             return Vec::new();
         }
+
+        let gap = scaled_gap.unwrap_or(self.gap);
 
         let (available_main, start_main, available_cross, cross_origin) = if self.is_row() {
             (content_rect.width as i32, content_rect.x, content_rect.height as i32, content_rect.y)
@@ -385,10 +393,11 @@ impl FlexLayout {
             return Vec::new();
         }
 
-        let (main_sizes, _total_flex_grow, total_used) = self.compute_main_sizes(available_main);
+        let (main_sizes, _total_flex_grow, total_used) =
+            self.compute_main_sizes(available_main, gap);
 
         let main_positions =
-            self.justify_positions(&main_sizes, total_used, available_main, start_main);
+            self.justify_positions(&main_sizes, total_used, available_main, start_main, gap);
         let cross_positions = self.compute_cross_positions(&main_sizes, available_cross);
 
         let mut results = Vec::with_capacity(self.items.len());
@@ -460,7 +469,7 @@ impl Layout for FlexLayout {
             rect.height.saturating_sub(2 * self.padding as u32),
         );
 
-        let results = self.compute_rects(content_rect);
+        let results = self.compute_rects(content_rect, None);
         for (widget_id, child_rect) in results {
             if let Some(wid) = widget_id {
                 widgets(wid, child_rect);
@@ -476,6 +485,7 @@ impl Layout for FlexLayout {
     ) {
         let scale = context.layout_scale;
         let scaled_padding = (self.padding as f32 * scale) as i32;
+        let scaled_gap = (self.gap as f32 * scale) as i32;
 
         let content_rect = Rect::new(
             rect.x + scaled_padding,
@@ -484,7 +494,7 @@ impl Layout for FlexLayout {
             rect.height.saturating_sub(2 * scaled_padding as u32),
         );
 
-        let results = self.compute_rects(content_rect);
+        let results = self.compute_rects(content_rect, Some(scaled_gap));
         for (widget_id, child_rect) in results {
             if let Some(wid) = widget_id {
                 widgets(wid, child_rect);

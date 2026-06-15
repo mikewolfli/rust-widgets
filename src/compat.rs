@@ -73,13 +73,98 @@ pub use alloc::collections::BTreeMap as HashMap;
 #[cfg(not(feature = "mini"))]
 pub use std::collections::HashMap;
 
+/// A thread-safe mutual exclusion primitive.
+/// Under mini (no_std), wraps `RefCell` with `lock()` → `RefMut`.
+/// Under desktop, re-exports `std::sync::Mutex`.
 #[cfg(feature = "mini")]
-pub use core::cell::RefCell as Mutex;
+pub struct Mutex<T> {
+    inner: core::cell::RefCell<T>,
+}
+
+/// A poison error wrapper for mini builds (no actual poisoning).
+#[cfg(feature = "mini")]
+#[derive(Debug)]
+pub struct PoisonError<T> {
+    inner: T,
+}
+
+#[cfg(feature = "mini")]
+impl<T> PoisonError<T> {
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+#[cfg(feature = "mini")]
+impl<T> Mutex<T> {
+    pub const fn new(value: T) -> Self {
+        Self { inner: core::cell::RefCell::new(value) }
+    }
+
+    pub fn lock(&self) -> Result<MutexGuard<'_, T>, PoisonError<MutexGuard<'_, T>>> {
+        Ok(MutexGuard { inner: self.inner.borrow_mut() })
+    }
+
+    pub fn into_inner(self) -> T {
+        self.inner.into_inner()
+    }
+}
+
+#[cfg(feature = "mini")]
+impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Mutex").field("inner", &self.inner).finish()
+    }
+}
+
+#[cfg(feature = "mini")]
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self { inner: core::cell::RefCell::new(T::default()) }
+    }
+}
+
+// SAFETY: Under mini (single-threaded), no concurrent access is possible.
+#[cfg(feature = "mini")]
+unsafe impl<T> Send for Mutex<T> {}
+#[cfg(feature = "mini")]
+unsafe impl<T> Sync for Mutex<T> {}
+
+#[cfg(feature = "mini")]
+pub struct MutexGuard<'a, T> {
+    inner: core::cell::RefMut<'a, T>,
+}
+
+#[cfg(feature = "mini")]
+unsafe impl<'a, T: Send> Send for MutexGuard<'a, T> {}
+#[cfg(feature = "mini")]
+unsafe impl<'a, T: Sync> Sync for MutexGuard<'a, T> {}
+
+#[cfg(feature = "mini")]
+impl<'a, T> core::fmt::Debug for MutexGuard<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MutexGuard").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "mini")]
+impl<'a, T> core::ops::Deref for MutexGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.inner.deref()
+    }
+}
+
+#[cfg(feature = "mini")]
+impl<'a, T> core::ops::DerefMut for MutexGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.inner.deref_mut()
+    }
+}
+
 #[cfg(not(feature = "mini"))]
 pub use std::sync::Mutex;
 
-#[cfg(feature = "mini")]
-pub use core::cell::RefMut as MutexGuard;
 #[cfg(not(feature = "mini"))]
 pub use std::sync::MutexGuard;
 
@@ -92,35 +177,46 @@ pub use std::sync::MutexGuard;
 /// On desktop, this is a no-op wrapper (allocation goes through the global allocator).
 #[cfg(feature = "mini")]
 pub struct MiniArena {
-    bump: core::cell::RefCell<bumpalo::Bump>,
+    // Use UnsafeCell instead of RefCell because bumpalo::Bump::alloc() returns
+    // references tied to &self, which is incompatible with temporary RefMut guards.
+    // Under mini (single-threaded), this is safe.
+    bump: core::cell::UnsafeCell<bumpalo::Bump>,
 }
 
 #[cfg(feature = "mini")]
 impl MiniArena {
     /// Create a new arena with default capacity (~16KB).
     pub fn new() -> Self {
-        Self { bump: core::cell::RefCell::new(bumpalo::Bump::new()) }
+        Self { bump: core::cell::UnsafeCell::new(bumpalo::Bump::new()) }
     }
 
     /// Allocate a value in the arena. Returns a mutable reference.
     /// The value lives until the arena is reset.
     pub fn alloc<T>(&self, val: T) -> &mut T {
-        self.bump.borrow_mut().alloc(val)
+        // SAFETY: Under mini (single-threaded), no concurrent access.
+        // The Bump is only borrowed mutably here, and the returned reference
+        // is valid until reset() is called.
+        unsafe { (*self.bump.get()).alloc(val) }
     }
 
     /// Allocate a slice by copying from an iterator.
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &mut [T] {
-        self.bump.borrow_mut().alloc_slice_copy(slice)
+        // SAFETY: Same reasoning as alloc().
+        unsafe { (*self.bump.get()).alloc_slice_copy(slice) }
     }
 
     /// Reset the arena, freeing all allocations.
     pub fn reset(&self) {
-        self.bump.borrow_mut().reset();
+        // SAFETY: Under mini (single-threaded), no concurrent access.
+        unsafe {
+            (*self.bump.get()).reset();
+        }
     }
 
     /// Remaining capacity hint.
     pub fn allocated_bytes(&self) -> usize {
-        self.bump.borrow().allocated_bytes()
+        // SAFETY: allocated_bytes() is a read-only operation safe under single-threaded.
+        unsafe { (*self.bump.get()).allocated_bytes() }
     }
 }
 
@@ -150,17 +246,9 @@ impl MiniArena {
 pub fn frame_arena() -> &'static MiniArena {
     #[cfg(feature = "mini")]
     {
-        use core::cell::UnsafeCell;
-        use core::mem::MaybeUninit;
-        use core::sync::atomic::{AtomicBool, Ordering};
-        static INIT: AtomicBool = AtomicBool::new(false);
-        static ARENA: UnsafeCell<MaybeUninit<MiniArena>> = UnsafeCell::new(MaybeUninit::uninit());
-        if !INIT.load(Ordering::Acquire) {
-            let arena = unsafe { &mut *ARENA.get() };
-            arena.write(MiniArena::new());
-            INIT.store(true, Ordering::Release);
-        }
-        unsafe { (*ARENA.get()).assume_init_ref() }
+        // Use compat OnceLock which is unconditionally Sync under mini.
+        static ARENA: OnceLock<MiniArena> = OnceLock::new();
+        ARENA.get_or_init(MiniArena::new)
     }
     #[cfg(not(feature = "mini"))]
     {
@@ -174,3 +262,167 @@ pub fn frame_arena() -> &'static MiniArena {
 pub fn reset_frame_arena() {
     frame_arena().reset();
 }
+
+// ── OnceLock compat (thread-safe static init for both std and no_std) ──
+
+/// Thread-safe once-cell for static initialization.
+/// Under mini (no_std), backed by a spin-based atomic flag + UnsafeCell.
+/// Under desktop, re-exports `std::sync::OnceLock`.
+#[cfg(feature = "mini")]
+pub struct OnceLock<T> {
+    initialized: core::sync::atomic::AtomicBool,
+    data: core::cell::UnsafeCell<core::mem::MaybeUninit<T>>,
+}
+
+#[cfg(feature = "mini")]
+impl<T> OnceLock<T> {
+    pub const fn new() -> Self {
+        Self {
+            initialized: core::sync::atomic::AtomicBool::new(false),
+            data: core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()),
+        }
+    }
+
+    pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
+        if !self.initialized.load(core::sync::atomic::Ordering::Acquire) {
+            let val = f();
+            unsafe {
+                (*self.data.get()).write(val);
+            }
+            self.initialized.store(true, core::sync::atomic::Ordering::Release);
+        }
+        unsafe { (*self.data.get()).assume_init_ref() }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        if self.initialized.load(core::sync::atomic::Ordering::Acquire) {
+            Some(unsafe { (*self.data.get()).assume_init_ref() })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "mini")]
+// SAFETY: Under mini (no_std, single-threaded), no concurrent access is possible.
+unsafe impl<T> Sync for OnceLock<T> {}
+#[cfg(feature = "mini")]
+unsafe impl<T> Send for OnceLock<T> {}
+
+#[cfg(not(feature = "mini"))]
+pub use std::sync::OnceLock;
+
+// ── Instant compat (no_std stub for mini builds) ──
+
+/// A measurement of a monotonically non-decreasing clock.
+/// Under mini, always returns `Duration::ZERO` for `elapsed()`.
+/// Under desktop, re-exports `std::time::Instant`.
+#[cfg(feature = "mini")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instant;
+
+#[cfg(feature = "mini")]
+impl Instant {
+    pub fn now() -> Self {
+        Self
+    }
+    pub fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    pub fn duration_since(&self, _other: &Instant) -> Duration {
+        Duration::ZERO
+    }
+    pub fn checked_duration_since(&self, _other: &Instant) -> Option<Duration> {
+        Some(Duration::ZERO)
+    }
+    pub fn saturating_duration_since(&self, _other: &Instant) -> Duration {
+        Duration::ZERO
+    }
+    pub fn checked_add(&self, _duration: Duration) -> Option<Instant> {
+        Some(*self)
+    }
+    pub fn checked_sub(&self, _duration: Duration) -> Option<Instant> {
+        Some(*self)
+    }
+    pub fn as_nanos(&self) -> u64 {
+        0
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub use std::time::Instant;
+
+// ── mpsc compat (single-threaded channel for mini builds) ──
+
+/// Single-threaded channel for mini (no_std) builds.
+/// Wraps a `VecDeque` behind `RefCell` + `Arc`.
+#[cfg(feature = "mini")]
+pub mod mpsc {
+    use alloc::collections::VecDeque;
+    use alloc::sync::Arc;
+    use core::cell::RefCell;
+
+    pub struct Sender<T> {
+        inner: Arc<RefCell<VecDeque<T>>>,
+    }
+
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            Self { inner: self.inner.clone() }
+        }
+    }
+
+    impl<T> Sender<T> {
+        pub fn send(&self, value: T) -> Result<(), ()> {
+            self.inner.borrow_mut().push_back(value);
+            Ok(())
+        }
+    }
+
+    pub struct Receiver<T> {
+        inner: Arc<RefCell<VecDeque<T>>>,
+    }
+
+    impl<T> Receiver<T> {
+        pub fn try_recv(&self) -> Result<T, ()> {
+            self.inner.borrow_mut().pop_front().ok_or(())
+        }
+        pub fn recv(&self) -> Result<T, ()> {
+            loop {
+                if let Some(val) = self.inner.borrow_mut().pop_front() {
+                    return Ok(val);
+                }
+                // No threads under mini, so no events to wait on — return error
+                return Err(());
+            }
+        }
+    }
+
+    pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let inner = Arc::new(RefCell::new(VecDeque::new()));
+        (Sender { inner: inner.clone() }, Receiver { inner })
+    }
+}
+
+#[cfg(not(feature = "mini"))]
+pub use std::sync::mpsc;
+
+// ── Condvar compat (no_std stub for mini builds) ──
+
+/// A condition variable for thread synchronization.
+/// Under mini, all operations are no-ops (single-threaded).
+/// Under desktop, re-exports `std::sync::Condvar`.
+#[cfg(feature = "mini")]
+pub struct Condvar;
+
+#[cfg(feature = "mini")]
+impl Condvar {
+    pub fn new() -> Self {
+        Self
+    }
+    pub fn notify_all(&self) {}
+    pub fn notify_one(&self) {}
+}
+
+#[cfg(not(feature = "mini"))]
+pub use std::sync::Condvar;

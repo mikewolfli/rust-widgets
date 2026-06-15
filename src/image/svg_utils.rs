@@ -100,7 +100,7 @@ fn parse_svg_dimensions(s: &str) -> Result<(u32, u32), String> {
     let (vw, vh) = if let Some(vb) = svg_tag.to_lowercase().find("viewbox=\"") {
         let rest = &svg_tag[vb + 9..];
         let nums: Vec<f32> = rest
-            .split(|c: char| c == ' ' || c == ',' || c == '"')
+            .split(|c: char| [' ', ',', '"'].contains(&c))
             .filter_map(|s| s.parse::<f32>().ok())
             .collect();
         if nums.len() >= 4 {

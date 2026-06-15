@@ -279,6 +279,11 @@ impl Layout for HBoxLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
         self.inner.add_widget(widget_id, stretch);
     }
@@ -345,6 +350,11 @@ impl Layout for VBoxLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
         self.inner.add_widget(widget_id, stretch);
     }

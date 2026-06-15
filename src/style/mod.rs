@@ -36,31 +36,33 @@ pub enum ReducedMotionPreference {
     NoPreference,
     ReduceMotion,
 }
+/// Per-side spacing values for padding and margin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Padding {
-    /// Top padding.
+pub struct EdgeOffsets {
+    /// Top spacing.
     pub top: u32,
-    /// Right padding.
+    /// Right spacing.
     pub right: u32,
-    /// Bottom padding.
+    /// Bottom spacing.
     pub bottom: u32,
-    /// Left padding.
+    /// Left spacing.
     pub left: u32,
 }
-impl Padding {
-    /// Creates per-side padding values.
+
+impl EdgeOffsets {
+    /// Creates per-side spacing values.
     pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
         Self { top, right, bottom, left }
     }
-    /// Creates equal padding on all sides.
+    /// Creates equal spacing on all sides.
     pub const fn all(value: u32) -> Self {
         Self::new(value, value, value, value)
     }
-    /// Creates symmetric padding as `(vertical, horizontal)`.
+    /// Creates symmetric spacing as `(vertical, horizontal)`.
     pub const fn symmetric(vertical: u32, horizontal: u32) -> Self {
         Self::new(vertical, horizontal, vertical, horizontal)
     }
-    /// Creates padding from possibly-negative values, clamping each side to `>= 0`.
+    /// Creates spacing from possibly-negative values, clamping each side to `>= 0`.
     pub fn normalized(top: i32, right: i32, bottom: i32, left: i32) -> Self {
         Self::new(
             normalize_side(top),
@@ -74,51 +76,13 @@ impl Padding {
         *self
     }
 }
-/// Per-side outer spacing values around a widget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Margin {
-    /// Top margin.
-    pub top: u32,
-    /// Right margin.
-    pub right: u32,
-    /// Bottom margin.
-    pub bottom: u32,
-    /// Left margin.
-    pub left: u32,
-}
-impl Margin {
-    /// Creates per-side margin values.
-    pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
-        Self { top, right, bottom, left }
-    }
-    /// Creates equal margin on all sides.
-    pub const fn all(value: u32) -> Self {
-        Self::new(value, value, value, value)
-    }
-    /// Creates symmetric margin as `(vertical, horizontal)`.
-    pub const fn symmetric(vertical: u32, horizontal: u32) -> Self {
-        Self::new(vertical, horizontal, vertical, horizontal)
-    }
-    /// Creates margin from possibly-negative values, clamping each side to `>= 0`.
-    pub fn normalized(top: i32, right: i32, bottom: i32, left: i32) -> Self {
-        Self::new(
-            normalize_side(top),
-            normalize_side(right),
-            normalize_side(bottom),
-            normalize_side(left),
-        )
-    }
-    /// Returns self as a `Padding` value (identity conversion).
-    pub const fn to_padding(&self) -> Padding {
-        Padding { top: self.top, right: self.right, bottom: self.bottom, left: self.left }
-    }
-}
-impl Default for Padding {
-    fn default() -> Self {
-        Self::all(0)
-    }
-}
-impl Default for Margin {
+
+/// Inner content spacing. Alias for EdgeOffsets for semantic clarity.
+pub type Padding = EdgeOffsets;
+/// Outer widget margin. Alias for EdgeOffsets for semantic clarity.
+pub type Margin = EdgeOffsets;
+
+impl Default for EdgeOffsets {
     fn default() -> Self {
         Self::all(0)
     }

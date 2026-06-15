@@ -23,7 +23,6 @@ mod options;
 mod tests;
 mod types;
 mod watcher;
-pub use crate::tr;
 pub use global::{
     check_and_reload_all, get_manager, init, init_with_options, translate, translate_with_context,
 };

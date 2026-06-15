@@ -57,6 +57,8 @@ const MAX_STATIONARY_DISTANCE: f32 = 15.0;
 const LONG_PRESS_MAX_MOVE: f32 = 10.0;
 /// Minimum distance (px) for a swipe to be recognised.
 const SWIPE_MIN_DISTANCE: f32 = 30.0;
+/// Maximum time delta (ms) between touch-down and release for a single tap.
+const TAP_TIMEOUT_MS: u64 = 300;
 
 // ────────────────────────────────────────────
 // GestureRecognizer trait

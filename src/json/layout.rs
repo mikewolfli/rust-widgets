@@ -38,24 +38,14 @@ thread_local! {
 }
 
 /// Store a layout manager for a parent widget.
-pub fn store_layout(
-    parent_id: u64,
-    layout: Box<dyn Layout>,
-    _registry: &mut crate::index::WidgetRegistry,
-) {
+pub fn store_layout(parent_id: u64, layout: Box<dyn Layout>) {
     LAYOUT_MAP.with(|map| {
         map.borrow_mut().insert(parent_id, layout);
     });
 }
 
 /// Register a widget as a layout child with its stretch factor.
-pub fn add_widget_to_layout(
-    _layout: &dyn Layout,
-    child_id: u64,
-    stretch: u32,
-    parent_id: u64,
-    _registry: &mut crate::index::WidgetRegistry,
-) {
+pub fn add_widget_to_layout(_layout: &dyn Layout, child_id: u64, stretch: u32, parent_id: u64) {
     LAYOUT_MAP.with(|map| {
         let mut map = map.borrow_mut();
         if let Some(layout_box) = map.get_mut(&parent_id) {
@@ -68,11 +58,7 @@ pub fn add_widget_to_layout(
 ///
 /// Box layouts support stretchable spacers. The spacer is resolved
 /// from the stored layout for `_parent_id`.
-pub fn add_spacer_to_layout(
-    _stretch: u32,
-    _parent_id: u64,
-    _registry: &mut crate::index::WidgetRegistry,
-) {
+pub fn add_spacer_to_layout(_stretch: u32, _parent_id: u64) {
     LAYOUT_MAP.with(|map| {
         let mut map = map.borrow_mut();
         if let Some(layout_box) = map.get_mut(&_parent_id) {

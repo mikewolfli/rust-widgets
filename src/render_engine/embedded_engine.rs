@@ -145,6 +145,5 @@ mod tests {
     }
 
     use crate::compat::Mutex;
-    #[cfg(not(feature = "mini"))]
-    use std::sync::OnceLock;
+    use crate::compat::OnceLock;
 }

@@ -25,6 +25,7 @@ pub use flex::*;
 pub use flow::*;
 pub use form::*;
 pub use grid::*;
+pub use inspector::*;
 pub use keyboard_aware::*;
 pub use splitter::*;
 pub use stack::*;
@@ -61,7 +62,7 @@ impl LayoutConstraints {
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutContext {
     /// Scale factor applied to spacing, margins, and padding.
-    /// Derived from `DeviceEnvironment::layout_scale`.
+    /// Derived from device DPI and font scale factors.
     pub layout_scale: f32,
     /// Scale factor applied to font/metric sizes.
     pub font_scale: f32,
@@ -131,12 +132,13 @@ pub trait Layout {
     /// Required for mutation access to concrete layout implementations
     /// through the trait object.
     ///
-    /// # Panics
-    /// The default implementation panics with a message instructing implementors
-    /// to override this method. Concrete layout types **must** override
-    /// `as_any_mut` to return `self` for mutable downcasting to work.
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        panic!("as_any_mut not implemented — override in concrete layout implementation");
+    /// The default implementation returns `self`, which works when the
+    /// concrete type is `Sized + 'static`. Override for unsized layouts.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
+    where
+        Self: Sized + 'static,
+    {
+        self
     }
 }
 #[cfg(test)]

@@ -120,11 +120,11 @@ impl AdaptiveRenderer {
             upgrade_count: self.upgrade_count,
         }
     }
-    /// Logs quality change (in a real implementation, this would use a logging framework).
+    /// Logs quality change using the `log` crate.
     fn log_quality_change(&self, action: &str, new_quality: QualityLevel) {
         let fps = self.current_fps();
         let avg_time = self.average_frame_time();
-        println!(
+        log::info!(
             "{} quality to {:?} (FPS: {:.1}, Avg frame time: {:.3}ms)",
             action,
             new_quality,

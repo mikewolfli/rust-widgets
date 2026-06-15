@@ -65,12 +65,13 @@ pub fn severity_label(s: Severity) -> &'static str {
     }
 }
 
-/// Localised severity label (supports multi-language).
-pub fn severity_label_localised(s: Severity) -> &'static str {
-    match s {
-        Severity::Info => "\u{2139}\u{FE0F} info",
-        Severity::Warning => "\u{26A0}\u{FE0F} warning",
-        Severity::Error => "\u{274C} error",
+/// Localised severity label.
+pub fn severity_label_localised(s: Severity, locale: &str) -> String {
+    match (s, locale) {
+        (Severity::Info, "zh-CN" | "zh-cn" | "zh") => "信息".to_string(),
+        (Severity::Warning, "zh-CN" | "zh-cn" | "zh") => "警告".to_string(),
+        (Severity::Error, "zh-CN" | "zh-cn" | "zh") => "错误".to_string(),
+        _ => severity_label(s).to_string(),
     }
 }
 
@@ -180,7 +181,7 @@ impl fmt::Display for DiagnosticReport {
         if !self.issues.is_empty() {
             writeln!(f)?;
             for (i, issue) in self.issues.iter().enumerate() {
-                let sev = severity_label_localised(issue.severity);
+                let sev = severity_label_localised(issue.severity, "en");
                 writeln!(f, "  {}. [{}] {} — {}", i + 1, sev, issue.category, issue.description)?;
                 if let Some(wid) = issue.widget_id {
                     writeln!(f, "     widget: {}", wid)?;

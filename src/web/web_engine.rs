@@ -10,6 +10,8 @@
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
+#[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+use super::WebKitBackend;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -17,18 +19,32 @@ use crate::style::WidgetStyle;
 use crate::widget::{Widget, WidgetKind};
 
 /// Enhanced web engine view widget.
+///
+/// When the `"webkit-engine"` feature is enabled, this widget delegates
+/// navigation to a real [`WebKitBackend`] instead of using the simulated
+/// 0→50→100 progress callbacks.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
     pub certificate_error: Signal1<String>,
     pub download_requested: Signal1<String>,
+    /// Optional real web engine backend. When `Some`, navigation methods
+    /// delegate to the WebKit backend; when `None`, the simulated path is
+    /// used as fallback.
+    #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+    webkit_backend: Option<WebKitBackend>,
 }
 
 impl WebEngineViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        let webkit_backend = WebKitBackend::new().ok();
+
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebEngineView", ""),
             certificate_error: Signal1::new(),
             download_requested: Signal1::new(),
+            #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+            webkit_backend,
         }
     }
 
@@ -92,27 +108,69 @@ impl WebEngineViewEnhanced {
     // -- Methods that delegate to core --
 
     pub fn load_url(&mut self, url: &str) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            let _ = backend.load_url(url);
+            return;
+        }
         self.core.load_url(url);
     }
     pub fn set_url(&mut self, url: String) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            let _ = backend.load_url(&url);
+            self.core.set_url(url);
+            return;
+        }
         self.core.set_url(url);
     }
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            let _ = backend.load_html(html, base_url);
+            self.core.load_html(html, base_url);
+            return;
+        }
         self.core.load_html(html, base_url);
     }
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if self.webkit_backend.is_some() {
+            self.core.load_data(data, mime_type, base_url);
+            return;
+        }
         self.core.load_data(data, mime_type, base_url);
     }
     pub fn go_back(&mut self) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            backend.go_back();
+            return;
+        }
         self.core.go_back();
     }
     pub fn go_forward(&mut self) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            backend.go_forward();
+            return;
+        }
         self.core.go_forward();
     }
     pub fn reload(&mut self) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            backend.reload();
+            return;
+        }
         self.core.reload();
     }
     pub fn stop(&mut self) {
+        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
+        if let Some(ref mut backend) = self.webkit_backend {
+            backend.stop_loading();
+            return;
+        }
         self.core.stop();
     }
     pub fn set_title(&mut self, title: String) {

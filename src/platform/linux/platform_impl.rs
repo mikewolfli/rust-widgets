@@ -1,4 +1,5 @@
 use super::types::{LinuxHandleKind, LinuxPlatform};
+use crate::compat::OnceLock;
 use crate::core::PlatformFamily;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
@@ -6,8 +7,6 @@ use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "linux")]
-use std::sync::OnceLock;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]

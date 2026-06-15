@@ -1,5 +1,7 @@
 /// RGBA color value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct Color {
     /// Red channel.
     pub r: u8,
@@ -216,13 +218,9 @@ impl Color {
         ((self.r as u32) << 24) | ((self.g as u32) << 16) | ((self.b as u32) << 8) | self.a as u32
     }
     /// Unpacks channels from `0xRRGGBBAA`.
+    /// Delegates to [`from_u32_rgba`] which has the same implementation.
     pub const fn from_rgba_u32(value: u32) -> Self {
-        Self::rgba(
-            ((value >> 24) & 0xFF) as u8,
-            ((value >> 16) & 0xFF) as u8,
-            ((value >> 8) & 0xFF) as u8,
-            (value & 0xFF) as u8,
-        )
+        Self::from_u32_rgba(value)
     }
     /// Creates color from tuple of i32 (r, g, b, a) in 0-255 range.
     pub fn from_i32_tuple((r, g, b, a): (i32, i32, i32, i32)) -> Self {

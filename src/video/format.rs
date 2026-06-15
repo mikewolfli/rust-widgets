@@ -1,9 +1,10 @@
 //! Video container format detection and enumeration.
 
 /// Supported video container formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ContainerFormat {
     /// Unknown/unrecognized format.
+    #[default]
     Unknown,
     /// MP4 (ISO Base Media File Format).
     Mp4,
@@ -52,12 +53,6 @@ impl ContainerFormat {
             ContainerFormat::Wmv => "video/x-ms-wmv",
             ContainerFormat::Mjpeg => "video/x-motion-jpeg",
         }
-    }
-}
-
-impl Default for ContainerFormat {
-    fn default() -> Self {
-        Self::Unknown
     }
 }
 

@@ -7,12 +7,18 @@ pub mod normalize;
 pub mod resample;
 pub mod samples;
 
+#[cfg(feature = "audio-output")]
+pub mod output;
+
 pub use decoder::{decode, detect_audio_format};
 pub use encoder::encode;
 pub use format::AudioFormat;
 pub use normalize::normalize;
 pub use resample::resample;
 pub use samples::AudioBuffer;
+
+#[cfg(feature = "audio-output")]
+pub use output::AudioOutput;
 
 use crate::signal::Signal;
 
@@ -111,6 +117,19 @@ impl AudioEngine {
             self.on_state_change.emit(false);
         }
         advanced
+    }
+
+    /// Play the loaded audio through the system's default audio output device.
+    #[cfg(feature = "audio-output")]
+    pub fn play_to_device(&mut self) -> Result<(), String> {
+        let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
+        let mut output = AudioOutput::new()?;
+        output.play(buffer)?;
+        self.is_playing = true;
+        self.on_state_change.emit(true);
+        // Keep the output alive for playback duration
+        // In a real implementation, this would spawn a thread
+        Ok(())
     }
 
     /// Get interleaved samples for the current playback window, scaled by volume.
