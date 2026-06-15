@@ -99,6 +99,18 @@ impl TimerManager {
         Self { state, thread_handle: None }
     }
 
+    /// Acquire the lock on timer state, recovering from poisoning.
+    fn lock_timers(&self) -> crate::compat::MutexGuard<'_, TimerState> {
+        #[cfg(not(feature = "mini"))]
+        {
+            self.state.lock().unwrap_or_else(recover_lock)
+        }
+        #[cfg(feature = "mini")]
+        {
+            self.state.lock().unwrap_or_else(|p| p.into_inner())
+        }
+    }
+
     /// Start or replace a timer for `(target, id)`.
     pub fn start_timer(
         &self,
@@ -112,64 +124,26 @@ impl TimerManager {
         }
 
         let entry = TimerEntry { interval, repeating, next_fire: Instant::now() + interval };
-
-        #[cfg(not(feature = "mini"))]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-            guard.timers.insert((target, id), entry);
-        }
-        #[cfg(feature = "mini")]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            guard.timers.insert((target, id), entry);
-        }
+        self.lock_timers().timers.insert((target, id), entry);
         Ok(())
     }
 
     /// Stop one timer by `(target, id)`.
     pub fn stop_timer(&self, target: ObjectId, id: u32) -> bool {
-        #[cfg(not(feature = "mini"))]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-            guard.timers.remove(&(target, id)).is_some()
-        }
-        #[cfg(feature = "mini")]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            guard.timers.remove(&(target, id)).is_some()
-        }
+        self.lock_timers().timers.remove(&(target, id)).is_some()
     }
 
     /// Stop all timers belonging to one target.
     pub fn stop_timers_for_target(&self, target: ObjectId) -> usize {
-        #[cfg(not(feature = "mini"))]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-            let before = guard.timers.len();
-            guard.timers.retain(|(timer_target, _), _| *timer_target != target);
-            before.saturating_sub(guard.timers.len())
-        }
-        #[cfg(feature = "mini")]
-        {
-            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            let before = guard.timers.len();
-            guard.timers.retain(|(timer_target, _), _| *timer_target != target);
-            before.saturating_sub(guard.timers.len())
-        }
+        let mut guard = self.lock_timers();
+        let before = guard.timers.len();
+        guard.timers.retain(|(timer_target, _), _| *timer_target != target);
+        before.saturating_sub(guard.timers.len())
     }
 
     /// Remove all active timers.
-    #[cfg(not(feature = "mini"))]
     pub fn clear(&self) {
-        let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-        guard.timers.clear();
-    }
-
-    /// Remove all active timers (mini stub).
-    #[cfg(feature = "mini")]
-    pub fn clear(&self) {
-        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        guard.timers.clear();
+        self.lock_timers().timers.clear();
     }
 }
 

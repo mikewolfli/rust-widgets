@@ -75,6 +75,7 @@ impl Frame {
     /// Sets frame shape.
     pub fn set_frame_shape(&mut self, shape: FrameShape) {
         self.frame_shape = shape;
+        self.base.request_redraw();
     }
     /// Returns frame shadow.
     pub fn frame_shadow(&self) -> FrameShadow {
@@ -83,6 +84,7 @@ impl Frame {
     /// Sets frame shadow.
     pub fn set_frame_shadow(&mut self, shadow: FrameShadow) {
         self.frame_shadow = shadow;
+        self.base.request_redraw();
     }
     /// Returns line width.
     pub fn line_width(&self) -> f32 {
@@ -91,6 +93,7 @@ impl Frame {
     /// Sets line width.
     pub fn set_line_width(&mut self, width: f32) {
         self.line_width = width.max(0.0);
+        self.base.request_redraw();
     }
     /// Returns mid line width.
     pub fn mid_line_width(&self) -> f32 {
@@ -99,6 +102,7 @@ impl Frame {
     /// Sets mid line width.
     pub fn set_mid_line_width(&mut self, width: f32) {
         self.mid_line_width = width.max(0.0);
+        self.base.request_redraw();
     }
     /// Sets widget.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
@@ -130,17 +134,15 @@ impl Frame {
     }
     /// Draws box frame.
     fn draw_box_frame(&self, context: &mut RenderContext, rect: Rect) {
-        let line_width = self.line_width;
-        let mid_line_width = self.mid_line_width;
         match self.frame_shadow {
             FrameShadow::Plain => {
                 // Draw single border
-                context.draw_rect(rect, Color::from_rgb(0, 0, 0));
+                context.draw_rect(rect, Color::rgb(0, 0, 0));
             }
             FrameShadow::Raised => {
                 // Draw raised border
-                let light_color = Color::from_rgb(255, 255, 255);
-                let dark_color = Color::from_rgb(128, 128, 128);
+                let light_color = Color::rgb(255, 255, 255);
+                let dark_color = Color::rgb(128, 128, 128);
                 // Top and left (light)
                 context.draw_line(
                     Point::from_f32(rect.x as f32, rect.y as f32),
@@ -170,53 +172,14 @@ impl Frame {
                     dark_color,
                 );
                 // Draw mid line if needed
-                if mid_line_width > 0.0 {
-                    let mid_light = Color::from_rgb(192, 192, 192);
-                    let mid_dark = Color::from_rgb(64, 64, 64);
-                    context.draw_line(
-                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + line_width,
-                        ),
-                        mid_light,
-                    );
-                    context.draw_line(
-                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
-                        Point::from_f32(
-                            rect.x as f32 + line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_light,
-                    );
-                    context.draw_line(
-                        Point::from_f32(
-                            rect.x as f32 + line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_dark,
-                    );
-                    context.draw_line(
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + line_width,
-                        ),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_dark,
-                    );
-                }
+                let mid_light = Color::rgb(192, 192, 192);
+                let mid_dark = Color::rgb(64, 64, 64);
+                self.draw_mid_lines(context, rect, mid_light, mid_dark);
             }
             FrameShadow::Sunken => {
                 // Draw sunken border
-                let light_color = Color::from_rgb(128, 128, 128);
-                let dark_color = Color::from_rgb(255, 255, 255);
+                let light_color = Color::rgb(128, 128, 128);
+                let dark_color = Color::rgb(255, 255, 255);
                 // Top and left (dark)
                 context.draw_line(
                     Point::from_f32(rect.x as f32, rect.y as f32),
@@ -246,89 +209,105 @@ impl Frame {
                     dark_color,
                 );
                 // Draw mid line if needed
-                if mid_line_width > 0.0 {
-                    let mid_light = Color::from_rgb(64, 64, 64);
-                    let mid_dark = Color::from_rgb(192, 192, 192);
-                    context.draw_line(
-                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + line_width,
-                        ),
-                        mid_light,
-                    );
-                    context.draw_line(
-                        Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
-                        Point::from_f32(
-                            rect.x as f32 + line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_light,
-                    );
-                    context.draw_line(
-                        Point::from_f32(
-                            rect.x as f32 + line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_dark,
-                    );
-                    context.draw_line(
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + line_width,
-                        ),
-                        Point::from_f32(
-                            rect.x as f32 + rect.width as f32 - line_width,
-                            rect.y as f32 + rect.height as f32 - line_width,
-                        ),
-                        mid_dark,
-                    );
-                }
+                let mid_light = Color::rgb(64, 64, 64);
+                let mid_dark = Color::rgb(192, 192, 192);
+                self.draw_mid_lines(context, rect, mid_light, mid_dark);
             }
         }
     }
-    /// Draws panel frame.
+    /// Draws the mid-line section shared by Raised/Sunken box frames.
+    fn draw_mid_lines(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        mid_light: Color,
+        mid_dark: Color,
+    ) {
+        let line_width = self.line_width;
+        let mid_line_width = self.mid_line_width;
+        if mid_line_width <= 0.0 {
+            return;
+        }
+        context.draw_line(
+            Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+            Point::from_f32(
+                rect.x as f32 + rect.width as f32 - line_width,
+                rect.y as f32 + line_width,
+            ),
+            mid_light,
+        );
+        context.draw_line(
+            Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
+            Point::from_f32(
+                rect.x as f32 + line_width,
+                rect.y as f32 + rect.height as f32 - line_width,
+            ),
+            mid_light,
+        );
+        context.draw_line(
+            Point::from_f32(
+                rect.x as f32 + line_width,
+                rect.y as f32 + rect.height as f32 - line_width,
+            ),
+            Point::from_f32(
+                rect.x as f32 + rect.width as f32 - line_width,
+                rect.y as f32 + rect.height as f32 - line_width,
+            ),
+            mid_dark,
+        );
+        context.draw_line(
+            Point::from_f32(
+                rect.x as f32 + rect.width as f32 - line_width,
+                rect.y as f32 + line_width,
+            ),
+            Point::from_f32(
+                rect.x as f32 + rect.width as f32 - line_width,
+                rect.y as f32 + rect.height as f32 - line_width,
+            ),
+            mid_dark,
+        );
+    }
+    /// Draws panel frame with a subtle background fill and simple border.
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
-        // Similar to box but with different colors
-        self.draw_box_frame(context, rect);
+        let bg_color = Color::rgb(236, 233, 216);
+        context.fill_rect(rect, bg_color);
+        context.draw_rect(rect, Color::rgb(64, 64, 64));
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // More sophisticated panel with gradient
-        let bg_color = Color::from_rgb(240, 240, 240);
+        let bg_color = Color::rgb(240, 240, 240);
         context.fill_rect(rect, bg_color);
         self.draw_box_frame(context, rect);
     }
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
         let y = rect.y + (rect.height as i32) / 2;
-        context.draw_line(
+        context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
+            self.line_width as u32,
         );
     }
     /// Draws vertical line frame.
     fn draw_vline_frame(&self, context: &mut RenderContext, rect: Rect) {
         let x = rect.x + (rect.width as i32) / 2;
-        context.draw_line(
+        context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
+            self.line_width as u32,
         );
     }
     /// Draws Windows panel frame.
     fn draw_win_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // Windows-style panel
-        let bg_color = Color::from_rgb(240, 240, 240);
+        let bg_color = Color::rgb(240, 240, 240);
         context.fill_rect(rect, bg_color);
         // Draw 3D border
-        let light_color = Color::from_rgb(255, 255, 255);
-        let dark_color = Color::from_rgb(128, 128, 128);
+        let light_color = Color::rgb(255, 255, 255);
+        let dark_color = Color::rgb(128, 128, 128);
         // Outer border (sunken)
         context.draw_line(
             Point::from_f32(rect.x as f32, rect.y as f32),
@@ -398,6 +377,10 @@ impl Widget for Frame {
 impl EventHandler for Frame {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // Skip event forwarding when disabled
+        if !self.base.is_enabled() {
+            return;
+        }
         // Forward events to widget via registry
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {
@@ -415,6 +398,11 @@ impl Draw for Frame {
             if let Some(ref reg) = self.registry {
                 reg.borrow_mut().draw_widget(widget_id, context);
             }
+        }
+        // Dim content when disabled
+        if !self.base.is_enabled() {
+            let rect = self.geometry();
+            context.fill_rect(rect, Color::rgba(128, 128, 128, 80));
         }
     }
 }
@@ -554,7 +542,7 @@ mod tests {
     fn frame_style_roundtrip() {
         let mut f = Frame::new(Rect::new(0, 0, 200, 100));
         assert_eq!(*f.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(240, 240, 240));
+        let custom = WidgetStyle::default().with_background(Color::rgb(240, 240, 240));
         f.set_style(custom.clone());
         assert_eq!(*f.style(), custom);
     }

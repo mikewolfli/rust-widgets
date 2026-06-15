@@ -1,5 +1,5 @@
 //! Single-line text edit widget.
-use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -54,7 +54,8 @@ impl LineEdit {
         &self.text
     }
     /// Sets text and emits text_changed signal if different.
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }
@@ -364,15 +365,16 @@ impl Draw for LineEdit {
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
-        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
         if let Some(border_color) = style.border_color {
-            if style.border_width > 0 {
+            let bw = style.border_width.unwrap_or(0);
+            if bw > 0 {
                 context.draw_rect_stroke(
                     Rect::new(rect.x, rect.y, rect.width, rect.height),
                     border_color,
-                    style.border_width,
+                    bw,
                 );
             } else {
                 context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
@@ -385,9 +387,15 @@ impl Draw for LineEdit {
             &self.display_text()
         };
         if !display_text.is_empty() {
-            let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+            let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
             let font = style.font.clone().unwrap_or_default();
-            context.draw_text(Point::new(text_x, text_y as i32), display_text, &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y as i32),
+                display_text,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
         // Draw cursor if focused
         // Note: Would need focus state tracking

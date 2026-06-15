@@ -163,10 +163,9 @@ pub fn denormalize_coords(norm_x: f32, norm_y: f32, width: f32, height: f32) -> 
 /// Clamps coordinates to within a rectangle.
 #[inline]
 pub fn clamp_point_to_rect(point: Point, rect: Rect) -> Point {
-    Point::new(
-        point.x.clamp(rect.x, rect.x + rect.width as i32 - 1),
-        point.y.clamp(rect.y, rect.y + rect.height as i32 - 1),
-    )
+    let max_x = rect.x.saturating_add((rect.width.max(1) - 1) as i32);
+    let max_y = rect.y.saturating_add((rect.height.max(1) - 1) as i32);
+    Point::new(point.x.clamp(rect.x, max_x), point.y.clamp(rect.y, max_y))
 }
 /// Clamps coordinates to within a rectangle (f32).
 #[inline]

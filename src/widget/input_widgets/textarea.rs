@@ -53,7 +53,12 @@ impl TextArea {
     ///
     /// Emits the `changed` signal if the new text differs from the current text.
     /// The cursor is moved to the end of the new text.
-    pub fn set_text(&mut self, text: String) {
+    /// Replaces the entire text content.
+    ///
+    /// Emits the `changed` signal if the new text differs from the current text.
+    /// The cursor is moved to the end of the new text.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }
@@ -257,16 +262,16 @@ impl Draw for TextArea {
         let padding = 4;
 
         // -- Background --
-        let bg = self.style().background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(rect, bg);
 
         // -- Border --
-        let border = self.style().border_color.unwrap_or(Color::from_rgb(200, 200, 200));
+        let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
         context.draw_rect(rect, border);
 
         // -- Text --
-        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-        let placeholder_color = Color::from_rgb(180, 180, 180);
+        let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let placeholder_color = Color::rgb(180, 180, 180);
 
         if self.text.is_empty() && !self.placeholder.is_empty() && !self.focused {
             // Draw placeholder in gray

@@ -8,6 +8,7 @@ pub struct CommandLink {
     base: BaseWidget,
     text: String,
     description: String,
+    is_hovered: bool,
     /// Emitted when command link is clicked.
     pub clicked: GenericSignal,
     /// Emitted when command link is hovered.
@@ -19,6 +20,7 @@ impl CommandLink {
             base: BaseWidget::new(WidgetKind::CommandLink, geometry, "CommandLink"),
             text: "Command".to_string(),
             description: "".to_string(),
+            is_hovered: false,
             clicked: GenericSignal::new(),
             hovered: Signal1::new(),
         }
@@ -69,9 +71,11 @@ impl EventHandler for CommandLink {
                 self.clicked.emit();
             }
             Event::MouseEnter { .. } => {
+                self.is_hovered = true;
                 self.hovered.emit(true);
             }
             Event::MouseLeave { .. } => {
+                self.is_hovered = false;
                 self.hovered.emit(false);
             }
             _ => { /* Other events are not relevant */ }
@@ -86,7 +90,7 @@ impl Draw for CommandLink {
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 102, 204));
         let hover_color = Color::rgb(0, 0, 255);
         let disabled_color = Color::GRAY;
-        let is_hovered = self.hovered.slot_count() > 0;
+        let is_hovered = self.is_hovered;
         let is_enabled = self.base.is_enabled();
         // Draw background (transparent by default)
         if bg_color != Color::TRANSPARENT {
@@ -220,7 +224,7 @@ mod tests {
     fn commandlink_style_roundtrip() {
         let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
         assert_eq!(*cl.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(240, 240, 240));
+        let custom = WidgetStyle::default().with_background(Color::rgb(240, 240, 240));
         cl.set_style(custom.clone());
         assert_eq!(*cl.style(), custom);
     }

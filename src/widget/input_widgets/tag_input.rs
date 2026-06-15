@@ -198,7 +198,7 @@ impl Draw for TagInput {
 
             // Chip background
             let chip_bg = if is_enabled {
-                Color::from_rgb(25, 118, 210) // Material blue
+                Color::rgb(25, 118, 210) // Material blue
             } else {
                 Color::rgba(180, 180, 180, 160)
             };
@@ -217,7 +217,7 @@ impl Draw for TagInput {
 
             // X mark (two diagonal lines)
             let x_offset = (TAG_CLOSE_RADIUS as f32 * 0.45) as i32;
-            let close_fg = Color::from_rgb(25, 118, 210);
+            let close_fg = Color::rgb(25, 118, 210);
             context.draw_line(
                 Point::new(close_center.x - x_offset, close_center.y - x_offset),
                 Point::new(close_center.x + x_offset, close_center.y + x_offset),

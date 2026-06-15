@@ -40,37 +40,28 @@ pub fn merge_intersecting_rects(rects: &[Rect]) -> Vec<Rect> {
         return rects.to_vec();
     }
 
-    let working: Vec<Rect> = rects.to_vec();
-    let mut consumed = vec![false; working.len()];
+    // Work with a mutable set of unconsumed rects, draining them into
+    // merged groups. For each seed rect we scan *all* remaining rects;
+    // whenever a merge happens we restart the scan from the beginning
+    // because the newly grown rect may now intersect rects it previously
+    // did not (the "bridge rect" scenario: B connects A and C, so after
+    // A absorbs B the merged result must be re-checked against C).
+    let mut remaining: Vec<Rect> = rects.to_vec();
     let mut merged = Vec::new();
 
-    for i in 0..working.len() {
-        if consumed[i] {
-            continue;
-        }
-        let mut current = working[i];
-        consumed[i] = true;
-
-        // Greedily absorb any other rect that intersects the current one.
-        // Repeat passes because a newly-absorbed rect may itself intersect
-        // others that the original `current` did not.
-        loop {
-            let mut progressed = false;
-            for j in (i + 1)..working.len() {
-                if consumed[j] {
-                    continue;
-                }
-                if current.intersects(&working[j]) {
-                    current = current.union(&working[j]);
-                    consumed[j] = true;
-                    progressed = true;
-                }
-            }
-            if !progressed {
-                break;
+    while let Some(mut current) = remaining.pop() {
+        let mut i = 0;
+        while i < remaining.len() {
+            if current.intersects(&remaining[i]) {
+                current = current.union(&remaining[i]);
+                remaining.swap_remove(i);
+                // Restart from the beginning: the newly expanded `current`
+                // may now intersect rects checked earlier in this pass.
+                i = 0;
+            } else {
+                i += 1;
             }
         }
-
         merged.push(current);
     }
 

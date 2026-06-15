@@ -1,5 +1,5 @@
 //! Key sequence editor widget for capturing keyboard shortcuts.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -183,19 +183,11 @@ fn key_code_to_name(key: u32) -> String {
 impl Draw for KeySequenceEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let bg = if self.recording {
-            Color::from_rgb(255, 240, 240)
-        } else {
-            Color::from_rgb(255, 255, 255)
-        };
+        let bg = if self.recording { Color::rgb(255, 240, 240) } else { Color::rgb(255, 255, 255) };
         context.fill_rect(rect, bg);
         context.draw_rect(
             rect,
-            if self.recording {
-                Color::from_rgb(200, 0, 0)
-            } else {
-                Color::from_rgb(150, 150, 150)
-            },
+            if self.recording { Color::rgb(200, 0, 0) } else { Color::rgb(150, 150, 150) },
         );
         let display = if self.recording {
             "Recording...".to_string()
@@ -205,9 +197,9 @@ impl Draw for KeySequenceEdit {
             self.key_sequence.to_display_string()
         };
         let text_color = if self.key_sequence.is_empty() && !self.recording {
-            Color::from_rgb(180, 180, 180)
+            Color::rgb(180, 180, 180)
         } else {
-            Color::from_rgb(0, 0, 0)
+            Color::rgb(0, 0, 0)
         };
         context.draw_text(
             Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
@@ -459,7 +451,7 @@ mod tests {
 
         kse.set_geometry(Rect::new(0, 0, 200, 32));
         assert_eq!(kse.geometry(), Rect::new(0, 0, 200, 32));
-        assert_eq!(kse.rect(), Rect::new(0, 0, 200, 32));
+        assert_eq!(kse.geometry(), Rect::new(0, 0, 200, 32));
         assert_eq!(kse.position(), Point::new(0, 0));
         assert_eq!(kse.size(), crate::core::Size::new(200, 32));
     }

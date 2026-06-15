@@ -161,27 +161,15 @@ impl Draw for EmptyState {
         } else {
             Color::rgba(180, 180, 180, 120)
         };
-        let icon_font = Font {
-            family: "Sans".to_string(),
-            size: icon_size as f32,
-            weight: 400,
-            bold: false,
-            italic: false,
-        };
+        let icon_font = Font::with_weight("Sans", icon_size as f32, 400, false);
         draw_centered(context, icon_y + icon_size, &self.icon, &icon_font, icon_color);
 
         // ── Title ──
         let title_font_size = 20;
         let title_y = icon_y + icon_size + SECTION_GAP;
         let title_color =
-            if is_enabled { Color::from_rgb(50, 50, 60) } else { Color::rgba(160, 160, 160, 180) };
-        let title_font = Font {
-            family: "Sans".to_string(),
-            size: title_font_size as f32,
-            weight: 600,
-            bold: false,
-            italic: false,
-        };
+            if is_enabled { Color::rgb(50, 50, 60) } else { Color::rgba(160, 160, 160, 180) };
+        let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
         let title_metrics = context.measure_text(&self.title, &title_font);
         let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
         context.draw_text(
@@ -200,13 +188,7 @@ impl Draw for EmptyState {
         } else {
             Color::rgba(170, 170, 170, 150)
         };
-        let message_font = Font {
-            family: "Sans".to_string(),
-            size: message_font_size as f32,
-            weight: 400,
-            bold: false,
-            italic: false,
-        };
+        let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
 
         // Wrap message text if it's wider than the available width
         let available_width = rect.width.max(50) - 20;
@@ -233,20 +215,14 @@ impl Draw for EmptyState {
             let btn_bg = if !is_enabled {
                 Color::rgba(200, 200, 200, 120)
             } else {
-                Color::from_rgb(59, 130, 246) // Blue action color
+                Color::rgb(59, 130, 246) // Blue action color
             };
             context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
 
             // Button text
             let btn_text_color =
                 if !is_enabled { Color::rgba(160, 160, 160, 180) } else { Color::WHITE };
-            let btn_font = Font {
-                family: "Sans".to_string(),
-                size: 14.0,
-                weight: 600,
-                bold: false,
-                italic: false,
-            };
+            let btn_font = Font::with_weight("Sans", 14.0, 600, false);
             let btn_metrics = context.measure_text(&self.action_text, &btn_font);
             let btn_origin = Point::new(
                 btn_rect.x + (btn_rect.width as i32 - btn_metrics.width as i32) / 2,

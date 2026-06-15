@@ -4,7 +4,7 @@
 //! to set a rating value. Filled stars (★) are drawn in gold for the rated
 //! portion, while unrated stars (☆) are drawn in gray outline.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -120,7 +120,7 @@ impl Draw for Rating {
             // Center the character vertically and horizontally within its star cell
             let text_point = Point::new(star_x + self.star_size as i32 / 2, center_y);
 
-            context.draw_text(text_point, ch, &font, color, HorizontalAlignment::Left);
+            context.draw_text(text_point, ch, &font, color, HorizontalAlignment::Center);
         }
     }
 }

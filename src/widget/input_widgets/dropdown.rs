@@ -227,13 +227,13 @@ impl Draw for Dropdown {
         let geo = self.geometry();
 
         // ── style-derived colours ───────────────────────────────────────
-        let bg = self.style().background_color.unwrap_or(Color::from_rgb(255, 255, 255));
-        let border = self.style().border_color.unwrap_or(Color::from_rgb(180, 180, 180));
-        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-        let placeholder_color = Color::from_rgb(160, 160, 160);
-        let highlight_bg = Color::from_rgb(200, 220, 255);
-        let highlight_text = Color::from_rgb(0, 0, 0);
-        let list_border = Color::from_rgb(150, 150, 150);
+        let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
+        let border = self.style().border_color.unwrap_or(Color::rgb(180, 180, 180));
+        let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let placeholder_color = Color::rgb(160, 160, 160);
+        let highlight_bg = Color::rgb(200, 220, 255);
+        let highlight_text = Color::rgb(0, 0, 0);
+        let list_border = Color::rgb(150, 150, 150);
 
         // ── Collapsed / button area ─────────────────────────────────────
         // Background
@@ -294,7 +294,7 @@ impl Draw for Dropdown {
             if is_selected {
                 context.fill_rect(item_geo, highlight_bg);
             } else {
-                context.fill_rect(item_geo, Color::from_rgb(248, 248, 248));
+                context.fill_rect(item_geo, Color::rgb(248, 248, 248));
             }
 
             // Border (bottom line)

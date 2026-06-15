@@ -209,8 +209,8 @@ impl EventHandler for MapView {
 impl Draw for MapView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(235, 243, 250));
-        context.draw_rect(rect, Color::from_rgb(168, 184, 201));
+        context.fill_rect(rect, Color::rgb(235, 243, 250));
+        context.draw_rect(rect, Color::rgb(168, 184, 201));
 
         // Draw coarse map grid for pan/zoom visual feedback.
         let step = (40.0 * self.zoom.clamp(0.5, 2.0)) as i32;
@@ -220,7 +220,7 @@ impl Draw for MapView {
                 context.draw_line(
                     Point::new(x, rect.y),
                     Point::new(x, rect.y + rect.height as i32),
-                    Color::from_rgb(210, 220, 233),
+                    Color::rgb(210, 220, 233),
                 );
                 x += step;
             }
@@ -230,7 +230,7 @@ impl Draw for MapView {
                 context.draw_line(
                     Point::new(rect.x, y),
                     Point::new(rect.x + rect.width as i32, y),
-                    Color::from_rgb(210, 220, 233),
+                    Color::rgb(210, 220, 233),
                 );
                 y += step;
             }
@@ -240,16 +240,16 @@ impl Draw for MapView {
             let (sx, sy) = self.world_to_screen(marker.x, marker.y);
             let marker_rect = Rect::new((sx as i32) - 3, (sy as i32) - 3, 6, 6);
             let color = if self.selected_marker == Some(index) {
-                Color::from_rgb(230, 88, 76)
+                Color::rgb(230, 88, 76)
             } else {
-                Color::from_rgb(59, 114, 190)
+                Color::rgb(59, 114, 190)
             };
             context.fill_rect(marker_rect, color);
             context.draw_text(
                 Point::new((sx as i32) + 6, sy as i32),
                 &marker.label,
                 &Font::default(),
-                Color::from_rgb(33, 43, 56),
+                Color::rgb(33, 43, 56),
                 HorizontalAlignment::Left,
             );
         }
@@ -258,7 +258,7 @@ impl Draw for MapView {
             Point::new(rect.x + 8, rect.y + 16),
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
             &Font::default(),
-            Color::from_rgb(45, 58, 74),
+            Color::rgb(45, 58, 74),
             HorizontalAlignment::Left,
         );
     }

@@ -36,11 +36,11 @@ pub trait Widget: EventHandler + Any {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base_mut().set_geometry(geometry);
     }
-    /// Returns widget rectangle aliasing `geometry()`.
+    #[deprecated(since = "0.1.0", note = "Use `geometry()` instead.")]
     fn rect(&self) -> Rect {
         self.geometry()
     }
-    /// Sets widget rectangle aliasing `set_geometry()`.
+    #[deprecated(since = "0.1.0", note = "Use `set_geometry()` instead.")]
     fn set_rect(&mut self, rect: Rect) {
         self.set_geometry(rect);
     }
@@ -202,11 +202,11 @@ pub trait Widget: EventHandler + Any {
         self.style().border_color
     }
     /// Returns border width shorthand.
-    fn border_width(&self) -> u32 {
+    fn border_width(&self) -> Option<u32> {
         self.style().border_width
     }
     /// Returns border radius shorthand.
-    fn border_radius(&self) -> u32 {
+    fn border_radius(&self) -> Option<u32> {
         self.style().border_radius
     }
     /// Sets optional border color shorthand.
@@ -218,21 +218,21 @@ pub trait Widget: EventHandler + Any {
     /// Sets border width shorthand.
     fn set_border_width(&mut self, width: u32) {
         let mut style = self.style().clone();
-        style.border_width = width;
+        style.border_width = Some(width);
         self.set_style(style);
     }
     /// Sets border radius shorthand.
     fn set_border_radius(&mut self, radius: u32) {
         let mut style = self.style().clone();
-        style.border_radius = radius;
+        style.border_radius = Some(radius);
         self.set_style(style);
     }
     /// Sets border shorthand in one call.
     fn set_border(&mut self, color: Option<Color>, width: u32, radius: u32) {
         let mut style = self.style().clone();
         style.border_color = color;
-        style.border_width = width;
-        style.border_radius = radius;
+        style.border_width = Some(width);
+        style.border_radius = Some(radius);
         self.set_style(style);
     }
     /// Returns current per-side content padding.

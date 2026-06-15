@@ -1,5 +1,5 @@
 //! Progress bar widget.
-use crate::core::{HorizontalAlignment, Color, Font, Orientation, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -147,8 +147,8 @@ impl Draw for ProgressBar {
         let rect = self.geometry();
         let progress = self.progress();
         let style = self.style();
-        let bg = style.background_color.unwrap_or(Color::from_rgb(240, 240, 240));
-        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let bg = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         // Draw background
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
@@ -166,7 +166,7 @@ impl Draw for ProgressBar {
                 };
                 context.fill_rect(
                     Rect::new(x, rect.y, progress_width, rect.height),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             }
             Orientation::Vertical => {
@@ -178,7 +178,7 @@ impl Draw for ProgressBar {
                 };
                 context.fill_rect(
                     Rect::new(rect.x, y, rect.width, progress_height),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             }
         }
@@ -190,7 +190,7 @@ impl Draw for ProgressBar {
                 &text,
                 &Font::default(),
                 text_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }
@@ -333,7 +333,7 @@ mod tests {
     fn progressbar_style_roundtrip() {
         let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
         assert_eq!(*pb.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(220, 220, 220));
+        let custom = WidgetStyle::default().with_background(Color::rgb(220, 220, 220));
         pb.set_style(custom.clone());
         assert_eq!(*pb.style(), custom);
     }

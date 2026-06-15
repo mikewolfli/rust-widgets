@@ -1,5 +1,5 @@
 //! Label widget implementation.
-use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
@@ -24,7 +24,8 @@ impl Label {
         &self.text
     }
     /// Sets label text.
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if text == self.text {
             return;
         }
@@ -64,13 +65,18 @@ impl Draw for Label {
     fn draw(&mut self, context: &mut RenderContext) {
         // Label rendering logic
         let rect = self.geometry();
+        let disabled = !self.base.is_enabled();
         // Draw background if specified
         if let Some(bg_color) = self.style().background_color {
             context.fill_rect(rect, bg_color);
         }
         // Draw text
         if !self.text.is_empty() {
-            let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+            let text_color = if disabled {
+                self.style().text_color.unwrap_or(Color::rgb(150, 150, 150))
+            } else {
+                self.style().text_color.unwrap_or(Color::rgb(0, 0, 0))
+            };
             let font = self.font().cloned().unwrap_or_default();
             // Compute text width approximately (8px per char)
             let text_width = self.text.len() as u32 * 8;
@@ -81,11 +87,21 @@ impl Draw for Label {
                 crate::core::Alignment::Right => rect.x + rect.width as i32 - text_width as i32,
                 _ => rect.x,
             };
-            context.draw_text(Point::new(text_x, rect.y), &self.text, &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, rect.y),
+                &self.text,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
         // Draw border if specified
         if let Some(border_color) = self.style().border_color {
             context.draw_rect(rect, border_color);
+        }
+        // Dim content overlay when disabled
+        if disabled {
+            context.fill_rect(rect, Color::rgba(128, 128, 128, 60));
         }
     }
 }
@@ -134,15 +150,15 @@ mod tests {
     #[test]
     fn label_set_text_updates_stored_text() {
         let mut label = Label::new("Initial".to_string(), Rect::new(0, 0, 100, 20));
-        label.set_text("Updated".to_string());
+        label.set_text("Updated");
         assert_eq!(label.text(), "Updated");
     }
 
     #[test]
     fn label_set_text_overwrites_previous() {
         let mut label = Label::new("First".to_string(), Rect::new(0, 0, 100, 20));
-        label.set_text("Second".to_string());
-        label.set_text("Third".to_string());
+        label.set_text("Second");
+        label.set_text("Third");
         assert_eq!(label.text(), "Third");
     }
 
@@ -330,7 +346,7 @@ mod tests {
         assert_eq!(*label.style(), WidgetStyle::default());
 
         // Set a custom style
-        let custom_style = WidgetStyle::default().with_background(Color::from_rgb(240, 240, 240));
+        let custom_style = WidgetStyle::default().with_background(Color::rgb(240, 240, 240));
         label.set_style(custom_style.clone());
         assert_eq!(*label.style(), custom_style);
     }
@@ -362,14 +378,14 @@ mod tests {
         assert_eq!(style.text_color, None);
         assert_eq!(style.font, None);
         assert_eq!(style.border_color, None);
-        assert_eq!(style.border_width, 0);
-        assert_eq!(style.border_radius, 0);
+        assert_eq!(style.border_width, None);
+        assert_eq!(style.border_radius, None);
     }
 
     #[test]
     fn label_style_background_color() {
         let mut label = Label::new("Test".to_string(), Rect::new(0, 0, 100, 20));
-        let bg = Color::from_rgb(200, 210, 220);
+        let bg = Color::rgb(200, 210, 220);
 
         let style = WidgetStyle::default().with_background(bg);
         label.set_style(style);
@@ -380,7 +396,7 @@ mod tests {
     #[test]
     fn label_style_text_color() {
         let mut label = Label::new("Test".to_string(), Rect::new(0, 0, 100, 20));
-        let tc = Color::from_rgb(50, 80, 200);
+        let tc = Color::rgb(50, 80, 200);
 
         let style = WidgetStyle::default().with_text_color(tc);
         label.set_style(style);
@@ -402,7 +418,7 @@ mod tests {
     #[test]
     fn label_style_border_color() {
         let mut label = Label::new("Test".to_string(), Rect::new(0, 0, 100, 20));
-        let border = Color::from_rgb(255, 0, 0);
+        let border = Color::rgb(255, 0, 0);
 
         let style = WidgetStyle::default().with_border(border, 2, 4);
         label.set_style(style);
@@ -413,28 +429,28 @@ mod tests {
     #[test]
     fn label_style_border_width() {
         let mut label = Label::new("Test".to_string(), Rect::new(0, 0, 100, 20));
-        let style = WidgetStyle::default().with_border(Color::from_rgb(0, 0, 0), 5, 0);
+        let style = WidgetStyle::default().with_border(Color::rgb(0, 0, 0), 5, 0);
         label.set_style(style);
 
-        assert_eq!(label.style().border_width, 5);
+        assert_eq!(label.style().border_width, Some(5));
     }
 
     #[test]
     fn label_style_border_radius() {
         let mut label = Label::new("Test".to_string(), Rect::new(0, 0, 100, 20));
-        let style = WidgetStyle::default().with_border(Color::from_rgb(0, 0, 0), 1, 8);
+        let style = WidgetStyle::default().with_border(Color::rgb(0, 0, 0), 1, 8);
         label.set_style(style);
 
-        assert_eq!(label.style().border_radius, 8);
+        assert_eq!(label.style().border_radius, Some(8));
     }
 
     #[test]
     fn label_style_combined_properties() {
         let mut label = Label::new("Styled".to_string(), Rect::new(0, 0, 200, 40));
-        let bg = Color::from_rgb(240, 248, 255);
-        let tc = Color::from_rgb(0, 51, 102);
+        let bg = Color::rgb(240, 248, 255);
+        let tc = Color::rgb(0, 51, 102);
         let font = Font::simple("Georgia", 18.0);
-        let bc = Color::from_rgb(0, 102, 204);
+        let bc = Color::rgb(0, 102, 204);
 
         let style = WidgetStyle::default()
             .with_background(bg)
@@ -449,7 +465,7 @@ mod tests {
         assert_eq!(s.text_color, Some(tc));
         assert_eq!(s.font, Some(font));
         assert_eq!(s.border_color, Some(bc));
-        assert_eq!(s.border_width, 2);
-        assert_eq!(s.border_radius, 6);
+        assert_eq!(s.border_width, Some(2));
+        assert_eq!(s.border_radius, Some(6));
     }
 }

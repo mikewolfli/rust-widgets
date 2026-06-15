@@ -123,7 +123,7 @@ impl Draw for Chip {
         let bg_color = if !is_enabled {
             Color::rgba(200, 200, 200, 100)
         } else if self.selected {
-            Color::from_rgb(25, 118, 210) // Material blue
+            Color::rgb(25, 118, 210) // Material blue
         } else {
             Color::rgba(220, 220, 220, 200)
         };
@@ -133,7 +133,7 @@ impl Draw for Chip {
         let border_color = if !is_enabled {
             Color::rgba(180, 180, 180, 80)
         } else if self.selected {
-            Color::from_rgb(21, 101, 192)
+            Color::rgb(21, 101, 192)
         } else {
             Color::rgba(190, 190, 190, 150)
         };
@@ -145,7 +145,7 @@ impl Draw for Chip {
         } else if self.selected {
             Color::WHITE
         } else {
-            Color::from_rgb(33, 33, 33)
+            Color::rgb(33, 33, 33)
         };
 
         // Text area: from left padding up to close button (if closable) or right padding
@@ -192,7 +192,7 @@ impl Draw for Chip {
                     Color::rgba(180, 180, 180, 200)
                 };
                 let close_fg = if self.selected {
-                    Color::from_rgb(25, 118, 210)
+                    Color::rgb(25, 118, 210)
                 } else {
                     Color::rgba(80, 80, 80, 220)
                 };

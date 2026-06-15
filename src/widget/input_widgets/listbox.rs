@@ -1,5 +1,5 @@
 //! List box widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -13,6 +13,7 @@ pub struct ListBox {
     selection_mode: SelectionMode,
     current_row: Option<usize>,
     item_height: f32,
+    scroll_offset: usize,
     pub item_selected: Signal1<usize>,
     pub item_activated: Signal1<usize>,
     pub selection_changed: GenericSignal,
@@ -40,6 +41,7 @@ impl ListBox {
             selection_mode: SelectionMode::SingleSelection,
             current_row: None,
             item_height: 20.0,
+            scroll_offset: 0,
             item_selected: Signal1::new(),
             item_activated: Signal1::new(),
             selection_changed: GenericSignal::new(),
@@ -216,7 +218,8 @@ impl ListBox {
     fn select_at_pos(&mut self, pos: Point) {
         let rect = self.geometry();
         if rect.contains(pos) {
-            let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            let rel_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            let item_index = self.scroll_offset + rel_index;
             if item_index < self.items.len() {
                 self.select(item_index);
                 self.base.clicked.emit();
@@ -227,7 +230,8 @@ impl ListBox {
     fn activate_at_pos(&mut self, pos: Point) {
         let rect = self.geometry();
         if rect.contains(pos) {
-            let item_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            let rel_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
+            let item_index = self.scroll_offset + rel_index;
             if item_index < self.items.len() {
                 self.select(item_index);
                 self.item_activated.emit(item_index);
@@ -260,9 +264,22 @@ impl ListBox {
     fn visible_range(&self) -> (usize, usize) {
         let rect = self.geometry();
         let visible_items = (rect.height as f32 / self.item_height).ceil() as usize;
-        let start = 0;
+        let start = self.scroll_offset.min(self.items.len().saturating_sub(1));
         let end = self.items.len().min(start + visible_items);
         (start, end)
+    }
+    /// Scrolls the list by the given delta (positive = down, negative = up).
+    pub fn scroll(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let max_offset = self.items.len().saturating_sub(1);
+        if delta > 0 {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta as usize).min(max_offset);
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_sub((-delta) as usize);
+        }
+        self.base.request_redraw();
     }
 }
 // Implement Widget trait
@@ -295,9 +312,9 @@ impl EventHandler for ListBox {
             Event::Tap { pos } => {
                 self.activate_at_pos(*pos);
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
                 match *key {
-                    38 => {
+                    38 if *modifiers == 0 => {
                         // Up arrow
                         if let Some(current) = self.current_row {
                             if current > 0 {
@@ -307,7 +324,7 @@ impl EventHandler for ListBox {
                             self.select(self.items.len() - 1);
                         }
                     }
-                    40 => {
+                    40 if *modifiers == 0 => {
                         // Down arrow
                         if let Some(current) = self.current_row {
                             if current < self.items.len() - 1 {
@@ -337,6 +354,10 @@ impl EventHandler for ListBox {
                     _ => {}
                 }
             }
+            Event::Wheel { delta, .. } => {
+                // delta.y > 0 = scroll down, delta.y < 0 = scroll up
+                self.scroll(-delta.y);
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -349,8 +370,8 @@ impl Draw for ListBox {
         let rect = self.geometry();
         let padding = 2;
         let style = self.style();
-        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
-        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         // Draw background
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
@@ -367,18 +388,18 @@ impl Draw for ListBox {
             if self.is_selected(i) {
                 context.fill_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             } else if Some(i) == self.current_row {
                 context.fill_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
-                    Color::from_rgb(240, 240, 240),
+                    Color::rgb(240, 240, 240),
                 );
             }
             // Draw item text
             if let Some(text) = self.item(i) {
                 let text_color =
-                    if self.is_selected(i) { Color::from_rgb(255, 255, 255) } else { text_color };
+                    if self.is_selected(i) { Color::rgb(255, 255, 255) } else { text_color };
                 context.draw_text(
                     Point::new(
                         item_rect.x + padding,
@@ -396,7 +417,7 @@ impl Draw for ListBox {
                 context.draw_line(
                     Point::new(item_rect.x, sep_y),
                     Point::new(item_rect.x + item_rect.width as i32, sep_y),
-                    Color::from_rgb(230, 230, 230),
+                    Color::rgb(230, 230, 230),
                 );
             }
         }

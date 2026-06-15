@@ -110,8 +110,8 @@ impl PieMenu {
             current_index: 0,
             center,
             animation_progress: 1.0,
-            hover_color: Color::from_rgb(0, 120, 215),
-            text_color: Color::from_rgb(30, 30, 30),
+            hover_color: Color::rgb(0, 120, 215),
+            text_color: Color::rgb(30, 30, 30),
             triggered: Signal1::new(),
             triggered_text: Signal1::new(),
             about_to_show: GenericSignal::new(),
@@ -383,18 +383,18 @@ impl PieMenu {
     /// Returns a colour for the slice at index `i`, cycling through a pleasant palette.
     fn slice_color(&self, i: usize) -> Color {
         const PALETTE: &[Color] = &[
-            Color::from_rgb(173, 216, 230), // light blue
-            Color::from_rgb(255, 182, 193), // light pink
-            Color::from_rgb(152, 251, 152), // pale green
-            Color::from_rgb(255, 218, 185), // peach
-            Color::from_rgb(216, 191, 216), // thistle
-            Color::from_rgb(255, 228, 181), // moccasin
-            Color::from_rgb(175, 238, 238), // turquoise
-            Color::from_rgb(255, 239, 213), // papaya whip
-            Color::from_rgb(221, 160, 221), // plum
-            Color::from_rgb(176, 224, 230), // powder blue
-            Color::from_rgb(240, 230, 140), // khaki
-            Color::from_rgb(255, 192, 203), // pink
+            Color::rgb(173, 216, 230), // light blue
+            Color::rgb(255, 182, 193), // light pink
+            Color::rgb(152, 251, 152), // pale green
+            Color::rgb(255, 218, 185), // peach
+            Color::rgb(216, 191, 216), // thistle
+            Color::rgb(255, 228, 181), // moccasin
+            Color::rgb(175, 238, 238), // turquoise
+            Color::rgb(255, 239, 213), // papaya whip
+            Color::rgb(221, 160, 221), // plum
+            Color::rgb(176, 224, 230), // powder blue
+            Color::rgb(240, 230, 140), // khaki
+            Color::rgb(255, 192, 203), // pink
         ];
         PALETTE[i % PALETTE.len()]
     }
@@ -468,7 +468,7 @@ impl Draw for PieMenu {
         for (i, item) in self.items.iter().enumerate() {
             let is_hovered = self.hovered_index == Some(i);
             let base_color = if !item.is_enabled() {
-                Color::from_rgb(220, 220, 220)
+                Color::rgb(220, 220, 220)
             } else if is_hovered {
                 self.hover_color
             } else {
@@ -497,17 +497,17 @@ impl Draw for PieMenu {
                     cx + outer_r * item.angle_start().cos(),
                     cy + outer_r * item.angle_start().sin(),
                 ),
-                Color::from_rgb(160, 160, 160),
+                Color::rgb(160, 160, 160),
                 1,
             );
         }
 
         // Draw the outer ring border
-        context.draw_circle_stroke(center, outer_r as u32, Color::from_rgb(140, 140, 140), 1);
+        context.draw_circle_stroke(center, outer_r as u32, Color::rgb(140, 140, 140), 1);
 
         // Draw the inner donut hole circle
-        context.fill_circle(center, inner_r as u32, Color::from_rgb(250, 250, 250));
-        context.draw_circle_stroke(center, inner_r as u32, Color::from_rgb(180, 180, 180), 1);
+        context.fill_circle(center, inner_r as u32, Color::rgb(250, 250, 250));
+        context.draw_circle_stroke(center, inner_r as u32, Color::rgb(180, 180, 180), 1);
 
         // Draw text labels centered in each slice
         let font = Font::default();
@@ -529,7 +529,7 @@ impl Draw for PieMenu {
         }
 
         // Draw a small center dot
-        context.fill_circle(center, 3, Color::from_rgb(100, 100, 100));
+        context.fill_circle(center, 3, Color::rgb(100, 100, 100));
     }
 }
 
@@ -562,8 +562,8 @@ mod tests {
         assert!(menu.items().is_empty());
 
         // Default colors
-        assert_eq!(menu.hover_color(), Color::from_rgb(0, 120, 215));
-        assert_eq!(menu.text_color(), Color::from_rgb(30, 30, 30));
+        assert_eq!(menu.hover_color(), Color::rgb(0, 120, 215));
+        assert_eq!(menu.text_color(), Color::rgb(30, 30, 30));
 
         // Geometry: centered at (200,200) with radius 100 => rect (100, 100, 200, 200)
         let geom = menu.geometry();
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(menu.geometry(), Rect::new(0, 0, 100, 100));
 
         // rect() alias
-        assert_eq!(menu.rect(), Rect::new(0, 0, 100, 100));
+        assert_eq!(menu.geometry(), Rect::new(0, 0, 100, 100));
 
         // position / size
         assert_eq!(menu.position(), Point::new(0, 0));
@@ -1020,18 +1020,18 @@ mod tests {
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
 
         // Default hover color
-        assert_eq!(menu.hover_color(), Color::from_rgb(0, 120, 215));
+        assert_eq!(menu.hover_color(), Color::rgb(0, 120, 215));
 
         // Change hover color
-        menu.set_hover_color(Color::from_rgb(255, 0, 0));
-        assert_eq!(menu.hover_color(), Color::from_rgb(255, 0, 0));
+        menu.set_hover_color(Color::rgb(255, 0, 0));
+        assert_eq!(menu.hover_color(), Color::rgb(255, 0, 0));
 
         // Default text color
-        assert_eq!(menu.text_color(), Color::from_rgb(30, 30, 30));
+        assert_eq!(menu.text_color(), Color::rgb(30, 30, 30));
 
         // Change text color
-        menu.set_text_color(Color::from_rgb(255, 255, 255));
-        assert_eq!(menu.text_color(), Color::from_rgb(255, 255, 255));
+        menu.set_text_color(Color::rgb(255, 255, 255));
+        assert_eq!(menu.text_color(), Color::rgb(255, 255, 255));
     }
 
     /// 20. Animation progress

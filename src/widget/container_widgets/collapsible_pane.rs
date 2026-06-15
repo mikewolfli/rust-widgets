@@ -16,7 +16,6 @@ pub struct CollapsiblePane {
     base: BaseWidget,
     title: String,
     collapsed: bool,
-    animation_progress: f32,
     content_child: Option<ObjectId>,
     header_height: u32,
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
@@ -27,14 +26,11 @@ pub struct CollapsiblePane {
 impl CollapsiblePane {
     /// Creates a new collapsible pane with the specified geometry and title.
     pub fn new(geometry: Rect, title: String) -> Self {
-        let mut base = BaseWidget::new(WidgetKind::CollapsiblePane, geometry, "CollapsiblePane");
-        // Collapsible pane starts expanded by default.
-        base.visible = true;
+        let base = BaseWidget::new(WidgetKind::CollapsiblePane, geometry, "CollapsiblePane");
         Self {
             base,
             title,
             collapsed: false,
-            animation_progress: 1.0,
             content_child: None,
             header_height: 24,
             toggled: Signal1::new(),
@@ -63,7 +59,6 @@ impl CollapsiblePane {
             return;
         }
         self.collapsed = collapsed;
-        self.animation_progress = if collapsed { 0.0 } else { 1.0 };
         self.toggled.emit(collapsed);
         self.base.request_redraw();
     }
@@ -168,14 +163,14 @@ impl Draw for CollapsiblePane {
 
         // --- Draw header background ---
         let header_bg = if self.base.is_enabled() {
-            Color::from_rgb(220, 220, 220)
+            Color::rgb(220, 220, 220)
         } else {
-            Color::from_rgb(240, 240, 240)
+            Color::rgb(240, 240, 240)
         };
         context.fill_rect(hdr, header_bg);
 
         // --- Draw header bottom border ---
-        let border_color = Color::from_rgb(180, 180, 180);
+        let border_color = Color::rgb(180, 180, 180);
         context.draw_line(
             Point::from_f32(hdr.x as f32, (hdr.y + hdr.height as i32) as f32),
             Point::from_f32((hdr.x + hdr.width as i32) as f32, (hdr.y + hdr.height as i32) as f32),
@@ -186,9 +181,9 @@ impl Draw for CollapsiblePane {
         let arrow_x = hdr.x + 6;
         let arrow_y = hdr.y + (hdr.height as i32 / 2) - 4;
         let arrow_color = if self.base.is_enabled() {
-            Color::from_rgb(80, 80, 80)
+            Color::rgb(80, 80, 80)
         } else {
-            Color::from_rgb(180, 180, 180)
+            Color::rgb(180, 180, 180)
         };
         let arrow_char = if self.collapsed { "▶" } else { "▼" };
         context.draw_text(
@@ -204,9 +199,9 @@ impl Draw for CollapsiblePane {
             let text_x = hdr.x + 20;
             let text_y = hdr.y + (hdr.height as i32 / 2) - 6;
             let text_color = if self.base.is_enabled() {
-                Color::from_rgb(0, 0, 0)
+                Color::rgb(0, 0, 0)
             } else {
-                Color::from_rgb(150, 150, 150)
+                Color::rgb(150, 150, 150)
             };
             context.draw_text(
                 Point::from_f32(text_x as f32, text_y as f32),
@@ -221,7 +216,7 @@ impl Draw for CollapsiblePane {
         if !self.collapsed {
             let content_rect = self.content_rect();
             // Draw a subtle inner background for the content area.
-            context.fill_rect(content_rect, Color::from_rgb(248, 248, 248));
+            context.fill_rect(content_rect, Color::rgb(248, 248, 248));
             // Draw border around the content area (left, right, bottom).
             context.draw_line(
                 Point::from_f32(content_rect.x as f32, content_rect.y as f32),
@@ -450,7 +445,7 @@ mod tests {
         let mut cp = make_pane();
 
         let mut svg_backend = SvgPaintBackend::new(Size::new(200, 100));
-        svg_backend.begin_frame(Color::from_rgb(255, 255, 255));
+        svg_backend.begin_frame(Color::rgb(255, 255, 255));
         {
             let mut ctx = RenderContext::new(&mut svg_backend);
             cp.draw(&mut ctx);
@@ -472,7 +467,7 @@ mod tests {
         cp2.set_collapsed(true);
 
         let mut svg_backend2 = SvgPaintBackend::new(Size::new(200, 100));
-        svg_backend2.begin_frame(Color::from_rgb(255, 255, 255));
+        svg_backend2.begin_frame(Color::rgb(255, 255, 255));
         {
             let mut ctx = RenderContext::new(&mut svg_backend2);
             cp2.draw(&mut ctx);

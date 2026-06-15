@@ -59,7 +59,7 @@ impl GridWidget {
             rows: 1,
             columns: 1,
             spacing: 0,
-            line_color: Some(Color::from_rgb(220, 220, 220)),
+            line_color: Some(Color::rgb(220, 220, 220)),
             cell_width: geometry.width,
             cell_height: geometry.height,
             hovered_cell: None,
@@ -75,7 +75,7 @@ impl GridWidget {
             rows: rows.max(1),
             columns: columns.max(1),
             spacing: 0,
-            line_color: Some(Color::from_rgb(220, 220, 220)),
+            line_color: Some(Color::rgb(220, 220, 220)),
             cell_width: geometry.width / columns.max(1),
             cell_height: geometry.height / rows.max(1),
             hovered_cell: None,
@@ -234,10 +234,10 @@ impl Draw for GridWidget {
         self.update_cell_dimensions();
 
         // Background fill
-        context.fill_rect(rect, Color::from_rgb(250, 250, 252));
+        context.fill_rect(rect, Color::rgb(250, 250, 252));
 
         // Border
-        context.draw_rect(rect, Color::from_rgb(180, 185, 195));
+        context.draw_rect(rect, Color::rgb(180, 185, 195));
 
         // Grid lines (skip for 1×1, also skip if color is None)
         let Some(line_color) = self.line_color else {

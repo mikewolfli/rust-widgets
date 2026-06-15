@@ -164,11 +164,11 @@ impl Draw for MenuBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         // Menu bar background
-        context.fill_rect(rect, Color::from_rgb(240, 240, 240));
+        context.fill_rect(rect, Color::rgb(240, 240, 240));
         context.draw_line(
             Point::new(rect.x, rect.y + rect.height as i32 - 1),
             Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
@@ -177,16 +177,16 @@ impl Draw for MenuBar {
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
             if is_active {
-                context.fill_rect(entry_rect, Color::from_rgb(0, 120, 215));
+                context.fill_rect(entry_rect, Color::rgb(0, 120, 215));
             } else if is_hovered {
-                context.fill_rect(entry_rect, Color::from_rgb(210, 230, 255));
+                context.fill_rect(entry_rect, Color::rgb(210, 230, 255));
             }
             let fg = if !entry.is_enabled() {
-                Color::from_rgb(150, 150, 150)
+                Color::rgb(150, 150, 150)
             } else if is_active {
-                Color::from_rgb(255, 255, 255)
+                Color::rgb(255, 255, 255)
             } else {
-                Color::from_rgb(0, 0, 0)
+                Color::rgb(0, 0, 0)
             };
             context.draw_text(
                 Point::new(x + w / 2, rect.y + rect.height as i32 / 2),

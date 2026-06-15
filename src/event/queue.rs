@@ -75,15 +75,6 @@ impl<T, const N: usize> Default for FixedSizeQueue<T, N> {
         Self::new()
     }
 }
-pub struct PriorityEntry<T> {
-    pub item: T,
-    pub priority: u8,
-}
-impl<T> PriorityEntry<T> {
-    pub fn new(item: T, priority: u8) -> Self {
-        Self { item, priority }
-    }
-}
 #[derive(Debug)]
 pub struct PriorityQueue<T> {
     queues: [VecDeque<T>; 8],

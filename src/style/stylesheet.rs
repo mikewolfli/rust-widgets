@@ -145,12 +145,12 @@ mod tests {
 
         assert_eq!(
             style.background_color,
-            Some(Color::from_rgb(255, 0, 0)),
+            Some(Color::rgb(255, 0, 0)),
             "background_color should be red"
         );
         assert_eq!(
             style.text_color,
-            Some(Color::from_rgb(255, 255, 255)),
+            Some(Color::rgb(255, 255, 255)),
             "text_color should be white"
         );
     }
@@ -182,13 +182,13 @@ mod tests {
         // background-color comes from high-priority sheet (blue overrides red)
         assert_eq!(
             style.background_color,
-            Some(Color::from_rgb(0, 0, 255)),
+            Some(Color::rgb(0, 0, 255)),
             "high-priority blue should override low-priority red"
         );
         // text_color comes from low-priority sheet (high didn't set it)
         assert_eq!(
             style.text_color,
-            Some(Color::from_rgb(0, 0, 0)),
+            Some(Color::rgb(0, 0, 0)),
             "text_color from low-priority sheet should be preserved"
         );
     }
@@ -250,7 +250,7 @@ mod tests {
 
         assert_eq!(
             style.background_color,
-            Some(Color::from_rgb(0, 255, 0)),
+            Some(Color::rgb(0, 255, 0)),
             "should use the latest registered CSS for the same name"
         );
     }
@@ -272,7 +272,7 @@ mod tests {
 
         assert_eq!(
             style.background_color,
-            Some(Color::from_rgb(0xff, 0x88, 0x00)),
+            Some(Color::rgb(0xff, 0x88, 0x00)),
             "class selector .primary should match"
         );
     }

@@ -325,11 +325,11 @@ impl Draw for Menu {
         let popup_h = self.popup_height();
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
-            Color::from_rgb(250, 250, 250),
+            Color::rgb(250, 250, 250),
         );
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
-            Color::from_rgb(160, 160, 160),
+            Color::rgb(160, 160, 160),
         );
         let mut y = rect.y as f32 + 2.0;
         for (i, item) in self.items.iter().enumerate() {
@@ -338,7 +338,7 @@ impl Draw for Menu {
                 context.draw_line(
                     Point::new(rect.x + 4, sep_y as i32),
                     Point::new(rect.x + rect.width as i32 - 4, sep_y as i32),
-                    Color::from_rgb(200, 200, 200),
+                    Color::rgb(200, 200, 200),
                 );
                 y += Self::separator_height();
                 continue;
@@ -347,15 +347,15 @@ impl Draw for Menu {
             if is_hovered {
                 context.fill_rect(
                     Rect::new(rect.x + 2, y as i32, rect.width - 4, Self::item_height() as u32),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             }
             let fg = if !item.is_enabled() {
-                Color::from_rgb(150, 150, 150)
+                Color::rgb(150, 150, 150)
             } else if is_hovered {
-                Color::from_rgb(255, 255, 255)
+                Color::rgb(255, 255, 255)
             } else {
-                Color::from_rgb(0, 0, 0)
+                Color::rgb(0, 0, 0)
             };
             if item.is_checkable() {
                 let check_sym = if item.is_checked() { "✓" } else { " " };

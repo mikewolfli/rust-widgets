@@ -18,7 +18,9 @@ impl<T: Clone + Send + 'static> Computed<T> {
     /// Create a new computed value with an initial value.
     ///
     /// `compute` is the derivation function. `initial` is the starting value
-    /// before any dependencies are invalidated.
+    /// before any dependencies are invalidated. The value is **not** recomputed
+    /// on the first [`get`](Self::get); call [`invalidate`](Self::invalidate)
+    /// to mark it dirty when dependencies change.
     pub fn new<F>(compute: F, initial: T) -> Self
     where
         F: Fn() -> T + 'static,
@@ -26,7 +28,7 @@ impl<T: Clone + Send + 'static> Computed<T> {
         Self {
             compute_fn: Box::new(compute),
             cached: initial,
-            dirty: true,
+            dirty: false,
             listeners: HashMap::new(),
         }
     }
@@ -101,6 +103,10 @@ mod tests {
     #[test]
     fn test_computed_initial_value() {
         let mut c: Computed<i32> = Computed::new(|| 42, 0);
+        // With dirty: false, the initial value is returned directly
+        assert_eq!(c.get(), 0);
+        // After invalidation, the compute function runs
+        c.invalidate();
         assert_eq!(c.get(), 42);
     }
 
@@ -110,6 +116,8 @@ mod tests {
         let f = factor.clone();
         let mut c = Computed::new(move || f.load(Ordering::SeqCst) * 10, 0);
 
+        // Initially dirty=false — need to invalidate first to trigger compute
+        c.invalidate();
         assert_eq!(c.get(), 20);
 
         factor.store(5, Ordering::SeqCst);
@@ -131,7 +139,12 @@ mod tests {
             0,
         );
 
-        // First get triggers computation
+        // Initially dirty=false, so get() returns initial without computing
+        assert_eq!(c.get(), 0);
+        assert_eq!(compute_count.load(Ordering::SeqCst), 0);
+
+        // After invalidate, get() triggers computation
+        c.invalidate();
         assert_eq!(c.get(), 100);
         assert_eq!(compute_count.load(Ordering::SeqCst), 1);
 
@@ -155,19 +168,29 @@ mod tests {
             })),
         );
 
-        // First get computes and notifies (dirty=true, cached=0, compute=10)
-        assert_eq!(c2.get(), 10);
+        // First get returns the initial value (dirty=false), no notification
+        assert_eq!(c2.get(), 0);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 0);
+
+        // Invalidate to trigger computation on next get
+        inner.store(10, Ordering::SeqCst);
+        c2.invalidate();
+        // invalidate notifies listeners immediately
         assert_eq!(notified_count.load(Ordering::SeqCst), 1);
 
-        // Change value and invalidate — invalidate now notifies listeners immediately
+        // Now get() recomputes, detects change 0→10, notifies again
+        assert_eq!(c2.get(), 10);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 2);
+
+        // Change value and invalidate — invalidate notifies listeners immediately
         inner.store(20, Ordering::SeqCst);
         c2.invalidate();
-        // 1 (from first get) + 1 (from invalidate) = 2
-        assert_eq!(notified_count.load(Ordering::SeqCst), 2);
+        // 2 (from previous invalidate) + 1 = 3
+        assert_eq!(notified_count.load(Ordering::SeqCst), 3);
 
         // Now get() recomputes from 10 to 20, notifies again because value changed
         assert_eq!(c2.get(), 20);
-        assert_eq!(notified_count.load(Ordering::SeqCst), 3);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 4);
     }
 
     #[test]
@@ -177,7 +200,8 @@ mod tests {
         // get_cached returns the initial value before any get() call
         assert_eq!(c.get_cached(), 0);
 
-        // After get(), cached is updated
+        // After invalidate+get(), cached is updated
+        c.invalidate();
         assert_eq!(c.get(), 99);
         assert_eq!(c.get_cached(), 99);
 

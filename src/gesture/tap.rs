@@ -157,12 +157,15 @@ const TWO_FINGER_TAP_DURATION_MS: u64 = 300;
 /// - [`Event::TwoFingerTap { pos }`] — centroid of both touches
 #[derive(Debug)]
 pub struct TwoFingerTapGesture {
-    touches: Vec<(Point, TouchId, u64)>, // (pos, id, time)
+    /// (touchdown_pos, current_pos, touch_id, time)
+    touches: Vec<(Point, Point, TouchId, u64)>,
+    /// End positions of touches that have lifted, used for centroid calculation.
+    touch_ends: Vec<Point>,
 }
 
 impl TwoFingerTapGesture {
     pub fn new() -> Self {
-        Self { touches: Vec::new() }
+        Self { touches: Vec::new(), touch_ends: Vec::new() }
     }
 }
 
@@ -173,11 +176,13 @@ impl GestureRecognizer for TwoFingerTapGesture {
                 if self.touches.len() >= 2 {
                     return None;
                 }
-                self.touches.push((*pos, *touch_id, now_ms));
+                // Store both touchdown_pos and current_pos as the same point initially
+                self.touches.push((*pos, *pos, *touch_id, now_ms));
                 None
             }
             Event::TouchMove { pos, touch_id } => {
-                if let Some(t) = self.touches.iter_mut().find(|(_, id, _)| *id == *touch_id) {
+                if let Some(t) = self.touches.iter_mut().find(|(_, _, id, _)| *id == *touch_id) {
+                    // Compare against the **original** touchdown position to prevent drift
                     let dx = (pos.x - t.0.x).abs();
                     let dy = (pos.y - t.0.y).abs();
                     if (dx as f32) > MAX_STATIONARY_DISTANCE
@@ -185,18 +190,27 @@ impl GestureRecognizer for TwoFingerTapGesture {
                     {
                         self.reset(); // moved too much
                     } else {
-                        t.0 = *pos; // update position
+                        t.1 = *pos; // update current position only
                     }
                 }
                 None
             }
-            Event::TouchEnd { pos, touch_id } => {
-                if let Some(idx) = self.touches.iter().position(|(_, id, _)| *id == *touch_id) {
-                    let first_time = self.touches[0].2;
+            Event::TouchEnd { pos: _, touch_id } => {
+                if let Some(idx) = self.touches.iter().position(|(_, _, id, _)| *id == *touch_id) {
+                    let first_time = self.touches[0].3;
                     let elapsed = now_ms.saturating_sub(first_time);
+                    // Store the end position for centroid calculation
+                    let end_pos = self.touches[idx].1;
                     self.touches.remove(idx);
+                    self.touch_ends.push(end_pos);
                     if self.touches.is_empty() && elapsed <= TWO_FINGER_TAP_DURATION_MS {
-                        let centroid = *pos;
+                        // Compute centroid from all stored end positions
+                        let centroid = Point::from_f32(
+                            self.touch_ends.iter().map(|p| p.x).sum::<i32>() as f32
+                                / self.touch_ends.len() as f32,
+                            self.touch_ends.iter().map(|p| p.y).sum::<i32>() as f32
+                                / self.touch_ends.len() as f32,
+                        );
                         self.reset();
                         return Some(Event::TwoFingerTap { pos: centroid });
                     }
@@ -206,7 +220,7 @@ impl GestureRecognizer for TwoFingerTapGesture {
             _ => {
                 // Timeout: if first touch is too old, reset
                 if let Some(first) = self.touches.first() {
-                    if now_ms.saturating_sub(first.2) > TWO_FINGER_TAP_TIMEOUT_MS * 2 {
+                    if now_ms.saturating_sub(first.3) > TWO_FINGER_TAP_TIMEOUT_MS * 2 {
                         self.reset();
                     }
                 }
@@ -217,6 +231,7 @@ impl GestureRecognizer for TwoFingerTapGesture {
 
     fn reset(&mut self) {
         self.touches.clear();
+        self.touch_ends.clear();
     }
 }
 

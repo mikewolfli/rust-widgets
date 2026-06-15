@@ -1,5 +1,5 @@
 //! Multi-line text edit widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -34,7 +34,8 @@ impl TextEdit {
         &self.text
     }
     /// Sets text and emits text_changed signal if different.
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }
@@ -56,10 +57,11 @@ impl TextEdit {
     /// Sets maximum text length.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
-        // Truncate if needed
+        // Truncate if needed (using floor_char_boundary to avoid mid-char panic)
         if let Some(max) = max_length {
             if self.text.len() > max {
-                self.text.truncate(max);
+                let boundary = self.text.floor_char_boundary(max);
+                self.text.truncate(boundary);
                 self.text_changed.emit(self.text.clone());
             }
         }
@@ -175,9 +177,9 @@ impl Draw for TextEdit {
         let text_x = rect.x + padding;
         let text_y = rect.y + padding;
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
@@ -190,7 +192,7 @@ impl Draw for TextEdit {
                 Point::new(text_x, text_y),
                 display_text,
                 &Font::default(),
-                Color::from_rgb(0, 0, 0),
+                Color::rgb(0, 0, 0),
                 HorizontalAlignment::Left,
             );
         }

@@ -64,9 +64,9 @@ impl Draw for PopupWindow {
         let rect = self.base.geometry();
         use crate::core::Color;
         // Draw popup background with semi-transparent effect
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(120, 120, 120));
+        context.draw_rect(rect, Color::rgb(120, 120, 120));
     }
 }
 impl crate::event::EventHandler for PopupWindow {

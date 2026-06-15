@@ -124,16 +124,16 @@ impl ThemeManager {
                     token.background.or(background_color),
                     token.foreground.or(text_color),
                     token.border.or(border_color),
-                    token.border_width.unwrap_or(theme.borders.width),
-                    token.radius.unwrap_or(theme.borders.radius),
+                    token.border_width.or(Some(theme.borders.width)),
+                    token.radius.or(Some(theme.borders.radius)),
                 )
             } else {
                 (
                     background_color,
                     text_color,
                     border_color,
-                    theme.borders.width,
-                    theme.borders.radius,
+                    Some(theme.borders.width),
+                    Some(theme.borders.radius),
                 )
             };
 
@@ -174,34 +174,10 @@ impl Default for Theme {
                 info: Color::INFO,
             },
             fonts: Fonts {
-                regular: Font {
-                    family: "Arial".to_string(),
-                    size: 14.0,
-                    weight: Font::REGULAR_WEIGHT,
-                    bold: false,
-                    italic: false,
-                },
-                bold: Font {
-                    family: "Arial".to_string(),
-                    size: 14.0,
-                    weight: Font::BOLD_WEIGHT,
-                    bold: true,
-                    italic: false,
-                },
-                italic: Font {
-                    family: "Arial".to_string(),
-                    size: 14.0,
-                    weight: Font::REGULAR_WEIGHT,
-                    bold: false,
-                    italic: true,
-                },
-                monospace: Font {
-                    family: "Courier New".to_string(),
-                    size: 12.0,
-                    weight: Font::REGULAR_WEIGHT,
-                    bold: false,
-                    italic: false,
-                },
+                regular: Font::simple("Arial", 14.0),
+                bold: Font::bold("Arial", 14.0),
+                italic: Font::with_weight("Arial", 14.0, Font::REGULAR_WEIGHT, true),
+                monospace: Font::simple("Courier New", 12.0),
                 caption: Font::simple("Arial", 11.0),
                 body: Font::simple("Arial", 14.0),
                 title: Font::bold("Arial", 16.0),
@@ -238,13 +214,7 @@ impl Theme {
             fonts: Fonts {
                 regular: Font::simple("Arial", 14.0),
                 bold: Font::bold("Arial", 14.0),
-                italic: Font {
-                    family: "Arial".to_string(),
-                    size: 14.0,
-                    weight: Font::REGULAR_WEIGHT,
-                    bold: false,
-                    italic: true,
-                },
+                italic: Font::with_weight("Arial", 14.0, Font::REGULAR_WEIGHT, true),
                 monospace: Font::simple("Courier New", 12.0),
                 caption: Font::simple("Arial", 11.0),
                 body: Font::simple("Arial", 14.0),

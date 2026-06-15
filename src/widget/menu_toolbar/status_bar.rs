@@ -64,11 +64,11 @@ impl Draw for StatusBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         // Background
-        context.fill_rect(rect, Color::from_rgb(240, 240, 240));
+        context.fill_rect(rect, Color::rgb(240, 240, 240));
         context.draw_line(
             Point::new(rect.x, rect.y),
             Point::new(rect.x + rect.width as i32, rect.y),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         // Temporary message (left side)
         if !self.message.is_empty() {
@@ -76,7 +76,7 @@ impl Draw for StatusBar {
                 Point::new(rect.x + 6, rect.y + rect.height as i32 / 2),
                 &self.message,
                 &Font::default(),
-                Color::from_rgb(0, 0, 0),
+                Color::rgb(0, 0, 0),
                 HorizontalAlignment::Left,
             );
         }
@@ -91,7 +91,7 @@ impl Draw for StatusBar {
                 Point::new(right_x, rect.y + rect.height as i32 / 2),
                 &self.permanent_message,
                 &Font::default(),
-                Color::from_rgb(80, 80, 80),
+                Color::rgb(80, 80, 80),
                 HorizontalAlignment::Left,
             );
         }
@@ -104,7 +104,7 @@ impl Draw for StatusBar {
                 context.draw_line(
                     Point::new(gx + offset, gy + 12),
                     Point::new(gx + 12, gy + offset),
-                    Color::from_rgb(160, 160, 160),
+                    Color::rgb(160, 160, 160),
                 );
             }
         }

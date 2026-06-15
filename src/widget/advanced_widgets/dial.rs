@@ -171,8 +171,8 @@ impl Draw for Dial {
             y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
-        context.fill_circle(center, radius, Color::from_rgb(230, 230, 230));
-        context.draw_circle(center, radius, Color::from_rgb(150, 150, 150));
+        context.fill_circle(center, radius, Color::rgb(230, 230, 230));
+        context.draw_circle(center, radius, Color::rgb(150, 150, 150));
         // Draw a simple value needle.
         let angle = self.value_angle();
         let needle_len = (radius as f32 * 0.7) as i32;
@@ -180,8 +180,8 @@ impl Draw for Dial {
             x: center.x + (needle_len as f32 * angle.cos() as f32) as i32,
             y: center.y + (needle_len as f32 * angle.sin() as f32) as i32,
         };
-        context.draw_line(center, to, Color::from_rgb(0, 0, 0));
-        context.fill_circle(center, 3, Color::from_rgb(80, 80, 80));
+        context.draw_line(center, to, Color::rgb(0, 0, 0));
+        context.fill_circle(center, 3, Color::rgb(80, 80, 80));
     }
 }
 

@@ -5,7 +5,7 @@
 //! It supports configurable minimum, maximum, step size, and emits a
 //! `value_changed` signal whenever the value changes.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -54,14 +54,14 @@ impl Stepper {
 
     /// Sets the minimum value (inclusive).
     pub fn set_min(&mut self, min: i32) {
-        self.min = min;
+        self.min = min.min(self.max);
         // Re-clamp current value to new bounds
         self.set_value(self.value);
     }
 
     /// Sets the maximum value (inclusive).
     pub fn set_max(&mut self, max: i32) {
-        self.max = max;
+        self.max = max.max(self.min);
         // Re-clamp current value to new bounds
         self.set_value(self.value);
     }
@@ -179,7 +179,13 @@ impl Draw for Stepper {
         } else {
             Color::rgba(30, 30, 30, 255)
         };
-        context.draw_text(Point::new(text_x, text_y), &value_text, &font, text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            &value_text,
+            &font,
+            text_color,
+            HorizontalAlignment::Left,
+        );
     }
 }
 
@@ -189,7 +195,7 @@ impl EventHandler for Stepper {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button } => {
                 if *button != 1 {
                     return;
                 }

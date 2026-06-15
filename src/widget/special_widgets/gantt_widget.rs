@@ -190,8 +190,8 @@ impl EventHandler for GanttWidget {
 impl Draw for GanttWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(251, 252, 254));
-        context.draw_rect(rect, Color::from_rgb(189, 197, 210));
+        context.fill_rect(rect, Color::rgb(251, 252, 254));
+        context.draw_rect(rect, Color::rgb(189, 197, 210));
 
         let track_x = rect.x + 150;
         let track_w = rect.width.saturating_sub(160);
@@ -201,7 +201,7 @@ impl Draw for GanttWidget {
             if self.selected_index == Some(index) {
                 context.fill_rect(
                     Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::from_rgb(225, 236, 252),
+                    Color::rgb(225, 236, 252),
                 );
             }
 
@@ -209,7 +209,7 @@ impl Draw for GanttWidget {
                 Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                 &task.label,
                 &Font::default(),
-                Color::from_rgb(36, 49, 68),
+                Color::rgb(36, 49, 68),
                 HorizontalAlignment::Left,
             );
 
@@ -217,21 +217,21 @@ impl Draw for GanttWidget {
             let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
             let bar_h = self.row_height.saturating_sub(10);
             let bar_rect = Rect::new(x0, y + 5, (x1 - x0) as u32, bar_h);
-            context.fill_rect(bar_rect, Color::from_rgb(104, 163, 232));
+            context.fill_rect(bar_rect, Color::rgb(104, 163, 232));
 
             let progress_w =
                 ((bar_rect.width as f32) * (task.progress as f32 / 100.0)).round() as u32;
             if progress_w > 0 {
                 context.fill_rect(
                     Rect::new(bar_rect.x, bar_rect.y, progress_w, bar_rect.height),
-                    Color::from_rgb(74, 140, 215),
+                    Color::rgb(74, 140, 215),
                 );
             }
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::from_rgb(229, 234, 242),
+                Color::rgb(229, 234, 242),
             );
         }
     }

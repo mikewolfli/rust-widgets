@@ -5,13 +5,7 @@ use crate::render::{
 };
 
 fn font() -> Font {
-    Font {
-        family: "Sans".to_string(),
-        size: 14.0,
-        weight: Font::REGULAR_WEIGHT,
-        bold: false,
-        italic: false,
-    }
+    Font::simple("Sans", 14.0)
 }
 
 #[test]

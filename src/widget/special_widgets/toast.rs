@@ -220,8 +220,8 @@ impl EventHandler for ToastStack {
 impl Draw for ToastStack {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(250, 251, 253));
-        context.draw_rect(rect, Color::from_rgb(208, 214, 223));
+        context.fill_rect(rect, Color::rgb(250, 251, 253));
+        context.draw_rect(rect, Color::rgb(208, 214, 223));
 
         let bottom = rect.y + rect.height as i32;
         for (index, item) in self.toasts.iter().enumerate() {
@@ -234,25 +234,25 @@ impl Draw for ToastStack {
             let row =
                 Rect::new(rect.x + 4, y + 2, rect.width.saturating_sub(8), self.row_height - 4);
             let bg = if self.selected_index == Some(index) {
-                Color::from_rgb(225, 235, 250)
+                Color::rgb(225, 235, 250)
             } else {
-                Color::from_rgb(241, 245, 251)
+                Color::rgb(241, 245, 251)
             };
             context.fill_rect(row, bg);
-            context.draw_rect(row, Color::from_rgb(184, 194, 208));
+            context.draw_rect(row, Color::rgb(184, 194, 208));
 
             let badge = match item.level {
-                ToastLevel::Info => Color::from_rgb(76, 124, 201),
-                ToastLevel::Success => Color::from_rgb(58, 161, 103),
-                ToastLevel::Warning => Color::from_rgb(220, 158, 54),
-                ToastLevel::Error => Color::from_rgb(209, 85, 74),
+                ToastLevel::Info => Color::rgb(76, 124, 201),
+                ToastLevel::Success => Color::rgb(58, 161, 103),
+                ToastLevel::Warning => Color::rgb(220, 158, 54),
+                ToastLevel::Error => Color::rgb(209, 85, 74),
             };
             context.fill_rect(Rect::new(row.x + 6, row.y + 9, 8, 8), badge);
             context.draw_text(
                 Point::new(row.x + 20, row.y + 17),
                 &item.message,
                 &Font::default(),
-                Color::from_rgb(44, 55, 72),
+                Color::rgb(44, 55, 72),
                 HorizontalAlignment::Left,
             );
         }

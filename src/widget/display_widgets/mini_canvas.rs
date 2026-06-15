@@ -109,7 +109,7 @@ impl Draw for MiniCanvas {
         }
 
         // Fill background from style.
-        let bg = self.style().background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(rect, bg);
 
         // Replay all stored commands.
@@ -190,11 +190,11 @@ mod tests {
         canvas.fill_rect(Rect::new(10, 10, 50, 50), Color::RED);
         assert_eq!(canvas.commands().len(), 1);
 
-        canvas.clear_with_color(Color::from_rgb(200, 200, 200));
+        canvas.clear_with_color(Color::rgb(200, 200, 200));
         assert_eq!(canvas.commands().len(), 1);
         match &canvas.commands()[0] {
             RenderCommand::FillRect { color, .. } => {
-                assert_eq!(*color, Color::from_rgb(200, 200, 200));
+                assert_eq!(*color, Color::rgb(200, 200, 200));
             }
             _ => panic!("Expected FillRect command"),
         }

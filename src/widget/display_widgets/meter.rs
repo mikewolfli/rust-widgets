@@ -127,10 +127,10 @@ impl Draw for Meter {
             deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized_value() + offset);
 
         // Resolve colors from style.
-        let track_color = Color::from_rgb(230, 230, 230);
-        let value_arc_color = self.style().background_color.unwrap_or(Color::from_rgb(0, 120, 215));
-        let needle_color = self.style().text_color.unwrap_or(Color::from_rgb(60, 60, 60));
-        let tick_color = Color::from_rgb(160, 160, 160);
+        let track_color = Color::rgb(230, 230, 230);
+        let value_arc_color = self.style().background_color.unwrap_or(Color::rgb(0, 120, 215));
+        let needle_color = self.style().text_color.unwrap_or(Color::rgb(60, 60, 60));
+        let tick_color = Color::rgb(160, 160, 160);
 
         // Draw the background track arc (270° sweep, light gray).
         if (end_angle - start_angle).abs() > 0.001 {

@@ -247,14 +247,14 @@ impl Draw for ComboBox {
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
-        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
+        let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
         if let Some(border_color) = style.border_color {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
         }
         // Draw dropdown arrow
-        let arrow_color = style.text_color.unwrap_or(Color::from_rgb(100, 100, 100));
+        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
         let arrow_size = 8;
         let arrow_x_f = rect.x as f32 + rect.width as f32 - padding as f32 - arrow_size as f32;
         let arrow_y_f = rect.y as f32 + rect.height as f32 / 2.0;
@@ -276,7 +276,7 @@ impl Draw for ComboBox {
             arrow_color,
         );
         // Draw current text
-        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         let font = style.font.clone().unwrap_or_default();
         let current_text = self.current_text();
         if !current_text.is_empty() {

@@ -90,33 +90,47 @@ impl TextCache {
     }
     pub fn get(&mut self, key: &TextKey) -> Option<&CachedText> {
         self.access_counter += 1;
-        // Single lookup: check expiry first, then return if valid
-        if !self.cache.contains_key(key) {
-            self.misses += 1;
-            return None;
-        }
-        if self.is_expired(self.cache.get(key).unwrap()) {
+        // Check expiry with an immutable lookup first
+        let needs_removal = self.cache.get(key).map_or(false, |entry| self.is_expired(entry));
+        if needs_removal {
             self.cache.remove(key);
             self.misses += 1;
             return None;
         }
-        self.hits += 1;
-        self.cache.get(key)
+        // Single mutable lookup: update LRU order and return
+        match self.cache.get_mut(key) {
+            Some(entry) => {
+                entry.access_order = self.access_counter;
+                self.hits += 1;
+                // Reborrow &mut → & for the shared return type
+                Some(entry)
+            }
+            None => {
+                self.misses += 1;
+                None
+            }
+        }
     }
     pub fn get_mut(&mut self, key: &TextKey) -> Option<&mut CachedText> {
         self.access_counter += 1;
-        // Single lookup path for mutable access
-        if !self.cache.contains_key(key) {
-            self.misses += 1;
-            return None;
-        }
-        if self.is_expired(self.cache.get(key).unwrap()) {
+        // Check expiry with an immutable lookup first
+        let needs_removal = self.cache.get(key).map_or(false, |entry| self.is_expired(entry));
+        if needs_removal {
             self.cache.remove(key);
             self.misses += 1;
             return None;
         }
-        self.hits += 1;
-        self.cache.get_mut(key)
+        match self.cache.get_mut(key) {
+            Some(entry) => {
+                entry.access_order = self.access_counter;
+                self.hits += 1;
+                Some(entry)
+            }
+            None => {
+                self.misses += 1;
+                None
+            }
+        }
     }
     pub fn insert(&mut self, cached: CachedText) {
         let size = cached.data.len();

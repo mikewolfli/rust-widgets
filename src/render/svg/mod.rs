@@ -35,6 +35,7 @@ pub struct SvgPaintBackend {
     dpi_scale: f32,
     elements: Vec<String>,
     clip_depth: u32,
+    clip_path_counter: u32,
     svg_output: Option<String>,
     gradient_counter: u32,
 }
@@ -47,6 +48,7 @@ impl SvgPaintBackend {
             dpi_scale: 1.0,
             elements: Vec::new(),
             clip_depth: 0,
+            clip_path_counter: 0,
             svg_output: None,
             gradient_counter: 0,
         }
@@ -291,8 +293,8 @@ impl PaintBackend for SvgPaintBackend {
                     r#"<text x="{}" y="{}" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
                     origin.x,
                     origin.y,
-                    escape_xml(&font.family),
-                    font.size,
+                    escape_xml(font.family()),
+                    font.size(),
                     font.style_css(),
                     font.weight_css(),
                     color_to_rgba(color),
@@ -451,21 +453,24 @@ impl PaintBackend for SvgPaintBackend {
                     d, fill, stroke, width
                 ));
             }
-            RenderCommand::BoxShadow {
-                rect,
-                color,
-                offset_x,
-                offset_y,
-                blur_radius: _,
-                spread,
-            } => {
+            RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
                 let spread_w = (rect.width as i32 + *spread * 2).max(0) as u32;
                 let spread_h = (rect.height as i32 + *spread * 2).max(0) as u32;
                 let x = rect.x + offset_x - *spread;
                 let y = rect.y + offset_y - *spread;
+                let filter_attr = if *blur_radius > 0 {
+                    let filter_id = format!("shadow_blur_{}", blur_radius);
+                    self.push_element(format!(
+                        r##"<filter id=\"{}\"><feGaussianBlur stdDeviation=\"{}\" /></filter>"##,
+                        filter_id, blur_radius
+                    ));
+                    format!(r##" filter=\"url(#{})\""##, filter_id)
+                } else {
+                    String::new()
+                };
                 self.push_element(format!(
-                    r##"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" filter="url(#shadowBlur)" rx="4" />"##,
-                    x, y, spread_w, spread_h, color_to_rgba(color)
+                    r##"<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"{} rx=\"4\" />"##,
+                    x, y, spread_w, spread_h, color_to_rgba(color), filter_attr
                 ));
             }
             RenderCommand::Blur { radius } => {
@@ -476,15 +481,19 @@ impl PaintBackend for SvgPaintBackend {
             }
             RenderCommand::ClipPath { points } => {
                 if !points.is_empty() {
+                    let clip_id = format!("cp_{}", self.clip_path_counter);
+                    self.clip_path_counter += 1;
                     let mut d = format!("M {} {}", points[0].x, points[0].y);
                     for pt in &points[1..] {
                         d.push_str(&format!(" L {} {}", pt.x, pt.y));
                     }
                     d.push_str(" Z");
                     self.push_element(format!(
-                        r##"<clipPath id="cp"><path d="{}" /></clipPath>"##,
-                        d
+                        r##"<clipPath id=\"{}\"><path d=\"{}\" /></clipPath>"##,
+                        clip_id, d
                     ));
+                    self.push_element(format!(r##"<g clip-path=\"url(#{})\">"##, clip_id));
+                    self.clip_depth += 1;
                 }
             }
             RenderCommand::SetBlendMode { mode: _ } => {

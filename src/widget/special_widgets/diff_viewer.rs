@@ -151,28 +151,28 @@ impl EventHandler for DiffViewer {
 impl Draw for DiffViewer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(252, 252, 253));
-        context.draw_rect(rect, Color::from_rgb(195, 202, 214));
+        context.fill_rect(rect, Color::rgb(252, 252, 253));
+        context.draw_rect(rect, Color::rgb(195, 202, 214));
 
         let mid_x = rect.x + (rect.width as i32 / 2);
         context.draw_line(
             Point::new(mid_x, rect.y),
             Point::new(mid_x, rect.y + rect.height as i32),
-            Color::from_rgb(216, 222, 232),
+            Color::rgb(216, 222, 232),
         );
 
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
             "LEFT",
             &Font::default(),
-            Color::from_rgb(54, 66, 85),
+            Color::rgb(54, 66, 85),
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(mid_x + 8, rect.y + 16),
             "RIGHT",
             &Font::default(),
-            Color::from_rgb(54, 66, 85),
+            Color::rgb(54, 66, 85),
             HorizontalAlignment::Left,
         );
 
@@ -180,9 +180,9 @@ impl Draw for DiffViewer {
             let y = rect.y + 34 + (idx as i32) * 16;
             let bg = match line.kind {
                 DiffKind::Equal => None,
-                DiffKind::Added => Some(Color::from_rgb(229, 246, 235)),
-                DiffKind::Removed => Some(Color::from_rgb(251, 233, 232)),
-                DiffKind::Changed => Some(Color::from_rgb(253, 244, 225)),
+                DiffKind::Added => Some(Color::rgb(229, 246, 235)),
+                DiffKind::Removed => Some(Color::rgb(251, 233, 232)),
+                DiffKind::Changed => Some(Color::rgb(253, 244, 225)),
             };
             if let Some(color) = bg {
                 context.fill_rect(
@@ -193,7 +193,7 @@ impl Draw for DiffViewer {
             if self.selected_index == Some(idx) {
                 context.draw_rect(
                     Rect::new(rect.x + 2, y - 11, rect.width.saturating_sub(4), 16),
-                    Color::from_rgb(114, 157, 220),
+                    Color::rgb(114, 157, 220),
                 );
             }
 
@@ -202,7 +202,7 @@ impl Draw for DiffViewer {
                     Point::new(rect.x + 8, y),
                     text,
                     &Font::default(),
-                    Color::from_rgb(44, 57, 77),
+                    Color::rgb(44, 57, 77),
                     HorizontalAlignment::Left,
                 );
             }
@@ -211,7 +211,7 @@ impl Draw for DiffViewer {
                     Point::new(mid_x + 8, y),
                     text,
                     &Font::default(),
-                    Color::from_rgb(44, 57, 77),
+                    Color::rgb(44, 57, 77),
                     HorizontalAlignment::Left,
                 );
             }

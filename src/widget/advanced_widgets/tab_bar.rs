@@ -406,22 +406,22 @@ impl TabBar {
 
         // Background color.
         let bg = if !is_enabled {
-            Color::from_rgb(240, 240, 240)
+            Color::rgb(240, 240, 240)
         } else if is_current {
-            Color::from_rgb(255, 255, 255)
+            Color::rgb(255, 255, 255)
         } else if is_hovered {
-            Color::from_rgb(235, 235, 250)
+            Color::rgb(235, 235, 250)
         } else {
-            Color::from_rgb(230, 230, 230)
+            Color::rgb(230, 230, 230)
         };
 
         // Border color.
         let border = if !is_enabled {
-            Color::from_rgb(200, 200, 200)
+            Color::rgb(200, 200, 200)
         } else if is_current {
-            Color::from_rgb(180, 180, 200)
+            Color::rgb(180, 180, 200)
         } else {
-            Color::from_rgb(180, 180, 180)
+            Color::rgb(180, 180, 180)
         };
 
         // Draw tab shape.
@@ -455,7 +455,7 @@ impl TabBar {
 
         // Text color.
         let text_color =
-            if !is_enabled { Color::from_rgb(150, 150, 150) } else { Color::from_rgb(0, 0, 0) };
+            if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
 
         // Draw tab title.
         let text_x = tab_rect.x + 6;
@@ -465,9 +465,9 @@ impl TabBar {
         // Draw close button if closable.
         if let Some(close_rect) = self.close_rect(index) {
             let close_color = if !is_enabled {
-                Color::from_rgb(180, 180, 180)
+                Color::rgb(180, 180, 180)
             } else {
-                Color::from_rgb(100, 100, 100)
+                Color::rgb(100, 100, 100)
             };
             context.draw_line(
                 Point::new(close_rect.x, close_rect.y),

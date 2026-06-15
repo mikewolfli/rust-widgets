@@ -74,7 +74,7 @@ impl SoftwareSurface {
     /// Measures text bounds and baseline metrics.
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         let scale = self.buffer.dpi_scale();
-        let line_height = (font.size * scale).max(1.0);
+        let line_height = (font.size() * scale).max(1.0);
         let ascent = (line_height * 0.8) as u32;
         let descent = (line_height - ascent as f32).max(0.0) as u32;
         let shaped = self.shape_text(text, font);
@@ -105,7 +105,7 @@ impl SoftwareSurface {
         }
         let mut total_advance = 0.0f32;
         for cluster in &mut clusters {
-            cluster.advance = estimate_cluster_advance(&cluster.text, font.size, scale);
+            cluster.advance = estimate_cluster_advance(&cluster.text, font.size(), scale);
             total_advance += cluster.advance;
         }
         ShapedText { clusters, advance: total_advance }

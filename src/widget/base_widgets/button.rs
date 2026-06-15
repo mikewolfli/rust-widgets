@@ -1,5 +1,5 @@
 //! Button widget implementation.
-use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -77,6 +77,7 @@ impl Button {
             self.released_signal.emit();
         }
         self.state_changed.emit(self.state());
+        self.base.request_redraw();
     }
     pub fn press(&mut self) {
         self.set_pressed(true);
@@ -97,9 +98,12 @@ impl Button {
         }
     }
     /// Sets button text.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.base.request_redraw();
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.text != text {
+            self.text = text;
+            self.base.request_redraw();
+        }
     }
     /// Sets the icon displayed on the button.
     #[cfg(not(feature = "mini"))]
@@ -156,14 +160,14 @@ impl EventHandler for Button {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MouseDown((_, _)) if self.base.is_enabled() => {
+            Event::MousePress { pos: _, button: _ } if self.base.is_enabled() => {
                 self.press();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { .. } if self.base.is_enabled() => {
                 self.press();
             }
-            Event::MouseUp((_, _)) if self.pressed => {
+            Event::MouseRelease { pos: _, button: _ } if self.pressed => {
                 self.release();
                 self.base.clicked.emit();
             }
@@ -211,27 +215,24 @@ impl Draw for Button {
 
         // ── Background ──
         let bg = style.background_color.unwrap_or_else(|| match state {
-            ButtonState::Normal => Color::from_rgb(240, 240, 240),
-            ButtonState::Pressed => Color::from_rgb(200, 200, 200),
-            ButtonState::Disabled => Color::from_rgb(220, 220, 220),
+            ButtonState::Normal => Color::rgb(240, 240, 240),
+            ButtonState::Pressed => Color::rgb(200, 200, 200),
+            ButtonState::Disabled => Color::rgb(220, 220, 220),
         });
-        if style.border_radius > 0 {
-            context.fill_rounded_rect(rect, style.border_radius, bg);
+        let br = style.border_radius.unwrap_or(0);
+        if br > 0 {
+            context.fill_rounded_rect(rect, br, bg);
         } else {
             context.fill_rect(rect, bg);
         }
 
         // ── Border ──
         if let Some(border_color) = style.border_color {
-            if style.border_radius > 0 && style.border_width > 0 {
-                context.draw_rounded_rect_stroke(
-                    rect,
-                    style.border_radius,
-                    border_color,
-                    style.border_width,
-                );
-            } else if style.border_width > 0 {
-                context.draw_rect_stroke(rect, border_color, style.border_width);
+            let bw = style.border_width.unwrap_or(0);
+            if br > 0 && bw > 0 {
+                context.draw_rounded_rect_stroke(rect, br, border_color, bw);
+            } else if bw > 0 {
+                context.draw_rect_stroke(rect, border_color, bw);
             }
         }
 
@@ -239,9 +240,9 @@ impl Draw for Button {
         if !self.text.is_empty() {
             let text_color = style.text_color.unwrap_or_else(|| {
                 if state == ButtonState::Disabled {
-                    Color::from_rgb(150, 150, 150)
+                    Color::rgb(150, 150, 150)
                 } else {
-                    Color::from_rgb(0, 0, 0)
+                    Color::rgb(0, 0, 0)
                 }
             });
             let font = style.font.clone().unwrap_or_default();
@@ -459,14 +460,14 @@ mod tests {
         let mut b = make_button();
         assert_eq!(b.text(), "Click");
 
-        b.set_text("OK".into());
+        b.set_text("OK");
         assert_eq!(b.text(), "OK");
     }
 
     #[test]
     fn set_empty_text() {
         let mut b = make_button();
-        b.set_text("".into());
+        b.set_text("");
         assert_eq!(b.text(), "");
         assert!(b.text().is_empty());
     }
@@ -575,7 +576,7 @@ mod tests {
     #[test]
     fn event_mouse_down_presses_button() {
         let mut b = make_button();
-        let event = Event::MouseDown((Point::new(15, 25), 0));
+        let event = Event::MousePress { pos: Point::new(15, 25), button: 0 };
         b.handle_event(&event);
         assert!(b.is_pressed());
         assert_eq!(b.state(), ButtonState::Pressed);
@@ -596,7 +597,7 @@ mod tests {
         b.press();
         assert!(b.is_pressed());
 
-        let event = Event::MouseUp((Point::new(15, 25), 0));
+        let event = Event::MouseRelease { pos: Point::new(15, 25), button: 0 };
         b.handle_event(&event);
         assert!(!b.is_pressed());
         assert_eq!(b.state(), ButtonState::Normal);
@@ -793,7 +794,7 @@ mod tests {
         let mut b = make_button();
         let default_style = b.style().clone();
         // Verify we can set a modified style via builder pattern.
-        let new_style = default_style.clone().with_background(Color::from_rgb(255, 0, 0));
+        let new_style = default_style.clone().with_background(Color::rgb(255, 0, 0));
         b.set_style(new_style.clone());
         assert_eq!(b.style().background_color, new_style.background_color);
     }
@@ -872,14 +873,14 @@ mod tests {
         });
 
         // set_text does NOT emit base.changed — it only calls request_redraw()
-        b.set_text("Click".into());
+        b.set_text("Click");
         assert!(
             !changed_count.load(Ordering::SeqCst),
             "set_text with same value should not emit changed"
         );
 
         // Even setting different text does not emit base.changed
-        b.set_text("Different".into());
+        b.set_text("Different");
         assert!(
             !changed_count.load(Ordering::SeqCst),
             "set_text with different value should not emit changed"

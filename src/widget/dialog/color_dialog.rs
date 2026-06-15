@@ -20,7 +20,7 @@ impl ColorDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
-            current_color: Color::from_rgb(255, 255, 255),
+            current_color: Color::rgb(255, 255, 255),
             options_alpha: false,
             modal: true,
             color_selected: Signal1::new(),
@@ -85,11 +85,11 @@ impl ColorDialog {
         let g = ((1.0 - ry) * 255.0).round() as u8;
         let b = ((1.0 - rx) * 255.0).round() as u8;
         let a = if self.options_alpha { self.current_color.a } else { 255 };
-        Some(Color::from_rgba(r, g, b, a))
+        Some(Color::rgba(r, g, b, a))
     }
 
     fn nudge_rgb(&mut self, dr: i16, dg: i16, db: i16) {
-        let next = Color::from_rgba(
+        let next = Color::rgba(
             (self.current_color.r as i16 + dr).clamp(0, 255) as u8,
             (self.current_color.g as i16 + dg).clamp(0, 255) as u8,
             (self.current_color.b as i16 + db).clamp(0, 255) as u8,
@@ -144,34 +144,34 @@ impl Draw for ColorDialog {
         let rect = self.geometry();
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(245, 245, 245),
+            Color::rgb(245, 245, 245),
         );
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(160, 160, 160),
+            Color::rgb(160, 160, 160),
         );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &tr!("color_dialog.title"),
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         // Color picker area (simplified)
         let picker_rect = self.picker_rect();
-        context.fill_rect(picker_rect, Color::from_rgb(200, 200, 200));
-        context.draw_rect(picker_rect, Color::from_rgb(100, 100, 100));
+        context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
+        context.draw_rect(picker_rect, Color::rgb(100, 100, 100));
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
         context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
         context
-            .draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::from_rgb(0, 0, 0));
+            .draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::rgb(0, 0, 0));
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
             &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
@@ -179,28 +179,28 @@ impl Draw for ColorDialog {
         let btn_w = 80;
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            Color::from_rgb(0, 120, 215),
+            Color::rgb(0, 120, 215),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &tr!("common.button.ok"),
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::from_rgb(225, 225, 225),
+            Color::rgb(225, 225, 225),
         );
         context.draw_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
     }
@@ -215,13 +215,13 @@ mod tests {
     fn mouse_pick_updates_color() {
         let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
         dialog.handle_event(&Event::mouse_press(60, 80, 1));
-        assert_ne!(dialog.current_color(), Color::from_rgb(255, 255, 255));
+        assert_ne!(dialog.current_color(), Color::rgb(255, 255, 255));
     }
 
     #[test]
     fn arrow_keys_nudge_channels() {
         let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
-        dialog.set_current_color(Color::from_rgb(100, 100, 100));
+        dialog.set_current_color(Color::rgb(100, 100, 100));
         dialog.handle_event(&Event::key_press(39, 0));
         assert_eq!(dialog.current_color().r, 105);
         dialog.handle_event(&Event::key_press(38, 0));
@@ -239,9 +239,9 @@ mod tests {
             }
         });
 
-        dialog.set_current_color(Color::from_rgb(1, 2, 3));
+        dialog.set_current_color(Color::rgb(1, 2, 3));
 
         let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
-        assert_eq!(got, vec![Color::from_rgb(1, 2, 3)]);
+        assert_eq!(got, vec![Color::rgb(1, 2, 3)]);
     }
 }

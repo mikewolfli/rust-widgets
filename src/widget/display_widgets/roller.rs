@@ -194,13 +194,13 @@ impl Draw for Roller {
         }
 
         // Resolve style colors with sensible fallbacks.
-        let bg_color = self.style().background_color.unwrap_or(Color::from_rgb(240, 240, 240));
+        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
         let selected_bg = self
             .style()
             .background_color
             .map(|c| Color::rgba(c.r, c.g, c.b, 200))
-            .unwrap_or(Color::from_rgb(0, 120, 215));
-        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(50, 50, 50));
+            .unwrap_or(Color::rgb(0, 120, 215));
+        let text_color = self.style().text_color.unwrap_or(Color::rgb(50, 50, 50));
         let selected_text_color = Color::WHITE;
         let muted_color = Color::rgba(text_color.r, text_color.g, text_color.b, 120);
 

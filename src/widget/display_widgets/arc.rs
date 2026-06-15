@@ -165,9 +165,9 @@ impl Draw for Arc {
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
 
         // Resolve colors from style overrides, falling back to defaults.
-        let track_color = self.style().background_color.unwrap_or(Color::from_rgb(220, 220, 220));
+        let track_color = self.style().background_color.unwrap_or(Color::rgb(220, 220, 220));
 
-        let arc_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 120, 215));
+        let arc_color = self.style().text_color.unwrap_or(Color::rgb(0, 120, 215));
 
         // Radius is half the smaller dimension minus a small inset.
         let outer_radius = rect.width.min(rect.height).saturating_sub(2) / 2;
@@ -232,10 +232,11 @@ impl Draw for Arc {
         // We draw a filled circle in the background color over the center,
         // simulating a donut punch-out.
         if inner_radius > 0 {
-            // Use a neutral light fill that blends with the parent background.
-            // Since we don't have compositing, draw over with a white-ish color
-            // that matches the typical canvas background.
-            let bg = self.style().background_color.unwrap_or(Color::TRANSPARENT);
+            // Use the style background color, or fall back to the track color
+            // (which was already drawn as the full background circle). This
+            // creates a visible donut hole rather than relying on TRANSPARENT
+            // which can't erase the filled circle behind it.
+            let bg = self.style().background_color.unwrap_or(Color::WHITE);
             context.fill_circle(center, inner_radius, bg);
         }
 
@@ -250,7 +251,7 @@ impl Draw for Arc {
             let text_x = center.x - (text_width as i32 / 2);
             let text_y = center.y - (text_height as i32 / 2);
 
-            let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+            let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
             context.draw_text(Point::new(text_x, text_y), &text, &font, text_color, HorizontalAlignment::Left);
         }
     }

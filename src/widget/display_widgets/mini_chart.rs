@@ -107,9 +107,9 @@ impl Draw for MiniChart {
         let rect = self.geometry();
         let style = self.style();
 
-        let bg_color = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
-        let line_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-        let axis_color = style.border_color.unwrap_or(Color::from_rgb(80, 80, 80));
+        let bg_color = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        let line_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let axis_color = style.border_color.unwrap_or(Color::rgb(80, 80, 80));
 
         // Draw background
         context.fill_rect(rect, bg_color);
@@ -127,7 +127,7 @@ impl Draw for MiniChart {
 
         // Draw horizontal grid lines
         let grid_count = 4;
-        let grid_color = Color::from_rgb(220, 220, 220);
+        let grid_color = Color::rgb(220, 220, 220);
         for i in 0..=grid_count {
             let gy = chart_origin_y + (chart_area_h as i32 * i / grid_count);
             context.draw_line(
@@ -270,7 +270,7 @@ impl Draw for MiniChart {
                     let b = (200.0 - t * 180.0) as u8;
 
                     context
-                        .fill_rect(Rect::new(bx, by, bar_width, bar_h), Color::from_rgb(r, g, b));
+                        .fill_rect(Rect::new(bx, by, bar_width, bar_h), Color::rgb(r, g, b));
                 }
             }
         }

@@ -242,8 +242,8 @@ impl Draw for SpinBox {
         let text_x = rect.x + padding;
         let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         let style = self.style();
-        let bg = style.background_color.unwrap_or(Color::from_rgb(255, 255, 255));
-        let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
+        let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
         // Draw background
@@ -261,11 +261,11 @@ impl Draw for SpinBox {
         // Down button
         context.fill_rect(
             Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::from_rgb(240, 240, 240),
+            Color::rgb(240, 240, 240),
         );
         context.draw_rect(
             Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         // Down arrow
         let down_arrow_x_f = down_button_x_f + button_width_f / 2.0;
@@ -275,26 +275,26 @@ impl Draw for SpinBox {
         context.draw_line(
             Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         // Up button
         context.fill_rect(
             Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::from_rgb(240, 240, 240),
+            Color::rgb(240, 240, 240),
         );
         context.draw_rect(
             Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         // Up arrow
         let up_arrow_x_f = up_button_x_f + button_width_f / 2.0;
@@ -302,17 +302,17 @@ impl Draw for SpinBox {
         context.draw_line(
             Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_line(
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         // Draw text
         let display_text = self.display_text();

@@ -14,15 +14,15 @@ impl Point {
     /// Creates a point from f32 coordinates (rounded to nearest integer, clamped to i32 range).
     pub fn from_f32(x: f32, y: f32) -> Self {
         Self {
-            x: x.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
-            y: y.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            x: (x as f64).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: (y as f64).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
         }
     }
     /// Creates a point from f32 coordinates (truncated to integer, clamped to i32 range).
     pub fn from_f32_trunc(x: f32, y: f32) -> Self {
         Self {
-            x: x.clamp(i32::MIN as f32, i32::MAX as f32) as i32,
-            y: y.clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            x: (x as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: (y as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32,
         }
     }
     /// Creates a point from u32 coordinates.
@@ -257,8 +257,8 @@ impl Rect {
     /// Creates a rectangle from f32 coordinates (rounded to nearest integer).
     pub fn from_f32(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
-            x: x.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
-            y: y.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            x: (x as f64).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            y: (y as f64).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
             width: width.round().max(0.0).min(u32::MAX as f32) as u32,
             height: height.round().max(0.0).min(u32::MAX as f32) as u32,
         }
@@ -277,6 +277,8 @@ impl Rect {
         Self { x: x as i32, y: y as i32, width, height }
     }
     /// Creates a rectangle from mixed types (i32 for position, u32 for size).
+    /// Use [`new`] instead.
+    #[deprecated(since = "0.7.0", note = "use `new` instead")]
     pub const fn from_mixed(x: i32, y: i32, width: u32, height: u32) -> Self {
         Self::new(x, y, width, height)
     }
@@ -365,6 +367,10 @@ impl Rect {
     pub const fn is_valid(&self) -> bool {
         self.width > 0 && self.height > 0
     }
+    /// Returns (right, bottom) exclusive max edge coordinates.
+    fn max_coords(&self) -> (i32, i32) {
+        (self.x + self.width as i32, self.y + self.height as i32)
+    }
     /// Returns `true` if the rectangle contains the point (inclusive origin, exclusive max edge).
     pub const fn contains_point(&self, point: Point) -> bool {
         let max_x = self.x + self.width as i32;
@@ -372,21 +378,14 @@ impl Rect {
         point.x >= self.x && point.y >= self.y && point.x < max_x && point.y < max_y
     }
     pub fn intersects(&self, other: &Rect) -> bool {
-        let self_max_x = self.x + self.width as i32;
-        let self_max_y = self.y + self.height as i32;
-        let other_max_x = other.x + other.width as i32;
-        let other_max_y = other.y + other.height as i32;
-        self.x < other_max_x && self_max_x > other.x && self.y < other_max_y && self_max_y > other.y
+        let (sx, sy) = self.max_coords();
+        let (ox, oy) = other.max_coords();
+        self.x < ox && sx > other.x && self.y < oy && sy > other.y
     }
     pub fn contains_rect(&self, other: &Rect) -> bool {
-        let self_max_x = self.x + self.width as i32;
-        let self_max_y = self.y + self.height as i32;
-        let other_max_x = other.x + other.width as i32;
-        let other_max_y = other.y + other.height as i32;
-        other.x >= self.x
-            && other.y >= self.y
-            && other_max_x <= self_max_x
-            && other_max_y <= self_max_y
+        let (sx, sy) = self.max_coords();
+        let (ox, oy) = other.max_coords();
+        other.x >= self.x && other.y >= self.y && ox <= sx && oy <= sy
     }
 
     /// Expand this rectangle outward (keeping center) to meet a minimum size.
@@ -419,23 +418,19 @@ impl Rect {
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
-        let self_max_x = self.x + self.width as i32;
-        let self_max_y = self.y + self.height as i32;
-        let other_max_x = other.x + other.width as i32;
-        let other_max_y = other.y + other.height as i32;
-        let max_x = self_max_x.max(other_max_x);
-        let max_y = self_max_y.max(other_max_y);
+        let (sx, sy) = self.max_coords();
+        let (ox, oy) = other.max_coords();
+        let max_x = sx.max(ox);
+        let max_y = sy.max(oy);
         Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32)
     }
     pub fn intersection(&self, other: &Rect) -> Option<Rect> {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
-        let self_max_x = self.x + self.width as i32;
-        let self_max_y = self.y + self.height as i32;
-        let other_max_x = other.x + other.width as i32;
-        let other_max_y = other.y + other.height as i32;
-        let max_x = self_max_x.min(other_max_x);
-        let max_y = self_max_y.min(other_max_y);
+        let (sx, sy) = self.max_coords();
+        let (ox, oy) = other.max_coords();
+        let max_x = sx.min(ox);
+        let max_y = sy.min(oy);
         if max_x > x && max_y > y {
             Some(Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32))
         } else {
@@ -481,29 +476,23 @@ impl Rect {
     /// Creates rectangle from center point and size.
     pub fn from_center(center: Point, size: Size) -> Self {
         Self::new(
-            center.x - (size.width as i32) / 2,
-            center.y - (size.height as i32) / 2,
+            center.x.saturating_sub((size.width as i32) / 2),
+            center.y.saturating_sub((size.height as i32) / 2),
             size.width,
             size.height,
         )
     }
     /// Creates rectangle with padding applied.
+    /// Use [`shrink`] instead.
+    #[deprecated(since = "0.7.0", note = "use `shrink` instead")]
     pub fn with_padding(&self, padding: i32) -> Self {
-        Self::new(
-            self.x + padding,
-            self.y + padding,
-            (self.width as i32 - 2 * padding).max(0) as u32,
-            (self.height as i32 - 2 * padding).max(0) as u32,
-        )
+        self.shrink(padding)
     }
     /// Creates rectangle with margin applied.
+    /// Use [`grow`] instead.
+    #[deprecated(since = "0.7.0", note = "use `grow` instead")]
     pub fn with_margin(&self, margin: i32) -> Self {
-        Self::new(
-            self.x - margin,
-            self.y - margin,
-            (self.width as i32 + 2 * margin).max(0) as u32,
-            (self.height as i32 + 2 * margin).max(0) as u32,
-        )
+        self.grow(margin)
     }
     /// Returns `true` if the rectangle contains the point (alias for contains_point).
     pub fn contains(&self, point: Point) -> bool {
@@ -515,8 +504,8 @@ impl Rect {
     }
     /// Clamps a point to be inside the rectangle.
     pub fn clamp_point(&self, point: Point) -> Point {
-        let max_x = self.x + self.width as i32 - 1;
-        let max_y = self.y + self.height as i32 - 1;
+        let max_x = self.x.saturating_add((self.width.max(1) - 1) as i32);
+        let max_y = self.y.saturating_add((self.height.max(1) - 1) as i32);
         Point::new(point.x.clamp(self.x, max_x), point.y.clamp(self.y, max_y))
     }
     /// Shrinks the rectangle by `amount` on all sides.
@@ -684,14 +673,14 @@ mod tests {
     fn rect_padding_and_margin() {
         let rect = Rect::new(10, 20, 100, 200);
 
-        let padded = rect.with_padding(5);
+        let padded = rect.shrink(5);
         assert_eq!(padded, Rect::new(15, 25, 90, 190));
 
-        let margined = rect.with_margin(5);
+        let margined = rect.grow(5);
         assert_eq!(margined, Rect::new(5, 15, 110, 210));
 
         // Test with negative padding (should clamp to zero)
-        let padded_neg = rect.with_padding(60);
+        let padded_neg = rect.shrink(60);
         assert_eq!(padded_neg, Rect::new(70, 80, 0, 80));
     }
     #[test]

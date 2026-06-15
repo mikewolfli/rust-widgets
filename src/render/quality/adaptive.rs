@@ -1,9 +1,10 @@
 //! Adaptive rendering quality optimization.
 use crate::quality::QualityLevel;
+use std::collections::VecDeque;
 /// Adaptive rendering optimizer that adjusts quality based on performance.
 pub struct AdaptiveRenderer {
     current_quality: QualityLevel,
-    frame_times: Vec<f32>,
+    frame_times: VecDeque<f32>,
     target_fps: f32,
     degrade_count: usize,
     upgrade_count: usize,
@@ -13,7 +14,7 @@ impl AdaptiveRenderer {
     pub fn new(target_fps: f32) -> Self {
         Self {
             current_quality: QualityLevel::High,
-            frame_times: Vec::with_capacity(120), // Keep 2 seconds of frame times
+            frame_times: VecDeque::with_capacity(120), // Keep 2 seconds of frame times
             target_fps,
             degrade_count: 0,
             upgrade_count: 0,
@@ -21,19 +22,15 @@ impl AdaptiveRenderer {
     }
     /// Updates frame time and adjusts quality if needed.
     pub fn update_frame_time(&mut self, frame_time: f32) -> QualityLevel {
-        self.frame_times.push(frame_time);
+        self.frame_times.push_back(frame_time);
         // Keep only recent frame times
         if self.frame_times.len() > 120 {
-            self.frame_times.remove(0);
+            self.frame_times.pop_front();
         }
         // Calculate average frame time over last 60 frames (1 second)
-        let recent_frames = if self.frame_times.len() >= 60 {
-            &self.frame_times[self.frame_times.len() - 60..]
-        } else {
-            &self.frame_times
-        };
-        let avg_frame_time = if !recent_frames.is_empty() {
-            recent_frames.iter().sum::<f32>() / recent_frames.len() as f32
+        let recent_count = self.frame_times.len().min(60);
+        let avg_frame_time = if recent_count > 0 {
+            self.frame_times.iter().rev().take(recent_count).sum::<f32>() / recent_count as f32
         } else {
             frame_time
         };
@@ -101,12 +98,8 @@ impl AdaptiveRenderer {
         if self.frame_times.is_empty() {
             return 0.0;
         }
-        let recent_frames = if self.frame_times.len() >= 60 {
-            &self.frame_times[self.frame_times.len() - 60..]
-        } else {
-            &self.frame_times
-        };
-        recent_frames.iter().sum::<f32>() / recent_frames.len() as f32
+        let recent_count = self.frame_times.len().min(60);
+        self.frame_times.iter().rev().take(recent_count).sum::<f32>() / recent_count as f32
     }
     /// Returns performance metrics.
     pub fn metrics(&self) -> AdaptiveMetrics {

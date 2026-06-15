@@ -94,6 +94,7 @@ pub fn apply_text_clamp(
     text: &str,
     clamp: &TextClamp,
     max_width: f32,
+    font_size: f32,
     shaper: &dyn TextShaper,
 ) -> Vec<String> {
     if text.is_empty() || max_width <= 0.0 {
@@ -119,7 +120,7 @@ pub fn apply_text_clamp(
             format!("{}{}", current_line, word)
         };
 
-        let line_width = shaper.measure_width(&candidate, clamp.line_height);
+        let line_width = shaper.measure_width(&candidate, font_size);
         if line_width <= max_width || current_line.is_empty() {
             // Word fits (or we must place it because the line is empty).
             current_line = candidate;
@@ -140,25 +141,18 @@ pub fn apply_text_clamp(
         // Apply overflow to the last line to indicate truncation
         if let Some(last) = lines.last_mut() {
             // Ensure the line actually overflows before truncating
-            let last_width = shaper.measure_width(last, clamp.line_height);
+            let last_width = shaper.measure_width(last, font_size);
             if last_width > max_width {
-                *last =
-                    apply_text_overflow(last, max_width, clamp.line_height, clamp.overflow, shaper);
+                *last = apply_text_overflow(last, max_width, font_size, clamp.overflow, shaper);
             } else if !current_line.is_empty() && !last.is_empty() {
                 // The overflow happened in current_line; append its first word and truncate
                 let first_overflow_word = current_line.split_whitespace().next().unwrap_or("");
                 let combined = format!("{}{}", last.trim_end(), first_overflow_word);
-                *last = apply_text_overflow(
-                    &combined,
-                    max_width,
-                    clamp.line_height,
-                    clamp.overflow,
-                    shaper,
-                );
+                *last =
+                    apply_text_overflow(&combined, max_width, font_size, clamp.overflow, shaper);
             } else {
                 // Nothing to add, but still need ellipsis to indicate overflow
-                *last =
-                    apply_text_overflow(last, max_width, clamp.line_height, clamp.overflow, shaper);
+                *last = apply_text_overflow(last, max_width, font_size, clamp.overflow, shaper);
             }
         }
         return lines;
@@ -168,12 +162,12 @@ pub fn apply_text_clamp(
     if !current_line.is_empty() {
         if lines.len() < max_lines {
             // Check if the last line overflows.
-            let last_width = shaper.measure_width(&current_line, clamp.line_height);
+            let last_width = shaper.measure_width(&current_line, font_size);
             if last_width > max_width {
                 lines.push(apply_text_overflow(
                     &current_line,
                     max_width,
-                    clamp.line_height,
+                    font_size,
                     clamp.overflow,
                     shaper,
                 ));
@@ -183,8 +177,7 @@ pub fn apply_text_clamp(
         } else {
             // We already have max_lines, apply overflow to the last pushed line.
             if let Some(last) = lines.last_mut() {
-                *last =
-                    apply_text_overflow(last, max_width, clamp.line_height, clamp.overflow, shaper);
+                *last = apply_text_overflow(last, max_width, font_size, clamp.overflow, shaper);
             }
         }
     }
@@ -274,8 +267,8 @@ mod tests {
     fn test_text_clamp_limits_lines() {
         let shaper = SimpleTextShaper::new();
         let clamp =
-            TextClamp { max_lines: Some(2), overflow: TextOverflow::Clip, line_height: 14.0 };
-        let lines = apply_text_clamp("one two three four five", &clamp, 60.0, &shaper);
+            TextClamp { max_lines: Some(2), overflow: TextOverflow::Clip, line_height: 20.0 };
+        let lines = apply_text_clamp("one two three four five", &clamp, 60.0, 14.0, &shaper);
         assert!(lines.len() <= 2);
     }
 
@@ -283,16 +276,16 @@ mod tests {
     fn test_text_clamp_zero_lines_returns_empty() {
         let shaper = SimpleTextShaper::new();
         let clamp =
-            TextClamp { max_lines: Some(0), overflow: TextOverflow::Clip, line_height: 14.0 };
-        let lines = apply_text_clamp("Hello World", &clamp, 100.0, &shaper);
+            TextClamp { max_lines: Some(0), overflow: TextOverflow::Clip, line_height: 20.0 };
+        let lines = apply_text_clamp("Hello World", &clamp, 100.0, 14.0, &shaper);
         assert!(lines.is_empty());
     }
 
     #[test]
     fn test_text_clamp_no_limit() {
         let shaper = SimpleTextShaper::new();
-        let clamp = TextClamp { max_lines: None, overflow: TextOverflow::Clip, line_height: 14.0 };
-        let lines = apply_text_clamp("a b c d", &clamp, 20.0, &shaper);
+        let clamp = TextClamp { max_lines: None, overflow: TextOverflow::Clip, line_height: 20.0 };
+        let lines = apply_text_clamp("a b c d", &clamp, 20.0, 14.0, &shaper);
         // With None max_lines, each short word should become its own line.
         assert!(lines.len() >= 2);
     }
@@ -301,8 +294,8 @@ mod tests {
     fn test_text_clamp_ellipsis_on_last_line() {
         let shaper = SimpleTextShaper::new();
         let clamp =
-            TextClamp { max_lines: Some(1), overflow: TextOverflow::Ellipsis, line_height: 14.0 };
-        let lines = apply_text_clamp("A very long text string here", &clamp, 20.0, &shaper);
+            TextClamp { max_lines: Some(1), overflow: TextOverflow::Ellipsis, line_height: 20.0 };
+        let lines = apply_text_clamp("A very long text string here", &clamp, 20.0, 14.0, &shaper);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].ends_with('…'));
     }

@@ -57,11 +57,11 @@ impl GestureRecognizer for LongPressGesture {
                 None
             }
             _ => {
-                // Check time threshold on non-touch events (e.g. timer ticks)
+                // Frame-count-based timeout check: fire when duration is exceeded
+                // on any non-touch event, not just Timer.
                 if let Some(start_time) = self.start_time {
                     let elapsed = now_ms.saturating_sub(start_time);
-                    // Only fire on a timer event or when duration is exceeded
-                    if elapsed >= LONG_PRESS_MIN_MS && matches!(event, Event::Timer { .. }) {
+                    if elapsed >= LONG_PRESS_MIN_MS {
                         if let Some(pos) = self.start_pos {
                             self.fired = true;
                             return Some(Event::LongPress { pos });
@@ -249,10 +249,13 @@ impl GestureRecognizer for LongPressDragGesture {
                 None
             }
             _ => {
-                // Check for long-press timeout on any event while holding
+                // Check for long-press timeout only on timer events while holding
                 if !self.long_press_fired && !self.dragging {
                     if let (Some(start_pos), Some(start)) = (self.start_pos, self.start_time) {
-                        if now_ms >= start && now_ms - start >= LONG_PRESS_MIN_MS {
+                        if now_ms >= start
+                            && now_ms - start >= LONG_PRESS_MIN_MS
+                            && matches!(event, Event::Timer { .. })
+                        {
                             self.long_press_fired = true;
                             return Some(Event::LongPress { pos: start_pos });
                         }

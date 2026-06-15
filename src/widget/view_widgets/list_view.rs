@@ -306,9 +306,9 @@ impl Draw for ListView {
         let rect = self.base.geometry();
         use crate::core::Color;
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
         // Draw items from model
         if let Some(ref model) = self.model {
             let item_height = 20;
@@ -322,7 +322,7 @@ impl Draw for ListView {
                 if Some(i) == current_row {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
-                        Color::from_rgb(200, 220, 255),
+                        Color::rgb(200, 220, 255),
                     );
                 }
                 if let Some(text) = model.data(i) {
@@ -330,7 +330,7 @@ impl Draw for ListView {
                         crate::core::Point::new(rect.x + 2, y + item_height / 2),
                         &text,
                         &crate::core::Font::default(),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                         HorizontalAlignment::Left,
                     );
                 }

@@ -202,8 +202,8 @@ impl EventHandler for Breadcrumb {
 impl Draw for Breadcrumb {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(249, 250, 252));
-        context.draw_rect(rect, Color::from_rgb(206, 211, 220));
+        context.fill_rect(rect, Color::rgb(249, 250, 252));
+        context.draw_rect(rect, Color::rgb(206, 211, 220));
 
         let mut x = rect.x;
         for (index, segment) in self.segments.iter().enumerate() {
@@ -211,14 +211,14 @@ impl Draw for Breadcrumb {
             let segment_rect = Rect::new(x, rect.y, width as u32, rect.height);
 
             if self.selected_index == Some(index) {
-                context.fill_rect(segment_rect, Color::from_rgb(220, 231, 247));
+                context.fill_rect(segment_rect, Color::rgb(220, 231, 247));
             }
 
             context.draw_text(
                 Point::new(x + self.segment_padding, rect.y + rect.height as i32 / 2),
                 &segment.label,
                 &Font::default(),
-                Color::from_rgb(34, 45, 64),
+                Color::rgb(34, 45, 64),
                 HorizontalAlignment::Left,
             );
 
@@ -228,7 +228,7 @@ impl Draw for Breadcrumb {
                     Point::new(x + 3, rect.y + rect.height as i32 / 2),
                     ">",
                     &Font::default(),
-                    Color::from_rgb(120, 128, 142),
+                    Color::rgb(120, 128, 142),
                     HorizontalAlignment::Left,
                 );
                 x += self.separator_width;

@@ -181,8 +181,8 @@ impl EventHandler for SegmentedControl {
 impl Draw for SegmentedControl {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(244, 246, 250));
-        context.draw_rect(rect, Color::from_rgb(186, 193, 206));
+        context.fill_rect(rect, Color::rgb(244, 246, 250));
+        context.draw_rect(rect, Color::rgb(186, 193, 206));
 
         for index in 0..self.items.len() {
             let Some(seg) = self.segment_rect(index) else {
@@ -190,11 +190,11 @@ impl Draw for SegmentedControl {
             };
 
             let bg = if self.selected_index == Some(index) {
-                Color::from_rgb(203, 223, 250)
+                Color::rgb(203, 223, 250)
             } else if self.hovered_index == Some(index) {
-                Color::from_rgb(225, 236, 251)
+                Color::rgb(225, 236, 251)
             } else {
-                Color::from_rgb(244, 246, 250)
+                Color::rgb(244, 246, 250)
             };
             context.fill_rect(seg, bg);
 
@@ -202,7 +202,7 @@ impl Draw for SegmentedControl {
                 context.draw_line(
                     Point::new(seg.x, seg.y),
                     Point::new(seg.x, seg.y + seg.height as i32),
-                    Color::from_rgb(186, 193, 206),
+                    Color::rgb(186, 193, 206),
                 );
             }
 
@@ -211,7 +211,7 @@ impl Draw for SegmentedControl {
                     Point::new(seg.x + 8, seg.y + seg.height as i32 / 2),
                     &item.label,
                     &Font::default(),
-                    Color::from_rgb(36, 48, 66),
+                    Color::rgb(36, 48, 66),
                     HorizontalAlignment::Left,
                 );
             }

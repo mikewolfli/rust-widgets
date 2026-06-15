@@ -356,41 +356,41 @@ impl EventHandler for SplitButton {
 impl Draw for SplitButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(244, 246, 250));
-        context.draw_rect(rect, Color::from_rgb(188, 194, 206));
+        context.fill_rect(rect, Color::rgb(244, 246, 250));
+        context.draw_rect(rect, Color::rgb(188, 194, 206));
 
         let primary = self.primary_rect();
         let arrow = self.arrow_rect();
 
         let primary_bg = if self.pressed_primary {
-            Color::from_rgb(192, 218, 247)
+            Color::rgb(192, 218, 247)
         } else if self.hovered_primary {
-            Color::from_rgb(216, 232, 250)
+            Color::rgb(216, 232, 250)
         } else {
-            Color::from_rgb(244, 246, 250)
+            Color::rgb(244, 246, 250)
         };
         context.fill_rect(primary, primary_bg);
 
         let arrow_bg = if self.pressed_arrow || self.menu_open {
-            Color::from_rgb(192, 218, 247)
+            Color::rgb(192, 218, 247)
         } else if self.hovered_arrow {
-            Color::from_rgb(216, 232, 250)
+            Color::rgb(216, 232, 250)
         } else {
-            Color::from_rgb(236, 239, 245)
+            Color::rgb(236, 239, 245)
         };
         context.fill_rect(arrow, arrow_bg);
 
         context.draw_line(
             Point::new(arrow.x, arrow.y),
             Point::new(arrow.x, arrow.y + arrow.height as i32),
-            Color::from_rgb(188, 194, 206),
+            Color::rgb(188, 194, 206),
         );
 
         context.draw_text(
             Point::new(primary.x + 8, primary.y + primary.height as i32 / 2),
             &self.text,
             &Font::default(),
-            Color::from_rgb(34, 45, 64),
+            Color::rgb(34, 45, 64),
             HorizontalAlignment::Left,
         );
 
@@ -398,14 +398,14 @@ impl Draw for SplitButton {
             Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow.y + arrow.height as i32 / 2),
             "v",
             &Font::default(),
-            Color::from_rgb(64, 74, 88),
+            Color::rgb(64, 74, 88),
             HorizontalAlignment::Left,
         );
 
         if self.menu_open {
             let menu = self.menu_rect();
-            context.fill_rect(menu, Color::from_rgb(255, 255, 255));
-            context.draw_rect(menu, Color::from_rgb(188, 194, 206));
+            context.fill_rect(menu, Color::rgb(255, 255, 255));
+            context.draw_rect(menu, Color::rgb(188, 194, 206));
 
             for index in 0..self.actions.len() {
                 let Some(action_rect) = self.action_rect(index) else {
@@ -413,7 +413,7 @@ impl Draw for SplitButton {
                 };
 
                 if self.highlighted_action_index == Some(index) {
-                    context.fill_rect(action_rect, Color::from_rgb(218, 232, 250));
+                    context.fill_rect(action_rect, Color::rgb(218, 232, 250));
                 }
 
                 if let Some(action) = self.actions.get(index) {
@@ -424,7 +424,7 @@ impl Draw for SplitButton {
                         ),
                         &action.label,
                         &Font::default(),
-                        Color::from_rgb(34, 45, 64),
+                        Color::rgb(34, 45, 64),
                         HorizontalAlignment::Left,
                     );
                 }

@@ -228,9 +228,9 @@ impl Draw for TableWidget {
         let rect = self.base.geometry();
         use crate::core::Color;
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
         // Draw grid from model
         if let Some(ref model) = self.model {
             let row_h = 20;
@@ -250,7 +250,7 @@ impl Draw for TableWidget {
                 if Some(r) == current_row {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, row_h as u32),
-                        Color::from_rgb(200, 220, 255),
+                        Color::rgb(200, 220, 255),
                     );
                 }
                 for c in 0..col_count {
@@ -260,7 +260,7 @@ impl Draw for TableWidget {
                             crate::core::Point::new(x + 2, y + row_h / 2),
                             &text,
                             &crate::core::Font::default(),
-                            Color::from_rgb(0, 0, 0),
+                            Color::rgb(0, 0, 0),
                             HorizontalAlignment::Left,
                         );
                     }
@@ -269,7 +269,7 @@ impl Draw for TableWidget {
                         context.draw_line(
                             crate::core::Point::new(x + col_w as i32, y),
                             crate::core::Point::new(x + col_w as i32, y + row_h),
-                            Color::from_rgb(220, 220, 220),
+                            Color::rgb(220, 220, 220),
                         );
                     }
                 }
@@ -278,7 +278,7 @@ impl Draw for TableWidget {
                     context.draw_line(
                         crate::core::Point::new(rect.x, y + row_h),
                         crate::core::Point::new(rect.x + rect.width as i32, y + row_h),
-                        Color::from_rgb(220, 220, 220),
+                        Color::rgb(220, 220, 220),
                     );
                 }
             }
@@ -625,7 +625,7 @@ mod tests {
 
         tv.set_geometry(Rect::new(0, 0, 500, 400));
         assert_eq!(tv.geometry(), Rect::new(0, 0, 500, 400));
-        assert_eq!(tv.rect(), Rect::new(0, 0, 500, 400));
+        assert_eq!(tv.geometry(), Rect::new(0, 0, 500, 400));
         assert_eq!(tv.position(), Point::new(0, 0));
         assert_eq!(tv.size(), crate::core::Size::new(500, 400));
     }

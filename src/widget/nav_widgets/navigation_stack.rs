@@ -159,7 +159,7 @@ impl Draw for NavigationStack {
         // ── Draw Navigation Bar ──
         let nav_rect = self.nav_bar_rect();
         // Nav bar background
-        context.fill_rect(nav_rect, Color::from_rgb(245, 246, 248));
+        context.fill_rect(nav_rect, Color::rgb(245, 246, 248));
         // Nav bar bottom border
         context.draw_line(
             Point::new(nav_rect.x, nav_rect.y + nav_rect.height as i32 - 1),

@@ -29,6 +29,9 @@ impl<T: Clone + Send + 'static> Binding<T> {
     }
 
     /// Get the current value.
+    ///
+    /// For `T: Copy` types, use [`get_copy`](Self::get_copy) to avoid the clone.
+    #[inline(always)]
     pub fn get(&self) -> T {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).value.clone()
     }
@@ -110,6 +113,17 @@ impl<T: Clone + Send + 'static> Binding<T> {
             &listener_other_key,
             Box::new(TwoWayListener::new(syncing, other_weak, self_weak)),
         );
+    }
+
+    /// Get the current value without cloning (available for `Copy` types).
+    ///
+    /// This avoids the `.clone()` that [`get`](Self::get) always performs.
+    #[inline(always)]
+    pub fn get_copy(&self) -> T
+    where
+        T: Copy,
+    {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).value
     }
 
     /// Return the number of currently registered listeners.

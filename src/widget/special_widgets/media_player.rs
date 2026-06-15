@@ -261,8 +261,8 @@ impl EventHandler for MediaPlayer {
 impl Draw for MediaPlayer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(24, 28, 36));
-        context.draw_rect(rect, Color::from_rgb(72, 84, 102));
+        context.fill_rect(rect, Color::rgb(24, 28, 36));
+        context.draw_rect(rect, Color::rgb(72, 84, 102));
 
         let title = self
             .source
@@ -277,14 +277,14 @@ impl Draw for MediaPlayer {
             Point::new(rect.x + 10, rect.y + 18),
             title,
             &Font::default(),
-            Color::from_rgb(232, 237, 245),
+            Color::rgb(232, 237, 245),
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + 10, rect.y + 36),
             &format!("{} | {} | {}", state, vol, fs),
             &Font::default(),
-            Color::from_rgb(190, 202, 220),
+            Color::rgb(190, 202, 220),
             HorizontalAlignment::Left,
         );
 
@@ -294,12 +294,12 @@ impl Draw for MediaPlayer {
             rect.width.saturating_sub(20),
             8,
         );
-        context.fill_rect(bar_rect, Color::from_rgb(62, 73, 90));
+        context.fill_rect(bar_rect, Color::rgb(62, 73, 90));
         let fill_w = ((bar_rect.width as f32) * self.progress_ratio()) as u32;
         if fill_w > 0 {
             context.fill_rect(
                 Rect::new(bar_rect.x, bar_rect.y, fill_w, bar_rect.height),
-                Color::from_rgb(107, 171, 248),
+                Color::rgb(107, 171, 248),
             );
         }
     }

@@ -4,7 +4,7 @@
 //! displays a dropdown list of suggestions as the user types. The user can
 //! select a suggestion with the keyboard (Enter) or by clicking.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -227,7 +227,13 @@ impl Draw for AutoCompleteEdit {
         } else {
             Color::rgba(0, 0, 0, 255)
         };
-        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            display_text,
+            &font,
+            text_color,
+            HorizontalAlignment::Left,
+        );
 
         // Draw dropdown if visible
         if !self.show_dropdown || self.filtered_suggestions.is_empty() {
@@ -302,7 +308,7 @@ impl EventHandler for AutoCompleteEdit {
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
                 if *key == 13 {
                     // Enter
                     if self.show_dropdown {
@@ -313,10 +319,10 @@ impl EventHandler for AutoCompleteEdit {
                     if self.show_dropdown {
                         self.hide_dropdown();
                     }
-                } else if *key == 38 && self.show_dropdown {
+                } else if *key == 38 && *modifiers == 0 && self.show_dropdown {
                     // Up arrow
                     self.select_previous();
-                } else if *key == 40 && self.show_dropdown {
+                } else if *key == 40 && *modifiers == 0 && self.show_dropdown {
                     // Down arrow
                     self.select_next();
                 } else if *key >= 32 && *key <= 126 {

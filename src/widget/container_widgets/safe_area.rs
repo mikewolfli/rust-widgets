@@ -69,7 +69,7 @@ impl Draw for SafeArea {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let g = self.geometry();
         let cr = self.content_rect();
-        // Fill margin areas (top/bottom bars)
+        // Fill margin areas (top/bottom/left/right bars)
         if self.insets.top > 0 {
             ctx.fill_rect(Rect::new(g.x, g.y, g.width, self.insets.top), self.margin_color);
         }
@@ -80,6 +80,25 @@ impl Draw for SafeArea {
                     g.y + g.height as i32 - self.insets.bottom as i32,
                     g.width,
                     self.insets.bottom,
+                ),
+                self.margin_color,
+            );
+        }
+        if self.insets.left > 0 {
+            let left_bar_height = g.height.saturating_sub(self.insets.top + self.insets.bottom);
+            ctx.fill_rect(
+                Rect::new(g.x, g.y + self.insets.top as i32, self.insets.left, left_bar_height),
+                self.margin_color,
+            );
+        }
+        if self.insets.right > 0 {
+            let right_bar_height = g.height.saturating_sub(self.insets.top + self.insets.bottom);
+            ctx.fill_rect(
+                Rect::new(
+                    g.x + g.width as i32 - self.insets.right as i32,
+                    g.y + self.insets.top as i32,
+                    self.insets.right,
+                    right_bar_height,
                 ),
                 self.margin_color,
             );

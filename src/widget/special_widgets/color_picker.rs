@@ -27,19 +27,19 @@ impl ColorPicker {
     pub fn new(geometry: Rect) -> Self {
         let mut picker = Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorPicker"),
-            color: Color::from_rgb(255, 0, 0),
+            color: Color::rgb(255, 0, 0),
             hue: 0,
             saturation: 255,
             value: 255,
             alpha: 255,
             show_alpha: true,
             presets: vec![
-                Color::from_rgb(244, 67, 54),
-                Color::from_rgb(33, 150, 243),
-                Color::from_rgb(76, 175, 80),
-                Color::from_rgb(255, 193, 7),
-                Color::from_rgb(156, 39, 176),
-                Color::from_rgb(96, 125, 139),
+                Color::rgb(244, 67, 54),
+                Color::rgb(33, 150, 243),
+                Color::rgb(76, 175, 80),
+                Color::rgb(255, 193, 7),
+                Color::rgb(156, 39, 176),
+                Color::rgb(96, 125, 139),
             ],
             color_changed: Signal1::new(),
             hex_changed: Signal1::new(),
@@ -256,22 +256,22 @@ impl EventHandler for ColorPicker {
 impl Draw for ColorPicker {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(247, 249, 252));
-        context.draw_rect(rect, Color::from_rgb(186, 195, 208));
+        context.fill_rect(rect, Color::rgb(247, 249, 252));
+        context.draw_rect(rect, Color::rgb(186, 195, 208));
 
         let palette = self.palette_rect();
         let base_hue = hsv_to_color(self.hue, 255, 255, 255);
         context.fill_rect(palette, base_hue.blend(&Color::WHITE, 0.25));
-        context.draw_rect(palette, Color::from_rgb(142, 153, 170));
+        context.draw_rect(palette, Color::rgb(142, 153, 170));
 
         let hue_rect = self.hue_rect();
-        context.fill_rect(hue_rect, Color::from_rgb(210, 214, 223));
-        context.draw_rect(hue_rect, Color::from_rgb(138, 147, 161));
+        context.fill_rect(hue_rect, Color::rgb(210, 214, 223));
+        context.draw_rect(hue_rect, Color::rgb(138, 147, 161));
 
         if self.show_alpha {
             let alpha_rect = self.alpha_rect();
-            context.fill_rect(alpha_rect, Color::from_rgb(226, 229, 236));
-            context.draw_rect(alpha_rect, Color::from_rgb(150, 159, 172));
+            context.fill_rect(alpha_rect, Color::rgb(226, 229, 236));
+            context.draw_rect(alpha_rect, Color::rgb(150, 159, 172));
         }
 
         for (index, color) in self.presets.iter().enumerate() {
@@ -279,7 +279,7 @@ impl Draw for ColorPicker {
                 continue;
             };
             context.fill_rect(preset_rect, *color);
-            context.draw_rect(preset_rect, Color::from_rgb(107, 116, 131));
+            context.draw_rect(preset_rect, Color::rgb(107, 116, 131));
         }
 
         context.fill_rect(
@@ -288,14 +288,14 @@ impl Draw for ColorPicker {
         );
         context.draw_rect(
             Rect::new(rect.x + rect.width as i32 - 70, rect.y + rect.height as i32 - 28, 56, 18),
-            Color::from_rgb(40, 48, 63),
+            Color::rgb(40, 48, 63),
         );
 
         context.draw_text(
             Point::new(rect.x + 8, rect.y + rect.height as i32 - 12),
             &self.hex_rgba(),
             &Font::default(),
-            Color::from_rgb(53, 66, 84),
+            Color::rgb(53, 66, 84),
             HorizontalAlignment::Left,
         );
     }
@@ -324,7 +324,7 @@ fn hsv_to_color(h: u8, s: u8, v: u8, a: u8) -> Color {
         (c, 0.0, x)
     };
 
-    Color::from_rgba(
+    Color::rgba(
         ((r1 + m) * 255.0).round() as u8,
         ((g1 + m) * 255.0).round() as u8,
         ((b1 + m) * 255.0).round() as u8,
@@ -351,7 +351,7 @@ mod tests {
     fn set_hex_updates_color() {
         let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
         assert!(picker.set_hex("#336699CC"));
-        assert_eq!(picker.color(), Color::from_rgba(0x33, 0x66, 0x99, 0xCC));
+        assert_eq!(picker.color(), Color::rgba(0x33, 0x66, 0x99, 0xCC));
     }
 
     #[test]

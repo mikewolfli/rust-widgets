@@ -6,7 +6,7 @@
 //! half (previous) or right half (next) of the widget. Dot indicators at the
 //! bottom show the current position within the page sequence.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -136,36 +136,71 @@ impl Draw for Carousel {
                 + metrics.ascent as i32;
             let text_color =
                 if !is_enabled { Color::rgba(255, 255, 255, 160) } else { Color::WHITE };
-            context.draw_text(Point::new(text_x, text_y), &page.title, &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &page.title,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Dot page indicators ─────────────────────────────────────
-        let dot_count = page_count.min(10); // Cap dots at 10 to avoid overflow
+        const MAX_VISIBLE_DOTS: usize = 20;
+        const SIDE_DOTS: usize = 9;
+
+        // Build the list of page indices to show as dots.
+        // For > MAX_VISIBLE_DOTS pages, truncate with an ellipsis marker (None).
+        let dot_pages: Vec<Option<usize>> = if page_count <= MAX_VISIBLE_DOTS {
+            (0..page_count).map(Some).collect()
+        } else {
+            let mut dots: Vec<Option<usize>> = (0..SIDE_DOTS).map(Some).collect();
+            dots.push(None); // ellipsis marker
+            for i in (page_count - (MAX_VISIBLE_DOTS - SIDE_DOTS - 1))..page_count {
+                dots.push(Some(i));
+            }
+            dots
+        };
+
         let dot_radius: u32 = 4;
         let dot_spacing: u32 = 16;
-        let total_dots_width = dot_count as u32 * dot_spacing;
+        let total_dots_width = dot_pages.len() as u32 * dot_spacing;
         let dots_start_x = rect.x + (rect.width as i32 - total_dots_width as i32) / 2;
         let dots_y = rect.y + rect.height as i32 - 20;
 
-        for i in 0..dot_count {
+        for (i, &maybe_page) in dot_pages.iter().enumerate() {
             let dot_x = dots_start_x + (i as i32 * dot_spacing as i32);
-            let dot_rect = Rect::new(dot_x, dots_y, dot_radius * 2, dot_radius * 2);
 
-            let is_active = i == self.current_index;
-            let dot_color = if is_active { Color::WHITE } else { Color::rgba(255, 255, 255, 120) };
+            match maybe_page {
+                None => {
+                    // Ellipsis indicator: a small dim dot
+                    let dot_rect = Rect::new(dot_x + 4, dots_y + 4, 2, 2);
+                    context.fill_rounded_rect(dot_rect, 1, Color::rgba(255, 255, 255, 60));
+                }
+                Some(page_idx) => {
+                    let dot_rect = Rect::new(dot_x, dots_y, dot_radius * 2, dot_radius * 2);
+                    let is_active = page_idx == self.current_index;
+                    let dot_color =
+                        if is_active { Color::WHITE } else { Color::rgba(255, 255, 255, 120) };
 
-            context.fill_rounded_rect(dot_rect, dot_radius, dot_color);
+                    context.fill_rounded_rect(dot_rect, dot_radius, dot_color);
 
-            // Active dot slightly larger
-            if is_active {
-                let active_dot_rect =
-                    Rect::new(dot_x - 1, dots_y - 1, dot_radius * 2 + 2, dot_radius * 2 + 2);
-                context.draw_rounded_rect_stroke(
-                    active_dot_rect,
-                    dot_radius + 1,
-                    Color::rgba(255, 255, 255, 80),
-                    1,
-                );
+                    // Active dot slightly larger
+                    if is_active {
+                        let active_dot_rect = Rect::new(
+                            dot_x - 1,
+                            dots_y - 1,
+                            dot_radius * 2 + 2,
+                            dot_radius * 2 + 2,
+                        );
+                        context.draw_rounded_rect_stroke(
+                            active_dot_rect,
+                            dot_radius + 1,
+                            Color::rgba(255, 255, 255, 80),
+                            1,
+                        );
+                    }
+                }
             }
         }
     }

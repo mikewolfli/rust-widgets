@@ -126,8 +126,8 @@ impl EventHandler for TerminalView {
 impl Draw for TerminalView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(22, 27, 34));
-        context.draw_rect(rect, Color::from_rgb(68, 78, 92));
+        context.fill_rect(rect, Color::rgb(22, 27, 34));
+        context.draw_rect(rect, Color::rgb(68, 78, 92));
 
         let max_lines = ((rect.height.saturating_sub(28)) / 14) as usize;
         let start = self.lines.len().saturating_sub(max_lines);
@@ -137,7 +137,7 @@ impl Draw for TerminalView {
                 Point::new(rect.x + 8, y),
                 line,
                 &Font::default(),
-                Color::from_rgb(217, 224, 236),
+                Color::rgb(217, 224, 236),
                 HorizontalAlignment::Left,
             );
         }
@@ -147,7 +147,7 @@ impl Draw for TerminalView {
             Point::new(rect.x + 8, prompt_y),
             &format!("> {}", self.input_line),
             &Font::default(),
-            Color::from_rgb(140, 218, 160),
+            Color::rgb(140, 218, 160),
             HorizontalAlignment::Left,
         );
     }

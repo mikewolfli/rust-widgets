@@ -156,19 +156,19 @@ impl Draw for GroupBox {
         let title_rect = self.title_rect();
         let style = self.style();
         // Draw border
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::from_rgb(200, 200, 200)));
+        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         // Draw title background to hide border
         let title_bg_width = title_rect.width + 20;
         let title_bg_x = title_rect.x - 10;
         context.fill_rect(
             Rect::new(title_bg_x, rect.y, title_bg_width, 2),
-            style.background_color.unwrap_or(Color::from_rgb(255, 255, 255)),
+            style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
         );
         // Draw checkbox if checkable
         if self.checkable {
             if let Some(checkbox_rect) = self.checkbox_rect() {
                 // Draw checkbox border
-                context.draw_rect(checkbox_rect, Color::from_rgb(100, 100, 100));
+                context.draw_rect(checkbox_rect, Color::rgb(100, 100, 100));
                 // Draw checkmark if checked
                 if self.checked {
                     context.draw_line(
@@ -180,7 +180,7 @@ impl Draw for GroupBox {
                             checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5,
                             checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0,
                         ),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                     );
                     context.draw_line(
                         Point::from_f32(
@@ -191,7 +191,7 @@ impl Draw for GroupBox {
                             checkbox_rect.x as f32 + checkbox_rect.width as f32 - 2.0,
                             checkbox_rect.y as f32 + 2.0,
                         ),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                     );
                 }
             }
@@ -199,9 +199,9 @@ impl Draw for GroupBox {
         // Draw title text
         if !self.title.is_empty() {
             let text_color = if self.base.is_enabled() {
-                style.text_color.unwrap_or(Color::from_rgb(0, 0, 0))
+                style.text_color.unwrap_or(Color::rgb(0, 0, 0))
             } else {
-                Color::from_rgb(150, 150, 150)
+                Color::rgb(150, 150, 150)
             };
             context.draw_text(
                 Point::from_f32(title_rect.x as f32, title_rect.y as f32),

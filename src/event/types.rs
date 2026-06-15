@@ -31,18 +31,39 @@ pub enum GestureClass {
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Legacy pointer/button press payload.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use [`MousePress`] instead.
     MouseDown((Point, u32)),
     /// Legacy pointer/button release payload.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use [`MouseRelease`] instead.
     MouseUp((Point, u32)),
     /// Legacy pointer move payload.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use [`MouseMove`] instead.
     MouseMoveLegacy((Point, u32)),
     /// Legacy keyboard press payload.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use [`KeyPress`] instead.
     KeyDown((u32, u32)),
     /// Legacy keyboard release payload.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use [`KeyRelease`] instead.
     KeyUp((u32, u32)),
     /// Legacy focus gained event.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use the `focus_gained` signal on [`BaseWidget`] instead.
     FocusGained,
     /// Legacy focus lost event.
+    ///
+    /// This is a legacy variant kept for backward compatibility.
+    /// Use the `focus_lost` signal on [`BaseWidget`] instead.
     FocusLost,
     /// Pointer moved inside active surface.
     MouseMove { pos: Point },
@@ -327,7 +348,8 @@ impl Event {
             | Self::DoubleTap { .. }
             | Self::LongPress { .. }
             | Self::Swipe { .. }
-            | Self::Fling { .. } => Some(GestureClass::Single),
+            | Self::Fling { .. }
+            | Self::Drag { .. } => Some(GestureClass::Single),
             #[cfg(feature = "touch")]
             Self::Pinch { .. }
             | Self::Rotate { .. }
@@ -704,28 +726,45 @@ impl AsyncTask {
     }
 }
 
+use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{Mutex, OnceLock};
+
+fn channel() -> &'static (mpsc::Sender<AsyncTask>, Mutex<mpsc::Receiver<AsyncTask>>) {
+    static CHANNEL: OnceLock<(mpsc::Sender<AsyncTask>, Mutex<mpsc::Receiver<AsyncTask>>)> =
+        OnceLock::new();
+    CHANNEL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        (tx, Mutex::new(rx))
+    })
+}
+
 /// Schedules a closure to run on the event loop thread.
+///
+/// Safe to call from any thread; the task will be delivered to the event loop
+/// via a global `mpsc` channel. The event loop drains tasks each frame via
+/// [`drain_tasks()`].
 pub fn schedule_task<F>(id: u64, f: F)
 where
     F: FnOnce() + Send + 'static,
 {
     let task = AsyncTask::new(id, f);
-    // Push to a global task queue that the event loop drains each frame
-    TASK_QUEUE.with(|q| {
-        q.borrow_mut().push_back(task);
-    });
-}
-
-thread_local! {
-    static TASK_QUEUE: std::cell::RefCell<std::collections::VecDeque<AsyncTask>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    let (tx, _) = channel();
+    // The channel lives for the program's lifetime, so send will never fail.
+    let _ = tx.send(task);
 }
 
 /// Drain all pending async tasks (called by event loop each frame).
 pub fn drain_tasks() {
-    TASK_QUEUE.with(|q| {
-        let mut tasks = q.borrow_mut();
-        while let Some(task) = tasks.pop_front() {
-            (task.task)();
+    let (_, rx_mutex) = channel();
+    let Ok(rx) = rx_mutex.lock() else { return };
+    loop {
+        match rx.try_recv() {
+            Ok(task) => (task.task)(),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                // Channel disconnected — no more tasks will arrive.
+                break;
+            }
         }
-    });
+    }
 }

@@ -175,18 +175,18 @@ impl Draw for FileDialog {
         let rect = self.geometry();
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(245, 245, 245),
+            Color::rgb(245, 245, 245),
         );
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(160, 160, 160),
+            Color::rgb(160, 160, 160),
         );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         // File list area
@@ -194,17 +194,17 @@ impl Draw for FileDialog {
         let list_h = rect.height.saturating_sub(120);
         context.fill_rect(
             Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
         );
         context.draw_rect(
             Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            Color::from_rgb(150, 150, 150),
+            Color::rgb(150, 150, 150),
         );
         context.draw_text(
             Point::new(rect.x + 16, list_y + 20),
             &tr!("dialog.file_dialog.file_list_placeholder"),
             &Font::default(),
-            Color::from_rgb(150, 150, 150),
+            Color::rgb(150, 150, 150),
             HorizontalAlignment::Left,
         );
         // Selected files display
@@ -213,23 +213,23 @@ impl Draw for FileDialog {
             Point::new(rect.x + 10, sel_y + 10),
             &tr!("dialog.file_dialog.file_name"),
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         let fname = self.selected_file().unwrap_or("");
         context.fill_rect(
             Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
         );
         context.draw_rect(
             Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
-            Color::from_rgb(150, 150, 150),
+            Color::rgb(150, 150, 150),
         );
         context.draw_text(
             Point::new(rect.x + 84, sel_y + 11),
             fname,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
@@ -242,28 +242,28 @@ impl Draw for FileDialog {
         };
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            Color::from_rgb(0, 120, 215),
+            Color::rgb(0, 120, 215),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &ok_label,
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::from_rgb(225, 225, 225),
+            Color::rgb(225, 225, 225),
         );
         context.draw_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
     }

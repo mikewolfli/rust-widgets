@@ -3,7 +3,7 @@
 //! Displays a preview of a font family at configurable sizes, with sample
 //! text, alphabet samples, and pangrams. Supports bold and italic styles.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -280,7 +280,7 @@ mod tests {
     fn font_preview_build_font() {
         let fp = FontPreview::new("Times New Roman", Rect::new(0, 0, 300, 200));
         let font = fp.build_font(12.0);
-        assert_eq!(font.family, "Times New Roman");
-        assert!((font.size - 12.0).abs() < 0.01);
+        assert_eq!(font.family(), "Times New Roman");
+        assert!((font.size() - 12.0).abs() < 0.01);
     }
 }

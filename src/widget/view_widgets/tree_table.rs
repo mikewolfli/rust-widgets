@@ -289,8 +289,8 @@ impl Widget for TreeTable {
 impl Draw for TreeTable {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
 
         if self.visible_rows.is_empty() {
             return;
@@ -313,7 +313,7 @@ impl Draw for TreeTable {
             if self.selected_row == Some(row) {
                 context.fill_rect(
                     Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::from_rgb(210, 230, 255),
+                    Color::rgb(210, 230, 255),
                 );
             }
 
@@ -325,7 +325,7 @@ impl Draw for TreeTable {
 
                 context.draw_rect(
                     Rect::new(x, y, self.column_width, self.row_height),
-                    Color::from_rgb(230, 230, 230),
+                    Color::rgb(230, 230, 230),
                 );
 
                 if let Some(text) = self.item(row, col) {
@@ -335,7 +335,7 @@ impl Draw for TreeTable {
                         Point::new(x + 4 + indent, y + row_h / 2),
                         &text,
                         &Font::default(),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                         HorizontalAlignment::Left,
                     );
                 }

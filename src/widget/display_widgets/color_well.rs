@@ -104,7 +104,7 @@ impl EventHandler for ColorWell {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } | Event::MouseRelease { pos: _, button } => {
+            Event::MousePress { pos: _, button } => {
                 if *button == 1 {
                     self.clicked.emit();
                 }

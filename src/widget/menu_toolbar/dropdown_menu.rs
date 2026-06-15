@@ -246,7 +246,7 @@ impl Draw for DropdownMenu {
         let text_color = if !is_enabled {
             Color::rgba(150, 150, 150, 200)
         } else if self.selected_value.is_some() {
-            Color::from_rgb(33, 33, 33)
+            Color::rgb(33, 33, 33)
         } else {
             Color::rgba(180, 180, 180, 200)
         };
@@ -316,7 +316,7 @@ impl Draw for DropdownMenu {
                 let item_text_color = if !item.enabled {
                     Color::rgba(180, 180, 180, 200)
                 } else {
-                    Color::from_rgb(33, 33, 33)
+                    Color::rgb(33, 33, 33)
                 };
                 let item_font = Font::simple("sans-serif", 12.0);
                 let mut item_x = ir.x + PADDING;

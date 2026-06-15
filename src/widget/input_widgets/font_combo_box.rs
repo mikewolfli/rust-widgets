@@ -1,4 +1,4 @@
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
@@ -11,6 +11,7 @@ pub struct FontComboBox {
     current_index: i32,
     editable: bool,
     max_visible_items: i32,
+    expanded: bool,
     /// Emitted when the current font changes.
     pub current_font_changed: Signal1<Font>,
     /// Emitted when the current index changes.
@@ -34,6 +35,7 @@ impl FontComboBox {
             current_index: -1,
             editable: false,
             max_visible_items: 10,
+            expanded: false,
             current_font_changed: Signal1::new(),
             current_index_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -75,7 +77,7 @@ impl FontComboBox {
             if clamped >= 0 && clamped < self.fonts.len() as i32 {
                 // Update current font based on selection
                 if let Some(font_name) = self.fonts.get(clamped as usize) {
-                    let new_font = Font::new(font_name, self.current_font.size, false, false);
+                    let new_font = Font::new(font_name, self.current_font.size(), false, false);
                     self.set_current_font(new_font);
                 }
             }
@@ -110,10 +112,14 @@ impl FontComboBox {
         self.base.request_redraw();
     }
     pub fn show_popup(&mut self) {
+        self.expanded = true;
         self.popup_shown.emit();
+        self.base.request_redraw();
     }
     pub fn hide_popup(&mut self) {
+        self.expanded = false;
         self.popup_hidden.emit();
+        self.base.request_redraw();
     }
     pub fn current_text(&self) -> String {
         if self.current_index >= 0 && self.current_index < self.fonts.len() as i32 {
@@ -166,7 +172,20 @@ impl Draw for FontComboBox {
         let g = self.geometry();
         ctx.fill_rect(g, Color::WHITE);
         ctx.draw_rect(g, Color::rgb(200, 200, 200));
-        let font_name = self.current_font().family.clone();
+        // Draw drop-down arrow indicator
+        let arrow_right_x = g.x + g.width as i32 - 14;
+        let arrow_y = g.y + g.height as i32 / 2;
+        ctx.draw_line(
+            Point::new(arrow_right_x - 3, arrow_y - 2),
+            Point::new(arrow_right_x, arrow_y + 2),
+            Color::rgb(100, 100, 100),
+        );
+        ctx.draw_line(
+            Point::new(arrow_right_x, arrow_y + 2),
+            Point::new(arrow_right_x + 3, arrow_y - 2),
+            Color::rgb(100, 100, 100),
+        );
+        let font_name = self.current_font().family().to_string();
         ctx.draw_text(
             Point::new(g.x + 4, g.y + g.height as i32 / 2 + 5),
             &font_name,
@@ -174,6 +193,41 @@ impl Draw for FontComboBox {
             Color::BLACK,
             HorizontalAlignment::Left,
         );
+        // Draw popup list when expanded
+        if self.expanded && !self.fonts.is_empty() {
+            let popup_item_height = 22i32;
+            let visible_count = self.fonts.len().min(self.max_visible_items as usize);
+            let popup_height = (visible_count as i32) * popup_item_height;
+            let popup_rect = Rect::new(g.x, g.y + g.height as i32, g.width, popup_height as u32);
+            ctx.fill_rect(popup_rect, Color::WHITE);
+            ctx.draw_rect(popup_rect, Color::rgb(180, 180, 180));
+            let display_font = Font::default_ui();
+            for i in 0..visible_count {
+                let item_y = popup_rect.y + (i as i32) * popup_item_height;
+                let item_rect =
+                    Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
+                if i as i32 == self.current_index {
+                    ctx.fill_rect(item_rect, Color::rgb(0, 120, 215));
+                    if let Some(name) = self.fonts.get(i) {
+                        ctx.draw_text(
+                            Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
+                            name,
+                            &display_font,
+                            Color::WHITE,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                } else if let Some(name) = self.fonts.get(i) {
+                    ctx.draw_text(
+                        Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
+                        name,
+                        &display_font,
+                        Color::BLACK,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
     }
     fn uses_custom_drawing(&self) -> bool {
         true
@@ -242,7 +296,7 @@ mod tests {
         let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
         let font = Font::new("Arial", 12.0, false, false);
         fcb.set_current_font(font.clone());
-        assert_eq!(fcb.current_font().family, "Arial");
+        assert_eq!(fcb.current_font().family(), "Arial");
     }
 
     #[test]

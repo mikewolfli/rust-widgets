@@ -287,7 +287,7 @@ impl Draw for MaskedEdit {
 
         // ── Border ──
         let border_color = if self.focused && is_enabled {
-            Color::from_rgb(25, 118, 210)
+            Color::rgb(25, 118, 210)
         } else {
             Color::rgba(190, 190, 200, 200)
         };
@@ -302,7 +302,7 @@ impl Draw for MaskedEdit {
             let text_color = if !is_enabled {
                 Color::rgba(150, 150, 150, 200)
             } else {
-                Color::from_rgb(33, 33, 33)
+                Color::rgb(33, 33, 33)
             };
             context.draw_text(Point::new(text_x, text_y), &self.raw_text, &font, text_color, HorizontalAlignment::Left);
             return;
@@ -341,7 +341,7 @@ impl Draw for MaskedEdit {
                     let char_color = if !is_enabled {
                         Color::rgba(150, 150, 150, 200)
                     } else if has_input {
-                        Color::from_rgb(33, 33, 33)
+                        Color::rgb(33, 33, 33)
                     } else {
                         Color::rgba(180, 180, 180, 200)
                     };
@@ -353,7 +353,7 @@ impl Draw for MaskedEdit {
                     if self.focused && is_enabled && seg_idx == self.cursor_pos {
                         context.fill_rect(
                             Rect::new(display_x, geom.y + 2, char_width, geom.height - 4),
-                            Color::from_rgb(25, 118, 210),
+                            Color::rgb(25, 118, 210),
                         );
                         context.draw_text(
                             Point::new(display_x, text_y),

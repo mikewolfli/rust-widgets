@@ -319,10 +319,10 @@ impl CssParser {
                 style.border_color = Some(Self::parse_color(&decl.value)?);
             }
             "border-width" => {
-                style.border_width = Self::parse_length(&decl.value)?;
+                style.border_width = Some(Self::parse_length(&decl.value)?);
             }
             "border-radius" => {
-                style.border_radius = Self::parse_length(&decl.value)?;
+                style.border_radius = Some(Self::parse_length(&decl.value)?);
             }
             "padding" => {
                 let vals = Self::parse_space_separated_lengths(&decl.value, 4)?;
@@ -352,21 +352,21 @@ impl CssParser {
             }
             "font-size" => {
                 if let Some(font) = &mut style.font {
-                    font.size = Self::parse_float(&decl.value)?;
+                    font.set_size(Self::parse_float(&decl.value)?);
                 } else {
-                    style.font = Some(crate::core::Font {
-                        size: Self::parse_float(&decl.value)?,
-                        ..Default::default()
-                    });
+                    let mut font = crate::core::Font::default_ui();
+                    font.set_size(Self::parse_float(&decl.value)?);
+                    style.font = Some(font);
                 }
             }
             "font-family" => {
                 let family = decl.value.trim().trim_matches('"').trim_matches('\'').to_string();
                 if let Some(font) = &mut style.font {
-                    font.family = family;
+                    font.set_family(family);
                 } else {
-                    style.font =
-                        Some(crate::core::Font { family: family.clone(), ..Default::default() });
+                    let mut font = crate::core::Font::default_ui();
+                    font.set_family(family);
+                    style.font = Some(font);
                 }
             }
             _ => {
@@ -493,7 +493,6 @@ impl CssParser {
             2 => Ok(vec![parsed[0], parsed[1], parsed[0], parsed[1]]),
             3 => Ok(vec![parsed[0], parsed[1], parsed[2], parsed[1]]),
             4 => Ok(parsed),
-            _ if count == 4 && parts.len() == 1 && parts[0] == "0" => Ok(vec![0; 4]),
             _ => Err(format!("Expected 1-4 values for spacing, got {}", parts.len())),
         }
     }
@@ -533,18 +532,38 @@ impl CssParser {
 // Extension mechanism to store CSS declarations — uses global HashMap keyed by rule name
 // because StyleRule doesn't have a declarations field.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+/// Monotonically increasing counter to disambiguate entries with the same
+/// selector text from different stylesheets.
+static DECL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Stores CSS declarations keyed by a unique `{counter}:{selector}` string so
+/// that two stylesheets with the same selector text do not stomp each other.
 static DECLARATIONS: LazyLock<Mutex<HashMap<String, Vec<CssDeclaration>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
-    DECLARATIONS.lock().unwrap().insert(rule_name.to_string(), decls);
+    let key = format!("{}:{}", DECL_COUNTER.fetch_add(1, Ordering::Relaxed), rule_name);
+    DECLARATIONS.lock().unwrap().insert(key, decls);
 }
 
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
-    DECLARATIONS.lock().unwrap().get(rule_name).cloned()
+    let map = DECLARATIONS.lock().unwrap();
+    let mut result = Vec::new();
+    let suffix = format!(":{}", rule_name);
+    for (key, decls) in map.iter() {
+        if key.ends_with(&suffix) {
+            result.extend(decls.clone());
+        }
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 impl CssParser {
@@ -734,7 +753,7 @@ mod tests {
             }
         }
         // Button base applied
-        assert_eq!(style.border_radius, 4);
+        assert_eq!(style.border_radius, Some(4));
         // .primary overrides
         assert_eq!(style.background_color, Some(Color::rgba(0, 102, 204, 255)));
     }

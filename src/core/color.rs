@@ -22,10 +22,12 @@ impl Color {
         Self::rgba(r, g, b, 255)
     }
     /// Backward-compatible alias for `rgb`.
+    #[deprecated(since = "0.7.0", note = "use `rgb` instead")]
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         Self::rgb(r, g, b)
     }
     /// Backward-compatible alias for `rgba`.
+    #[deprecated(since = "0.7.0", note = "use `rgba` instead")]
     pub const fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self::rgba(r, g, b, a)
     }
@@ -218,7 +220,8 @@ impl Color {
         ((self.r as u32) << 24) | ((self.g as u32) << 16) | ((self.b as u32) << 8) | self.a as u32
     }
     /// Unpacks channels from `0xRRGGBBAA`.
-    /// Delegates to [`from_u32_rgba`] which has the same implementation.
+    /// Use [`from_u32_rgba`] instead.
+    #[deprecated(since = "0.7.0", note = "use `from_u32_rgba` instead")]
     pub const fn from_rgba_u32(value: u32) -> Self {
         Self::from_u32_rgba(value)
     }
@@ -320,7 +323,7 @@ mod tests {
         let color = Color::rgba(0x01, 0x23, 0x45, 0x67);
         let packed = color.to_rgba_u32();
         assert_eq!(packed, 0x01234567);
-        assert_eq!(Color::from_rgba_u32(packed), color);
+        assert_eq!(Color::from_u32_rgba(packed), color);
     }
     #[test]
     fn color_constructors_from_different_types() {

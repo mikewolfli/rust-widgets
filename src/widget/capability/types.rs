@@ -78,6 +78,6 @@ pub(crate) type WidgetCtor = fn(Rect, &str) -> Box<dyn Widget>;
 pub struct WidgetFactory {
     pub(crate) capabilities: Vec<WidgetCapability>,
     pub(crate) key_to_index: HashMap<String, usize>,
-    pub(crate) kind_to_index: Vec<(WidgetKind, usize)>,
+    pub(crate) kind_to_index: HashMap<WidgetKind, Vec<usize>>,
     pub(crate) constructors: HashMap<String, WidgetCtor>,
 }

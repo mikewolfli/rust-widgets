@@ -393,6 +393,9 @@ impl SoftwareSurface {
         }
     }
     /// Draws an arc (partial circle).
+    ///
+    /// Angles are normalized to [0, 2π) and the sweep is capped at 2π to
+    /// prevent excessive point generation for very large angle ranges.
     pub fn draw_arc(
         &mut self,
         center: Point,
@@ -405,26 +408,45 @@ impl SoftwareSurface {
         if radius == 0 {
             return;
         }
+        const TWO_PI: f32 = std::f32::consts::TAU;
+        // Normalize both angles to [0, 2π)
+        let mut start = start_angle % TWO_PI;
+        if start < 0.0 {
+            start += TWO_PI;
+        }
+        let mut end = end_angle % TWO_PI;
+        if end < 0.0 {
+            end += TWO_PI;
+        }
+        // Cap the sweep to at most one full circle
         let step = 0.02f32;
-        let mut angle = start_angle;
+        let mut angle = start;
         let mut points: Vec<Point> = Vec::new();
-        if start_angle <= end_angle {
-            while angle <= end_angle {
+        if start <= end {
+            while angle <= end && angle <= start + TWO_PI {
                 let x = center.x + (radius as f32 * angle.cos()).round() as i32;
                 let y = center.y + (radius as f32 * angle.sin()).round() as i32;
                 points.push(Point::new(x, y));
                 angle += step;
             }
         } else {
-            while angle >= end_angle {
+            // Wraparound case: e.g. start=350° to end=10°
+            while angle < TWO_PI && angle <= start + TWO_PI {
                 let x = center.x + (radius as f32 * angle.cos()).round() as i32;
                 let y = center.y + (radius as f32 * angle.sin()).round() as i32;
                 points.push(Point::new(x, y));
-                angle -= step;
+                angle += step;
+            }
+            angle = 0.0;
+            while angle <= end && angle <= TWO_PI {
+                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
+                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
+                points.push(Point::new(x, y));
+                angle += step;
             }
         }
-        let last_x = center.x + (radius as f32 * end_angle.cos()).round() as i32;
-        let last_y = center.y + (radius as f32 * end_angle.sin()).round() as i32;
+        let last_x = center.x + (radius as f32 * end.cos()).round() as i32;
+        let last_y = center.y + (radius as f32 * end.sin()).round() as i32;
         points.push(Point::new(last_x, last_y));
 
         if filled {

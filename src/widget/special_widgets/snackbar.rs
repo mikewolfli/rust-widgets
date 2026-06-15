@@ -150,8 +150,8 @@ impl EventHandler for Snackbar {
 impl Draw for Snackbar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(248, 250, 253));
-        context.draw_rect(rect, Color::from_rgb(204, 210, 220));
+        context.fill_rect(rect, Color::rgb(248, 250, 253));
+        context.draw_rect(rect, Color::rgb(204, 210, 220));
 
         if !self.visible {
             return;
@@ -163,26 +163,26 @@ impl Draw for Snackbar {
             rect.width.saturating_sub(16),
             26,
         );
-        context.fill_rect(bar, Color::from_rgb(43, 51, 64));
-        context.draw_rect(bar, Color::from_rgb(75, 87, 105));
+        context.fill_rect(bar, Color::rgb(43, 51, 64));
+        context.draw_rect(bar, Color::rgb(75, 87, 105));
 
         context.draw_text(
             Point::new(bar.x + 10, bar.y + 16),
             &self.message,
             &Font::default(),
-            Color::from_rgb(236, 240, 246),
+            Color::rgb(236, 240, 246),
             HorizontalAlignment::Left,
         );
 
         if let Some(action_rect) = self.action_rect() {
-            context.fill_rect(action_rect, Color::from_rgb(69, 108, 171));
-            context.draw_rect(action_rect, Color::from_rgb(105, 143, 204));
+            context.fill_rect(action_rect, Color::rgb(69, 108, 171));
+            context.draw_rect(action_rect, Color::rgb(105, 143, 204));
             if let Some(label) = &self.action_label {
                 context.draw_text(
                     Point::new(action_rect.x + 10, action_rect.y + 13),
                     label,
                     &Font::default(),
-                    Color::from_rgb(238, 244, 252),
+                    Color::rgb(238, 244, 252),
                     HorizontalAlignment::Left,
                 );
             }
@@ -190,12 +190,12 @@ impl Draw for Snackbar {
 
         if let Some(progress) = self.progress {
             let progress_bar = Rect::new(bar.x, bar.y + bar.height as i32 - 3, bar.width, 3);
-            context.fill_rect(progress_bar, Color::from_rgb(77, 88, 103));
+            context.fill_rect(progress_bar, Color::rgb(77, 88, 103));
             let fill = (progress_bar.width as f32 * progress).round() as u32;
             if fill > 0 {
                 context.fill_rect(
                     Rect::new(progress_bar.x, progress_bar.y, fill, progress_bar.height),
-                    Color::from_rgb(93, 179, 125),
+                    Color::rgb(93, 179, 125),
                 );
             }
         }

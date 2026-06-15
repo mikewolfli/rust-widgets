@@ -124,7 +124,7 @@ impl FlowLayout {
                 row_height = 0;
             }
             if current_y + child_height > content_rect.y + content_rect.height as i32 {
-                break;
+                continue;
             }
             positions.push(Rect::new(
                 current_x,
@@ -155,7 +155,7 @@ impl FlowLayout {
                 column_width = 0;
             }
             if current_x + child_width > content_rect.x + content_rect.width as i32 {
-                break;
+                continue;
             }
             positions.push(Rect::new(
                 current_x,

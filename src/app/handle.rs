@@ -341,6 +341,11 @@ impl WindowHandle {
         PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
     }
 
+    /// Create a new frame (group box).
+    ///
+    /// Internally, a Frame is backed by a Panel widget (`create_panel`).
+    /// The terminology difference is cosmetic — `new_frame` exists for API
+    /// clarity when the widget is used as a visual frame/group box.
     pub fn new_frame(&self, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
         FrameHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
     }

@@ -77,13 +77,17 @@ use std::collections::HashMap;
 
 use crate::core::Rect;
 
-#[cfg(not(feature = "mini"))]
-use super::view_widgets::data_grid::DataGrid;
-#[cfg(not(feature = "mini"))]
-use super::view_widgets::tree_table::TreeTable;
-#[cfg(not(feature = "mini"))]
-use super::view_widgets::virtual_table::VirtualTable;
 use super::{Widget, WidgetKind};
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::data_grid::DataGrid;
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::table_widget::TableWidget;
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::tree_table::TreeTable;
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::tree_view::TreeView;
+#[cfg(not(feature = "mini"))]
+use crate::widget::view_widgets::virtual_table::VirtualTable;
 
 pub mod types;
 pub use types::*;
@@ -117,7 +121,7 @@ impl WidgetFactory {
         Self {
             capabilities: Vec::new(),
             key_to_index: HashMap::new(),
-            kind_to_index: Vec::new(),
+            kind_to_index: HashMap::new(),
             constructors: HashMap::new(),
         }
     }
@@ -132,9 +136,7 @@ impl WidgetFactory {
     /// Registers one widget capability and constructor.
     pub fn register(&mut self, capability: WidgetCapability, ctor: WidgetCtor) {
         let idx = self.capabilities.len();
-        if self.kind_to_index.iter().all(|(kind, _)| *kind != capability.kind) {
-            self.kind_to_index.push((capability.kind, idx));
-        }
+        self.kind_to_index.entry(capability.kind).or_default().push(idx);
 
         let canonical_key = normalize_key(capability.canonical_name);
         self.key_to_index.insert(canonical_key.clone(), idx);
@@ -179,13 +181,10 @@ impl WidgetFactory {
     }
 
     /// Returns capability metadata by widget kind.
+    /// Returns the first registered capability for this kind.
     pub fn capability_by_kind(&self, kind: WidgetKind) -> Option<&WidgetCapability> {
-        let idx = self
-            .kind_to_index
-            .iter()
-            .find(|(stored_kind, _)| *stored_kind == kind)
-            .map(|(_, index)| *index)?;
-        self.capabilities.get(idx)
+        let indices = self.kind_to_index.get(&kind)?;
+        self.capabilities.get(indices[0])
     }
 
     /// Returns all registered capabilities.
@@ -244,20 +243,42 @@ impl WidgetFactory {
         write_widget_property_value(widget, property.name, value)
     }
 
+    /// Looks up capability by widget kind using the kind-based index.
+    /// When multiple capabilities share the same WidgetKind (e.g. DataGrid,
+    /// VirtualTable, TableWidget all use WidgetKind::Table), tries to match
+    /// by concrete widget type.
     fn capability_for_widget(&self, widget: &dyn Widget) -> Option<&WidgetCapability> {
-        #[cfg(not(feature = "mini"))]
-        if widget_as::<DataGrid>(widget).is_some() {
-            return self.capability("data_grid");
+        let kind = widget.kind();
+        let indices = self.kind_to_index.get(&kind)?;
+
+        // Fast path: only one capability for this kind
+        if indices.len() == 1 {
+            return self.capabilities.get(indices[0]);
         }
-        #[cfg(not(feature = "mini"))]
-        if widget_as::<VirtualTable>(widget).is_some() {
-            return self.capability("virtual_table");
+
+        // Multiple capabilities share this kind — find the right one by
+        // matching the concrete widget type against the canonical name.
+        for &idx in indices.iter() {
+            let cap = &self.capabilities[idx];
+            if self.widget_matches_capability(widget, cap.canonical_name) {
+                return Some(cap);
+            }
         }
-        #[cfg(not(feature = "mini"))]
-        if widget_as::<TreeTable>(widget).is_some() {
-            return self.capability("tree_table");
+
+        // Fallback: return the first registered capability
+        self.capabilities.get(indices[0])
+    }
+
+    /// Check whether a widget instance matches a given capability's concrete type.
+    fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
+        match canonical_name {
+            "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
+            "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
+            "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
+            "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
+            "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
+            _ => true,
         }
-        self.capability_by_kind(widget.kind())
     }
 
     /// Returns a schema-level default value for a known property.

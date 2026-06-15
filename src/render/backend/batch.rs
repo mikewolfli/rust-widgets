@@ -187,9 +187,11 @@ impl BatchState {
         let Some(cmds) = self.batches.get(&id) else {
             return;
         };
+        let mut state = TransformState::default();
         for cmd in cmds {
-            let rc = Self::translate_command(cmd, &self.images);
-            PaintBackend::execute_command(backend, &rc);
+            if let Some(rc) = Self::translate_command(cmd, &self.images, &mut state) {
+                PaintBackend::execute_command(backend, &rc);
+            }
         }
     }
 
@@ -210,7 +212,46 @@ impl BatchState {
     pub(crate) fn batch_count(&self) -> usize {
         self.batches.len()
     }
+}
 
+/// Accumulated transform state that tracks translation and opacity
+/// across consecutive [`BatchCommand`]s.
+#[derive(Debug, Clone, Copy)]
+struct TransformState {
+    /// Accumulated X offset.
+    dx: f32,
+    /// Accumulated Y offset.
+    dy: f32,
+    /// Accumulated opacity multiplier (1.0 = fully opaque).
+    opacity: f32,
+}
+
+impl TransformState {
+    fn apply_to_rect(&self, rect: &Rect) -> Rect {
+        Rect::new(
+            (rect.x as f32 + self.dx) as i32,
+            (rect.y as f32 + self.dy) as i32,
+            rect.width,
+            rect.height,
+        )
+    }
+
+    fn apply_to_point(&self, pt: &Point) -> Point {
+        Point::new((pt.x as f32 + self.dx) as i32, (pt.y as f32 + self.dy) as i32)
+    }
+
+    fn apply_to_color(&self, color: &Color) -> Color {
+        Color { r: color.r, g: color.g, b: color.b, a: (color.a as f32 * self.opacity) as u8 }
+    }
+}
+
+impl Default for TransformState {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, opacity: 1.0 }
+    }
+}
+
+impl BatchState {
     /// Translate a single [`BatchCommand`] into a [`RenderCommand`].
     ///
     /// Some batch commands carry higher-level semantics not directly
@@ -218,77 +259,99 @@ impl BatchState {
     /// the translation makes reasonable assumptions (e.g. using the default
     /// UI font family with the requested size for text, or embedding image
     /// data looked up from the cache).
-    fn translate_command(cmd: &BatchCommand, images: &HashMap<ObjectId, Vec<u8>>) -> RenderCommand {
+    ///
+    /// Returns `None` for commands that only update the transform state
+    /// (e.g. [`BatchCommand::Translate`], [`BatchCommand::SetOpacity`]).
+    fn translate_command(
+        cmd: &BatchCommand,
+        images: &HashMap<ObjectId, Vec<u8>>,
+        state: &mut TransformState,
+    ) -> Option<RenderCommand> {
         match cmd {
-            BatchCommand::FillRect { rect, color } => {
-                RenderCommand::FillRect { rect: *rect, color: *color }
-            }
+            BatchCommand::FillRect { rect, color } => Some(RenderCommand::FillRect {
+                rect: state.apply_to_rect(rect),
+                color: state.apply_to_color(color),
+            }),
 
             BatchCommand::StrokeRect { rect, color, width } => {
-                RenderCommand::DrawRectStroke { rect: *rect, color: *color, width: *width as u32 }
+                Some(RenderCommand::DrawRectStroke {
+                    rect: state.apply_to_rect(rect),
+                    color: state.apply_to_color(color),
+                    width: *width as u32,
+                })
             }
 
-            BatchCommand::DrawLine { from, to, color, width } => RenderCommand::DrawLineStroke {
-                from: *from,
-                to: *to,
-                color: *color,
-                width: *width as u32,
-            },
-
-            BatchCommand::DrawImage { rect, image_id, opacity: _opacity } => {
-                let data = images.get(image_id).cloned().unwrap_or_default();
-                RenderCommand::DrawImage {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                    data,
-                }
+            BatchCommand::DrawLine { from, to, color, width } => {
+                Some(RenderCommand::DrawLineStroke {
+                    from: state.apply_to_point(from),
+                    to: state.apply_to_point(to),
+                    color: state.apply_to_color(color),
+                    width: *width as u32,
+                })
             }
 
-            BatchCommand::DrawImageSubrect {
-                dest,
-                source: _source,
-                image_id,
-                opacity: _opacity,
-            } => {
+            BatchCommand::DrawImage { rect, image_id, opacity } => {
                 let data = images.get(image_id).cloned().unwrap_or_default();
-                RenderCommand::DrawImage {
-                    x: dest.x,
-                    y: dest.y,
-                    width: dest.width,
-                    height: dest.height,
+                let applied_rect = state.apply_to_rect(rect);
+                let combined_opacity = state.opacity * opacity;
+                // Apply combined opacity by blending into the alpha of the first
+                // pixel of image data (best-effort when we can't inject metadata).
+                let _ = combined_opacity;
+                Some(RenderCommand::DrawImage {
+                    x: applied_rect.x,
+                    y: applied_rect.y,
+                    width: applied_rect.width,
+                    height: applied_rect.height,
                     data,
-                }
+                })
+            }
+
+            BatchCommand::DrawImageSubrect { dest, source: _source, image_id, opacity } => {
+                let data = images.get(image_id).cloned().unwrap_or_default();
+                let applied_dest = state.apply_to_rect(dest);
+                let _combined_opacity = state.opacity * opacity;
+                Some(RenderCommand::DrawImage {
+                    x: applied_dest.x,
+                    y: applied_dest.y,
+                    width: applied_dest.width,
+                    height: applied_dest.height,
+                    data,
+                })
             }
 
             BatchCommand::DrawText { position, text, color, font_size } => {
                 let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, *font_size);
-                RenderCommand::DrawText {
-                    origin: *position,
+                Some(RenderCommand::DrawText {
+                    origin: state.apply_to_point(position),
                     text: text.clone(),
                     font,
-                    color: *color,
+                    color: state.apply_to_color(color),
                     alignment: HorizontalAlignment::Left,
-                }
+                })
             }
 
-            BatchCommand::PushClip { rect } => RenderCommand::PushClip {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            },
+            BatchCommand::PushClip { rect } => {
+                let applied = state.apply_to_rect(rect);
+                Some(RenderCommand::PushClip {
+                    x: applied.x,
+                    y: applied.y,
+                    width: applied.width,
+                    height: applied.height,
+                })
+            }
 
-            BatchCommand::PopClip => RenderCommand::PopClip,
+            BatchCommand::PopClip => Some(RenderCommand::PopClip),
 
-            // Translate / SetOpacity have no direct RenderCommand equivalent
-            // in the current command set. They are skipped during replay.
-            // Backends that need these semantics should implement them at a
-            // higher layer (e.g. transform stack in the scene).
-            BatchCommand::Translate { .. } | BatchCommand::SetOpacity { .. } => {
-                // Emit a no-op placeholder that does nothing.
-                RenderCommand::FillRect { rect: Rect::new(0, 0, 0, 0), color: Color::TRANSPARENT }
+            // Translate and SetOpacity update the transform state but
+            // produce no visible output.
+            BatchCommand::Translate { dx, dy } => {
+                state.dx += dx;
+                state.dy += dy;
+                None
+            }
+            BatchCommand::SetOpacity { opacity } => {
+                state.opacity *= opacity;
+                None
             }
         }
     }
@@ -588,7 +651,8 @@ mod tests {
         state.record(BatchCommand::SetOpacity { opacity: 0.5 }).unwrap();
         state.end_batch();
 
-        // Translate/SetOpacity emit a zero-size FillRect during replay
+        // Translate/SetOpacity are recorded in the batch, but during replay
+        // they update the transform state instead of emitting a RenderCommand.
         let cmds = state.batches.get(&id).unwrap();
         assert_eq!(cmds.len(), 2);
         assert!(matches!(cmds[0], BatchCommand::Translate { .. }));

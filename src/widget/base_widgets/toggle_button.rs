@@ -1,6 +1,6 @@
 //! Toggle button widget.
+use crate::core::HorizontalAlignment;
 use crate::core::Rect;
-use crate::core::{HorizontalAlignment};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -43,9 +43,11 @@ impl ToggleButton {
     pub fn text(&self) -> &str {
         &self.text
     }
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text != text {
             self.text = text;
+            self.base.request_redraw();
         }
     }
     pub fn is_checked(&self) -> bool {
@@ -56,6 +58,7 @@ impl ToggleButton {
             return;
         }
         self.checked = checked;
+        self.base.request_redraw();
         self.checked_changed.emit(checked);
         self.toggled.emit(checked);
         self.state_changed.emit(self.state());
@@ -110,43 +113,56 @@ impl Widget for ToggleButton {
 impl Draw for ToggleButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+        let state = self.state();
+        let style = self.style();
         use crate::core::Color;
-        // Draw background based on state
-        let bg_color = if !self.base.is_enabled() {
-            Color::from_rgb(220, 220, 220)
-        } else if self.checked {
-            Color::from_rgb(200, 220, 255)
-        } else {
-            Color::from_rgb(240, 240, 240)
-        };
+
+        // ── Background ──
+        let bg_color = style.background_color.unwrap_or_else(|| match state {
+            ToggleButtonState::Disabled => Color::rgb(220, 220, 220),
+            ToggleButtonState::Checked => Color::rgb(200, 220, 255),
+            ToggleButtonState::Normal => Color::rgb(240, 240, 240),
+        });
         context.fill_rect(rect, bg_color);
-        // Draw border
-        let border_color = if self.checked {
-            Color::from_rgb(80, 120, 200)
-        } else {
-            Color::from_rgb(180, 180, 180)
-        };
-        context.draw_rect(rect, border_color);
-        // Draw text centered
-        let text_color = if !self.base.is_enabled() {
-            Color::from_rgb(150, 150, 150)
-        } else {
-            Color::from_rgb(0, 0, 0)
-        };
-        context.draw_text(
-            crate::core::Point::new(
-                rect.x + rect.width as i32 / 2,
-                rect.y + rect.height as i32 / 2,
-            ),
-            &self.text,
-            &crate::core::Font::default(),
-            text_color,
-            HorizontalAlignment::Left,
-        );
+
+        // ── Border ──
+        let border_color = style.border_color.unwrap_or_else(|| {
+            if self.checked {
+                Color::rgb(80, 120, 200)
+            } else {
+                Color::rgb(180, 180, 180)
+            }
+        });
+        let bw = style.border_width.unwrap_or(0);
+        let border_width = if bw > 0 { bw } else { 1 };
+        context.draw_rect_stroke(rect, border_color, border_width);
+
+        // ── Text ──
+        if !self.text.is_empty() {
+            let text_color = style.text_color.unwrap_or_else(|| {
+                if state == ToggleButtonState::Disabled {
+                    Color::rgb(150, 150, 150)
+                } else {
+                    Color::rgb(0, 0, 0)
+                }
+            });
+            let font = style.font.clone().unwrap_or_default();
+            context.draw_text(
+                crate::core::Point::new(
+                    rect.x + rect.width as i32 / 2,
+                    rect.y + rect.height as i32 / 2,
+                ),
+                &self.text,
+                &font,
+                text_color,
+                HorizontalAlignment::Center,
+            );
+        }
     }
 }
 impl crate::event::EventHandler for ToggleButton {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -301,7 +317,7 @@ mod tests {
     fn toggle_style_roundtrip() {
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
         assert_eq!(*tb.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(200, 200, 200));
+        let custom = WidgetStyle::default().with_background(Color::rgb(200, 200, 200));
         tb.set_style(custom.clone());
         assert_eq!(*tb.style(), custom);
     }

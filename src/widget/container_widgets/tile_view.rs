@@ -129,14 +129,14 @@ impl Draw for TileView {
         context.fill_rect(rect, bg);
 
         // Draw a thin border to define the view area.
-        let border = self.style().border_color.unwrap_or(Color::from_rgb(200, 200, 200));
+        let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
         context.draw_rect_stroke(rect, border, 1);
 
         // Draw the current page number text centered in the tile area.
         let text = format!("Page {}", self.current_page + 1);
         let font = Font::default();
         let metrics = context.measure_text(&text, &font);
-        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(60, 60, 60));
+        let text_color = self.style().text_color.unwrap_or(Color::rgb(60, 60, 60));
         let cx = rect.x + rect.width as i32 / 2;
         let cy = rect.y + rect.height as i32 / 2;
         let text_x = cx - (metrics.width as i32 / 2);
@@ -158,12 +158,12 @@ impl Draw for TileView {
 
                 if i == self.current_page {
                     // Filled dot for current page.
-                    let dot_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 120, 215));
+                    let dot_color = self.style().text_color.unwrap_or(Color::rgb(0, 120, 215));
                     context.fill_circle(center, dot_radius, dot_color);
                 } else {
                     // Outline dot for other pages.
                     let dot_color =
-                        self.style().border_color.unwrap_or(Color::from_rgb(180, 180, 180));
+                        self.style().border_color.unwrap_or(Color::rgb(180, 180, 180));
                     context.draw_circle_stroke(center, dot_radius, dot_color, 1);
                 }
             }

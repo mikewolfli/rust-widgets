@@ -268,7 +268,7 @@ impl Draw for MenuButton {
                 icon_str,
                 &icon_font,
                 if is_enabled {
-                    Color::from_rgb(50, 50, 50)
+                    Color::rgb(50, 50, 50)
                 } else {
                     Color::rgba(150, 150, 150, 200)
                 },
@@ -279,7 +279,7 @@ impl Draw for MenuButton {
 
         // ── Draw button text ──
         let text_color =
-            if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::from_rgb(33, 33, 33) };
+            if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::rgb(33, 33, 33) };
         let text_y = geom.y + geom.height as i32 / 2;
         context.draw_text(Point::new(text_offset_x, text_y), &self.text, &font, text_color, HorizontalAlignment::Left);
 
@@ -323,7 +323,7 @@ impl Draw for MenuButton {
                 let item_text_color = if !item.enabled {
                     Color::rgba(180, 180, 180, 200)
                 } else {
-                    Color::from_rgb(33, 33, 33)
+                    Color::rgb(33, 33, 33)
                 };
                 let item_font = Font::simple("sans-serif", 12.0);
                 let mut item_x = item_rect.x + PADDING;
@@ -357,7 +357,7 @@ impl Draw for MenuButton {
                         Point::new(check_x, item_rect.y + item_rect.height as i32 / 2),
                         "✓",
                         &check_font,
-                        Color::from_rgb(25, 118, 210),
+                        Color::rgb(25, 118, 210),
                         HorizontalAlignment::Left,
                     );
                 }

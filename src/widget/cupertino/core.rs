@@ -5,7 +5,7 @@
 //! interaction patterns) while delegating all widget mechanics to the
 //! underlying control.
 
-use crate::core::{HorizontalAlignment};
+use crate::core::HorizontalAlignment;
 use crate::core::Point;
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
@@ -262,7 +262,7 @@ impl EventHandler for MaterialSnackbar {
 /// Falls back to an approximate width calculation when context is unavailable.
 fn context_proxy_measure_text(text: &str, font: &crate::core::Font) -> i32 {
     // Approximate width: average char width ~0.6 * font size
-    let char_width = (font.size * 0.6) as i32;
+    let char_width = (font.size() * 0.6) as i32;
     (text.len() as i32 * char_width).max(0)
 }
 
@@ -367,7 +367,13 @@ impl Draw for CupertinoAlertDialog {
             let title_metrics = context.measure_text(&self.title, &title_font);
             let title_x = dialog_x + (dialog_width as i32 - title_metrics.width as i32) / 2;
             let title_y = dialog_y + 24 + title_metrics.height as i32 / 2;
-            context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, Color::BLACK, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(title_x, title_y),
+                &self.title,
+                &title_font,
+                Color::BLACK,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Message ──
@@ -797,7 +803,13 @@ impl Draw for MaterialNavigationRail {
             let icon_metrics = context.measure_text(&item.icon, &icon_font);
             let icon_x = rect.x + (rail_width as i32 - icon_metrics.width as i32) / 2;
             let icon_y = item_y + 20 + icon_metrics.height as i32 / 2;
-            context.draw_text(Point::new(icon_x, icon_y), &item.icon, &icon_font, icon_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(icon_x, icon_y),
+                &item.icon,
+                &icon_font,
+                icon_color,
+                HorizontalAlignment::Left,
+            );
 
             // ── Label ──
             let label_color = if is_selected {
@@ -808,7 +820,13 @@ impl Draw for MaterialNavigationRail {
             let label_metrics = context.measure_text(&item.label, &label_font);
             let label_x = rect.x + (rail_width as i32 - label_metrics.width as i32) / 2;
             let label_y = item_y + 44 + label_metrics.height as i32 / 2;
-            context.draw_text(Point::new(label_x, label_y), &item.label, &label_font, label_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(label_x, label_y),
+                &item.label,
+                &label_font,
+                label_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

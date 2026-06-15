@@ -255,17 +255,10 @@ pub(crate) fn cluster_ends_with_zwj(cluster: &TextCluster) -> bool {
     cluster.text.chars().last().map(|ch| ch == '\u{200D}').unwrap_or(false)
 }
 pub(crate) fn is_combining_mark(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x0300..=0x036F
-            | 0x1AB0..=0x1AFF
-            | 0x1DC0..=0x1DFF
-            | 0x20D0..=0x20FF
-            | 0xFE20..=0xFE2F
-    )
+    crate::render::grapheme::is_combining_mark(ch)
 }
 pub(crate) fn is_variation_selector(ch: char) -> bool {
-    matches!(ch as u32, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
+    crate::render::grapheme::is_variation_selector(ch)
 }
 pub(crate) fn is_wide_scalar(ch: char) -> bool {
     matches!(

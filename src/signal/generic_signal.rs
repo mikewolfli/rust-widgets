@@ -60,6 +60,16 @@ impl GenericSignal {
     pub fn unblock(&self, handle: ConnectionHandle) -> bool {
         self.inner.unblock(handle)
     }
+    /// Check if a handle is still blocked.
+    pub fn is_blocked(&self, handle: ConnectionHandle) -> Option<bool> {
+        self.inner.is_blocked(handle)
+    }
+
+    /// Change the priority of an existing connection.
+    pub fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
+        self.inner.set_priority(handle, priority)
+    }
+
     /// Check if a handle is still connected.
     pub fn is_connected(&self, handle: ConnectionHandle) -> bool {
         self.inner.is_connected(handle)

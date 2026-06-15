@@ -53,8 +53,8 @@ impl FreeformShapeWidget {
         Self {
             base: BaseWidget::new(WidgetKind::FreeformShape, geometry, "FreeformShapeWidget"),
             path,
-            fill_color: Color::from_rgb(200, 220, 255),
-            stroke_color: Some(Color::from_rgb(80, 120, 200)),
+            fill_color: Color::rgb(200, 220, 255),
+            stroke_color: Some(Color::rgb(80, 120, 200)),
             stroke_width: 2,
             hovered: false,
             pressed: false,
@@ -635,10 +635,10 @@ impl Widget for FreeformShapeWidget {
 impl Draw for FreeformShapeWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         self.draw_shape(context);
         if !self.base.is_enabled() {
-            let overlay = Color::from_rgba(200, 200, 200, 128);
+            let overlay = Color::rgba(200, 200, 200, 128);
             context.fill_rect(rect, overlay);
         }
     }
@@ -704,8 +704,8 @@ mod tests {
     fn freeform_shape_creation_defaults() {
         let shape = FreeformShapeWidget::new(Rect::new(10, 20, 200, 150), ShapePath::Heart);
         assert_eq!(shape.path(), &ShapePath::Heart);
-        assert_eq!(shape.fill_color(), Color::from_rgb(200, 220, 255));
-        assert_eq!(shape.stroke_color(), Some(Color::from_rgb(80, 120, 200)));
+        assert_eq!(shape.fill_color(), Color::rgb(200, 220, 255));
+        assert_eq!(shape.stroke_color(), Some(Color::rgb(80, 120, 200)));
         assert_eq!(shape.stroke_width(), 2);
         assert!(shape.base().is_visible());
         assert!(shape.base().is_enabled());
@@ -723,15 +723,15 @@ mod tests {
     #[test]
     fn freeform_shape_set_fill_color() {
         let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 100, 100), ShapePath::Heart);
-        shape.set_fill_color(Color::from_rgb(255, 0, 0));
-        assert_eq!(shape.fill_color(), Color::from_rgb(255, 0, 0));
+        shape.set_fill_color(Color::rgb(255, 0, 0));
+        assert_eq!(shape.fill_color(), Color::rgb(255, 0, 0));
     }
 
     #[test]
     fn freeform_shape_set_stroke_color() {
         let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 100, 100), ShapePath::Heart);
-        shape.set_stroke_color(Some(Color::from_rgb(0, 255, 0)));
-        assert_eq!(shape.stroke_color(), Some(Color::from_rgb(0, 255, 0)));
+        shape.set_stroke_color(Some(Color::rgb(0, 255, 0)));
+        assert_eq!(shape.stroke_color(), Some(Color::rgb(0, 255, 0)));
 
         shape.set_stroke_color(None);
         assert_eq!(shape.stroke_color(), None);

@@ -172,18 +172,18 @@ impl EventHandler for CodeEditor {
 impl Draw for CodeEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(249, 251, 254));
-        context.draw_rect(rect, Color::from_rgb(188, 197, 211));
+        context.fill_rect(rect, Color::rgb(249, 251, 254));
+        context.draw_rect(rect, Color::rgb(188, 197, 211));
 
         let gutter_w = 40;
         context.fill_rect(
             Rect::new(rect.x, rect.y, gutter_w as u32, rect.height),
-            Color::from_rgb(238, 243, 250),
+            Color::rgb(238, 243, 250),
         );
         context.draw_line(
             Point::new(rect.x + gutter_w, rect.y),
             Point::new(rect.x + gutter_w, rect.y + rect.height as i32),
-            Color::from_rgb(208, 217, 230),
+            Color::rgb(208, 217, 230),
         );
 
         for (idx, line) in self.text.lines().take(14).enumerate() {
@@ -192,23 +192,23 @@ impl Draw for CodeEditor {
                 Point::new(rect.x + 6, y),
                 &format!("{}", idx + 1),
                 &Font::default(),
-                Color::from_rgb(108, 120, 138),
+                Color::rgb(108, 120, 138),
                 HorizontalAlignment::Left,
             );
 
             if let Some(marker) = self.markers.iter().find(|m| m.line == idx) {
                 let color = match marker.severity {
-                    MarkerSeverity::Info => Color::from_rgb(74, 125, 201),
-                    MarkerSeverity::Warning => Color::from_rgb(216, 155, 52),
-                    MarkerSeverity::Error => Color::from_rgb(206, 82, 73),
+                    MarkerSeverity::Info => Color::rgb(74, 125, 201),
+                    MarkerSeverity::Warning => Color::rgb(216, 155, 52),
+                    MarkerSeverity::Error => Color::rgb(206, 82, 73),
                 };
                 context.fill_rect(Rect::new(rect.x + gutter_w - 8, y - 6, 4, 4), color);
             }
 
             let text_color = if idx == self.cursor_line {
-                Color::from_rgb(24, 99, 190)
+                Color::rgb(24, 99, 190)
             } else {
-                Color::from_rgb(43, 55, 74)
+                Color::rgb(43, 55, 74)
             };
             context.draw_text(
                 Point::new(rect.x + gutter_w + 8, y),
@@ -223,7 +223,7 @@ impl Draw for CodeEditor {
             Point::new(rect.x + rect.width as i32 - 130, rect.y + rect.height as i32 - 10),
             &format!("Ln {}, Col {}", self.cursor_line + 1, self.cursor_column + 1),
             &Font::default(),
-            Color::from_rgb(88, 102, 124),
+            Color::rgb(88, 102, 124),
             HorizontalAlignment::Left,
         );
     }

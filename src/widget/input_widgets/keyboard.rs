@@ -353,7 +353,7 @@ impl Draw for Keyboard {
         }
 
         // Draw keyboard background.
-        let bg = self.style().background_color.unwrap_or(Color::from_rgb(220, 220, 220));
+        let bg = self.style().background_color.unwrap_or(Color::rgb(220, 220, 220));
         context.fill_rect(rect, bg);
 
         let row_count = self.keys.len();
@@ -366,11 +366,11 @@ impl Draw for Keyboard {
         let row_width = rect.width as f32;
 
         // Default key colors.
-        let key_bg = Color::from_rgb(245, 245, 245);
-        let key_border = Color::from_rgb(180, 180, 180);
-        let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-        let special_bg = Color::from_rgb(210, 210, 210);
-        let shift_bg = if self.shift { Color::from_rgb(160, 200, 255) } else { special_bg };
+        let key_bg = Color::rgb(245, 245, 245);
+        let key_border = Color::rgb(180, 180, 180);
+        let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let special_bg = Color::rgb(210, 210, 210);
+        let shift_bg = if self.shift { Color::rgb(160, 200, 255) } else { special_bg };
 
         let default_font = Font::default();
 

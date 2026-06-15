@@ -643,17 +643,17 @@ impl RibbonBar {
     fn draw_minimize_button(&self, context: &mut RenderContext) {
         let btn_rect = self.minimize_button_rect();
         let bg = if self.minimize_hovered {
-            Color::from_rgb(200, 200, 210)
+            Color::rgb(200, 200, 210)
         } else {
-            Color::from_rgb(230, 230, 235)
+            Color::rgb(230, 230, 235)
         };
         context.fill_rect(btn_rect, bg);
-        context.draw_rect(btn_rect, Color::from_rgb(180, 180, 190));
+        context.draw_rect(btn_rect, Color::rgb(180, 180, 190));
 
         // Draw arrow: ^ when expanded, v when minimized
         let mid_x = btn_rect.x + btn_rect.width as i32 / 2;
         let mid_y = btn_rect.y + btn_rect.height as i32 / 2;
-        let arrow_color = Color::from_rgb(60, 60, 60);
+        let arrow_color = Color::rgb(60, 60, 60);
         if self.minimized {
             // Downward arrow (v)
             context.draw_line(
@@ -687,16 +687,16 @@ impl RibbonBar {
         let is_hovered = self.hovered_tab == Some(index);
 
         let bg = if is_current {
-            Color::from_rgb(255, 255, 255)
+            Color::rgb(255, 255, 255)
         } else if is_hovered {
-            Color::from_rgb(235, 235, 250)
+            Color::rgb(235, 235, 250)
         } else {
-            Color::from_rgb(230, 230, 235)
+            Color::rgb(230, 230, 235)
         };
         let border = if is_current {
-            Color::from_rgb(180, 180, 200)
+            Color::rgb(180, 180, 200)
         } else {
-            Color::from_rgb(200, 200, 200)
+            Color::rgb(200, 200, 200)
         };
 
         context.fill_rect(tab_rect, bg);
@@ -713,9 +713,9 @@ impl RibbonBar {
         // Draw tab title (centered)
         let text = &self.tabs[index];
         let text_color = if self.base.is_enabled() {
-            Color::from_rgb(0, 0, 0)
+            Color::rgb(0, 0, 0)
         } else {
-            Color::from_rgb(150, 150, 150)
+            Color::rgb(150, 150, 150)
         };
         context.draw_text(
             Point::new(
@@ -741,14 +741,14 @@ impl RibbonBar {
 
         // ── Panel background (gradient-like: light gray top, white body) ──
         let top_strip = Rect::new(panel.x, panel.y, panel.width, 3);
-        context.fill_rect(top_strip, Color::from_rgb(235, 235, 240));
+        context.fill_rect(top_strip, Color::rgb(235, 235, 240));
         let body = Rect::new(panel.x, panel.y + 3, panel.width, panel.height.saturating_sub(3));
-        context.fill_rect(body, Color::from_rgb(252, 252, 252));
+        context.fill_rect(body, Color::rgb(252, 252, 252));
 
         // Panel border
         context.draw_rect(
             Rect::new(panel.x, panel.y, panel.width, panel.height),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
 
         // Get current tab groups
@@ -769,23 +769,23 @@ impl RibbonBar {
 
                     // Background
                     let item_bg = if item.is_checked() {
-                        Color::from_rgb(180, 210, 255)
+                        Color::rgb(180, 210, 255)
                     } else if is_hovered && item.is_enabled() {
-                        Color::from_rgb(210, 230, 255)
+                        Color::rgb(210, 230, 255)
                     } else {
-                        Color::from_rgb(252, 252, 252)
+                        Color::rgb(252, 252, 252)
                     };
                     context.fill_rect(*ir, item_bg);
 
                     // Border on hover/checked
                     if is_hovered || item.is_checked() {
-                        context.draw_rect(*ir, Color::from_rgb(0, 120, 215));
+                        context.draw_rect(*ir, Color::rgb(0, 120, 215));
                     }
 
                     let fg = if !item.is_enabled() {
-                        Color::from_rgb(180, 180, 180)
+                        Color::rgb(180, 180, 180)
                     } else {
-                        Color::from_rgb(0, 0, 0)
+                        Color::rgb(0, 0, 0)
                     };
 
                     if item.is_large() {
@@ -798,7 +798,7 @@ impl RibbonBar {
                             icon_center,
                             &icon_char.to_string(),
                             &Font::default(),
-                            Color::from_rgb(50, 50, 150),
+                            Color::rgb(50, 50, 150),
                             HorizontalAlignment::Left,
                         );
                         // Label below
@@ -817,7 +817,7 @@ impl RibbonBar {
                             Point::new(ir.x + 2, ir.y + ir.height as i32 / 2),
                             &icon_char.to_string(),
                             &Font::default(),
-                            Color::from_rgb(50, 50, 150),
+                            Color::rgb(50, 50, 150),
                             HorizontalAlignment::Left,
                         );
                         context.draw_text(
@@ -837,19 +837,19 @@ impl RibbonBar {
                 context.draw_line(
                     Point::new(sep_x, gr.y),
                     Point::new(sep_x, gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT),
-                    Color::from_rgb(200, 200, 200),
+                    Color::rgb(200, 200, 200),
                 );
             }
 
             // ── Group title at bottom ──
             let title_y = gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT;
             let title_rect = Rect::new(gr.x, title_y, gr.width, GROUP_TITLE_HEIGHT as u32);
-            context.fill_rect(title_rect, Color::from_rgb(245, 245, 248));
+            context.fill_rect(title_rect, Color::rgb(245, 245, 248));
             context.draw_text(
                 Point::new(gr.x + 2, title_y + GROUP_TITLE_HEIGHT / 2),
                 group.title(),
                 &Font::default(),
-                Color::from_rgb(80, 80, 80),
+                Color::rgb(80, 80, 80),
                 HorizontalAlignment::Left,
             );
         }
@@ -942,7 +942,7 @@ impl Draw for RibbonBar {
     fn draw(&mut self, context: &mut RenderContext) {
         // ── Overall background ──
         let g = self.geometry();
-        context.fill_rect(g, Color::from_rgb(240, 240, 245));
+        context.fill_rect(g, Color::rgb(240, 240, 245));
 
         // ── Draw tab headers ──
         for i in 0..self.tabs.len() {

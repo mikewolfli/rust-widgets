@@ -20,7 +20,8 @@ use super::animation::{AnimationConfig, AnimationDriver, AnimationId};
 ///
 /// // Each frame:
 /// if !group.is_completed(&driver) {
-///     driver.advance(); // drives all active animations
+///     group.advance(&mut driver);
+///     driver.advance();
 /// }
 /// ```
 pub struct AnimationGroup {
@@ -32,6 +33,9 @@ pub struct AnimationGroup {
     sequential: Vec<AnimationConfig>,
     /// Index into `sequential` for the currently running config.
     current_seq_index: usize,
+    /// The animation ID of the currently running sequential animation
+    /// (if one has been started in the driver).
+    current_seq_id: Option<AnimationId>,
 }
 
 impl AnimationGroup {
@@ -42,6 +46,7 @@ impl AnimationGroup {
             parallel: Vec::new(),
             sequential: Vec::new(),
             current_seq_index: 0,
+            current_seq_id: None,
         }
     }
 
@@ -88,26 +93,54 @@ impl AnimationGroup {
     /// Reset the sequential index back to 0 (does not remove parallel IDs).
     pub fn reset(&mut self) {
         self.current_seq_index = 0;
+        self.current_seq_id = None;
     }
 
     /// Advance the sequential index when the current sequential animation completes.
     ///
     /// Call this each frame while the group is running. Once parallel animations
-    /// are all finished, the sequential index advances by one each time the
-    /// current sequential animation completes.  When `current_seq_index` reaches
-    /// `sequential.len()`, [`is_completed`](AnimationGroup::is_completed) returns
-    /// `true`.
-    pub fn advance(&mut self, driver: &AnimationDriver) {
+    /// are all finished, each sequential animation config is added to the driver
+    /// and run to completion before advancing to the next one. When
+    /// `current_seq_index` reaches `sequential.len()`,
+    /// [`is_completed`](AnimationGroup::is_completed) returns `true`.
+    pub fn advance(&mut self, driver: &mut AnimationDriver) {
         if self.current_seq_index >= self.sequential.len() {
             return;
         }
-        // Advance only after parallel animations complete
+        // Only advance sequential animations after parallel animations complete
         let parallel_done = self
             .parallel
             .iter()
             .all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true));
-        if parallel_done {
+        if !parallel_done {
+            return;
+        }
+
+        // If no sequential animation is running yet, start the current one
+        if self.current_seq_id.is_none() {
+            let config = self.sequential[self.current_seq_index].clone();
+            let id = driver.add(config, |_| {});
+            self.current_seq_id = Some(id);
+            return;
+        }
+
+        // Check if the current sequential animation has completed
+        let done = self
+            .current_seq_id
+            .and_then(|id| driver.get_progress(id))
+            .map(|p| p >= 1.0)
+            .unwrap_or(true);
+
+        if done {
+            self.current_seq_id = None;
             self.current_seq_index += 1;
+
+            // Start the next sequential animation if available
+            if self.current_seq_index < self.sequential.len() {
+                let config = self.sequential[self.current_seq_index].clone();
+                let id = driver.add(config, |_| {});
+                self.current_seq_id = Some(id);
+            }
         }
     }
 }

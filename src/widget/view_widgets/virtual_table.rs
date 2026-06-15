@@ -261,8 +261,8 @@ impl EventHandler for VirtualTable {
 impl Draw for VirtualTable {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(251, 252, 254));
-        context.draw_rect(rect, Color::from_rgb(190, 198, 210));
+        context.fill_rect(rect, Color::rgb(251, 252, 254));
+        context.draw_rect(rect, Color::rgb(190, 198, 210));
 
         let data = self.fetch_visible_window();
         if data.is_empty() {
@@ -279,13 +279,13 @@ impl Draw for VirtualTable {
                     self.column_width.saturating_sub(2),
                     self.row_height.saturating_sub(2),
                 );
-                context.draw_rect(cell_rect, Color::from_rgb(220, 225, 233));
+                context.draw_rect(cell_rect, Color::rgb(220, 225, 233));
                 if let Some(value) = cell {
                     context.draw_text(
                         Point::new(x + 4, y + self.row_height as i32 / 2),
                         value,
                         &Font::default(),
-                        Color::from_rgb(49, 60, 78),
+                        Color::rgb(49, 60, 78),
                         HorizontalAlignment::Left,
                     );
                 }

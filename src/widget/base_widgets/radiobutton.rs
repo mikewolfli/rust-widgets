@@ -1,5 +1,5 @@
 //! Radio button widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -34,8 +34,8 @@ impl RadioButton {
         &self.text
     }
     /// Sets the text label displayed next to the radio button and requests a redraw.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
         self.base.request_redraw();
     }
     /// Sets optional group identifier.
@@ -112,21 +112,40 @@ impl Draw for RadioButton {
         // Draw radio button
         let rect = self.geometry();
         let style = self.style();
+        let enabled = self.base.is_enabled();
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
         let radius = rect.height.min(rect.width) / 4;
         // Draw outer circle
-        let circle_color = style.border_color.unwrap_or(Color::from_rgb(100u8, 100, 100));
+        let circle_color = if enabled {
+            style.border_color.unwrap_or(Color::rgb(100u8, 100, 100))
+        } else {
+            style.border_color.unwrap_or(Color::rgb(180u8, 180, 180))
+        };
         context.draw_circle(center, radius, circle_color);
         // Draw inner circle if checked
         if self.checked {
             let inner_radius = radius / 2;
-            let fill_color = style.background_color.unwrap_or(Color::from_rgb(0u8, 120, 215));
+            let fill_color = if enabled {
+                style.background_color.unwrap_or(Color::rgb(0u8, 120, 215))
+            } else {
+                style.background_color.unwrap_or(Color::rgb(150u8, 150, 150))
+            };
             context.fill_circle(center, inner_radius, fill_color);
         }
         // Draw text label
-        let text_color = style.text_color.unwrap_or(Color::from_rgb(60u8, 60, 60));
+        let text_color = if enabled {
+            style.text_color.unwrap_or(Color::rgb(60u8, 60, 60))
+        } else {
+            style.text_color.unwrap_or(Color::rgb(150u8, 150, 150))
+        };
         let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
-        context.draw_text(text_pos, &self.text, &Font::default(), text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            text_pos,
+            &self.text,
+            &Font::default(),
+            text_color,
+            HorizontalAlignment::Left,
+        );
     }
 }
 

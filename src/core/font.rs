@@ -3,16 +3,48 @@
 #[serde(from = "FontSerde")]
 pub struct Font {
     /// Font family name.
-    pub family: String,
+    family: String,
     /// Font point size.
-    pub size: f32,
+    size: f32,
     /// Font weight in CSS-like scale (100..=900).
     #[serde(default = "Font::default_weight")]
-    pub weight: u16,
+    weight: u16,
     /// Whether bold style is requested.
-    pub bold: bool,
+    bold: bool,
     /// Whether italic style is requested.
-    pub italic: bool,
+    italic: bool,
+}
+impl Font {
+    /// Returns the font family name.
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+    /// Returns the font point size.
+    pub fn size(&self) -> f32 {
+        self.size
+    }
+    /// Returns the font weight in CSS-like scale (100..=900).
+    pub fn weight(&self) -> u16 {
+        self.weight
+    }
+    /// Returns whether italic style is requested.
+    pub fn is_italic(&self) -> bool {
+        self.italic
+    }
+    /// Sets the font point size (mutable setter for CSS parser integration).
+    pub fn set_size(&mut self, size: f32) -> &mut Self {
+        self.size = size;
+        self
+    }
+    /// Sets the font family (mutable setter for CSS parser integration).
+    pub fn set_family(&mut self, family: impl Into<String>) -> &mut Self {
+        self.family = family.into();
+        self
+    }
+    /// Creates a [`FontBuilder`] for ergonomic construction.
+    pub fn builder() -> FontBuilder {
+        FontBuilder::new()
+    }
 }
 impl Font {
     /// Shared regular text weight.
@@ -71,6 +103,8 @@ impl Font {
         Self::new(family, size, true, true)
     }
     /// Creates a font descriptor from tuple (family, size).
+    /// Use [`simple`] instead.
+    #[deprecated(since = "0.7.0", note = "use `simple` instead")]
     pub fn from_tuple(family: impl Into<String>, size: f32) -> Self {
         Self::simple(family, size)
     }
@@ -219,6 +253,68 @@ impl From<FontSerde> for Font {
         }
     }
 }
+/// Builder for constructing [`Font`] instances with fine-grained control.
+///
+/// By default the builder creates a regular-weight, non-italic font (family: "Arial",
+/// size: 14.0). All settings are optional — call only what you need.
+///
+/// # Example
+///
+/// ```
+/// use rust_widgets::core::Font;
+///
+/// let font = Font::builder()
+///     .family("Helvetica")
+///     .size(16.0)
+///     .weight(600)
+///     .build();
+///
+/// assert_eq!(font.family(), "Helvetica");
+/// assert_eq!(font.weight(), 600);
+/// ```
+#[derive(Debug, Clone)]
+pub struct FontBuilder {
+    family: String,
+    size: f32,
+    weight: u16,
+    italic: bool,
+}
+impl FontBuilder {
+    fn new() -> Self {
+        Self {
+            family: String::from("Arial"),
+            size: 14.0,
+            weight: Font::REGULAR_WEIGHT,
+            italic: false,
+        }
+    }
+    /// Sets the font family.
+    pub fn family(mut self, family: impl Into<String>) -> Self {
+        self.family = family.into();
+        self
+    }
+    /// Sets the font point size.
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+    /// Sets the font weight in CSS-like scale (100..=900).
+    /// The value will be normalized via [`Font::normalize_weight`].
+    pub fn weight(mut self, weight: u16) -> Self {
+        self.weight = weight;
+        self
+    }
+    /// Sets the italic style.
+    pub fn italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
+    }
+    /// Consumes the builder and creates a [`Font`].
+    pub fn build(self) -> Font {
+        Font::with_weight(self.family, self.size, self.weight, self.italic)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,25 +325,27 @@ mod tests {
         assert_eq!(Font::default(), font);
         assert!(!Font::new("", 12.0, false, false).is_valid());
         assert!(!Font::new("Sans", 0.0, false, false).is_valid());
-        assert_eq!(font.weight, Font::REGULAR_WEIGHT);
-        assert_eq!(Font::default_ui_bold().weight, Font::BOLD_WEIGHT);
+        assert_eq!(font.weight(), Font::REGULAR_WEIGHT);
+        assert_eq!(Font::default_ui_bold().weight(), Font::BOLD_WEIGHT);
+        assert!(!font.is_bold());
+        assert!(Font::default_ui_bold().is_bold());
     }
     #[test]
     fn font_weight_normalization_contract() {
         let light = Font::with_weight("Sans", 12.0, 149, false);
         let medium = Font::with_weight("Sans", 12.0, 550, false);
         let heavy = Font::with_weight("Sans", 12.0, 2000, false);
-        assert_eq!(light.weight, 100);
-        assert_eq!(medium.weight, 600);
-        assert_eq!(heavy.weight, 900);
-        assert!(Font::with_weight("Sans", 12.0, 700, false).bold);
-        assert!(!Font::with_weight("Sans", 12.0, 600, false).bold);
+        assert_eq!(light.weight(), 100);
+        assert_eq!(medium.weight(), 600);
+        assert_eq!(heavy.weight(), 900);
+        assert!(Font::with_weight("Sans", 12.0, 700, false).is_bold());
+        assert!(!Font::with_weight("Sans", 12.0, 600, false).is_bold());
     }
     #[test]
     fn font_bold_is_derived_from_normalized_weight() {
         let normalized_to_bold = Font::with_weight("Sans", 12.0, 650, false);
-        assert_eq!(normalized_to_bold.weight, 700);
-        assert!(normalized_to_bold.bold);
+        assert_eq!(normalized_to_bold.weight(), 700);
+        assert!(normalized_to_bold.is_bold());
     }
     #[cfg(not(feature = "embedded"))]
     #[test]
@@ -256,13 +354,13 @@ mod tests {
             r#"{"family":"Sans","size":12.0,"weight":650,"bold":false,"italic":true}"#,
         )
         .expect("font deserialize should succeed");
-        assert_eq!(parsed.weight, 700);
-        assert!(parsed.bold);
-        assert!(parsed.italic);
+        assert_eq!(parsed.weight(), 700);
+        assert!(parsed.is_bold());
+        assert!(parsed.is_italic());
         let parsed_legacy: Font =
             serde_json::from_str(r#"{"family":"Sans","size":12.0,"bold":true,"italic":false}"#)
                 .expect("legacy font deserialize should succeed");
-        assert_eq!(parsed_legacy.weight, 700);
-        assert!(parsed_legacy.bold);
+        assert_eq!(parsed_legacy.weight(), 700);
+        assert!(parsed_legacy.is_bold());
     }
 }

@@ -1,5 +1,5 @@
 //! Message box dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -203,11 +203,11 @@ impl MessageBox {
     }
     fn icon_color(&self) -> Color {
         match self.icon {
-            MessageBoxIcon::Information => Color::from_rgb(0, 120, 215),
-            MessageBoxIcon::Question => Color::from_rgb(0, 120, 215),
-            MessageBoxIcon::Warning => Color::from_rgb(255, 140, 0),
-            MessageBoxIcon::Critical => Color::from_rgb(196, 43, 28),
-            MessageBoxIcon::NoIcon => Color::from_rgb(0, 0, 0),
+            MessageBoxIcon::Information => Color::rgb(0, 120, 215),
+            MessageBoxIcon::Question => Color::rgb(0, 120, 215),
+            MessageBoxIcon::Warning => Color::rgb(255, 140, 0),
+            MessageBoxIcon::Critical => Color::rgb(196, 43, 28),
+            MessageBoxIcon::NoIcon => Color::rgb(0, 0, 0),
         }
     }
 }
@@ -251,20 +251,19 @@ impl Draw for MessageBox {
         // Dialog background
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(245, 245, 245),
+            Color::rgb(245, 245, 245),
         );
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(160, 160, 160),
+            Color::rgb(160, 160, 160),
         );
         // Title bar
-        context
-            .fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), Color::from_rgb(0, 120, 215));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), Color::rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         // Icon
@@ -284,7 +283,7 @@ impl Draw for MessageBox {
             Point::new(text_x, rect.y + 60),
             &self.text,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // Buttons
@@ -295,18 +294,11 @@ impl Draw for MessageBox {
         let mut btn_x = rect.x as f32 + rect.width as f32 - total_btn_w;
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
-            let bg = if is_default {
-                Color::from_rgb(0, 120, 215)
-            } else {
-                Color::from_rgb(225, 225, 225)
-            };
-            let fg =
-                if is_default { Color::from_rgb(255, 255, 255) } else { Color::from_rgb(0, 0, 0) };
+            let bg = if is_default { Color::rgb(0, 120, 215) } else { Color::rgb(225, 225, 225) };
+            let fg = if is_default { Color::rgb(255, 255, 255) } else { Color::rgb(0, 0, 0) };
             context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), bg);
-            context.draw_rect(
-                Rect::from_f32(btn_x, btn_y, btn_w, btn_h),
-                Color::from_rgb(100, 100, 100),
-            );
+            context
+                .draw_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), Color::rgb(100, 100, 100));
             context.draw_text(
                 Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
                 &btn.translated_label(),
@@ -543,7 +535,7 @@ mod tests {
 
         mb.set_geometry(Rect::new(0, 0, 400, 200));
         assert_eq!(mb.geometry(), Rect::new(0, 0, 400, 200));
-        assert_eq!(mb.rect(), Rect::new(0, 0, 400, 200));
+        assert_eq!(mb.geometry(), Rect::new(0, 0, 400, 200));
         assert_eq!(mb.position(), Point::new(0, 0));
         assert_eq!(mb.size(), crate::core::Size::new(400, 200));
     }

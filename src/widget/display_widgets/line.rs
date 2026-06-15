@@ -89,7 +89,7 @@ impl Draw for Line {
         let line_color = self
             .color
             .or_else(|| self.style().border_color)
-            .unwrap_or(Color::from_rgb(180, 180, 180));
+            .unwrap_or(Color::rgb(180, 180, 180));
 
         draw_line(context, rect, is_vertical, self.thickness, line_color);
     }

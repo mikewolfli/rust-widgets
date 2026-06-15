@@ -275,14 +275,14 @@ impl Draw for ToolBar {
         // Background
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(245, 245, 245),
+            Color::rgb(245, 245, 245),
         );
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
         context.draw_line(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
@@ -294,7 +294,7 @@ impl Draw for ToolBar {
                         context.draw_line(
                             Point::new(mid_x, rect.y + 4),
                             Point::new(mid_x, rect.y + rect.height as i32 - 4),
-                            Color::from_rgb(200, 200, 200),
+                            Color::rgb(200, 200, 200),
                         );
                     }
                     ToolBarOrientation::Vertical => {
@@ -302,7 +302,7 @@ impl Draw for ToolBar {
                         context.draw_line(
                             Point::new(rect.x + 4, mid_y),
                             Point::new(rect.x + rect.width as i32 - 4, mid_y),
-                            Color::from_rgb(200, 200, 200),
+                            Color::rgb(200, 200, 200),
                         );
                     }
                 }
@@ -310,23 +310,23 @@ impl Draw for ToolBar {
             }
             let is_hovered = self.hovered_index == Some(i);
             let bg = if item.is_checked() {
-                Color::from_rgb(180, 210, 255)
+                Color::rgb(180, 210, 255)
             } else if is_hovered {
-                Color::from_rgb(210, 230, 255)
+                Color::rgb(210, 230, 255)
             } else {
-                Color::from_rgb(245, 245, 245)
+                Color::rgb(245, 245, 245)
             };
             context.fill_rect(Rect::new(item_r.x, item_r.y, item_r.width, item_r.height), bg);
             if is_hovered || item.is_checked() {
                 context.draw_rect(
                     Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             }
             let fg = if !item.is_enabled() {
-                Color::from_rgb(150, 150, 150)
+                Color::rgb(150, 150, 150)
             } else {
-                Color::from_rgb(0, 0, 0)
+                Color::rgb(0, 0, 0)
             };
             context.draw_text(
                 Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),

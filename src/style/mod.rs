@@ -188,10 +188,10 @@ pub struct WidgetStyle {
     pub font: Option<Font>,
     /// Optional border color.
     pub border_color: Option<Color>,
-    /// Border width in logical pixels.
-    pub border_width: u32,
-    /// Border radius in logical pixels.
-    pub border_radius: u32,
+    /// Border width in logical pixels. `None` = inherit from parent.
+    pub border_width: Option<u32>,
+    /// Border radius in logical pixels. `None` = inherit from parent.
+    pub border_radius: Option<u32>,
     /// Inner content padding.
     pub padding: Padding,
     /// Outer widget margin.
@@ -223,8 +223,8 @@ impl WidgetStyle {
     /// Sets the border.
     pub fn with_border(mut self, color: Color, width: u32, radius: u32) -> Self {
         self.border_color = Some(color);
-        self.border_width = width;
-        self.border_radius = radius;
+        self.border_width = Some(width);
+        self.border_radius = Some(radius);
         self
     }
     /// Sets the padding.
@@ -270,16 +270,8 @@ impl WidgetStyle {
             text_color: self.text_color.or(parent.text_color),
             font: self.font.clone().or(parent.font.clone()),
             border_color: self.border_color.or(parent.border_color),
-            border_width: if self.border_width > 0 {
-                self.border_width
-            } else {
-                parent.border_width
-            },
-            border_radius: if self.border_radius > 0 {
-                self.border_radius
-            } else {
-                parent.border_radius
-            },
+            border_width: self.border_width.or(parent.border_width),
+            border_radius: self.border_radius.or(parent.border_radius),
             padding: self.padding,
             margin: self.margin,
             shadow: self.shadow.clone().or(parent.shadow.clone()),
@@ -305,10 +297,10 @@ impl WidgetStyle {
         if self.border_color.is_none() {
             self.border_color = other.border_color;
         }
-        if self.border_width == 0 {
+        if self.border_width.is_none() {
             self.border_width = other.border_width;
         }
-        if self.border_radius == 0 {
+        if self.border_radius.is_none() {
             self.border_radius = other.border_radius;
         }
         if self.shadow.is_none() {

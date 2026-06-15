@@ -99,8 +99,12 @@ impl CAbiSafe for f64 {
 }
 
 // ⚠️ `bool` is **not** C‑ABI‑safe (its memory representation is not guaranteed by the ABI).
-// Prefer `u8` (0/1) for `extern "C" fn` return types. This impl exists only
-// to support existing call sites and should not be used for new code.
+// Prefer `u8` (0/1) or `u32` (0/1) for `extern "C" fn` return types. This impl exists only
+// to support existing call sites.
+//
+// DEPRECATED: Do not use `CAbiSafe for bool` in new code. The Rust bool type has no
+// guaranteed C‑ABI representation — use `u8` (0/1) or `u32` (0/1) as the return type
+// for `extern "C" fn` signatures instead.
 impl CAbiSafe for bool {
     fn c_abi_fallback() -> Self {
         false

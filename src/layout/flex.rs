@@ -262,7 +262,7 @@ impl FlexLayout {
             let actual_shrunk = total_intrinsic - main_sizes.iter().sum::<i32>() - gaps;
             if actual_shrunk < deficit {
                 // Distribute the remaining deficit
-                let remaining_deficit = deficit - actual_shrunk;
+                let mut remaining_deficit = deficit - actual_shrunk;
                 for s in main_sizes.iter_mut().rev() {
                     if remaining_deficit <= 0 {
                         break;
@@ -270,6 +270,7 @@ impl FlexLayout {
                     let possible = *s;
                     let cut = possible.min(remaining_deficit);
                     *s -= cut;
+                    remaining_deficit -= cut;
                 }
             }
         } else {

@@ -191,18 +191,18 @@ impl Draw for InputDialog {
         let rect = self.geometry();
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(245, 245, 245),
+            Color::rgb(245, 245, 245),
         );
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::from_rgb(160, 160, 160),
+            Color::rgb(160, 160, 160),
         );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::from_rgb(0, 120, 215));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         // Label
@@ -210,18 +210,18 @@ impl Draw for InputDialog {
             Point::new(rect.x + 10, rect.y + 48),
             &self.label_text,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // Input field
         let input_y = rect.y + 60;
         context.fill_rect(
             Rect::new(rect.x + 10, input_y, rect.width - 20, 26),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
         );
         context.draw_rect(
             Rect::new(rect.x + 10, input_y, rect.width - 20, 26),
-            Color::from_rgb(150, 150, 150),
+            Color::rgb(150, 150, 150),
         );
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
@@ -235,35 +235,35 @@ impl Draw for InputDialog {
             Point::new(rect.x + 14, input_y + 13),
             &display_text,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // OK/Cancel
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, 80, 28),
-            Color::from_rgb(0, 120, 215),
+            Color::rgb(0, 120, 215),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &tr!("common.button.ok"),
             &Font::default(),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            Color::from_rgb(225, 225, 225),
+            Color::rgb(225, 225, 225),
         );
         context.draw_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            Color::from_rgb(100, 100, 100),
+            Color::rgb(100, 100, 100),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
     }

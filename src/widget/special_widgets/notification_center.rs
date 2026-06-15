@@ -251,8 +251,8 @@ impl EventHandler for NotificationCenter {
 impl Draw for NotificationCenter {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(250, 251, 253));
-        context.draw_rect(rect, Color::from_rgb(194, 201, 214));
+        context.fill_rect(rect, Color::rgb(250, 251, 253));
+        context.draw_rect(rect, Color::rgb(194, 201, 214));
 
         for (index, item) in self.items.iter().enumerate() {
             let y = rect.y + index as i32 * self.row_height as i32;
@@ -262,18 +262,18 @@ impl Draw for NotificationCenter {
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
             let bg = if self.selected_index == Some(index) {
-                Color::from_rgb(220, 232, 249)
+                Color::rgb(220, 232, 249)
             } else if !item.read {
-                Color::from_rgb(240, 246, 255)
+                Color::rgb(240, 246, 255)
             } else {
-                Color::from_rgb(250, 251, 253)
+                Color::rgb(250, 251, 253)
             };
             context.fill_rect(row_rect, bg);
 
             let badge_color = match item.level {
-                NotificationLevel::Info => Color::from_rgb(74, 122, 199),
-                NotificationLevel::Warning => Color::from_rgb(222, 153, 42),
-                NotificationLevel::Error => Color::from_rgb(208, 82, 72),
+                NotificationLevel::Info => Color::rgb(74, 122, 199),
+                NotificationLevel::Warning => Color::rgb(222, 153, 42),
+                NotificationLevel::Error => Color::rgb(208, 82, 72),
             };
 
             context.fill_rect(Rect::new(rect.x + 8, y + 14, 8, 8), badge_color);
@@ -281,21 +281,21 @@ impl Draw for NotificationCenter {
                 Point::new(rect.x + 22, y + 14),
                 &item.title,
                 &Font::default(),
-                Color::from_rgb(40, 51, 68),
+                Color::rgb(40, 51, 68),
                 HorizontalAlignment::Left,
             );
             context.draw_text(
                 Point::new(rect.x + 22, y + 28),
                 &item.message,
                 &Font::default(),
-                Color::from_rgb(91, 103, 121),
+                Color::rgb(91, 103, 121),
                 HorizontalAlignment::Left,
             );
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::from_rgb(229, 233, 240),
+                Color::rgb(229, 233, 240),
             );
         }
     }

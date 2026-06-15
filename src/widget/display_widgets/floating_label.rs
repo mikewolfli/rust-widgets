@@ -227,6 +227,10 @@ impl Draw for FloatingLabel {
     }
 }
 
+const KEYCODE_TAB: u32 = 9;
+const KEYCODE_ENTER: u32 = 13;
+const KEYCODE_BACKSPACE: u32 = 8;
+
 impl EventHandler for FloatingLabel {
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
@@ -240,10 +244,10 @@ impl EventHandler for FloatingLabel {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                if *key == 9 {
+                if *key == KEYCODE_TAB {
                     // Tab — lose focus
                     self.set_focused(false);
-                } else if *key == 13 {
+                } else if *key == KEYCODE_ENTER {
                     // Enter — lose focus
                     self.set_focused(false);
                 } else if *key >= 32 && *key <= 126 {
@@ -254,7 +258,7 @@ impl EventHandler for FloatingLabel {
                         new_text.push(c);
                         self.set_text(new_text);
                     }
-                } else if *key == 8 {
+                } else if *key == KEYCODE_BACKSPACE {
                     // Backspace
                     if self.is_focused && !self.text.is_empty() {
                         let mut new_text = self.text.clone();

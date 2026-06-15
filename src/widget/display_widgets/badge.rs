@@ -78,8 +78,8 @@ impl Badge {
 
     /// Sets the display text shown inside the badge. When non-empty, this takes
     /// precedence over the numeric count.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
         self.base.request_redraw();
     }
 

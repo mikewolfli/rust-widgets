@@ -395,13 +395,13 @@ impl Draw for MdiArea {
                 // No background
             }
             Background::Plain => {
-                context.fill_rect(rect, Color::from_rgb(240, 240, 240));
+                context.fill_rect(rect, Color::rgb(240, 240, 240));
             }
             Background::Gradient => {
                 // Draw gradient background
                 for y in 0..rect.height as i32 {
                     let ratio = y as f32 / rect.height as f32;
-                    let color = Color::from_rgb(
+                    let color = Color::rgb(
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
                         (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
@@ -419,9 +419,9 @@ impl Draw for MdiArea {
                 for y in 0..(rect.height / pattern_size) as i32 {
                     for x in 0..(rect.width / pattern_size) as i32 {
                         let color = if (x + y) % 2 == 0 {
-                            Color::from_rgb(245, 245, 245)
+                            Color::rgb(245, 245, 245)
                         } else {
-                            Color::from_rgb(235, 235, 235)
+                            Color::rgb(235, 235, 235)
                         };
                         context.fill_rect(
                             Rect::new(
@@ -447,24 +447,24 @@ impl Draw for MdiArea {
             let frame_rect = subwindow.geometry;
             // Draw frame background
             let bg_color = if is_active {
-                Color::from_rgb(255, 255, 255)
+                Color::rgb(255, 255, 255)
             } else {
-                Color::from_rgb(250, 250, 250)
+                Color::rgb(250, 250, 250)
             };
             context.fill_rect(frame_rect, bg_color);
             // Draw frame border
             let border_color = if is_active {
-                Color::from_rgb(0, 120, 215)
+                Color::rgb(0, 120, 215)
             } else {
-                Color::from_rgb(200, 200, 200)
+                Color::rgb(200, 200, 200)
             };
             context.draw_rect(frame_rect, border_color);
             // Draw title bar
             let title_bar_height = 24;
             let title_bar_color = if is_active {
-                Color::from_rgb(0, 120, 215)
+                Color::rgb(0, 120, 215)
             } else {
-                Color::from_rgb(180, 180, 180)
+                Color::rgb(180, 180, 180)
             };
             context.fill_rect(
                 Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
@@ -472,7 +472,7 @@ impl Draw for MdiArea {
             );
             // Draw title text
             let text_color =
-                if is_active { Color::from_rgb(255, 255, 255) } else { Color::from_rgb(0, 0, 0) };
+                if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(0, 0, 0) };
             context.draw_text(
                 Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
                 &subwindow.title,
@@ -486,9 +486,9 @@ impl Draw for MdiArea {
                 let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
                 let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
                 let close_color = if is_active {
-                    Color::from_rgb(255, 255, 255)
+                    Color::rgb(255, 255, 255)
                 } else {
-                    Color::from_rgb(100, 100, 100)
+                    Color::rgb(100, 100, 100)
                 };
                 context.draw_line(
                     Point::new(close_x, close_y),

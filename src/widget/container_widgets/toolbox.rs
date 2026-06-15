@@ -1,5 +1,5 @@
 //! Tool box widget.
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Orientation, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -265,12 +265,12 @@ impl Draw for ToolBox {
         // Draw content background
         context.fill_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            Color::from_rgb(255, 255, 255),
+            Color::rgb(255, 255, 255),
         );
         // Draw content border
         context.draw_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            Color::from_rgb(200, 200, 200),
+            Color::rgb(200, 200, 200),
         );
         // Draw items
         for i in 0..self.items.len() {
@@ -280,11 +280,11 @@ impl Draw for ToolBox {
                 let is_enabled = item.enabled;
                 // Draw item background
                 let bg_color = if !is_enabled {
-                    Color::from_rgb(240, 240, 240)
+                    Color::rgb(240, 240, 240)
                 } else if is_current {
-                    Color::from_rgb(220, 220, 255)
+                    Color::rgb(220, 220, 255)
                 } else {
-                    Color::from_rgb(240, 240, 240)
+                    Color::rgb(240, 240, 240)
                 };
                 context.fill_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
@@ -292,38 +292,55 @@ impl Draw for ToolBox {
                 );
                 // Draw item border
                 let border_color = if !is_enabled {
-                    Color::from_rgb(200, 200, 200)
+                    Color::rgb(200, 200, 200)
                 } else if is_current {
-                    Color::from_rgb(100, 100, 200)
+                    Color::rgb(100, 100, 200)
                 } else {
-                    Color::from_rgb(200, 200, 200)
+                    Color::rgb(200, 200, 200)
                 };
                 context.draw_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     border_color,
                 );
                 // Draw icon if available
-                let icon_size = 16;
-                let text_x =
-                    if item.icon.is_some() { item_rect.x + icon_size + 5 } else { item_rect.x + 5 };
+                let icon_size = 16u32;
+                let padding = 5i32;
+                let text_x = if item.icon.is_some() {
+                    item_rect.x + icon_size as i32 + padding + 4
+                } else {
+                    item_rect.x + padding
+                };
                 if item.icon.is_some() {
-                    // NOTE: Full icon rendering requires draw_image() on RenderContext
-                    // For now, draw a placeholder gray square
-                    context.fill_rect(
+                    let icon_x = item_rect.x + padding;
+                    let icon_y = item_rect.y + (item_rect.height as i32 - icon_size as i32) / 2;
+                    let icon_rect = Rect::new(icon_x, icon_y, icon_size, icon_size);
+                    // Draw a small rounded square as the icon background
+                    let icon_bg_color = if is_current {
+                        Color::rgb(100, 100, 200)
+                    } else {
+                        Color::rgb(180, 180, 200)
+                    };
+                    context.fill_rounded_rect(icon_rect, 3, icon_bg_color);
+                    // Draw a simple shape inside: a small circle (representative)
+                    let inner_r = 3;
+                    let cx = icon_x + icon_size as i32 / 2;
+                    let cy = icon_y + icon_size as i32 / 2;
+                    context.fill_rounded_rect(
                         Rect::new(
-                            item_rect.x + 5,
-                            item_rect.y + (item_rect.height - icon_size as u32) as i32 / 2,
-                            icon_size as u32,
-                            icon_size as u32,
+                            cx - inner_r as i32,
+                            cy - inner_r as i32,
+                            inner_r * 2,
+                            inner_r * 2,
                         ),
-                        Color::from_rgb(150, 150, 150),
+                        inner_r,
+                        Color::rgb(255, 255, 255),
                     );
                 }
                 // Draw item text
                 let text_color = if !is_enabled {
-                    Color::from_rgb(150, 150, 150)
+                    Color::rgb(150, 150, 150)
                 } else {
-                    Color::from_rgb(0, 0, 0)
+                    Color::rgb(0, 0, 0)
                 };
                 context.draw_text(
                     Point::new(text_x, item_rect.y + item_rect.height as i32 / 2),

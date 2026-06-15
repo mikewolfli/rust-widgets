@@ -186,9 +186,9 @@ impl Draw for TreeView {
         let rect = self.base.geometry();
         use crate::core::Color;
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
         // Draw nodes from model
         if let Some(ref model) = self.model {
             let item_height = 20;
@@ -202,7 +202,7 @@ impl Draw for TreeView {
                 if Some(i) == self.focused_node {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
-                        Color::from_rgb(200, 220, 255),
+                        Color::rgb(200, 220, 255),
                     );
                 }
                 if let Some(path) = model.node_path(i) {
@@ -210,7 +210,7 @@ impl Draw for TreeView {
                         crate::core::Point::new(rect.x + indent, y + item_height / 2),
                         &path,
                         &crate::core::Font::default(),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                         HorizontalAlignment::Left,
                     );
                 }

@@ -25,6 +25,7 @@ macro_rules! binding {
 /// # use rust_widgets::computed;
 /// # use rust_widgets::data_binding::Computed;
 /// let mut double = computed!(|| 2 * 21, 0);
+/// double.invalidate();
 /// assert_eq!(double.get(), 42);
 /// ```
 #[macro_export]
@@ -51,6 +52,7 @@ mod tests {
     #[test]
     fn test_computed_macro() {
         let mut c = computed!(|| 2 + 2, 0);
+        c.invalidate();
         assert_eq!(c.get(), 4);
     }
 
@@ -58,6 +60,7 @@ mod tests {
     fn test_computed_macro_with_closure() {
         let x = 10;
         let mut c = computed!(move || x * 3, 0);
+        c.invalidate();
         assert_eq!(c.get(), 30);
     }
 }

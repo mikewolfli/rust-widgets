@@ -8,9 +8,7 @@ use core::cell::RefCell;
 use serde_json::Value;
 
 use crate::core::Orientation;
-use crate::layout::{
-    FormLayout, GridLayout, HBoxLayout, Layout, SplitterLayout, StackLayout, VBoxLayout,
-};
+use crate::layout::{BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout, StackLayout};
 
 // ── Layout kind enum ─────────────────────────────────────────
 
@@ -117,10 +115,10 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
 pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> {
     match *kind {
         DeclarativeLayoutKind::HBox { spacing, margin } => {
-            Box::new(HBoxLayout::new(spacing, margin))
+            Box::new(BoxLayout::new(Orientation::Horizontal, spacing, margin))
         }
         DeclarativeLayoutKind::VBox { spacing, margin } => {
-            Box::new(VBoxLayout::new(spacing, margin))
+            Box::new(BoxLayout::new(Orientation::Vertical, spacing, margin))
         }
         DeclarativeLayoutKind::Grid { columns, spacing, margin } => {
             Box::new(GridLayout::new(1, columns, spacing, margin))

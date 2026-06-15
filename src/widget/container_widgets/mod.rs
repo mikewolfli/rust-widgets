@@ -51,4 +51,5 @@ pub use stackedwidget::StackedWidget;
 pub use stepper::Stepper;
 #[cfg(not(feature = "mini"))]
 pub use tabwidget::TabWidget;
+#[cfg(not(feature = "mini"))]
 pub use toolbox::ToolBox;

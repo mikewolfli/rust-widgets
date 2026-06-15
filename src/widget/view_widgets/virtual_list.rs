@@ -290,8 +290,8 @@ impl Draw for VirtualList {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
 
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
 
         let rows = self.fetch_visible_rows();
         if rows.is_empty() {
@@ -308,7 +308,7 @@ impl Draw for VirtualList {
             if self.selected_row == Some(row_index) {
                 context.fill_rect(
                     Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::from_rgb(210, 230, 255),
+                    Color::rgb(210, 230, 255),
                 );
             }
 
@@ -316,7 +316,7 @@ impl Draw for VirtualList {
                 Point::new(rect.x + 4, y + rh / 2),
                 &text,
                 &Font::default(),
-                Color::from_rgb(0, 0, 0),
+                Color::rgb(0, 0, 0),
                 HorizontalAlignment::Left,
             );
         }

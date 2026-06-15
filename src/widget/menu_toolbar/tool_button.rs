@@ -152,27 +152,27 @@ impl Draw for ToolButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let bg = if self.pressed {
-            Color::from_rgb(180, 210, 255)
+            Color::rgb(180, 210, 255)
         } else if self.checked {
-            Color::from_rgb(200, 225, 255)
+            Color::rgb(200, 225, 255)
         } else if self.hovered && !self.auto_raise {
-            Color::from_rgb(220, 238, 255)
+            Color::rgb(220, 238, 255)
         } else if self.auto_raise && !self.hovered {
-            Color::from_rgba(0, 0, 0, 0) // transparent
+            Color::rgba(0, 0, 0, 0) // transparent
         } else {
-            Color::from_rgb(240, 240, 240)
+            Color::rgb(240, 240, 240)
         };
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         if self.hovered || self.pressed || self.checked {
             context.draw_rect(
                 Rect::new(rect.x, rect.y, rect.width, rect.height),
-                Color::from_rgb(0, 120, 215),
+                Color::rgb(0, 120, 215),
             );
         }
         let fg = if !self.base.is_enabled() {
-            Color::from_rgb(150, 150, 150)
+            Color::rgb(150, 150, 150)
         } else {
-            Color::from_rgb(0, 0, 0)
+            Color::rgb(0, 0, 0)
         };
         let label = match self.button_style {
             ToolButtonStyle::TextOnly

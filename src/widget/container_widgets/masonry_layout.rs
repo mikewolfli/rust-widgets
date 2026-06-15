@@ -23,9 +23,6 @@ pub struct MasonryItem {
 pub struct MasonryLayout {
     base: BaseWidget,
     columns: u32,
-    column_width: u32,
-    /// Vertical gaps (vertical position, height) for each placed item.
-    gaps: Vec<(u32, u32)>,
     items: Vec<MasonryItem>,
 }
 
@@ -35,8 +32,6 @@ impl MasonryLayout {
         Self {
             base: BaseWidget::new(WidgetKind::MasonryLayout, geometry, "MasonryLayout"),
             columns: 2,
-            column_width: geometry.width / 2,
-            gaps: Vec::new(),
             items: Vec::new(),
         }
     }
@@ -49,7 +44,6 @@ impl MasonryLayout {
     /// Sets the number of columns (minimum 1).
     pub fn set_columns(&mut self, columns: u32) {
         self.columns = columns.max(1);
-        self.column_width = self.base.geometry().width / self.columns.max(1);
         self.base.request_redraw();
     }
 
@@ -67,7 +61,6 @@ impl MasonryLayout {
     /// Removes all items from the layout.
     pub fn clear_items(&mut self) {
         self.items.clear();
-        self.gaps.clear();
         self.base.request_redraw();
     }
 

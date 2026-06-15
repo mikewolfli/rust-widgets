@@ -153,8 +153,8 @@ impl EventHandler for MarkdownEditor {
 impl Draw for MarkdownEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(252, 252, 253));
-        context.draw_rect(rect, Color::from_rgb(194, 201, 213));
+        context.fill_rect(rect, Color::rgb(252, 252, 253));
+        context.draw_rect(rect, Color::rgb(194, 201, 213));
 
         let header = if self.preview_mode {
             format!(
@@ -175,7 +175,7 @@ impl Draw for MarkdownEditor {
             Point::new(rect.x + 8, rect.y + 16),
             &header,
             &Font::default(),
-            Color::from_rgb(41, 54, 73),
+            Color::rgb(41, 54, 73),
             HorizontalAlignment::Left,
         );
 
@@ -185,9 +185,9 @@ impl Draw for MarkdownEditor {
                 break;
             }
             let color = if idx == self.cursor_line {
-                Color::from_rgb(23, 110, 203)
+                Color::rgb(23, 110, 203)
             } else {
-                Color::from_rgb(59, 72, 92)
+                Color::rgb(59, 72, 92)
             };
             let rendered =
                 if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };

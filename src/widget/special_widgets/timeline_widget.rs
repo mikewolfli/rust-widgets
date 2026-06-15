@@ -228,8 +228,8 @@ impl EventHandler for TimelineWidget {
 impl Draw for TimelineWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(251, 252, 254));
-        context.draw_rect(rect, Color::from_rgb(189, 196, 209));
+        context.fill_rect(rect, Color::rgb(251, 252, 254));
+        context.draw_rect(rect, Color::rgb(189, 196, 209));
 
         if self.items.is_empty() {
             return;
@@ -244,9 +244,9 @@ impl Draw for TimelineWidget {
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
             if self.selected_index == Some(index) {
-                context.fill_rect(row_rect, Color::from_rgb(220, 233, 251));
+                context.fill_rect(row_rect, Color::rgb(220, 233, 251));
             } else if self.hovered_index == Some(index) {
-                context.fill_rect(row_rect, Color::from_rgb(237, 244, 253));
+                context.fill_rect(row_rect, Color::rgb(237, 244, 253));
             }
 
             if let Some(item) = self.items.get(index) {
@@ -254,7 +254,7 @@ impl Draw for TimelineWidget {
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &item.label,
                     &Font::default(),
-                    Color::from_rgb(34, 47, 67),
+                    Color::rgb(34, 47, 67),
                     HorizontalAlignment::Left,
                 );
 
@@ -263,14 +263,14 @@ impl Draw for TimelineWidget {
                 let bar_w = (x1 - x0) as u32;
                 context.fill_rect(
                     Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12)),
-                    Color::from_rgb(116, 167, 230),
+                    Color::rgb(116, 167, 230),
                 );
             }
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::from_rgb(228, 232, 239),
+                Color::rgb(228, 232, 239),
             );
         }
     }

@@ -403,8 +403,8 @@ impl Widget for DataGrid {
 impl Draw for DataGrid {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
 
         let rows = self.fetch_visible_cells();
         if rows.is_empty() {
@@ -427,14 +427,14 @@ impl Draw for DataGrid {
                 }
                 context.draw_rect(
                     Rect::new(x, y, self.column_width, self.row_height),
-                    Color::from_rgb(230, 230, 230),
+                    Color::rgb(230, 230, 230),
                 );
                 if let Some(text) = cell {
                     context.draw_text(
                         Point::new(x + 4, y + row_h / 2),
                         text,
                         &Font::default(),
-                        Color::from_rgb(0, 0, 0),
+                        Color::rgb(0, 0, 0),
                         HorizontalAlignment::Left,
                     );
                 }
@@ -448,7 +448,7 @@ impl Draw for DataGrid {
                 context.draw_line(
                     Point::new(split_x, rect.y),
                     Point::new(split_x, rect.y + rect.height as i32),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
             }
         }

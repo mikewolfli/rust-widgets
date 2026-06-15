@@ -105,9 +105,9 @@ impl Draw for ChartWidget {
         use crate::core::Color;
         use crate::core::Font;
         // Draw chart background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border to make chart area visible
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(rect, Color::rgb(200, 200, 200));
 
         if self.data.is_empty() {
             // No data — draw placeholder text
@@ -118,7 +118,7 @@ impl Draw for ChartWidget {
                 text_origin,
                 "No data",
                 &font,
-                Color::from_rgb(180, 180, 180),
+                Color::rgb(180, 180, 180),
                 HorizontalAlignment::Left,
             );
             return;
@@ -154,12 +154,12 @@ impl ChartWidget {
         let bar_width = (chart_w / n as i32).max(4).saturating_sub(2);
         let gap = 2;
         let bar_colors = [
-            Color::from_rgb(66, 133, 244),
-            Color::from_rgb(219, 68, 55),
-            Color::from_rgb(244, 180, 0),
-            Color::from_rgb(15, 157, 88),
-            Color::from_rgb(171, 71, 188),
-            Color::from_rgb(0, 172, 193),
+            Color::rgb(66, 133, 244),
+            Color::rgb(219, 68, 55),
+            Color::rgb(244, 180, 0),
+            Color::rgb(15, 157, 88),
+            Color::rgb(171, 71, 188),
+            Color::rgb(0, 172, 193),
         ];
         let label_font = Font::simple("Sans", 10.0);
         for (i, &val) in self.data.iter().enumerate() {
@@ -186,7 +186,7 @@ impl ChartWidget {
                     label_origin,
                     &label_text,
                     &label_font,
-                    Color::from_rgb(80, 80, 80),
+                    Color::rgb(80, 80, 80),
                     HorizontalAlignment::Left,
                 );
             }
@@ -209,7 +209,7 @@ impl ChartWidget {
         let top_y = rect.y.saturating_add(padding);
         let step_x = chart_w / (n.saturating_sub(1) as i32).max(1);
         let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
-        let line_color = Color::from_rgb(66, 133, 244);
+        let line_color = Color::rgb(66, 133, 244);
         let points: Vec<crate::core::Point> = self
             .data
             .iter()
@@ -239,7 +239,7 @@ impl ChartWidget {
                     label_origin,
                     &label_text,
                     &label_font,
-                    Color::from_rgb(80, 80, 80),
+                    Color::rgb(80, 80, 80),
                     HorizontalAlignment::Left,
                 );
             }
@@ -257,12 +257,12 @@ impl ChartWidget {
         let cy = rect.y + rect.height as i32 / 2;
         let radius = (rect.width.min(rect.height) as i32 / 2).saturating_sub(10).max(10);
         let pie_colors = [
-            Color::from_rgb(66, 133, 244),
-            Color::from_rgb(219, 68, 55),
-            Color::from_rgb(244, 180, 0),
-            Color::from_rgb(15, 157, 88),
-            Color::from_rgb(171, 71, 188),
-            Color::from_rgb(0, 172, 193),
+            Color::rgb(66, 133, 244),
+            Color::rgb(219, 68, 55),
+            Color::rgb(244, 180, 0),
+            Color::rgb(15, 157, 88),
+            Color::rgb(171, 71, 188),
+            Color::rgb(0, 172, 193),
         ];
         let mut start_angle = -std::f64::consts::FRAC_PI_2;
         for (i, &val) in self.data.iter().enumerate() {
@@ -298,7 +298,7 @@ impl ChartWidget {
                     label_origin,
                     &label_text,
                     &label_font,
-                    Color::from_rgb(60, 60, 60),
+                    Color::rgb(60, 60, 60),
                     HorizontalAlignment::Left,
                 );
             }
@@ -322,7 +322,7 @@ impl ChartWidget {
         let top_y = rect.y.saturating_add(padding);
         let step_x = chart_w / (n as i32).max(1);
         let height_range = (baseline_y.saturating_sub(top_y)).max(1) as f64;
-        let dot_color = Color::from_rgb(66, 133, 244);
+        let dot_color = Color::rgb(66, 133, 244);
         let label_font = Font::simple("Sans", 10.0);
         for (i, &val) in self.data.iter().enumerate() {
             let x = bar_area_x.saturating_add(i as i32 * step_x);
@@ -339,7 +339,7 @@ impl ChartWidget {
                     label_origin,
                     &label_text,
                     &label_font,
-                    Color::from_rgb(80, 80, 80),
+                    Color::rgb(80, 80, 80),
                     HorizontalAlignment::Left,
                 );
             }

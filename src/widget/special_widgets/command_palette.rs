@@ -282,16 +282,16 @@ impl EventHandler for CommandPalette {
 impl Draw for CommandPalette {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(250, 250, 252));
-        context.draw_rect(rect, Color::from_rgb(200, 205, 214));
+        context.fill_rect(rect, Color::rgb(250, 250, 252));
+        context.draw_rect(rect, Color::rgb(200, 205, 214));
 
         let header = Rect::new(rect.x, rect.y, rect.width, self.row_height);
-        context.fill_rect(header, Color::from_rgb(239, 243, 249));
+        context.fill_rect(header, Color::rgb(239, 243, 249));
         context.draw_text(
             Point::new(rect.x + 8, rect.y + self.row_height as i32 / 2),
             &format!("> {}", self.query),
             &Font::default(),
-            Color::from_rgb(24, 36, 52),
+            Color::rgb(24, 36, 52),
             HorizontalAlignment::Left,
         );
 
@@ -305,7 +305,7 @@ impl Draw for CommandPalette {
             if self.highlighted_index == Some(filtered_index) {
                 context.fill_rect(
                     Rect::new(rect.x + 1, y, rect.width.saturating_sub(2), self.row_height),
-                    Color::from_rgb(214, 228, 248),
+                    Color::rgb(214, 228, 248),
                 );
             }
 
@@ -319,7 +319,7 @@ impl Draw for CommandPalette {
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &line,
                     &Font::default(),
-                    Color::from_rgb(35, 45, 60),
+                    Color::rgb(35, 45, 60),
                     HorizontalAlignment::Left,
                 );
             }

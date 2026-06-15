@@ -11,7 +11,8 @@ pub trait Draw {
     fn draw(&mut self, context: &mut RenderContext);
     /// Returns true if this widget uses custom drawing, false for native rendering.
     /// This allows the rendering system to choose between native and custom paths.
+    /// Defaults to `false` because most platform widgets should use native rendering.
     fn uses_custom_drawing(&self) -> bool {
-        true
+        false
     }
 }

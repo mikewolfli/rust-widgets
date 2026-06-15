@@ -4,7 +4,7 @@
 //! rendered with an underline style to indicate the preedit (uncommitted) state,
 //! similar to how operating systems render inline IME composition text.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -88,11 +88,17 @@ impl Draw for ImePreedit {
         let rect = self.geometry();
 
         // Draw the preedit text
-        context.draw_text(Point::new(rect.x, rect.y), &self.text, &self.font, self.text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(rect.x, rect.y),
+            &self.text,
+            &self.font,
+            self.text_color,
+            HorizontalAlignment::Left,
+        );
 
         // Draw composition underline below the text
         // Estimate text width based on character count × approximate font size
-        let font_size = self.font.size as i32;
+        let font_size = self.font.size() as i32;
         let char_width = font_size.max(8);
         let text_width = (self.text.len() as i32) * char_width;
         let underline_y = rect.y + font_size + 2;
@@ -110,6 +116,25 @@ impl Draw for ImePreedit {
 impl EventHandler for ImePreedit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        match event {
+            Event::KeyPress { key, modifiers } => {
+                if *key == 8 {
+                    // Backspace — remove last character
+                    if !self.text.is_empty() {
+                        self.text.pop();
+                        self.base.request_redraw();
+                    }
+                } else if *key >= 32 && *key <= 126 {
+                    // Printable ASCII — append to preedit text
+                    let c = char::from_u32(*key).unwrap_or(' ');
+                    // Respect shift for uppercase letters
+                    let c = if *modifiers & 0x02 != 0 { c.to_ascii_uppercase() } else { c };
+                    self.text.push(c);
+                    self.base.request_redraw();
+                }
+            }
+            _ => {}
+        }
     }
 }
 

@@ -157,7 +157,11 @@ impl Slider {
     }
     /// Sets slider position (without emitting signals).
     pub fn set_slider_position(&mut self, position: i32) {
-        self.slider_position = position.clamp(self.minimum, self.maximum);
+        let new_position = position.clamp(self.minimum, self.maximum);
+        if self.slider_position == new_position {
+            return;
+        }
+        self.slider_position = new_position;
         if self.tracking {
             self.set_value(self.slider_position);
         }
@@ -375,7 +379,7 @@ impl Draw for Slider {
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = 16;
         let style = self.style();
-        let groove_color = style.background_color.unwrap_or(Color::from_rgb(200, 200, 200));
+        let groove_color = style.background_color.unwrap_or(Color::rgb(200, 200, 200));
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
@@ -399,7 +403,7 @@ impl Draw for Slider {
                         slider_size as f32,
                         rect.height as f32,
                     ),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
                 // Draw handle border
                 if let Some(border_color) = style.border_color {
@@ -413,11 +417,15 @@ impl Draw for Slider {
                         border_color,
                     );
                 }
-                // Draw ticks if enabled
+                // Draw ticks if enabled (capped at 100 ticks max to avoid
+                // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_height = 6;
-                    for value in (self.minimum..=self.maximum).step_by(self.tick_interval as usize)
-                    {
+                    let total_ticks =
+                        ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
+                    let tick_count = total_ticks.min(100);
+                    for i in 0..tick_count {
+                        let value = self.minimum + i as i32 * self.tick_interval;
                         let tick_x = self.value_to_pixel_pos(value);
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
@@ -425,7 +433,7 @@ impl Draw for Slider {
                             context.draw_line(
                                 Point::from_f32(tick_x, rect.y as f32),
                                 Point::from_f32(tick_x, rect.y as f32 + tick_height as f32),
-                                Color::from_rgb(100, 100, 100),
+                                Color::rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
@@ -437,7 +445,7 @@ impl Draw for Slider {
                                     rect.y as f32 + rect.height as f32 - tick_height as f32,
                                 ),
                                 Point::from_f32(tick_x, rect.y as f32 + rect.height as f32),
-                                Color::from_rgb(100, 100, 100),
+                                Color::rgb(100, 100, 100),
                             );
                         }
                     }
@@ -464,7 +472,7 @@ impl Draw for Slider {
                         rect.width as f32,
                         slider_size as f32,
                     ),
-                    Color::from_rgb(0, 120, 215),
+                    Color::rgb(0, 120, 215),
                 );
                 // Draw handle border
                 if let Some(border_color) = style.border_color {
@@ -478,11 +486,15 @@ impl Draw for Slider {
                         border_color,
                     );
                 }
-                // Draw ticks if enabled
+                // Draw ticks if enabled (capped at 100 ticks max to avoid
+                // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_width = 6;
-                    for value in (self.minimum..=self.maximum).step_by(self.tick_interval as usize)
-                    {
+                    let total_ticks =
+                        ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
+                    let tick_count = total_ticks.min(100);
+                    for i in 0..tick_count {
+                        let value = self.minimum + i as i32 * self.tick_interval;
                         let tick_y = self.value_to_pixel_pos(value);
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
@@ -490,7 +502,7 @@ impl Draw for Slider {
                             context.draw_line(
                                 Point::from_f32(rect.x as f32, tick_y),
                                 Point::from_f32(rect.x as f32 + tick_width as f32, tick_y),
-                                Color::from_rgb(100, 100, 100),
+                                Color::rgb(100, 100, 100),
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
@@ -502,7 +514,7 @@ impl Draw for Slider {
                                     tick_y,
                                 ),
                                 Point::from_f32(rect.x as f32 + rect.width as f32, tick_y),
-                                Color::from_rgb(100, 100, 100),
+                                Color::rgb(100, 100, 100),
                             );
                         }
                     }
@@ -1035,11 +1047,11 @@ mod tests {
     fn widget_style_roundtrip() {
         let mut s = make_slider();
         let style = WidgetStyle {
-            background_color: Some(Color::from_rgb(255, 0, 0)),
+            background_color: Some(Color::rgb(255, 0, 0)),
             ..WidgetStyle::default()
         };
         s.set_style(style.clone());
-        assert_eq!(s.style().background_color, Some(Color::from_rgb(255, 0, 0)));
+        assert_eq!(s.style().background_color, Some(Color::rgb(255, 0, 0)));
     }
 
     #[test]

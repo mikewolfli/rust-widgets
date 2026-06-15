@@ -22,11 +22,18 @@ pub struct SimpleRegistry {
 type DrawClosure = Box<dyn FnMut(&mut RenderContext) + Send>;
 type EventClosure = Box<dyn FnMut(&Event) + Send>;
 
-// SAFETY: SimpleRegistry only stores closures that are Send.
-// It is used in single-threaded contexts via Rc<RefCell<...>>,
-// but the Send bound allows use in Arc<Mutex<...>> contexts.
-// The interior HashMap is only accessed via &mut self, providing
-// exclusive access, so there is no data race risk.
+// SAFETY: All types contained within SimpleRegistry implement Send:
+//   - HashMap<ObjectId, (DrawClosure, EventClosure)> where:
+//       * ObjectId: wraps a u64 — trivially Send.
+//       * DrawClosure = Box<dyn FnMut(&mut RenderContext) + Send>: Send because
+//         the closure is bounded by +Send and Box<dyn ... + Send> auto-implements Send.
+//       * EventClosure = Box<dyn FnMut(&Event) + Send>: same reasoning.
+//   - HashMap<K, V> implements Send when K: Send and V: Send, which holds here.
+//
+// SimpleRegistry is used in single-threaded contexts via Rc<RefCell<...>>,
+// but the Send bound allows use in Arc<Mutex<...>> contexts. The interior
+// HashMap is only accessed via &mut self, providing exclusive access, so
+// there is no data race risk.
 //
 // NOTE: We do NOT implement Sync because Box<dyn FnMut(...) + Send> is
 // not Sync — FnMut is not Sync. The &self methods (contains, len, is_empty)

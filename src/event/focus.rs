@@ -1,14 +1,12 @@
 //! Focus management for widgets.
 use crate::core::ObjectId;
-use crate::signal::{ConnectionScope, GenericSignal};
+use crate::signal::GenericSignal;
 /// Manages keyboard focus across widgets.
 pub struct FocusManager {
     /// Currently focused widget, if any.
     focused_widget: Option<ObjectId>,
     /// Signal emitted when focus changes.
     pub focus_changed: GenericSignal,
-    /// Scoped connections for focus tracking.
-    _connection_scope: ConnectionScope,
     /// Ordered list of focusable widgets for tab-order traversal.
     focusable_widgets: Vec<ObjectId>,
     /// Callback invoked when focus changes (used by AccessibilityBridge).
@@ -24,7 +22,6 @@ impl FocusManager {
         Self {
             focused_widget: None,
             focus_changed: GenericSignal::new(),
-            _connection_scope: ConnectionScope::new(),
             focusable_widgets: Vec::new(),
             on_focus_changed: None,
             traversal_strategy: FocusTraversalStrategy::TabOrder,
@@ -101,7 +98,20 @@ impl FocusManager {
     }
 
     /// Set the entire focus order (replaces any existing order).
+    ///
+    /// If the current `focused_widget` is not present in the new list,
+    /// focus is reset to `None`.
     pub fn set_focus_order(&mut self, ids: Vec<ObjectId>) {
+        // Validate that the currently focused widget still exists in the new list.
+        if let Some(focused) = self.focused_widget {
+            if !ids.contains(&focused) {
+                self.focused_widget = None;
+                self.focus_changed.emit();
+                if let Some(ref cb) = self.on_focus_changed {
+                    (cb)(focused);
+                }
+            }
+        }
         self.focusable_widgets = ids;
     }
 

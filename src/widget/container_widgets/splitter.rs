@@ -143,8 +143,8 @@ impl Draw for Splitter {
                             rect.height,
                         );
                         // Draw splitter handle
-                        context.fill_rect(handle_rect, crate::core::Color::from_rgb(200, 200, 200));
-                        context.draw_rect(handle_rect, crate::core::Color::from_rgb(150, 150, 150));
+                        context.fill_rect(handle_rect, crate::core::Color::rgb(200, 200, 200));
+                        context.draw_rect(handle_rect, crate::core::Color::rgb(150, 150, 150));
                     }
                 }
             }
@@ -163,8 +163,8 @@ impl Draw for Splitter {
                             handle_width as u32,
                         );
                         // Draw splitter handle
-                        context.fill_rect(handle_rect, crate::core::Color::from_rgb(200, 200, 200));
-                        context.draw_rect(handle_rect, crate::core::Color::from_rgb(150, 150, 150));
+                        context.fill_rect(handle_rect, crate::core::Color::rgb(200, 200, 200));
+                        context.draw_rect(handle_rect, crate::core::Color::rgb(150, 150, 150));
                     }
                 }
             }

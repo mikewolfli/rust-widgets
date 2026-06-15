@@ -1,5 +1,5 @@
 //! Tab widget.
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -50,6 +50,9 @@ pub enum TabShape {
     #[default]
     Rounded,
     /// Triangular tabs
+    ///
+    /// Note: Triangular tabs currently render as rectangular.
+    #[doc(hidden)]
     Triangular,
     /// Rectangular tabs
     Rectangular,
@@ -357,9 +360,9 @@ impl Draw for TabWidget {
         let _rect = self.geometry();
         let content_rect = self.content_rect();
         // Draw content background
-        context.fill_rect(content_rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(content_rect, Color::rgb(255, 255, 255));
         // Draw content border
-        context.draw_rect(content_rect, Color::from_rgb(200, 200, 200));
+        context.draw_rect(content_rect, Color::rgb(200, 200, 200));
         // Draw tabs
         for i in 0..self.tabs.len() {
             if let Some(tab_rect) = self.tab_rect(i) {
@@ -368,38 +371,38 @@ impl Draw for TabWidget {
                 let is_enabled = tab.enabled;
                 // Draw tab background
                 let bg_color = if !is_enabled {
-                    Color::from_rgb(240, 240, 240)
+                    Color::rgb(240, 240, 240)
                 } else if is_current {
-                    Color::from_rgb(255, 255, 255)
+                    Color::rgb(255, 255, 255)
                 } else {
-                    Color::from_rgb(230, 230, 230)
+                    Color::rgb(230, 230, 230)
                 };
                 match self.tab_shape {
                     TabShape::Rounded => {
                         let radius = 4;
                         context.fill_rounded_rect(tab_rect, radius, bg_color);
                         let border_color = if !is_enabled || is_current {
-                            Color::from_rgb(200, 200, 200)
+                            Color::rgb(200, 200, 200)
                         } else {
-                            Color::from_rgb(180, 180, 180)
+                            Color::rgb(180, 180, 180)
                         };
                         context.draw_rounded_rect_stroke(tab_rect, radius, border_color, 1);
                     }
                     _ => {
                         context.fill_rect(tab_rect, bg_color);
                         let border_color = if !is_enabled || is_current {
-                            Color::from_rgb(200, 200, 200)
+                            Color::rgb(200, 200, 200)
                         } else {
-                            Color::from_rgb(180, 180, 180)
+                            Color::rgb(180, 180, 180)
                         };
                         context.draw_rect(tab_rect, border_color);
                     }
                 };
                 // Draw tab text
                 let text_color = if !is_enabled {
-                    Color::from_rgb(150, 150, 150)
+                    Color::rgb(150, 150, 150)
                 } else {
-                    Color::from_rgb(0, 0, 0)
+                    Color::rgb(0, 0, 0)
                 };
                 context.draw_text(
                     Point::new(
@@ -419,12 +422,12 @@ impl Draw for TabWidget {
                     context.draw_line(
                         Point::new(close_x, close_y),
                         Point::new(close_x + close_size, close_y + close_size),
-                        Color::from_rgb(100, 100, 100),
+                        Color::rgb(100, 100, 100),
                     );
                     context.draw_line(
                         Point::new(close_x + close_size, close_y),
                         Point::new(close_x, close_y + close_size),
-                        Color::from_rgb(100, 100, 100),
+                        Color::rgb(100, 100, 100),
                     );
                 }
             }
@@ -891,7 +894,7 @@ mod tests {
     fn tabwidget_geometry_via_widget_trait() {
         let tw = TabWidget::new(Rect::new(5, 10, 200, 150));
         assert_eq!(tw.geometry(), Rect::new(5, 10, 200, 150));
-        assert_eq!(tw.rect(), Rect::new(5, 10, 200, 150));
+        assert_eq!(tw.geometry(), Rect::new(5, 10, 200, 150));
     }
 
     #[test]

@@ -155,6 +155,9 @@ pub struct Animation {
     pause_start_time: Option<Instant>,
     current_iteration: u32,
     on_complete_callback: Option<Box<dyn FnMut()>>,
+    /// Progress frozen at the moment of pause, so progress() returns the
+    /// correct value while the animation is paused.
+    frozen_progress: Option<f32>,
 }
 impl Animation {
     pub fn new(config: AnimationConfig) -> Self {
@@ -166,6 +169,7 @@ impl Animation {
             pause_start_time: None,
             current_iteration: 0,
             on_complete_callback: None,
+            frozen_progress: None,
         }
     }
     pub fn start(&mut self) {
@@ -178,11 +182,13 @@ impl Animation {
         self.is_running = false;
         self.start_time = None;
         self.current_iteration = 0;
+        self.frozen_progress = None;
         if let Some(mut callback) = self.on_complete_callback.take() {
             callback();
         }
     }
     pub fn pause(&mut self) {
+        self.frozen_progress = Some(self.compute_progress());
         self.is_paused = true;
         self.pause_start_time = Some(Instant::now());
     }
@@ -195,12 +201,14 @@ impl Animation {
         self.start_time = None;
         self.pause_start_time = None;
         self.current_iteration = 0;
+        self.frozen_progress = None;
     }
     pub fn on_complete(&mut self, callback: Box<dyn FnMut()>) {
         self.on_complete_callback = Some(callback);
     }
     pub fn resume(&mut self) {
         self.is_paused = false;
+        self.frozen_progress = None;
         // Adjust start_time forward by the paused duration so the animation
         // resumes from where it stopped rather than jumping forward.
         if let Some(pause_start) = self.pause_start_time.take() {
@@ -221,6 +229,10 @@ impl Animation {
         }
     }
     pub fn progress(&self) -> f32 {
+        if self.is_paused {
+            // Return the progress frozen at the moment pause() was called.
+            return self.frozen_progress.unwrap_or(0.0);
+        }
         if !self.is_running {
             return 0.0;
         }
@@ -256,6 +268,8 @@ impl Animation {
     }
     pub fn update(&mut self) {
         if !self.is_running || self.is_paused {
+            // Paused animations keep their frozen progress and do
+            // not advance their iteration count.
             return;
         }
         let elapsed = self.start_time.map(|t| t.elapsed()).unwrap_or_default();
@@ -275,6 +289,42 @@ impl Animation {
     }
     pub fn config(&self) -> &AnimationConfig {
         &self.config
+    }
+
+    /// Compute the current progress without considering pause state.
+    /// This is used to capture the progress value at the moment of pause.
+    fn compute_progress(&self) -> f32 {
+        if !self.is_running {
+            return 0.0;
+        }
+        let elapsed = self.start_time.map(|t| t.elapsed()).unwrap_or_default();
+        if elapsed < self.config.delay {
+            return 0.0;
+        }
+        let animation_elapsed = elapsed - self.config.delay;
+        let duration_secs = self.config.duration.as_secs_f32().max(f32::EPSILON);
+        let raw_progress = animation_elapsed.as_secs_f32() / duration_secs;
+        let progress =
+            if self.config.infinite { raw_progress % 1.0 } else { (raw_progress % 1.0).min(1.0) };
+        let eased_progress = self.config.easing.apply(progress);
+        match self.config.direction {
+            AnimationDirection::Normal => eased_progress,
+            AnimationDirection::Reverse => 1.0 - eased_progress,
+            AnimationDirection::Alternate => {
+                if self.current_iteration.is_multiple_of(2) {
+                    eased_progress
+                } else {
+                    1.0 - eased_progress
+                }
+            }
+            AnimationDirection::AlternateReverse => {
+                if self.current_iteration.is_multiple_of(2) {
+                    1.0 - eased_progress
+                } else {
+                    eased_progress
+                }
+            }
+        }
     }
 }
 pub struct ColorAnimation {
@@ -478,6 +528,14 @@ impl AnimationDriver {
                     }
                     entry.last_progress = *progress;
                 }
+            }
+        }
+        // Update PropertyAnimation.current values so callers reading
+        // .current on a PropertyAnimation get the latest interpolated value.
+        for (id, progress) in &snap {
+            if let Some(prop_anim) = self.property_animations.get_mut(id) {
+                let range = prop_anim.to - prop_anim.from;
+                prop_anim.current = prop_anim.from + range * progress;
             }
         }
         // Remove completed animations

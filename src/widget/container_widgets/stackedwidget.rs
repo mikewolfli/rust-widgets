@@ -129,7 +129,7 @@ impl Draw for StackedWidget {
         // Draw base widget
         let rect = self.geometry();
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw current widget via registry
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {

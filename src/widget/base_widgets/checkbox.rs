@@ -1,5 +1,5 @@
 //! Checkbox widget implementation.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -74,9 +74,12 @@ impl CheckBox {
         &self.text
     }
     /// Sets the text label displayed next to the checkbox and requests a redraw.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.base.request_redraw();
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.text != text {
+            self.text = text;
+            self.base.request_redraw();
+        }
     }
     /// Enables or disables tristate behavior.
     pub fn set_tristate_enabled(&mut self, enabled: bool) {
@@ -124,21 +127,16 @@ impl EventHandler for CheckBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MouseDown((_, _))
-                if self.base.is_enabled() => {
-                    self.toggle();
-                }
+            Event::MousePress { pos: _, button } if *button == 1 && self.base.is_enabled() => {
+                self.toggle();
+            }
             #[cfg(feature = "touch")]
-            Event::TouchBegin { .. }
-                if self.base.is_enabled() => {
-                    self.toggle();
-                }
-            Event::KeyDown((key, _))
-                // Space key toggles checkbox
-                if *key == 32 && self.base.is_enabled() => {
-                    // Space key
-                    self.toggle();
-                }
+            Event::TouchBegin { .. } if self.base.is_enabled() => {
+                self.toggle();
+            }
+            Event::KeyPress { key, .. } if *key == 32 && self.base.is_enabled() => {
+                self.toggle();
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -160,18 +158,18 @@ impl Draw for CheckBox {
         // Draw checkbox background
         let bg_color = style.background_color.unwrap_or_else(|| {
             if !enabled {
-                Color::from_rgb(240, 240, 240)
+                Color::rgb(240, 240, 240)
             } else {
-                Color::from_rgb(255, 255, 255)
+                Color::rgb(255, 255, 255)
             }
         });
         context.fill_rect(checkbox_rect, bg_color);
         // Draw checkbox border
         let border_color = style.border_color.unwrap_or_else(|| {
             if !enabled {
-                Color::from_rgb(180, 180, 180)
+                Color::rgb(180, 180, 180)
             } else {
-                Color::from_rgb(100, 100, 100)
+                Color::rgb(100, 100, 100)
             }
         });
         context.draw_rect(checkbox_rect, border_color);
@@ -179,9 +177,9 @@ impl Draw for CheckBox {
         if self.state != CheckState::Unchecked {
             let check_color = style.text_color.unwrap_or_else(|| {
                 if !enabled {
-                    Color::from_rgb(150, 150, 150)
+                    Color::rgb(150, 150, 150)
                 } else {
-                    Color::from_rgb(0, 120, 215) // Blue checkmark
+                    Color::rgb(0, 120, 215) // Blue checkmark
                 }
             });
             match self.state {
@@ -216,16 +214,22 @@ impl Draw for CheckBox {
         if !self.text.is_empty() {
             let text_color = style.text_color.unwrap_or_else(|| {
                 if !enabled {
-                    Color::from_rgb(150, 150, 150)
+                    Color::rgb(150, 150, 150)
                 } else {
-                    Color::from_rgb(0, 0, 0)
+                    Color::rgb(0, 0, 0)
                 }
             });
             let text_point = Point {
                 x: checkbox_rect.x + checkbox_rect.width as i32 + 4,
                 y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
             };
-            context.draw_text(text_point, &self.text, &Font::default(), text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                text_point,
+                &self.text,
+                &Font::default(),
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }
@@ -483,7 +487,7 @@ mod tests {
     fn test_mouse_down_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(cb.state(), CheckState::Checked);
     }
 
@@ -512,7 +516,7 @@ mod tests {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
         // Space key code is 32
-        cb.handle_event(&Event::KeyDown((32, 0)));
+        cb.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Checked);
     }
 
@@ -544,11 +548,11 @@ mod tests {
     #[test]
     fn test_multiple_mouse_down_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
-        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(cb.state(), CheckState::Checked);
-        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::MouseDown((Point::new(10, 10), 0)));
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(cb.state(), CheckState::Checked);
     }
 

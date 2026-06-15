@@ -259,14 +259,14 @@ impl EventHandler for Calendar {
 impl Draw for Calendar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(190, 190, 190));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(190, 190, 190));
         let title = format!("{} {}", self.selected_date.format("%B"), self.selected_date.year());
         context.draw_text(
             Point { x: rect.x + 8, y: rect.y + 8 },
             &title,
             &Font::default(),
-            Color::from_rgb(40, 40, 40),
+            Color::rgb(40, 40, 40),
             HorizontalAlignment::Left,
         );
         let value = self.selected_date.format(&self.date_format).to_string();
@@ -274,7 +274,7 @@ impl Draw for Calendar {
             Point { x: rect.x + 8, y: rect.y + 28 },
             &value,
             &Font::default(),
-            Color::from_rgb(20, 20, 20),
+            Color::rgb(20, 20, 20),
             HorizontalAlignment::Left,
         );
     }

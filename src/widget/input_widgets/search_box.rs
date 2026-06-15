@@ -5,7 +5,7 @@
 //! text is non-empty. It emits `text_changed` with the current text value on
 //! every edit.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -45,10 +45,11 @@ impl SearchBox {
     }
 
     /// Sets the text content. Emits `text_changed` if the text actually changes.
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text != text {
-            self.text = text.to_string();
-            self.text_changed.emit(self.text.clone());
+            self.text = text.clone();
+            self.text_changed.emit(text);
             self.base.request_redraw();
         }
     }

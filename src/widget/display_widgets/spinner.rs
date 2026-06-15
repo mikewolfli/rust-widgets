@@ -315,7 +315,7 @@ mod tests {
     fn spinner_style_roundtrip() {
         let mut sp = Spinner::new(Rect::new(0, 0, 48, 48));
         assert_eq!(*sp.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(0, 150, 255));
+        let custom = WidgetStyle::default().with_background(Color::rgb(0, 150, 255));
         sp.set_style(custom.clone());
         assert_eq!(*sp.style(), custom);
     }

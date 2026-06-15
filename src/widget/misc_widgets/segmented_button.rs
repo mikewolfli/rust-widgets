@@ -191,7 +191,7 @@ impl Draw for SegmentedButton {
 
         // Draw outer container border
         let border_color = if is_enabled {
-            Color::from_rgb(180, 180, 180)
+            Color::rgb(180, 180, 180)
         } else {
             Color::rgba(180, 180, 180, 100)
         };
@@ -208,7 +208,7 @@ impl Draw for SegmentedButton {
             let bg_color = if !seg_enabled {
                 Color::TRANSPARENT
             } else if is_selected {
-                Color::from_rgb(25, 118, 210) // Material blue fill
+                Color::rgb(25, 118, 210) // Material blue fill
             } else {
                 Color::TRANSPARENT
             };
@@ -262,7 +262,7 @@ impl Draw for SegmentedButton {
             } else if is_selected {
                 Color::WHITE
             } else {
-                Color::from_rgb(33, 33, 33)
+                Color::rgb(33, 33, 33)
             };
 
             let metrics = context.measure_text(&segment.text, &font);

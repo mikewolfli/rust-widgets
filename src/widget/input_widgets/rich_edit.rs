@@ -1,5 +1,5 @@
 //! Rich text editor widget.
-use crate::core::{HorizontalAlignment};
+use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -84,6 +84,52 @@ impl RichEdit {
     pub fn cursor_position(&self) -> usize {
         self.selection.map_or(0, |(start, _)| start)
     }
+
+    /// Converts a byte offset into (line_index, col_index).
+    /// Returns `None` when the offset is at end of text.
+    fn byte_offset_to_line_col(&self, offset: usize) -> Option<(usize, usize)> {
+        if self.text.is_empty() {
+            return Some((0, 0));
+        }
+        let offset = offset.min(self.text.len());
+        let mut line = 0usize;
+        let mut col = 0usize;
+        for (i, ch) in self.text.char_indices() {
+            if i >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        Some((line, col))
+    }
+
+    /// Converts (line_index, col_index) back to a byte offset.
+    fn line_col_to_byte_offset(&self, line: usize, col: usize) -> usize {
+        let mut current_line = 0usize;
+        let mut current_col = 0usize;
+        for (i, ch) in self.text.char_indices() {
+            if current_line == line && current_col == col {
+                return i;
+            }
+            if ch == '\n' {
+                current_line += 1;
+                current_col = 0;
+            } else {
+                current_col += 1;
+            }
+        }
+        // If we reached the end, return the text length if we're on the right line
+        if current_line == line {
+            self.text.len()
+        } else {
+            0
+        }
+    }
     /// Sets cursor position.
     pub fn set_cursor_position(&mut self, position: usize) {
         if self.read_only {
@@ -107,32 +153,56 @@ impl Draw for RichEdit {
         let rect = self.base.geometry();
         use crate::core::Color;
         // Draw background
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
         // Draw border
         context.draw_rect(
             rect,
             if self.read_only {
-                Color::from_rgb(220, 220, 220)
+                Color::rgb(220, 220, 220)
             } else {
-                Color::from_rgb(180, 180, 180)
+                Color::rgb(180, 180, 180)
             },
         );
-        // Draw text content (first line only as preview)
-        if !self.text.is_empty() {
-            let line = self.text.lines().next().unwrap_or("");
+        // Draw text content — all lines
+        let font = crate::core::Font::default();
+        let line_height = 16i32;
+        let padding = 2i32;
+        let mut line_y = rect.y + padding + line_height;
+        let cursor_before = self.selection.map_or(0, |(start, _)| start);
+        // Compute (line, col) for cursor
+        let cursor_coord = self.byte_offset_to_line_col(cursor_before);
+        for (line_idx, line) in self.text.lines().enumerate() {
+            if line_y > rect.y + rect.height as i32 {
+                break;
+            }
+            // Draw the line text
             context.draw_text(
-                crate::core::Point::new(rect.x + 2, rect.y + rect.height as i32 / 2),
+                crate::core::Point::new(rect.x + padding, line_y),
                 line,
-                &crate::core::Font::default(),
-                Color::from_rgb(0, 0, 0),
+                &font,
+                Color::rgb(0, 0, 0),
                 HorizontalAlignment::Left,
             );
+            // Draw cursor on this line if not read-only
+            if !self.read_only && Some(line_idx) == cursor_coord.map(|(l, _)| l) {
+                if let Some((_, col)) = cursor_coord {
+                    // Estimate cursor x position (rough char width)
+                    let cursor_x = rect.x + padding + (col as i32) * 7;
+                    context.draw_line(
+                        crate::core::Point::new(cursor_x, line_y - line_height + 2),
+                        crate::core::Point::new(cursor_x, line_y + 2),
+                        Color::rgb(0, 0, 0),
+                    );
+                }
+            }
+            line_y += line_height;
         }
     }
 }
 
 impl crate::event::EventHandler for RichEdit {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        self.base.handle_event(event);
         if !self.base.is_enabled() || self.read_only {
             return;
         }
@@ -143,7 +213,125 @@ impl crate::event::EventHandler for RichEdit {
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
-            _ => { /* Other events are not relevant */ }
+            crate::event::Event::KeyPress { key, modifiers } => {
+                let cursor = self.selection.map_or(0, |(start, _)| start);
+                match *key {
+                    8 => {
+                        // Backspace — delete char before cursor
+                        if cursor > 0 {
+                            let boundary = self.text.floor_char_boundary(cursor - 1);
+                            self.text.drain(boundary..cursor);
+                            let new_cursor = boundary;
+                            self.selection = Some((new_cursor, new_cursor));
+                            self.text_changed.emit(self.text.clone());
+                            self.cursor_position_changed.emit(new_cursor);
+                        }
+                    }
+                    127 => {
+                        // Delete — delete char after cursor
+                        if cursor < self.text.len() {
+                            let end = self.text.floor_char_boundary(cursor + 1);
+                            // Ensure we advance at least one char
+                            let end = if end == cursor { cursor + 1 } else { end };
+                            self.text.drain(cursor..end.min(self.text.len()));
+                            self.selection = Some((cursor, cursor));
+                            self.text_changed.emit(self.text.clone());
+                            self.cursor_position_changed.emit(cursor);
+                        }
+                    }
+                    13 => {
+                        // Enter — insert newline at cursor
+                        self.text.insert(cursor, '\n');
+                        let new_cursor = cursor + 1;
+                        self.selection = Some((new_cursor, new_cursor));
+                        self.text_changed.emit(self.text.clone());
+                        self.cursor_position_changed.emit(new_cursor);
+                    }
+                    37 if *modifiers == 0 => {
+                        // Left arrow — move cursor left by one char
+                        if cursor > 0 {
+                            let boundary = self.text.floor_char_boundary(cursor - 1);
+                            self.selection = Some((boundary, boundary));
+                            self.cursor_position_changed.emit(boundary);
+                        }
+                    }
+                    39 if *modifiers == 0 => {
+                        // Right arrow — move cursor right by one char
+                        if cursor < self.text.len() {
+                            let next = self.text.floor_char_boundary(cursor + 1);
+                            self.selection = Some((next, next));
+                            self.cursor_position_changed.emit(next);
+                        }
+                    }
+                    36 if *modifiers == 0 => {
+                        // Home — move to beginning of current line
+                        let coord = self.byte_offset_to_line_col(cursor);
+                        if let Some((line, _)) = coord {
+                            let new_cursor = self.line_col_to_byte_offset(line, 0);
+                            self.selection = Some((new_cursor, new_cursor));
+                            self.cursor_position_changed.emit(new_cursor);
+                        }
+                    }
+                    35 if *modifiers == 0 => {
+                        // End — move to end of current line
+                        let coord = self.byte_offset_to_line_col(cursor);
+                        if let Some((line, _)) = coord {
+                            // Find the line end
+                            let mut current_line = 0usize;
+                            let mut line_end = self.text.len();
+                            for (i, ch) in self.text.char_indices() {
+                                if current_line == line && ch == '\n' {
+                                    line_end = i;
+                                    break;
+                                }
+                                if ch == '\n' {
+                                    current_line += 1;
+                                }
+                            }
+                            // If we didn't find newline on this line, it's the last line
+                            if current_line == line && line_end == self.text.len() {
+                                // line_end already = text.len()
+                            }
+                            self.selection = Some((line_end, line_end));
+                            self.cursor_position_changed.emit(line_end);
+                        }
+                    }
+                    38 if *modifiers == 0 => {
+                        // Up arrow — move cursor up one line if possible
+                        let coord = self.byte_offset_to_line_col(cursor);
+                        if let Some((line, col)) = coord {
+                            if line > 0 {
+                                let new_cursor = self.line_col_to_byte_offset(line - 1, col);
+                                self.selection = Some((new_cursor, new_cursor));
+                                self.cursor_position_changed.emit(new_cursor);
+                            }
+                        }
+                    }
+                    40 if *modifiers == 0 => {
+                        // Down arrow — move cursor down one line if possible
+                        let coord = self.byte_offset_to_line_col(cursor);
+                        if let Some((line, col)) = coord {
+                            let new_cursor = self.line_col_to_byte_offset(line + 1, col);
+                            if new_cursor != cursor {
+                                self.selection = Some((new_cursor, new_cursor));
+                                self.cursor_position_changed.emit(new_cursor);
+                            }
+                        }
+                    }
+                    _ if *key >= 32 && *key <= 126 => {
+                        // Printable ASCII — insert at cursor position
+                        let c = char::from_u32(*key).unwrap_or(' ');
+                        let c = if *modifiers & 0x02 != 0 { c.to_ascii_uppercase() } else { c };
+                        self.text.insert(cursor, c);
+                        let new_cursor = cursor + c.len_utf8();
+                        self.selection = Some((new_cursor, new_cursor));
+                        self.text_changed.emit(self.text.clone());
+                        self.cursor_position_changed.emit(new_cursor);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 }

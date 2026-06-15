@@ -102,7 +102,7 @@ impl Draw for Window {
         let border_color = style.border_color.unwrap_or(Color::GRAY);
         let title_bar_color = Color::rgb(53, 53, 53);
         let title_text_color = Color::WHITE;
-        let border_width = style.border_width;
+        let border_width = style.border_width.unwrap_or(0);
         // Draw window background
         context.fill_rect(rect, bg_color);
         // Draw title bar

@@ -32,7 +32,17 @@ impl Image {
     }
 
     /// Creates an image from raw RGBA data.
+    ///
+    /// # Panics
+    /// Panics if `data.len()` does not equal `width * height * 4`.
     pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
+        assert_eq!(
+            data.len(),
+            width as usize * height as usize * 4,
+            "Image::from_rgba: data length {} does not match {width}x{height} RGBA (expected {})",
+            data.len(),
+            width as usize * height as usize * 4
+        );
         Self { data, format: ImageFormat::Rgba8, width, height }
     }
 

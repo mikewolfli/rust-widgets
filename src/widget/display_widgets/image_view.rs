@@ -1,5 +1,5 @@
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
-use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::image::{Image, ImageFormat};
@@ -27,6 +27,7 @@ impl ImageView {
     /// Sets a new image to display.
     pub fn set_image(&mut self, image: Image) {
         self.image = image;
+        self.base.request_redraw();
     }
 
     /// Returns a reference to the current image.
@@ -93,19 +94,25 @@ impl Draw for ImageView {
                 .style()
                 .background_color
                 .or(self.background)
-                .unwrap_or(Color::from_rgb(240, 240, 240));
+                .unwrap_or(Color::rgb(240, 240, 240));
             context.fill_rect(rect, bg);
 
             // Draw a border to make the placeholder visible.
-            let border = self.style().border_color.unwrap_or(Color::from_rgb(200, 200, 200));
+            let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
             context.draw_rect_stroke(rect, border, 1);
 
             // Draw "?" centered in the placeholder.
-            let fg = self.style().text_color.unwrap_or(Color::from_rgb(120, 120, 120));
+            let fg = self.style().text_color.unwrap_or(Color::rgb(120, 120, 120));
             let font = self.style().font.clone().unwrap_or_default();
             let text_x = rect.x + rect.width as i32 / 2 - 4;
             let text_y = rect.y + rect.height as i32 / 2 - 8;
-            context.draw_text(Point::new(text_x, text_y), "?", &font, fg, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y),
+                "?",
+                &font,
+                fg,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

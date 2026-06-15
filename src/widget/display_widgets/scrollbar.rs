@@ -318,12 +318,12 @@ impl Draw for ScrollBar {
         // Draw background
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            style.background_color.unwrap_or(Color::from_rgb(240, 240, 240)),
+            style.background_color.unwrap_or(Color::rgb(240, 240, 240)),
         );
         // Draw border
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            style.border_color.unwrap_or(Color::from_rgb(200, 200, 200)),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
         );
         // Draw slider
         match self.orientation {
@@ -336,7 +336,7 @@ impl Draw for ScrollBar {
                         slider_width as f32,
                         rect.height as f32,
                     ),
-                    Color::from_rgb(180, 180, 180),
+                    Color::rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
@@ -346,7 +346,7 @@ impl Draw for ScrollBar {
                         slider_width as f32,
                         rect.height as f32,
                     ),
-                    Color::from_rgb(150, 150, 150),
+                    Color::rgb(150, 150, 150),
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.height as f32).min(rect.width as f32 * 0.2) as u32;
@@ -360,7 +360,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 / 4.0,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -371,7 +371,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 // Right arrow head
                 context.draw_line(
@@ -383,7 +383,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
                         rect.y as f32 + rect.height as f32 / 4.0,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -394,7 +394,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
                         rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
             }
             Orientation::Vertical => {
@@ -406,7 +406,7 @@ impl Draw for ScrollBar {
                         rect.width as f32,
                         slider_height as f32,
                     ),
-                    Color::from_rgb(180, 180, 180),
+                    Color::rgb(180, 180, 180),
                 );
                 // Draw slider border
                 context.draw_rect(
@@ -416,7 +416,7 @@ impl Draw for ScrollBar {
                         rect.width as f32,
                         slider_height as f32,
                     ),
-                    Color::from_rgb(150, 150, 150),
+                    Color::rgb(150, 150, 150),
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.width as f32).min(rect.height as f32 * 0.2) as u32;
@@ -430,7 +430,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 / 4.0,
                         rect.y as f32 + arrow_size as f32,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -441,7 +441,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
                         rect.y as f32 + arrow_size as f32,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 // Down arrow head
                 context.draw_line(
@@ -453,7 +453,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 / 4.0,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -464,7 +464,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32,
                     ),
-                    Color::from_rgb(100, 100, 100),
+                    Color::rgb(100, 100, 100),
                 );
             }
         }
@@ -621,7 +621,7 @@ mod tests {
     fn scrollbar_style_roundtrip() {
         let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
         assert_eq!(*sb.style(), WidgetStyle::default());
-        let custom = WidgetStyle::default().with_background(Color::from_rgb(200, 200, 200));
+        let custom = WidgetStyle::default().with_background(Color::rgb(200, 200, 200));
         sb.set_style(custom.clone());
         assert_eq!(*sb.style(), custom);
     }

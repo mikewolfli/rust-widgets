@@ -68,7 +68,7 @@ pub struct EventLoop {
     /// Optional native platform event pump.
     /// Called on each loop iteration to dispatch pending native platform events
     /// (e.g., Wayland dispatch_pending). Replaces standalone platform dispatch loops.
-    native_pump: Option<Box<dyn Fn() + Send + Sync>>,
+    native_pump: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl EventLoop {
@@ -101,7 +101,7 @@ impl EventLoop {
         let dispatch_fn = self.dispatch_fn.clone();
         #[cfg(feature = "touch")]
         let mut gesture_engine = GestureEngine::new();
-        let native_pump = self.native_pump.take();
+        let native_pump = self.native_pump.clone();
         let handle = thread::spawn(move || {
             while *running.lock().unwrap_or_else(recover_lock) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -110,35 +110,35 @@ impl EventLoop {
                 }
                 // Phase 0a: Drain any pending scheduled tasks
                 crate::event::types::drain_tasks();
-                // Phase 1a: Drain all available events, process normal/high immediately,
-                // buffer idle events for budgeted processing.
+                // Phase 1a: Drain all available events into a buffer so we can
+                // dispatch them in strict priority order (High > Normal > Idle).
                 let mut had_work = false;
+                let mut priority_buffer: Vec<(ObjectId, Event, EventPriority)> = Vec::new();
                 let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
-                while let Some((target, event, priority)) =
-                    queue.lock().unwrap_or_else(recover_lock).dequeue()
-                {
+                while let Some(entry) = queue.lock().unwrap_or_else(recover_lock).dequeue() {
                     had_work = true;
+                    priority_buffer.push(entry);
+                }
+
+                // Phase 1b: Dispatch High-priority events first.
+                for (target, event, priority) in &priority_buffer {
+                    if *priority != EventPriority::High {
+                        continue;
+                    }
 
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if event.is_touch() {
-                        gesture_engine.process(&event, now_ms())
+                        gesture_engine.process(event, now_ms())
                     } else {
                         None
                     };
 
-                    // Buffer idle-priority events; process normal/high immediately
-                    if priority == EventPriority::Idle {
-                        idle_events.push((target, event));
-                        continue;
-                    }
-
-                    // Dispatch normal/high priority event immediately
                     if let Some(ref dispatch) = dispatch_fn {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            dispatch(target, &event);
+                            dispatch(*target, event);
                             #[cfg(feature = "touch")]
                             if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(target, gesture);
+                                dispatch(*target, gesture);
                             }
                         }));
                         if let Err(e) = result {
@@ -147,8 +147,49 @@ impl EventLoop {
                     } else {
                         log::warn!(
                             "[event-loop] No dispatch_fn set — dropping event {:?} for target {:?}",
-                            event, target
+                            event,
+                            target
                         );
+                    }
+                }
+
+                // Phase 1c: Dispatch Normal-priority events second.
+                for (target, event, priority) in &priority_buffer {
+                    if *priority != EventPriority::Normal {
+                        continue;
+                    }
+
+                    #[cfg(feature = "touch")]
+                    let maybe_gesture_event = if event.is_touch() {
+                        gesture_engine.process(event, now_ms())
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref dispatch) = dispatch_fn {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            dispatch(*target, event);
+                            #[cfg(feature = "touch")]
+                            if let Some(ref gesture) = maybe_gesture_event {
+                                dispatch(*target, gesture);
+                            }
+                        }));
+                        if let Err(e) = result {
+                            log::error!("[event-loop] Dispatch panicked: {:?}", e);
+                        }
+                    } else {
+                        log::warn!(
+                            "[event-loop] No dispatch_fn set — dropping event {:?} for target {:?}",
+                            event,
+                            target
+                        );
+                    }
+                }
+
+                // Phase 1d: Buffer Idle events for budgeted processing.
+                for (target, event, priority) in priority_buffer {
+                    if priority == EventPriority::Idle {
+                        idle_events.push((target, event));
                     }
                 }
 
@@ -170,13 +211,14 @@ impl EventLoop {
                         };
 
                         if let Some(ref dispatch) = dispatch_fn {
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                dispatch(target, &event);
-                                #[cfg(feature = "touch")]
-                                if let Some(ref gesture) = maybe_gesture_event {
-                                    dispatch(target, gesture);
-                                }
-                            }));
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    dispatch(target, &event);
+                                    #[cfg(feature = "touch")]
+                                    if let Some(ref gesture) = maybe_gesture_event {
+                                        dispatch(target, gesture);
+                                    }
+                                }));
                             if let Err(e) = result {
                                 log::error!("[event-loop] Dispatch panicked: {:?}", e);
                             }
@@ -239,7 +281,7 @@ impl EventLoop {
         event: Event,
         priority: EventPriority,
     ) -> Result<(), String> {
-        self.sender.post_with_priority(target, event, priority).map_err(|e| e.to_string())
+        self.sender.post_with_priority(target, event, priority)
     }
 
     /// Request the event loop to dispatch a custom animation frame event on the next iteration.
@@ -271,7 +313,7 @@ impl EventLoop {
     /// This replaces standalone platform dispatch loops with EventLoop-integrated
     /// dispatch.
     pub fn set_native_pump(&mut self, pump: Box<dyn Fn() + Send + Sync>) {
-        self.native_pump = Some(pump);
+        self.native_pump = Some(Arc::from(pump));
     }
 
     /// Checks if the event loop is running.

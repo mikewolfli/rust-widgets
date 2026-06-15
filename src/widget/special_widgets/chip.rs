@@ -223,8 +223,8 @@ impl EventHandler for Chip {
 impl Draw for Chip {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(248, 250, 253));
-        context.draw_rect(rect, Color::from_rgb(202, 208, 218));
+        context.fill_rect(rect, Color::rgb(248, 250, 253));
+        context.draw_rect(rect, Color::rgb(202, 208, 218));
 
         for index in 0..self.items.len() {
             let Some(chip_rect) = self.chip_rect(index) else {
@@ -236,14 +236,14 @@ impl Draw for Chip {
             };
 
             let bg = if item.selected {
-                Color::from_rgb(196, 220, 248)
+                Color::rgb(196, 220, 248)
             } else if self.focused_index == Some(index) {
-                Color::from_rgb(226, 237, 252)
+                Color::rgb(226, 237, 252)
             } else {
-                Color::from_rgb(237, 241, 247)
+                Color::rgb(237, 241, 247)
             };
             context.fill_rect(chip_rect, bg);
-            context.draw_rect(chip_rect, Color::from_rgb(176, 186, 200));
+            context.draw_rect(chip_rect, Color::rgb(176, 186, 200));
             context.draw_text(
                 Point::new(
                     chip_rect.x + self.chip_padding,
@@ -251,7 +251,7 @@ impl Draw for Chip {
                 ),
                 &item.label,
                 &Font::default(),
-                Color::from_rgb(32, 44, 61),
+                Color::rgb(32, 44, 61),
                 HorizontalAlignment::Left,
             );
         }

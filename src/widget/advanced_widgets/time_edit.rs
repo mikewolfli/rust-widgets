@@ -176,14 +176,14 @@ impl EventHandler for TimeEdit {
 impl Draw for TimeEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(150, 150, 150));
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(150, 150, 150));
         let text = self.time.to_string();
         context.draw_text(
             Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
             &text,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
     }

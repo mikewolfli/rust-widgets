@@ -34,7 +34,7 @@ static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 type SlotFn<T> = Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>;
 
 struct SlotEntry<T: Clone + Send + 'static> {
-    callback: SlotFn<T>,
+    callback: Option<SlotFn<T>>,
     once: bool,
     blocked: bool,
     priority: Priority,
@@ -149,7 +149,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
         self.inner.slots.write().expect("signal lock poisoned").insert(
             handle,
-            SlotEntry { callback: Box::new(slot), once: false, blocked: false, priority },
+            SlotEntry { callback: Some(Box::new(slot)), once: false, blocked: false, priority },
         );
         handle
     }
@@ -163,7 +163,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         self.inner.slots.write().expect("signal lock poisoned").insert(
             handle,
             SlotEntry {
-                callback: Box::new(slot),
+                callback: Some(Box::new(slot)),
                 once: true,
                 blocked: false,
                 priority: Priority::Normal,
@@ -230,14 +230,15 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Emit a cloned value to all connected (non-blocked) slots.
     ///
     /// This method safely processes slots **one at a time** by temporarily
-    /// removing each slot's entry from the real storage under a write lock,
-    /// invoking the callback **outside** the lock, and re-inserting it if
-    /// it is not a `once`-slot.  Callbacks may safely call `connect`,
-    /// `disconnect`, `disconnect_all`, `block`, `unblock`, or `emit` on
-    /// **the same Signal** without deadlocking.  Disconnections performed
-    /// during emission correctly modify the signal's real slot storage and
-    /// are properly persisted (or respected if the slot has not yet been
-    /// processed).
+    /// taking each slot's callback (via `Option::take`) under a write lock,
+    /// leaving the handle **in** the HashMap so that `disconnect(own_handle)`
+    /// can find and remove it. The callback is invoked **outside** the lock,
+    /// and if the handle still exists afterward (i.e., was not self-disconnected),
+    /// the callback is restored. Once-slots are removed unconditionally after
+    /// invocation. Callbacks may safely call `connect`, `disconnect`,
+    /// `disconnect_all`, `block`, `unblock`, or `emit` on **the same Signal**
+    /// without deadlocking. Self-disconnect from within a callback is now
+    /// correctly honored and does not get undone by a stale re-insertion.
     ///
     /// Slots are invoked in priority order (High → Normal → Low).
     /// Blocked slots are skipped entirely.
@@ -255,26 +256,47 @@ impl<T: Clone + Send + 'static> Signal<T> {
         snapshot.sort_by_key(|a| a.1.rank());
 
         // 3. Process each slot individually against the real HashMap.
-        //    Each entry is temporarily removed, the callback is invoked
-        //    outside the lock, and non-once entries are re-inserted.
+        //    The callback is temporarily taken (via Option::take) under a write
+        //    lock, leaving the handle in the map so that if the callback calls
+        //    `disconnect(own_handle)`, the disconnect can find and remove the
+        //    handle. After invocation, if the handle still exists in the map
+        //    (i.e., was not self-disconnected), the callback is restored.
+        //    Once-slots are removed unconditionally after invocation.
         for (handle, _priority) in snapshot {
-            // Remove the entry under a write lock.
-            let entry = {
+            // Temporarily take the callback under a write lock, leaving None.
+            // The handle stays in the HashMap so disconnect() can find it.
+            let taken = {
                 let mut slots = self.inner.slots.write().expect("signal lock poisoned");
-                slots.remove(&handle)
+                if let Some(entry) = slots.get_mut(&handle) {
+                    if entry.blocked {
+                        None
+                    } else {
+                        entry.callback.take()
+                    }
+                } else {
+                    // Handle was disconnected by a prior callback in this emit loop.
+                    None
+                }
             };
 
-            if let Some(mut entry) = entry {
-                if !entry.blocked {
-                    (entry.callback)(arc_value.clone());
+            if let Some(mut callback) = taken {
+                callback(arc_value.clone());
+
+                // After callback: if it was a once-slot, remove the entry.
+                // Otherwise, re-install the callback only if the handle still
+                // exists (i.e., the callback did not call disconnect on itself).
+                let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+                if let Some(entry) = slots.get_mut(&handle) {
+                    if entry.once {
+                        // Once-slot: remove the entry entirely.
+                        slots.remove(&handle);
+                    } else {
+                        // Non-once, still connected: restore the callback.
+                        entry.callback = Some(callback);
+                    }
                 }
-                if !entry.once {
-                    // Re-insert non-once slots.
-                    self.inner.slots.write().expect("signal lock poisoned").insert(handle, entry);
-                }
+                // If handle was removed by self-disconnect, callback is dropped.
             }
-            // If entry was disconnected by a prior callback, it is simply skipped.
-            // The disconnect happened against the real HashMap, so it persists.
         }
     }
 

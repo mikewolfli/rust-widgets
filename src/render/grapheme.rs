@@ -232,39 +232,12 @@ impl GraphemeProcessor {
 
     /// Returns `true` if `c` is a combining mark (zero-width diacritic).
     fn is_combining_mark(c: char) -> bool {
-        let code = c as u32;
-        matches!(code,
-            // Combining Diacritical Marks
-            0x0300..=0x036F
-            // Combining Diacritical Marks Extended
-            | 0x1AB0..=0x1AFF
-            // Combining Diacritical Marks Supplement
-            | 0x1DC0..=0x1DFF
-            // Combining Half Marks
-            | 0xFE20..=0xFE2F
-            // Devanagari combining marks (subset)
-            | 0x0901..=0x0903
-            | 0x093E..=0x094D
-            // Thai combining marks
-            | 0x0E31..=0x0E3A
-            | 0x0E47..=0x0E4E
-            // General combining range for Indic scripts
-            | 0x0981..=0x0983
-            | 0x09BE..=0x09CD
-            | 0x0A01..=0x0A03
-            | 0x0A3E..=0x0A4D
-            | 0x0B01..=0x0B03
-            | 0x0B3E..=0x0B4D
-            // Tibetan combining marks
-            | 0x0F82..=0x0F84
-            | 0x0F86..=0x0F8B
-        )
+        is_combining_mark(c)
     }
 
     /// Returns `true` if `c` is a variation selector (U+FE00..U+FE0F).
     fn is_variation_selector(c: char) -> bool {
-        let code = c as u32;
-        matches!(code, 0xFE00..=0xFE0F)
+        is_variation_selector(c)
     }
 
     /// Returns `true` if `c` is a regional indicator symbol (flag letters).
@@ -287,6 +260,45 @@ impl GraphemeProcessor {
         }
         1.0
     }
+}
+
+// ─── Standalone helpers (shared with pixel_ops) ─────────────────────
+
+/// Returns `true` if `c` is a combining mark (zero-width diacritic).
+pub(crate) fn is_combining_mark(c: char) -> bool {
+    let code = c as u32;
+    matches!(code,
+        // Combining Diacritical Marks
+        0x0300..=0x036F
+        // Combining Diacritical Marks Extended
+        | 0x1AB0..=0x1AFF
+        // Combining Diacritical Marks Supplement
+        | 0x1DC0..=0x1DFF
+        // Combining Half Marks
+        | 0xFE20..=0xFE2F
+        // Devanagari combining marks (subset)
+        | 0x0901..=0x0903
+        | 0x093E..=0x094D
+        // Thai combining marks
+        | 0x0E31..=0x0E3A
+        | 0x0E47..=0x0E4E
+        // General combining range for Indic scripts
+        | 0x0981..=0x0983
+        | 0x09BE..=0x09CD
+        | 0x0A01..=0x0A03
+        | 0x0A3E..=0x0A4D
+        | 0x0B01..=0x0B03
+        | 0x0B3E..=0x0B4D
+        // Tibetan combining marks
+        | 0x0F82..=0x0F84
+        | 0x0F86..=0x0F8B
+    )
+}
+
+/// Returns `true` if `c` is a variation selector (U+FE00..U+FE0F).
+pub(crate) fn is_variation_selector(c: char) -> bool {
+    let code = c as u32;
+    matches!(code, 0xFE00..=0xFE0F)
 }
 
 #[cfg(test)]

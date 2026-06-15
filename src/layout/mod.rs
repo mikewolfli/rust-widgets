@@ -176,7 +176,7 @@ mod tests {
     }
     #[test]
     fn hbox_and_vbox_named_types_delegate_to_box_layout_contract() {
-        let mut hbox = HBoxLayout::new(3, 2);
+        let mut hbox = BoxLayout::new(Orientation::Horizontal, 3, 2);
         hbox.add_widget(1, 1);
         hbox.add_spacer(1);
         hbox.add_widget(2, 2);
@@ -188,7 +188,7 @@ mod tests {
             rects.insert(id, rect);
         });
         assert_eq!(rects.len(), 2);
-        let mut vbox = VBoxLayout::new(1, 0);
+        let mut vbox = BoxLayout::new(Orientation::Vertical, 1, 0);
         vbox.add_widget(10, 1);
         vbox.add_widget(11, 1);
         let mut out = std::collections::HashMap::new();

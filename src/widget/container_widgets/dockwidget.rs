@@ -1,5 +1,5 @@
 //! Dock widget.
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -19,8 +19,9 @@ pub struct DockWidget {
     pub dock_location_changed: Signal1<DockWidgetArea>,
     pub features_changed: Signal1<DockWidgetFeatures>,
     pub top_level_changed: Signal1<bool>,
-    /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Offset from mouse cursor to widget top-left, set when drag begins.
+    drag_offset: (i32, i32),
 }
 /// Dock widget features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,10 +34,6 @@ pub struct DockWidgetFeatures {
     pub dock_widget_floatable: bool,
     /// Dock widget can be vertical
     pub dock_widget_vertical_title_bar: bool,
-    /// All features
-    pub dock_widget_all_features: bool,
-    /// No features
-    pub dock_widget_no_features: bool,
 }
 impl Default for DockWidgetFeatures {
     fn default() -> Self {
@@ -45,12 +42,25 @@ impl Default for DockWidgetFeatures {
             dock_widget_movable: true,
             dock_widget_floatable: true,
             dock_widget_vertical_title_bar: false,
-            dock_widget_all_features: true,
-            dock_widget_no_features: false,
         }
     }
 }
+
 impl DockWidgetFeatures {
+    /// Returns true when all features are enabled.
+    pub fn all_enabled(&self) -> bool {
+        self.dock_widget_closable
+            && self.dock_widget_movable
+            && self.dock_widget_floatable
+            && self.dock_widget_vertical_title_bar
+    }
+    /// Returns true when no features are enabled.
+    pub fn none_enabled(&self) -> bool {
+        !self.dock_widget_closable
+            && !self.dock_widget_movable
+            && !self.dock_widget_floatable
+            && !self.dock_widget_vertical_title_bar
+    }
     /// Creates features with all flags set.
     pub fn all() -> Self {
         Self {
@@ -58,8 +68,6 @@ impl DockWidgetFeatures {
             dock_widget_movable: true,
             dock_widget_floatable: true,
             dock_widget_vertical_title_bar: true,
-            dock_widget_all_features: true,
-            dock_widget_no_features: false,
         }
     }
     /// Creates features with no flags set.
@@ -69,8 +77,6 @@ impl DockWidgetFeatures {
             dock_widget_movable: false,
             dock_widget_floatable: false,
             dock_widget_vertical_title_bar: false,
-            dock_widget_all_features: false,
-            dock_widget_no_features: true,
         }
     }
 }
@@ -148,13 +154,14 @@ impl DockWidget {
             title: String::new(),
             widget: None,
             features: DockWidgetFeatures::default(),
-            allowed_areas: DockWidgetAreas::default(),
+            allowed_areas: DockWidgetAreas::all(),
             floating: false,
             docked: true,
             dock_location_changed: Signal1::new(),
             features_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
             registry: None,
+            drag_offset: (0, 0),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -190,9 +197,7 @@ impl DockWidget {
     }
     /// Sets features.
     pub fn set_features(&mut self, features: DockWidgetFeatures) {
-        if self.features.dock_widget_all_features != features.dock_widget_all_features
-            || self.features.dock_widget_no_features != features.dock_widget_no_features
-            || self.features.dock_widget_closable != features.dock_widget_closable
+        if self.features.dock_widget_closable != features.dock_widget_closable
             || self.features.dock_widget_movable != features.dock_widget_movable
             || self.features.dock_widget_floatable != features.dock_widget_floatable
             || self.features.dock_widget_vertical_title_bar
@@ -324,7 +329,9 @@ impl EventHandler for DockWidget {
                 } else if self.is_in_float_button(*pos) && self.features.dock_widget_floatable {
                     self.toggle_floating();
                 } else if self.is_in_title_bar(*pos) && self.features.dock_widget_movable {
-                    // Start dragging
+                    // Start dragging — store offset from cursor to widget top-left
+                    let rect = self.geometry();
+                    self.drag_offset = (pos.x - rect.x, pos.y - rect.y);
                     self.base.set_mouse_pressed(true);
                 }
             }
@@ -334,9 +341,14 @@ impl EventHandler for DockWidget {
             Event::MouseMove { pos }
                 if self.base.is_mouse_pressed() && self.features.dock_widget_movable =>
             {
-                // Move dock widget
+                // Move dock widget, maintaining the original offset
                 let rect = self.geometry();
-                self.set_geometry(Rect::new(pos.x, pos.y, rect.width, rect.height));
+                self.set_geometry(Rect::new(
+                    pos.x - self.drag_offset.0,
+                    pos.y - self.drag_offset.1,
+                    rect.width,
+                    rect.height,
+                ));
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -356,28 +368,28 @@ impl Draw for DockWidget {
         let content = self.content_rect();
         // Draw title bar
         let title_bar_color = if self.floating {
-            Color::from_rgb(220, 220, 255)
+            Color::rgb(220, 220, 255)
         } else {
-            Color::from_rgb(200, 200, 200)
+            Color::rgb(200, 200, 200)
         };
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
-        context.draw_rect(title_bar, Color::from_rgb(150, 150, 150));
+        context.draw_rect(title_bar, Color::rgb(150, 150, 150));
         // Draw title text
         context.draw_text(
             Point::new(title_bar.x + 5, title_bar.y + title_bar.height as i32 / 2),
             &self.title,
             &Font::default(),
-            Color::from_rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,
         );
         // Draw close button if enabled
         if self.features.dock_widget_closable {
             if let Some(close_rect) = self.close_button_rect() {
                 let close_color = if self.base.is_enabled() {
-                    Color::from_rgb(100, 100, 100)
+                    Color::rgb(100, 100, 100)
                 } else {
-                    Color::from_rgb(200, 200, 200)
+                    Color::rgb(200, 200, 200)
                 };
                 context.draw_line(
                     Point::new(close_rect.x, close_rect.y),
@@ -398,11 +410,11 @@ impl Draw for DockWidget {
         if self.features.dock_widget_floatable {
             if let Some(float_rect) = self.float_button_rect() {
                 let float_color = if self.floating {
-                    Color::from_rgb(0, 120, 215)
+                    Color::rgb(0, 120, 215)
                 } else if self.base.is_enabled() {
-                    Color::from_rgb(100, 100, 100)
+                    Color::rgb(100, 100, 100)
                 } else {
-                    Color::from_rgb(200, 200, 200)
+                    Color::rgb(200, 200, 200)
                 };
                 // Draw float icon (four arrows)
                 let center_x = float_rect.x + float_rect.width as i32 / 2;
@@ -460,9 +472,9 @@ impl Draw for DockWidget {
             }
         }
         // Draw content background
-        context.fill_rect(content, Color::from_rgb(255, 255, 255));
+        context.fill_rect(content, Color::rgb(255, 255, 255));
         // Draw content border
-        context.draw_rect(content, Color::from_rgb(200, 200, 200));
+        context.draw_rect(content, Color::rgb(200, 200, 200));
         // Draw widget via registry
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {
@@ -779,11 +791,12 @@ mod tests {
     fn test_mouse_move_drags_widget() {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         let title_pos = Point::new(50, 10);
-        // Press on title bar to start drag
+        // Press on title bar to start drag — stores offset (50, 10)
         dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
-        // Move mouse — widget should follow
+        // Move mouse — widget should follow, maintaining the initial grab offset
         dw.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
-        assert_eq!(dw.geometry(), Rect::new(100, 50, 200, 100));
+        // Offset was (50, 10), so new position = (100 - 50, 50 - 10) = (50, 40)
+        assert_eq!(dw.geometry(), Rect::new(50, 40, 200, 100));
     }
 
     #[test]
@@ -822,15 +835,15 @@ mod tests {
         assert!(all.dock_widget_movable);
         assert!(all.dock_widget_floatable);
         assert!(all.dock_widget_vertical_title_bar);
-        assert!(all.dock_widget_all_features);
-        assert!(!all.dock_widget_no_features);
+        assert!(all.all_enabled());
+        assert!(!all.none_enabled());
         let none = DockWidgetFeatures::none();
         assert!(!none.dock_widget_closable);
         assert!(!none.dock_widget_movable);
         assert!(!none.dock_widget_floatable);
         assert!(!none.dock_widget_vertical_title_bar);
-        assert!(!none.dock_widget_all_features);
-        assert!(none.dock_widget_no_features);
+        assert!(!none.all_enabled());
+        assert!(none.none_enabled());
     }
 
     #[test]
