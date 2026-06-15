@@ -7,7 +7,7 @@
 //! widgets, it returns a `BoundJsonLayout`. Callers retrieve typed widget
 //! handles by the JSON `"id"` attribute, e.g.:
 //!
-//! ```rust,ignore
+//! ```text
 //! let layout = JsonLoader::load(json_str)?;
 //! let btn = layout.widget_by_name::<ButtonHandle>("ok_btn")?;
 //! btn.set_text("Confirm");
@@ -71,7 +71,7 @@ impl BoundJsonLayout {
     ///
     /// Returns `Err` if the widget name is not found.
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let btn = layout.widget_by_name::<ButtonHandle>("ok_btn")?;
     /// btn.set_text("Confirm");
     /// ```

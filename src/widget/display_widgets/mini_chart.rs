@@ -245,8 +245,7 @@ impl Draw for MiniChart {
                 let max_bar_width = 40u32;
                 let ideal_bar_width = (chart_area_w / bar_count).min(max_bar_width).max(2);
                 let used_width = ideal_bar_width * bar_count;
-                let remaining =
-                    if used_width < chart_area_w { chart_area_w - used_width } else { 0 };
+                let remaining = chart_area_w.saturating_sub(used_width);
                 let gap = (remaining / total_gaps).max(1);
                 let bar_width = ideal_bar_width;
 
@@ -265,7 +264,7 @@ impl Draw for MiniChart {
                     let by = chart_origin_y + chart_area_h as i32 - bar_h as i32;
 
                     // Proportionally color the bar: low values → blue, high values → red
-                    let t = bar_h_ratio.min(1.0).max(0.0);
+                    let t = bar_h_ratio.clamp(0.0, 1.0);
                     let r = (60.0 + t * 195.0) as u8;
                     let g = (120.0 + t * 50.0) as u8;
                     let b = (200.0 - t * 180.0) as u8;

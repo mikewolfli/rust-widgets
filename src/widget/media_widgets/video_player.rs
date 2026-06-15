@@ -283,7 +283,7 @@ impl Draw for VideoPlayer {
         let control_bar_height = 36u32;
         let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
         let control_bar_rect =
-            Rect::new(rect.x, control_bar_y, rect.width as u32, control_bar_height);
+            Rect::new(rect.x, control_bar_y, rect.width, control_bar_height);
         context.fill_rect(control_bar_rect, Color::rgba(0, 0, 0, 160));
 
         // Play/Pause button.
@@ -298,7 +298,7 @@ impl Draw for VideoPlayer {
         // Seek bar.
         let seek_bar_x = btn_x + btn_metrics.width as i32 + 12;
         let seek_bar_y = control_bar_y + control_bar_height as i32 / 2 - 4;
-        let seek_bar_width = (rect.width as u32).saturating_sub((seek_bar_x - rect.x + 80) as u32);
+        let seek_bar_width = rect.width.saturating_sub((seek_bar_x - rect.x + 80) as u32);
         let seek_bar_height = 8u32;
         let seek_bar_full = Rect::new(seek_bar_x, seek_bar_y, seek_bar_width, seek_bar_height);
         context.fill_rounded_rect(seek_bar_full, 4, Color::rgba(100, 100, 100, 200));
@@ -389,8 +389,8 @@ impl EventHandler for VideoPlayer {
                     let control_bar_height = 36u32;
                     let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
 
-                    if pos.y >= control_bar_y && pos.y < rect.y + rect.height as i32 {
-                        if self.controls_visible {
+                    if pos.y >= control_bar_y && pos.y < rect.y + rect.height as i32
+                        && self.controls_visible {
                             // Play/pause button click area.
                             let font = Font::default();
                             let btn_text = if self.is_playing { "⏸" } else { "▶" };
@@ -406,7 +406,6 @@ impl EventHandler for VideoPlayer {
                                 return;
                             }
                         }
-                    }
 
                     // Click on video area toggles controls visibility or play/pause.
                     if pos.y < control_bar_y {

@@ -211,7 +211,7 @@ impl Draw for BarcodeScanner {
         }
         if vf_margin_x > 0 {
             context.fill_rect(
-                Rect::new(rect.x, rect.y + vf_margin_y, vf_margin_x as u32, vf_rect.height as u32),
+                Rect::new(rect.x, rect.y + vf_margin_y, vf_margin_x as u32, vf_rect.height),
                 Color::rgba(0, 0, 0, 180),
             );
         }
@@ -222,7 +222,7 @@ impl Draw for BarcodeScanner {
                     vf_right,
                     rect.y + vf_margin_y,
                     (rect.x + w - vf_right) as u32,
-                    vf_rect.height as u32,
+                    vf_rect.height,
                 ),
                 Color::rgba(0, 0, 0, 180),
             );

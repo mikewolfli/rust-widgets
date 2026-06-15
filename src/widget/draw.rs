@@ -15,8 +15,10 @@ pub trait Draw {
         true
     }
     /// Optional: Request a redraw of the widget.
-    /// Override in concrete types that implement Widget to call self.request_redraw().
+    /// The default implementation is a no-op because not all widgets use
+    /// custom drawing. Widgets that implement custom drawing should override
+    /// this to call appropriate redraw mechanisms.
     fn request_custom_redraw(&self) {
-        // No-op default (concrete types implementing Widget can override)
+        // Default implementation is a no-op.
     }
 }

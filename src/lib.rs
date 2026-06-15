@@ -24,6 +24,9 @@ pub mod action;
 /// Desktop-only: Generic asset file watcher.
 #[cfg(feature = "desktop")]
 pub mod asset;
+/// Audio module — format detection, decoding, encoding, sample processing, and normalization.
+#[cfg(feature = "audio")]
+pub mod audio;
 /// Desktop-only: C ABI bindings for desktop runtime.
 #[cfg(feature = "desktop")]
 pub mod bindings;
@@ -50,6 +53,10 @@ pub mod gpu;
 /// Desktop-only: Internationalization module.
 #[cfg(feature = "desktop")]
 pub mod i18n;
+/// Image module — format detection, decoding, encoding, transform, and color conversion.
+/// Supports all mainstream formats: PNG, JPEG, BMP, GIF, WebP, TIFF, AVIF, ICO, PNM, QOI, Farbfeld, SVG, SVGZ.
+#[cfg(feature = "image")]
+pub mod image;
 /// Declarative JSON window engine (QML-like).
 #[cfg(not(feature = "mini"))]
 pub mod json;
@@ -87,6 +94,9 @@ pub mod theme;
 pub mod undo;
 /// Generic utility modules (asset watcher, helpers, etc.).
 pub mod util;
+/// Video module — container format detection, frame extraction, metadata, and playback.
+#[cfg(feature = "video")]
+pub mod video;
 /// Web view and engine components.
 pub mod web;
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).

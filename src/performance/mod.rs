@@ -1,11 +1,13 @@
 //! Performance monitoring and optimization utilities, including dirty region tracking, update batching, and profiling.
 pub mod batcher;
 pub mod dirty;
+pub mod frame_timer;
 mod profiler;
 pub mod region;
 use crate::core::Rect;
 pub use batcher::*;
 pub use dirty::*;
+pub use frame_timer::*;
 pub use profiler::*;
 pub use region::*;
 

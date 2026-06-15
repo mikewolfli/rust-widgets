@@ -25,7 +25,9 @@ mod tests {
     fn app_core_default() {
         let config = crate::app::app_core::AppConfig::default();
         assert_eq!(config.app_name, "");
+        assert_eq!(config.version, "");
         assert!(config.enable_i18n);
+        assert!(config.enable_accessibility);
     }
     #[test]
     fn app_handle_set_get() {

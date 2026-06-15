@@ -63,6 +63,7 @@ pub struct LinuxImeBridge {
 
     // ── Native IBus handle ──
     /// Whether an IBus connection was successfully established.
+    #[allow(dead_code)]
     ibus_available: Mutex<bool>,
     /// Opaque IBus connection handle.
     #[cfg(feature = "linux-a11y")]

@@ -52,6 +52,12 @@ pub struct WrapLayout {
     children: Vec<WrapChild>,
 }
 
+impl Default for WrapLayout {
+    fn default() -> Self {
+        Self::new(WrapDirection::Horizontal, WrapAlignment::Start, 8, 8)
+    }
+}
+
 impl WrapLayout {
     /// Create a new wrap layout with the given parameters.
     pub fn new(
@@ -64,7 +70,7 @@ impl WrapLayout {
     }
 
     /// Create a wrap layout with default settings.
-    pub fn default() -> Self {
+    pub fn new_default() -> Self {
         Self::new(WrapDirection::Horizontal, WrapAlignment::Start, 8, 8)
     }
 

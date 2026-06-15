@@ -92,8 +92,8 @@ impl Popover {
     /// Computes the popover body rectangle below/above the anchor.
     fn compute_layout(&self) -> (Rect, Point, ArrowDirection) {
         let geom = self.geometry();
-        let body_width = geom.width.max(100).min(400);
-        let body_height = geom.height.max(60).min(400);
+        let body_width = geom.width.clamp(100, 400);
+        let body_height = geom.height.clamp(60, 400);
 
         // Position popover below the anchor by default; flip above if not enough room
         let below_space =
@@ -247,11 +247,9 @@ impl EventHandler for Popover {
 
         match event {
             Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    if !self.body_rect.contains_point(*pos) {
-                        // Auto-dismiss on click outside
-                        self.hide();
-                    }
+                if *button == 1 && !self.body_rect.contains_point(*pos) {
+                    // Auto-dismiss on click outside
+                    self.hide();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {

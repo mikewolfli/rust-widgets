@@ -11,6 +11,9 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+/// A selected date range: `(start_date, end_date)` each as `(year, month, day)`.
+pub(crate) type DateRange = (Option<(i32, u32, u32)>, Option<(i32, u32, u32)>);
+
 const MONTH_NAMES: &[&str] =
     &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -57,7 +60,7 @@ pub struct DateRangePicker {
     end_date: Option<(i32, u32, u32)>,
     hover_date: Option<(i32, u32, u32)>,
     /// Emitted when the range changes, with `(start_date, end_date)`.
-    pub range_changed: Signal1<(Option<(i32, u32, u32)>, Option<(i32, u32, u32)>)>,
+    pub range_changed: Signal1<DateRange>,
 }
 
 impl DateRangePicker {
@@ -346,93 +349,90 @@ impl EventHandler for DateRangePicker {
             return;
         }
 
-        match event {
-            Event::MousePress { pos, button: 1 } => {
-                let rect = self.geometry();
-                if !rect.contains_point(*pos) {
-                    return;
+        if let Event::MousePress { pos, button: 1 } = event {
+            let rect = self.geometry();
+            if !rect.contains_point(*pos) {
+                return;
+            }
+
+            let header_height = 40u32;
+            let day_header_height = 20u32;
+            let cell_size = 28u32;
+            let cell_spacing = 2u32;
+            let total_cell = cell_size + cell_spacing;
+            let grid_left = rect.x + 4;
+            let grid_top = rect.y + header_height as i32 + day_header_height as i32;
+
+            // Check header clicks for navigation
+            let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, header_height);
+            let header_rect_right =
+                Rect::new(rect.x + rect.width as i32 - 24, rect.y + 4, 20, header_height);
+
+            if header_rect_left.contains_point(*pos) {
+                self.previous_month();
+                return;
+            }
+            if header_rect_right.contains_point(*pos) {
+                self.next_month();
+                return;
+            }
+
+            // Check if click is on a cell in the grid
+            let rel_x = pos.x - grid_left;
+            let rel_y = pos.y - grid_top;
+            if rel_x < 0 || rel_y < 0 {
+                return;
+            }
+
+            let col = (rel_x as u32) / total_cell;
+            let row = (rel_y as u32) / total_cell;
+            if col >= 7 || row >= 6 {
+                // Click outside the grid — clear if only start is selected
+                if self.start_date.is_some() && self.end_date.is_none() {
+                    self.clear_selection();
                 }
+                return;
+            }
 
-                let header_height = 40u32;
-                let day_header_height = 20u32;
-                let cell_size = 28u32;
-                let cell_spacing = 2u32;
-                let total_cell = cell_size + cell_spacing;
-                let grid_left = rect.x + 4;
-                let grid_top = rect.y + header_height as i32 + day_header_height as i32;
+            let cell_idx = (row as usize) * 7 + (col as usize);
+            let Some(clicked_date) = self.date_at_cell(cell_idx) else {
+                return;
+            };
 
-                // Check header clicks for navigation
-                let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, header_height);
-                let header_rect_right =
-                    Rect::new(rect.x + rect.width as i32 - 24, rect.y + 4, 20, header_height);
-
-                if header_rect_left.contains_point(*pos) {
-                    self.previous_month();
-                    return;
+            match (self.start_date, self.end_date) {
+                (None, _) => {
+                    // No selection — set start
+                    self.start_date = Some(clicked_date);
+                    self.emit_range_changed();
+                    self.base.request_redraw();
                 }
-                if header_rect_right.contains_point(*pos) {
-                    self.next_month();
-                    return;
-                }
+                (Some(start), None) => {
+                    // Start is set, no end yet — set end
+                    let start_ord = date_to_ordinal(start);
+                    let click_ord = date_to_ordinal(clicked_date);
 
-                // Check if click is on a cell in the grid
-                let rel_x = pos.x - grid_left;
-                let rel_y = pos.y - grid_top;
-                if rel_x < 0 || rel_y < 0 {
-                    return;
-                }
-
-                let col = (rel_x as u32) / total_cell;
-                let row = (rel_y as u32) / total_cell;
-                if col >= 7 || row >= 6 {
-                    // Click outside the grid — clear if only start is selected
-                    if self.start_date.is_some() && self.end_date.is_none() {
+                    if click_ord > start_ord {
+                        self.end_date = Some(clicked_date);
+                    } else if click_ord < start_ord {
+                        // Clicked before start: swap: new start = clicked, end = old start
+                        self.start_date = Some(clicked_date);
+                        self.end_date = Some(start);
+                    } else {
+                        // Clicked same as start — clear
                         self.clear_selection();
+                        return;
                     }
-                    return;
+                    self.emit_range_changed();
+                    self.base.request_redraw();
                 }
-
-                let cell_idx = (row as usize) * 7 + (col as usize);
-                let Some(clicked_date) = self.date_at_cell(cell_idx) else {
-                    return;
-                };
-
-                match (self.start_date, self.end_date) {
-                    (None, _) => {
-                        // No selection — set start
-                        self.start_date = Some(clicked_date);
-                        self.emit_range_changed();
-                        self.base.request_redraw();
-                    }
-                    (Some(start), None) => {
-                        // Start is set, no end yet — set end
-                        let start_ord = date_to_ordinal(start);
-                        let click_ord = date_to_ordinal(clicked_date);
-
-                        if click_ord > start_ord {
-                            self.end_date = Some(clicked_date);
-                        } else if click_ord < start_ord {
-                            // Clicked before start: swap: new start = clicked, end = old start
-                            self.start_date = Some(clicked_date);
-                            self.end_date = Some(start);
-                        } else {
-                            // Clicked same as start — clear
-                            self.clear_selection();
-                            return;
-                        }
-                        self.emit_range_changed();
-                        self.base.request_redraw();
-                    }
-                    (Some(_), Some(_)) => {
-                        // Both set — start new selection
-                        self.start_date = Some(clicked_date);
-                        self.end_date = None;
-                        self.emit_range_changed();
-                        self.base.request_redraw();
-                    }
+                (Some(_), Some(_)) => {
+                    // Both set — start new selection
+                    self.start_date = Some(clicked_date);
+                    self.end_date = None;
+                    self.emit_range_changed();
+                    self.base.request_redraw();
                 }
             }
-            _ => {}
         }
     }
 }

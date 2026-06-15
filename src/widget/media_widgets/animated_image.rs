@@ -312,11 +312,9 @@ impl Draw for AnimatedImage {
                     let cx = ix + indicator_size as i32 / 2;
                     let cy = iy + indicator_size as i32 / 2;
                     let tri_size = 10i32;
-                    let points = vec![
-                        Point::new(cx - tri_size / 2, cy - tri_size),
+                    let points = [Point::new(cx - tri_size / 2, cy - tri_size),
                         Point::new(cx - tri_size / 2, cy + tri_size),
-                        Point::new(cx + tri_size / 2, cy),
-                    ];
+                        Point::new(cx + tri_size / 2, cy)];
                     if let Some(first) = points.first() {
                         let mut prev = *first;
                         for p in points.iter().skip(1) {
@@ -356,15 +354,14 @@ impl EventHandler for AnimatedImage {
         }
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
-                if *button == 1 {
-                    if self.geometry().contains_point(*pos) {
+                if *button == 1
+                    && self.geometry().contains_point(*pos) {
                         if self.playing {
                             self.pause();
                         } else {
                             self.play();
                         }
                     }
-                }
             }
             _ => {
                 self.base.handle_event(event);

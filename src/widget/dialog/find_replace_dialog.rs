@@ -548,7 +548,7 @@ impl EventHandler for FindReplaceDialog {
                     // Replace button
                     let r_btn_x = replace_row.x
                         + 46
-                        + (replace_row.width as i32 - 46 - GAP * 3 - 48).max(60) as i32
+                        + (replace_row.width as i32 - 46 - GAP * 3 - 48).max(60)
                         + GAP;
                     let rep_rect = Rect::new(r_btn_x, replace_row.y, 24, replace_row.height);
                     if rep_rect.contains_point(*pos) {
@@ -560,7 +560,6 @@ impl EventHandler for FindReplaceDialog {
                     let ra_rect = Rect::new(r_btn_x + 28, replace_row.y, 24, replace_row.height);
                     if ra_rect.contains_point(*pos) {
                         self.replace_all();
-                        return;
                     }
                 }
             }

@@ -1,4 +1,4 @@
-use super::{ConnectionHandle, ConnectionScope, Signal};
+use super::{ConnectionHandle, ConnectionScope, Priority, Signal};
 /// Zero-argument compatibility signal type.
 #[derive(Clone, Default)]
 pub struct GenericSignal {
@@ -15,6 +15,13 @@ impl GenericSignal {
         F: FnMut() + Send + Sync + 'static,
     {
         self.inner.connect(move |_| slot())
+    }
+    /// Connect zero-argument slot with priority and return connection handle.
+    pub fn connect_with_priority<F>(&self, mut slot: F, priority: Priority) -> ConnectionHandle
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        self.inner.connect_with_priority(move |_| slot(), priority)
     }
     /// Connect zero-argument once-slot and return connection handle.
     pub fn connect_once<F>(&self, mut slot: F) -> ConnectionHandle
@@ -43,6 +50,26 @@ impl GenericSignal {
     }
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
+        self.inner.disconnect_all();
+    }
+    /// Temporarily block a slot without disconnecting it.
+    pub fn block(&self, handle: ConnectionHandle) -> bool {
+        self.inner.block(handle)
+    }
+    /// Unblock a previously blocked slot.
+    pub fn unblock(&self, handle: ConnectionHandle) -> bool {
+        self.inner.unblock(handle)
+    }
+    /// Check if a handle is still connected.
+    pub fn is_connected(&self, handle: ConnectionHandle) -> bool {
+        self.inner.is_connected(handle)
+    }
+    /// Check if all tracked connections are cleared.
+    pub fn is_empty(&self) -> bool {
+        self.inner.slot_count() == 0
+    }
+    /// Clear (disconnect) all slots.
+    pub fn clear(&self) {
         self.inner.disconnect_all();
     }
     /// Emit signal to all currently connected slots.

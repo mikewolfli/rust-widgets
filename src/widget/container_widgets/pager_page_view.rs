@@ -175,13 +175,12 @@ impl EventHandler for PagerPageView {
                         self.page_changed.emit(self.current_page);
                         self.base.request_redraw();
                     }
-                } else if *key == right_arrow {
-                    if !self.pages.is_empty() && self.current_page + 1 < self.pages.len() {
+                } else if *key == right_arrow
+                    && !self.pages.is_empty() && self.current_page + 1 < self.pages.len() {
                         self.current_page += 1;
                         self.page_changed.emit(self.current_page);
                         self.base.request_redraw();
                     }
-                }
             }
             Event::KeyDown((key, _)) => {
                 let left_arrow = 37u32;
@@ -193,13 +192,12 @@ impl EventHandler for PagerPageView {
                         self.page_changed.emit(self.current_page);
                         self.base.request_redraw();
                     }
-                } else if *key == right_arrow {
-                    if !self.pages.is_empty() && self.current_page + 1 < self.pages.len() {
+                } else if *key == right_arrow
+                    && !self.pages.is_empty() && self.current_page + 1 < self.pages.len() {
                         self.current_page += 1;
                         self.page_changed.emit(self.current_page);
                         self.base.request_redraw();
                     }
-                }
             }
             _ => {
                 // Delegate events to the current page

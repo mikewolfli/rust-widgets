@@ -185,7 +185,7 @@ impl Draw for Arc {
         let arc_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 120, 215));
 
         // Radius is half the smaller dimension minus a small inset.
-        let outer_radius = (rect.width.min(rect.height) as u32).saturating_sub(2) / 2;
+        let outer_radius = rect.width.min(rect.height).saturating_sub(2) / 2;
         if outer_radius < self.thickness {
             // Not enough space to draw anything meaningful.
             return;

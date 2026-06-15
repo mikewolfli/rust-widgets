@@ -199,8 +199,8 @@ impl Draw for AudioVisualizer {
                 .collect()
         };
 
-        for i in 0..self.bar_count {
-            let value = bars[i].min(1.0);
+        for (i, &value) in bars.iter().enumerate() {
+            let value = value.min(1.0);
             let bar_height = (value * half_height).max(1.0);
             let x = rect.x as f32 + self.bar_spacing + i as f32 * (bar_width + self.bar_spacing);
             let bar_rect = Rect::new(

@@ -24,4 +24,30 @@ impl CustomSignalHub {
     {
         self.signals.entry(name.into()).or_default().connect(slot)
     }
+    /// Disconnect all slots from a named signal.
+    pub fn disconnect_all(&mut self, name: &str) {
+        if let Some(signal) = self.signals.get(name) {
+            signal.disconnect_all();
+        }
+    }
+    /// Remove a named signal entirely, disconnecting all its slots.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.signals.remove(name).is_some()
+    }
+    /// Returns true if a named signal exists in the hub.
+    pub fn contains(&self, name: &str) -> bool {
+        self.signals.contains_key(name)
+    }
+    /// Returns the number of named signals defined.
+    pub fn signal_count(&self) -> usize {
+        self.signals.len()
+    }
+    /// Returns true if the hub has no named signals.
+    pub fn is_empty(&self) -> bool {
+        self.signals.is_empty()
+    }
+    /// Remove all named signals and their slots.
+    pub fn clear(&mut self) {
+        self.signals.clear();
+    }
 }

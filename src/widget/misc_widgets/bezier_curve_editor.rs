@@ -126,32 +126,22 @@ impl BezierCurveEditor {
     pub fn sample_at(&self, t: f32) -> (f32, f32) {
         let p0 = (0.0f32, 0.0f32);
         let p3 = (1.0f32, 1.0f32);
-        Self::cubic_bezier(
-            t,
-            p0.0,
-            p0.1,
-            self.control_point1.0,
-            self.control_point1.1,
-            self.control_point2.0,
-            self.control_point2.1,
-            p3.0,
-            p3.1,
-        )
+        Self::cubic_bezier(t, p0, self.control_point1, self.control_point2, p3)
     }
 
-    /// Evaluates a cubic bezier curve at parameter t (0.0–1.0).
-    /// Returns the (x, y) point on the curve.
+    /// Evaluates a cubic bezier curve at parameter t (0.0–1.0) with control points
+    /// given as `(p0, p1, p2, p3)` tuples.
     pub fn cubic_bezier(
         t: f32,
-        p0x: f32,
-        p0y: f32,
-        p1x: f32,
-        p1y: f32,
-        p2x: f32,
-        p2y: f32,
-        p3x: f32,
-        p3y: f32,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        p2: (f32, f32),
+        p3: (f32, f32),
     ) -> (f32, f32) {
+        let (p0x, p0y) = p0;
+        let (p1x, p1y) = p1;
+        let (p2x, p2y) = p2;
+        let (p3x, p3y) = p3;
         let u = 1.0 - t;
         let tt = t * t;
         let uu = u * u;
@@ -365,11 +355,9 @@ impl EventHandler for BezierCurveEditor {
                 }
             }
             Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    if self.dragging.is_some() {
-                        self.dragging = None;
-                        self.base.set_mouse_pressed(false);
-                    }
+                if *button == 1 && self.dragging.is_some() {
+                    self.dragging = None;
+                    self.base.set_mouse_pressed(false);
                 }
             }
             Event::MouseMove { pos } => {
@@ -440,7 +428,8 @@ mod tests {
     #[test]
     fn bezier_cubic_bezier_static() {
         // Linear curve: endpoints (0,0) and (1,1), control points on the line.
-        let (x, y) = BezierCurveEditor::cubic_bezier(0.5, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0);
+        let (x, y) =
+            BezierCurveEditor::cubic_bezier(0.5, (0.0, 0.0), (0.5, 0.5), (0.5, 0.5), (1.0, 1.0));
         assert!((x - 0.5).abs() < 0.01);
         assert!((y - 0.5).abs() < 0.01);
     }
@@ -576,12 +565,14 @@ mod tests {
     #[test]
     fn bezier_cubic_bezier_endpoints() {
         // At t=0, the result must equal p0.
-        let (x, y) = BezierCurveEditor::cubic_bezier(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8);
+        let (x, y) =
+            BezierCurveEditor::cubic_bezier(0.0, (0.1, 0.2), (0.3, 0.4), (0.5, 0.6), (0.7, 0.8));
         assert!((x - 0.1).abs() < 0.001);
         assert!((y - 0.2).abs() < 0.001);
 
         // At t=1, the result must equal p3.
-        let (x, y) = BezierCurveEditor::cubic_bezier(1.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8);
+        let (x, y) =
+            BezierCurveEditor::cubic_bezier(1.0, (0.1, 0.2), (0.3, 0.4), (0.5, 0.6), (0.7, 0.8));
         assert!((x - 0.7).abs() < 0.001);
         assert!((y - 0.8).abs() < 0.001);
     }

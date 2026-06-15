@@ -166,7 +166,7 @@ impl ImageGallery {
 
     /// Sets the thumbnail size in pixels.
     pub fn set_thumbnail_size(&mut self, size: u32) {
-        self.thumbnail_size = size.max(16).min(256);
+        self.thumbnail_size = size.clamp(16, 256);
         self.base.request_redraw();
     }
 
@@ -225,12 +225,8 @@ impl Draw for ImageGallery {
 
         // ── Large preview area ──────────────────────────────────────────
         let thumb_strip_height = if self.show_thumbnails { self.thumbnail_size + 28 } else { 0 };
-        let preview_rect = Rect::new(
-            rect.x,
-            rect.y,
-            rect.width as u32,
-            (rect.height as u32).saturating_sub(thumb_strip_height),
-        );
+        let preview_rect =
+            Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(thumb_strip_height));
 
         let bg =
             if !is_enabled { Color::rgba(30, 30, 30, 200) } else { Color::rgba(30, 30, 30, 255) };
@@ -323,7 +319,7 @@ impl Draw for ImageGallery {
         let strip_rect = Rect::new(
             rect.x,
             preview_rect.y + preview_rect.height as i32,
-            rect.width as u32,
+            rect.width,
             thumb_strip_height,
         );
         context.fill_rect(strip_rect, Color::rgba(50, 50, 50, 255));
@@ -333,11 +329,8 @@ impl Draw for ImageGallery {
         let strip_padding = 8i32;
 
         // Calculate which thumbnails are visible.
-        let max_visible = if thumb_total > 0 {
-            (strip_rect.width as u32 / thumb_total).max(1) as usize
-        } else {
-            1
-        };
+        let max_visible =
+            strip_rect.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize);
 
         let start_offset = if self.current_index >= max_visible / 2 {
             (self.current_index - max_visible / 2)
@@ -417,8 +410,8 @@ impl EventHandler for ImageGallery {
 
                     let thumb_strip_height =
                         if self.show_thumbnails { self.thumbnail_size + 28 } else { 0 };
-                    let preview_height = (rect.height as u32).saturating_sub(thumb_strip_height);
-                    let preview_rect = Rect::new(rect.x, rect.y, rect.width as u32, preview_height);
+                    let preview_height = rect.height.saturating_sub(thumb_strip_height);
+                    let preview_rect = Rect::new(rect.x, rect.y, rect.width, preview_height);
 
                     // Check if clicked on navigation arrows in preview area.
                     if pos.y >= preview_rect.y && pos.y < preview_rect.y + preview_height as i32 {
@@ -478,7 +471,7 @@ impl EventHandler for ImageGallery {
                         let strip_rect = Rect::new(
                             rect.x,
                             preview_rect.y + preview_height as i32,
-                            rect.width as u32,
+                            rect.width,
                             thumb_strip_height,
                         );
 
@@ -488,11 +481,10 @@ impl EventHandler for ImageGallery {
                             let thumb_total = self.thumbnail_size + thumb_spacing;
                             let strip_padding = 8i32;
 
-                            let max_visible = if thumb_total > 0 {
-                                (strip_rect.width / thumb_total).max(1) as usize
-                            } else {
-                                1
-                            };
+                            let max_visible = strip_rect
+                                .width
+                                .checked_div(thumb_total)
+                                .map_or(1, |v| v.max(1) as usize);
 
                             let start_offset = if self.current_index >= max_visible / 2 {
                                 (self.current_index - max_visible / 2)

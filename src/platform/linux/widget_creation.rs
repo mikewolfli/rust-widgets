@@ -1,7 +1,8 @@
 use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;
-use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
+// WidgetTriggerEvent/WidgetTriggerKind reserved for future event routing
+// use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]

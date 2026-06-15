@@ -4,6 +4,7 @@ pub(crate) mod paint;
 pub(crate) mod scene;
 pub(crate) mod surface;
 
+// Public re-exports consumed by downstream — suppress intra-crate unused warning.
 #[allow(unused_imports)]
 pub use batch::{BatchCommand, BatchError, BatchId, BatchRenderer};
 pub use paint::{PaintBackend, SoftwarePaintBackend};

@@ -85,7 +85,7 @@ impl IconName {
     }
 
     /// Parses an icon name from its string representation.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         match s {
             "check" => Some(Self::Check),
             "cross" => Some(Self::Cross),
@@ -203,8 +203,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         ctx.draw_line_stroke(
             Point::new(cx + s / 8, cy + s / 2),
@@ -225,8 +225,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let pad = s / 5;
         ctx.draw_line_stroke(
@@ -248,8 +248,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let mid_y = cy + s / 2;
         let tip_x = cx + s / 5;
@@ -268,8 +268,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let mid_y = cy + s / 2;
         let tip_x = cx + s * 4 / 5;
@@ -293,8 +293,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let mid_x = cx + s / 2;
         ctx.draw_line_stroke(
@@ -322,8 +322,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let mid_x = cx + s / 2;
         ctx.draw_line_stroke(
@@ -350,8 +350,8 @@ impl Icon {
     fn draw_star(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let half = s / 2;
         let center = Point::new(cx + half, cy + half);
@@ -369,8 +369,8 @@ impl Icon {
     fn draw_heart(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let half = s / 2;
         let center = Point::new(cx + half, cy + half);
@@ -397,8 +397,8 @@ impl Icon {
     fn draw_search(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let center = Point::new(cx + s / 3, cy + s / 3);
         let circle_r = (s / 5).max(2) as u32;
@@ -415,8 +415,8 @@ impl Icon {
     fn draw_menu(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let sw = (self.size / 12.0).max(1.5) as u32;
         let pad = s / 5;
@@ -451,8 +451,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let pad = s / 4;
         ctx.draw_line_stroke(
@@ -474,8 +474,8 @@ impl Icon {
         let r = self.icon_rect();
         let c = self.color;
         let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let pad = s / 4;
         ctx.draw_line_stroke(
@@ -490,8 +490,8 @@ impl Icon {
     fn draw_info(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let center = Point::new(cx + s / 2, cy + s / 2);
         // Circle
@@ -511,8 +511,8 @@ impl Icon {
     fn draw_warning(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Triangle outline
         ctx.draw_line_stroke(
@@ -548,15 +548,15 @@ impl Icon {
     fn draw_error(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let center = Point::new(cx + s / 2, cy + s / 2);
         // Circle outline
         ctx.draw_circle_stroke(center, (s / 2 - 1).max(2) as u32, c, 2);
         // X inside
         let pad = s / 4;
-        let sw = 2 as u32;
+        let sw = 2_u32;
         ctx.draw_line_stroke(
             Point::new(cx + pad, cy + pad),
             Point::new(cx + s - pad, cy + s - pad),
@@ -615,8 +615,8 @@ impl Icon {
     fn draw_settings(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let center = Point::new(cx + s / 2, cy + s / 2);
         // Gear: circle with spokes
@@ -638,8 +638,8 @@ impl Icon {
     fn draw_home(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // House shape: roof + walls
         ctx.draw_line_stroke(
@@ -696,8 +696,8 @@ impl Icon {
     fn draw_user(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Head circle
         ctx.draw_circle_stroke(
@@ -738,8 +738,8 @@ impl Icon {
     fn draw_mail(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Envelope
         ctx.draw_rect_stroke(
@@ -765,8 +765,8 @@ impl Icon {
     fn draw_bell(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Bell body (arc + bottom)
         ctx.draw_line_stroke(
@@ -819,8 +819,8 @@ impl Icon {
     fn draw_edit(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Pencil
         ctx.draw_line_stroke(
@@ -847,8 +847,8 @@ impl Icon {
     fn draw_trash(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Bin outline
         ctx.draw_rect_stroke(
@@ -894,8 +894,8 @@ impl Icon {
     fn draw_share(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Share: three dots connected by lines
         ctx.fill_circle(Point::new(cx + s / 2, cy + s / 5), 2, c);
@@ -918,8 +918,8 @@ impl Icon {
     fn draw_refresh(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         let center = Point::new(cx + s / 2, cy + s / 2);
         // Circle
@@ -942,8 +942,8 @@ impl Icon {
     fn draw_more(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Three vertical dots
         ctx.fill_circle(Point::new(cx + s / 2, cy + s / 4), 2, c);
@@ -954,8 +954,8 @@ impl Icon {
     fn draw_filter(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Funnel
         ctx.draw_line_stroke(
@@ -988,8 +988,8 @@ impl Icon {
     fn draw_lock(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Shackle
         ctx.draw_line_stroke(
@@ -1023,8 +1023,8 @@ impl Icon {
     fn draw_unlock(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Open shackle (only right side)
         ctx.draw_line_stroke(
@@ -1052,8 +1052,8 @@ impl Icon {
     fn draw_download(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Arrow down
         let mid_x = cx + s / 2;
@@ -1087,8 +1087,8 @@ impl Icon {
     fn draw_upload(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         // Arrow up
         let mid_x = cx + s / 2;
@@ -1123,8 +1123,8 @@ impl Icon {
     fn draw_unknown(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
         let c = self.color;
-        let cx = r.x as i32;
-        let cy = r.y as i32;
+        let cx = r.x;
+        let cy = r.y;
         let s = r.width as i32;
         ctx.draw_text(
             Point::new(cx + s / 4, cy + s * 3 / 4),
@@ -1230,7 +1230,7 @@ mod tests {
             IconName::Upload,
         ] {
             let s = name.as_str();
-            let parsed = IconName::from_str(s);
+            let parsed = IconName::from_name(s);
             assert!(parsed.is_some(), "Failed to parse icon name: {s}");
             assert_eq!(parsed.unwrap(), *name);
         }

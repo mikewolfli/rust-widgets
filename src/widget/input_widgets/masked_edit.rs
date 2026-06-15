@@ -113,7 +113,7 @@ impl MaskedEdit {
         let mut chars = text.chars();
         for seg in &self.segments {
             if let MaskSegment::Input { kind } = seg {
-                while let Some(ch) = chars.next() {
+                for ch in chars.by_ref() {
                     if mask_char_matches(*kind, ch) {
                         self.raw_text.push(ch);
                         break;
@@ -233,15 +233,13 @@ impl MaskedEdit {
     /// Converts a display text position to the number of input characters before it.
     fn display_to_raw_index(&self, display_pos: usize) -> usize {
         let mut raw_count = 0;
-        let mut display_idx = 0;
-        for seg in &self.segments {
+        for (display_idx, seg) in self.segments.iter().enumerate() {
             if display_idx >= display_pos {
                 break;
             }
             if matches!(seg, MaskSegment::Input { .. }) {
                 raw_count += 1;
             }
-            display_idx += 1;
         }
         raw_count
     }

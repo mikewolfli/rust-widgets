@@ -233,20 +233,20 @@ impl Draw for RefreshControl {
 
                 // Downward arrow
                 let arrow_size = 12;
-                let arrow_top = center_y - arrow_size as i32 / 2;
+                let arrow_top = center_y - arrow_size / 2;
                 context.draw_line(
                     Point::new(center_x, arrow_top),
-                    Point::new(center_x, arrow_top + arrow_size as i32),
+                    Point::new(center_x, arrow_top + arrow_size),
                     arrow_color,
                 );
                 context.draw_line(
-                    Point::new(center_x - 4, arrow_top + arrow_size as i32 - 4),
-                    Point::new(center_x, arrow_top + arrow_size as i32),
+                    Point::new(center_x - 4, arrow_top + arrow_size - 4),
+                    Point::new(center_x, arrow_top + arrow_size),
                     arrow_color,
                 );
                 context.draw_line(
-                    Point::new(center_x + 4, arrow_top + arrow_size as i32 - 4),
-                    Point::new(center_x, arrow_top + arrow_size as i32),
+                    Point::new(center_x + 4, arrow_top + arrow_size - 4),
+                    Point::new(center_x, arrow_top + arrow_size),
                     arrow_color,
                 );
 

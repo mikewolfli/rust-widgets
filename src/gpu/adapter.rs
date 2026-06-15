@@ -6,7 +6,7 @@
 //! 3. CPU Software Rendering (CPU) - Fallback mode
 //!
 //! # Example (requires `gpu-wgpu` feature + async runtime)
-//! ```ignore
+//! ```text
 //! use rust_widgets::gpu::adapter::{AdapterSelector, AdapterSelectionStrategy};
 //!
 //! let selector = AdapterSelector::new();

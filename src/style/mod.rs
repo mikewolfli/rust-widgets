@@ -317,7 +317,7 @@ impl WidgetStyle {
                 parent.border_radius
             },
             padding: self.padding,
-            margin: self.margin.clone(),
+            margin: self.margin,
             shadow: self.shadow.clone().or(parent.shadow.clone()),
             touch_target: self.touch_target.or(parent.touch_target),
             opacity: self.opacity.or(parent.opacity),

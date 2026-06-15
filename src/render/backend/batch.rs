@@ -86,7 +86,7 @@ pub enum BatchCommand {
 ///
 /// # Usage
 ///
-/// ```rust,ignore
+/// ```text
 /// fn render(batcher: &mut impl BatchRenderer) -> Result<(), BatchError> {
 ///     let batch_id = batcher.begin_batch();
 ///     batcher.record(BatchCommand::FillRect {

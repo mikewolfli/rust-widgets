@@ -115,7 +115,7 @@ impl Draw for Meter {
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
 
         // Radius is half the smaller dimension minus padding.
-        let radius = (rect.width.min(rect.height) as u32).saturating_sub(8) / 2;
+        let radius = rect.width.min(rect.height).saturating_sub(8) / 2;
         if radius < 10 {
             return;
         }

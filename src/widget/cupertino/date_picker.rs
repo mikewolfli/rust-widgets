@@ -196,7 +196,7 @@ impl Draw for CupertinoDatePicker {
         // Build visible column items
         let constraint = self.date_constraint();
         let year_items: Vec<String> = self.year_range().map(|y| y.to_string()).collect();
-        let year_sel_idx = (self.selected_year - constraint.min_year) as i32;
+        let year_sel_idx = self.selected_year - constraint.min_year;
 
         let month_items: Vec<String> = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
         let month_sel_idx = (self.selected_month as usize - 1) as i32;
@@ -230,7 +230,7 @@ impl Draw for CupertinoDatePicker {
 
             // Draw the five visible rows
             for row in 0..5 {
-                let item_idx = row as i32 + (sel_offset - 2);
+                let item_idx = row + (sel_offset - 2);
                 if item_idx < 0 || item_idx >= items.len() as i32 {
                     continue;
                 }
@@ -289,55 +289,51 @@ impl EventHandler for CupertinoDatePicker {
             return;
         }
 
-        match event {
-            Event::MousePress { pos, button: 1 } => {
-                let col = self.column_at(pos.x);
-                let rect = self.geometry();
-                let row_height = rect.height / 5;
-                let rel_y = pos.y - rect.y;
-                let row = rel_y / row_height as i32;
-                // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
-                let increment = row <= 2;
+        if let Event::MousePress { pos, button: 1 } = event {
+            let col = self.column_at(pos.x);
+            let rect = self.geometry();
+            let row_height = rect.height / 5;
+            let rel_y = pos.y - rect.y;
+            let row = rel_y / row_height as i32;
+            // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
+            let increment = row <= 2;
 
-                match col {
-                    0 => {
-                        // Year column: cycle through available years
-                        let constraint = self.date_constraint();
-                        let new_year = if increment {
-                            (self.selected_year + 1).min(constraint.max_year)
-                        } else {
-                            (self.selected_year - 1).max(constraint.min_year)
-                        };
-                        let max_day = days_in_month(new_year, self.selected_month);
-                        let clamped_day = self.selected_day.min(max_day);
-                        self.set_selected_date(new_year, self.selected_month, clamped_day);
-                    }
-                    1 => {
-                        // Month column
-                        let new_month = if increment {
-                            (self.selected_month as i32 + 1).clamp(1, 12) as u32
-                        } else {
-                            (self.selected_month as i32 - 1).clamp(1, 12) as u32
-                        };
-                        let max_day = days_in_month(self.selected_year, new_month);
-                        let clamped_day = self.selected_day.min(max_day);
-                        self.set_selected_date(self.selected_year, new_month, clamped_day);
-                    }
-                    2 => {
-                        // Day column
-                        let max_days =
-                            days_in_month(self.selected_year, self.selected_month) as i32;
-                        let new_day = if increment {
-                            (self.selected_day as i32 + 1).clamp(1, max_days) as u32
-                        } else {
-                            (self.selected_day as i32 - 1).clamp(1, max_days) as u32
-                        };
-                        self.set_selected_date(self.selected_year, self.selected_month, new_day);
-                    }
-                    _ => {}
+            match col {
+                0 => {
+                    // Year column: cycle through available years
+                    let constraint = self.date_constraint();
+                    let new_year = if increment {
+                        (self.selected_year + 1).min(constraint.max_year)
+                    } else {
+                        (self.selected_year - 1).max(constraint.min_year)
+                    };
+                    let max_day = days_in_month(new_year, self.selected_month);
+                    let clamped_day = self.selected_day.min(max_day);
+                    self.set_selected_date(new_year, self.selected_month, clamped_day);
                 }
+                1 => {
+                    // Month column
+                    let new_month = if increment {
+                        (self.selected_month as i32 + 1).clamp(1, 12) as u32
+                    } else {
+                        (self.selected_month as i32 - 1).clamp(1, 12) as u32
+                    };
+                    let max_day = days_in_month(self.selected_year, new_month);
+                    let clamped_day = self.selected_day.min(max_day);
+                    self.set_selected_date(self.selected_year, new_month, clamped_day);
+                }
+                2 => {
+                    // Day column
+                    let max_days = days_in_month(self.selected_year, self.selected_month) as i32;
+                    let new_day = if increment {
+                        (self.selected_day as i32 + 1).clamp(1, max_days) as u32
+                    } else {
+                        (self.selected_day as i32 - 1).clamp(1, max_days) as u32
+                    };
+                    self.set_selected_date(self.selected_year, self.selected_month, new_day);
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 }

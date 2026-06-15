@@ -99,17 +99,13 @@ pub trait Layout {
 
     /// Returns true if the given widget ID is a child of this layout.
     fn has_child(&self, _id: ObjectId) -> bool {
-        log::warn!(
-            "Layout::has_child() called on a layout that does not override the default (no-op) implementation"
-        );
         false
     }
 
     /// Removes all children from this layout.
+    /// Default implementation does nothing (layouts without children).
     fn clear(&mut self) {
-        log::warn!(
-            "Layout::clear() called on a layout that does not override the default (no-op) implementation"
-        );
+        // Default: layouts that don't track children externally are no-ops.
     }
 
     /// Update child geometries with device-aware scaling context.
@@ -134,6 +130,11 @@ pub trait Layout {
     /// Enables mutable downcasting from `dyn Layout` to concrete types.
     /// Required for mutation access to concrete layout implementations
     /// through the trait object.
+    ///
+    /// # Panics
+    /// The default implementation panics with a message instructing implementors
+    /// to override this method. Concrete layout types **must** override
+    /// `as_any_mut` to return `self` for mutable downcasting to work.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         panic!("as_any_mut not implemented — override in concrete layout implementation");
     }

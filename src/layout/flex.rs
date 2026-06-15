@@ -325,16 +325,16 @@ impl FlexLayout {
         if self.is_reverse() {
             // Reverse direction: pack from the end (right/bottom) towards start.
             let mut cursor = end - first_gap;
-            for i in 0..count {
-                let pos = cursor - main_sizes[i];
+            for &size in main_sizes[..count].iter() {
+                let pos = cursor - size;
                 positions.push(pos);
                 cursor = pos - inter_gap;
             }
         } else {
             let mut cursor = start_main + first_gap;
-            for i in 0..count {
+            for &size in main_sizes[..count].iter() {
                 positions.push(cursor);
-                cursor += main_sizes[i] + inter_gap;
+                cursor += size + inter_gap;
             }
         }
 

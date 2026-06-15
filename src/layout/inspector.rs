@@ -10,7 +10,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use rust_widgets::layout::inspector::LayoutInspector;
 //!
 //! LayoutInspector::enable();

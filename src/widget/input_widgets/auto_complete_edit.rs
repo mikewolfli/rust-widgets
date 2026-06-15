@@ -297,7 +297,6 @@ impl EventHandler for AutoCompleteEdit {
                         if idx < self.filtered_suggestions.len() {
                             self.selected_suggestion = Some(idx);
                             self.select_highlighted();
-                            return;
                         }
                     }
                 }

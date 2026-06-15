@@ -133,8 +133,8 @@ impl EditableComboBox {
     /// Selects the item at the given index and sets the text field to its value.
     /// Emits `item_selected`. Returns `true` if the selection changed.
     pub fn select_index(&mut self, index: usize) -> bool {
-        if index < self.items.len() {
-            if self.selected_index != Some(index) {
+        if index < self.items.len()
+            && self.selected_index != Some(index) {
                 self.selected_index = Some(index);
                 self.text = self.items[index].clone();
                 self.text_changed.emit(self.text.clone());
@@ -143,7 +143,6 @@ impl EditableComboBox {
                 self.base.request_redraw();
                 return true;
             }
-        }
         false
     }
 }
@@ -363,7 +362,6 @@ impl EventHandler for EditableComboBox {
                     // Click outside dropdown - collapse
                     if !rect.contains_point(*pos) {
                         self.collapse();
-                        return;
                     }
                 }
             }

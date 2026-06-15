@@ -170,8 +170,7 @@ impl Draw for ProgressCircle {
         };
 
         let is_enabled = self.base.is_enabled();
-        let stroke_w =
-            if !is_enabled { self.stroke_width as u32 } else { self.stroke_width as u32 };
+        let stroke_w = self.stroke_width as u32;
 
         // Draw track (full circle)
         let track_color =

@@ -30,7 +30,7 @@ impl Roller {
     /// The initial selection is at index 0 and `visible_count` defaults to 5
     /// (clamped to an odd value so the selected item sits in the center).
     pub fn new(options: Vec<String>, rect: Rect) -> Self {
-        let visible_count = 5u32.max(3) | 1; // ensure odd, at least 3
+        let visible_count = 5u32 | 1; // ensure odd, at least 3
         Self {
             base: BaseWidget::new(WidgetKind::Roller, rect, "Roller"),
             options,
@@ -94,7 +94,7 @@ impl Roller {
     /// odd number (minimum 3) so that the selected item appears centered.
     pub fn set_visible_count(&mut self, count: u32) {
         let clamped = count.max(3);
-        let odd = if clamped % 2 == 0 { clamped + 1 } else { clamped };
+        let odd = if clamped.is_multiple_of(2) { clamped + 1 } else { clamped };
         if odd != self.visible_count {
             self.visible_count = odd;
             self.base.request_redraw();
@@ -162,8 +162,8 @@ impl EventHandler for Roller {
             Event::MousePress { pos, button: _ } => {
                 let rect = self.geometry();
                 let item_h = self.item_height() as i32;
-                let center_y = rect.y as i32 + (rect.height as i32) / 2;
-                let clicked_offset = pos.y as i32 - center_y;
+                let center_y = rect.y + (rect.height as i32) / 2;
+                let clicked_offset = pos.y - center_y;
                 let half_visible = (self.visible_count / 2) as i32;
                 // Clamp the row offset to the visible range.
                 let row_offset = (clicked_offset / item_h).clamp(-half_visible, half_visible);
@@ -209,8 +209,8 @@ impl Draw for Roller {
 
         let item_h = self.item_height() as i32;
         let half_visible = (self.visible_count / 2) as usize;
-        let center_x = rect.x as i32 + (rect.width as i32) / 2;
-        let center_y = rect.y as i32 + (rect.height as i32) / 2;
+        let center_x = rect.x + (rect.width as i32) / 2;
+        let center_y = rect.y + (rect.height as i32) / 2;
 
         // Draw a background fill for the entire widget area.
         context.fill_rect(rect, bg_color);

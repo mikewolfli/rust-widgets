@@ -6,7 +6,7 @@
 //! - `TextOverflow::Ellipsis` — replace trailing characters with `…`.
 //! - `TextOverflow::Fade` — gradually decrease alpha over the last portion
 //!   (when downstream renderers support it; here we return the full string
-//!    with a width hint).
+//!   with a width hint).
 //!
 //! Multi-line clamping is handled by `TextClamp` and `apply_text_clamp`,
 //! which line-break text at word boundaries.

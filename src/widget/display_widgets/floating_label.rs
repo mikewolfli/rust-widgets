@@ -197,7 +197,7 @@ impl Draw for FloatingLabel {
 
         // Show placeholder when empty, unfocused, and label is not shown inline
         let show_placeholder =
-            self.text.is_empty() && !self.is_focused && !(has_label && !self.show_label_above);
+            self.text.is_empty() && !self.is_focused && (!has_label || self.show_label_above);
 
         if show_placeholder && !self.placeholder.is_empty() {
             let placeholder_x = rect.x + padding;

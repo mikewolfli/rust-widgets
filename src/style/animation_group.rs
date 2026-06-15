@@ -11,7 +11,7 @@ use super::animation::{AnimationConfig, AnimationDriver, AnimationId};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let mut group = AnimationGroup::new("fade-in-slide");
 /// group.add_parallel(fade_id);
 /// group.add_parallel(scale_id);

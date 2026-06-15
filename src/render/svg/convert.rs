@@ -7,8 +7,9 @@ use crate::core::{Color, Point, Rect};
 
 /// Format a [`Color`] as an SVG-compatible `rgba()` CSS string.
 ///
-/// ```rust,ignore
-/// assert_eq!(color_to_rgba(&Color::RED), "rgba(255,0,0,1.00)");
+/// ```text
+/// // color_to_rgba is internal to the svg module, not exported publicly.
+/// // See tests in src/render/svg/convert.rs for usage.
 /// ```
 pub fn color_to_rgba(c: &Color) -> String {
     format!("rgba({},{},{},{:.2})", c.r, c.g, c.b, c.a as f32 / 255.0)

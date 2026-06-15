@@ -487,3 +487,103 @@ fn tr_macro_basic() {
     // Reset global state
     global::init();
 }
+
+#[test]
+fn test_i18n_manager_translate_with_context_count_only() {
+    // Count without context still works properly
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    let json = r#"{
+        "language": "en",
+        "translations": {
+            "item": {
+                "message": "items",
+                "plural": {
+                    "1": "1 item",
+                    "2": "{count} items"
+                }
+            }
+        }
+    }"#;
+    fs::write(&file_path, json).unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    manager.set_language("en");
+    assert_eq!(manager.translate_with_context("item", None, 1), "1 item");
+    assert_eq!(manager.translate_with_context("item", None, 2), "{count} items");
+    assert_eq!(manager.translate_with_context("item", None, 0), "items");
+    assert_eq!(manager.translate_with_context("item", None, 100), "items");
+}
+
+#[test]
+fn test_i18n_manager_audit_keys() {
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    let json = r#"{
+        "language": "en",
+        "translations": {
+            "hello": {"message": "Hello"},
+            "goodbye": {"message": "Goodbye"}
+        }
+    }"#;
+    fs::write(&file_path, json).unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    let keys = manager.audit_keys();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&"hello".to_string()));
+    assert!(keys.contains(&"goodbye".to_string()));
+}
+
+#[test]
+fn test_i18n_manager_multiple_languages_key_audit() {
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let en_path = temp_dir.path().join("en.json");
+    let fr_path = temp_dir.path().join("fr.json");
+    fs::write(&en_path, r#"{"language":"en","translations":{"a":{"message":"A"}}}"#).unwrap();
+    fs::write(&fr_path, r#"{"language":"fr","translations":{"b":{"message":"B"}}}"#).unwrap();
+    manager.load_translations(en_path.to_str().unwrap()).unwrap();
+    manager.load_translations(fr_path.to_str().unwrap()).unwrap();
+    let keys = manager.audit_keys();
+    assert_eq!(keys.len(), 2);
+}
+
+#[test]
+fn test_i18n_manager_empty_key() {
+    let mut manager = I18nManager::new();
+    manager.set_language("en");
+    assert_eq!(manager.translate(""), "");
+    assert_eq!(manager.translate_with_context("", None, 1), "");
+    assert_eq!(manager.translate_with_context("", Some("ctx"), 1), "");
+}
+
+#[test]
+fn test_i18n_manager_special_chars_in_key() {
+    let mut manager = I18nManager::new();
+    manager.set_language("en");
+    // Keys with special characters that might cause issues
+    assert_eq!(manager.translate("hello.world"), "hello.world");
+    assert_eq!(manager.translate("hello world"), "hello world");
+    assert_eq!(manager.translate("hello\nworld"), "hello\nworld");
+    assert_eq!(manager.translate("hello\tworld"), "hello\tworld");
+}
+
+#[test]
+fn test_i18n_manager_unicode() {
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    let json = r#"{
+        "language": "en",
+        "translations": {
+            "问候": {"message": "Hello"},
+            "emoji_test": {"message": "😀 🎉"}
+        }
+    }"#;
+    fs::write(&file_path, json).unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    manager.set_language("en");
+    assert_eq!(manager.translate("问候"), "Hello");
+    assert_eq!(manager.translate("emoji_test"), "😀 🎉");
+}

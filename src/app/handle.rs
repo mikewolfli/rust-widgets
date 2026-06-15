@@ -356,11 +356,11 @@ impl WindowHandle {
     /// The layout is stored internally and used to reposition children.
     /// Only one layout can be active at a time; calling this again replaces it.
     ///
-    /// ```rust,ignore
-    /// use rust_widgets::layout::{BoxLayout, Orientation};
-    /// use rust_widgets::app::WidgetHandle;
+    /// ```rust,no_run
+    /// use rust_widgets::app::{App, WidgetHandle};
+    /// use rust_widgets::layout::{BoxLayout, Layout, Orientation};
     ///
-    /// let app = App::new();
+    /// let mut app = App::new();
     /// app.init();
     /// let win = app.new_window("Layout Demo", 0, 0, 400, 300);
     /// let btn1 = win.new_button("Left", 0, 0, 0, 0);

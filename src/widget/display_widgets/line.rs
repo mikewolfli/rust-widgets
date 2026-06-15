@@ -103,7 +103,7 @@ impl Draw for Line {
                 context.draw_line_stroke(from, to, line_color, thickness);
                 // When thickness is even, draw an extra single-pixel line offset
                 // upward so the visual center remains accurate.
-                if thickness > 1 && thickness % 2 == 0 {
+                if thickness > 1 && thickness.is_multiple_of(2) {
                     let extra_from = Point::new(rect.x, mid_y - 1);
                     let extra_to = Point::new(rect.x + rect.width as i32, mid_y - 1);
                     context.draw_line_stroke(extra_from, extra_to, line_color, 1);
@@ -117,7 +117,7 @@ impl Draw for Line {
                 context.draw_line_stroke(from, to, line_color, thickness);
                 // When thickness is even, draw an extra single-pixel line offset
                 // left so the visual center remains accurate.
-                if thickness > 1 && thickness % 2 == 0 {
+                if thickness > 1 && thickness.is_multiple_of(2) {
                     let extra_from = Point::new(mid_x - 1, rect.y);
                     let extra_to = Point::new(mid_x - 1, rect.y + rect.height as i32);
                     context.draw_line_stroke(extra_from, extra_to, line_color, 1);

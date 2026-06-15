@@ -292,9 +292,10 @@ impl CssParser {
                 if let Some(font) = &mut style.font {
                     font.size = Self::parse_float(&decl.value)?;
                 } else {
-                    let mut f = crate::core::Font::default();
-                    f.size = Self::parse_float(&decl.value)?;
-                    style.font = Some(f);
+                    style.font = Some(crate::core::Font {
+                        size: Self::parse_float(&decl.value)?,
+                        ..Default::default()
+                    });
                 }
             }
             "font-family" => {
@@ -302,9 +303,8 @@ impl CssParser {
                 if let Some(font) = &mut style.font {
                     font.family = family;
                 } else {
-                    let mut f = crate::core::Font::default();
-                    f.family = family;
-                    style.font = Some(f);
+                    style.font =
+                        Some(crate::core::Font { family: family.clone(), ..Default::default() });
                 }
             }
             _ => {

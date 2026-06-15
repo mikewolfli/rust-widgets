@@ -317,7 +317,7 @@ impl Draw for SpinBox {
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {
-            context.draw_text(Point::new(text_x, text_y as i32), &display_text, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y as i32), &display_text, font, text_color);
         }
     }
 }

@@ -13,18 +13,15 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Orientation of the RangeSlider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum RangeSliderOrientation {
     /// Horizontal slider (left-to-right).
+    #[default]
     Horizontal,
     /// Vertical slider (bottom-to-top).
     Vertical,
 }
 
-impl Default for RangeSliderOrientation {
-    fn default() -> Self {
-        RangeSliderOrientation::Horizontal
-    }
-}
 
 /// A dual-handle range slider for selecting a min-max value range.
 ///
@@ -337,8 +334,8 @@ impl Draw for RangeSlider {
             for &value in &[self.lower_value, self.upper_value] {
                 let cy = self.value_to_pixel(value, &rect);
                 let handle_center = Point::new(center_x, cy);
-                context.fill_circle(handle_center, handle_radius as u32, handle_color);
-                context.draw_circle_stroke(handle_center, handle_radius as u32, handle_border, 2);
+                context.fill_circle(handle_center, handle_radius, handle_color);
+                context.draw_circle_stroke(handle_center, handle_radius, handle_border, 2);
             }
         }
     }

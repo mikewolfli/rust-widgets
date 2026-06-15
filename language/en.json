@@ -87,6 +87,702 @@
     },
     "color_dialog.current_color": {
       "message": "Current Color"
+    },
+    "widget.action.label": {
+      "message": "Action"
+    },
+    "widget.activity_indicator.label": {
+      "message": "Activity Indicator"
+    },
+    "widget.adaptive_scaffold.label": {
+      "message": "Adaptive Scaffold"
+    },
+    "widget.animated_image.label": {
+      "message": "Animated Image"
+    },
+    "widget.app_bar.label": {
+      "message": "App Bar"
+    },
+    "widget.arc.label": {
+      "message": "Arc"
+    },
+    "widget.audio_visualizer.label": {
+      "message": "Audio Visualizer"
+    },
+    "widget.autocomplete_edit.label": {
+      "message": "Auto Complete"
+    },
+    "widget.avatar.label": {
+      "message": "Avatar"
+    },
+    "widget.badge.label": {
+      "message": "Badge"
+    },
+    "widget.bar_chart.label": {
+      "message": "Bar Chart"
+    },
+    "widget.barcode_scanner.label": {
+      "message": "Barcode Scanner"
+    },
+    "widget.bezier_curve_editor.label": {
+      "message": "Bezier Editor"
+    },
+    "widget.bottom_navigation_bar.label": {
+      "message": "Bottom Nav"
+    },
+    "widget.bottom_sheet.label": {
+      "message": "Bottom Sheet"
+    },
+    "widget.breadcrumb.label": {
+      "message": "Breadcrumb"
+    },
+    "widget.button.label": {
+      "message": "Button"
+    },
+    "widget.calendar.label": {
+      "message": "Calendar"
+    },
+    "widget.camera_preview.label": {
+      "message": "Camera Preview"
+    },
+    "widget.canvas.label": {
+      "message": "Canvas"
+    },
+    "widget.carousel.label": {
+      "message": "Carousel"
+    },
+    "widget.chart.label": {
+      "message": "Chart"
+    },
+    "widget.check_list_box.label": {
+      "message": "Check List Box"
+    },
+    "widget.checkbox.label": {
+      "message": "CheckBox"
+    },
+    "widget.chip.label": {
+      "message": "Chip"
+    },
+    "widget.code_editor.label": {
+      "message": "Code Editor"
+    },
+    "widget.collapsible_pane.label": {
+      "message": "Collapsible Pane"
+    },
+    "widget.color_dialog.label": {
+      "message": "Color Dialog"
+    },
+    "widget.color_history.label": {
+      "message": "Color History"
+    },
+    "widget.color_picker.label": {
+      "message": "Color Picker"
+    },
+    "widget.color_well.label": {
+      "message": "Color Well"
+    },
+    "widget.column_view.label": {
+      "message": "Column View"
+    },
+    "widget.combobox.label": {
+      "message": "Combo Box"
+    },
+    "widget.command_entry.label": {
+      "message": "Command Entry"
+    },
+    "widget.command_link.label": {
+      "message": "Command Link"
+    },
+    "widget.command_palette.label": {
+      "message": "Command Palette"
+    },
+    "widget.context_menu.label": {
+      "message": "Context Menu"
+    },
+    "widget.cupertino_alert_dialog.label": {
+      "message": "Cupertino Alert"
+    },
+    "widget.cupertino_date_picker.label": {
+      "message": "Cupertino Date Picker"
+    },
+    "widget.cupertino_navigation_bar.label": {
+      "message": "Cupertino Nav Bar"
+    },
+    "widget.cupertino_segmented_control.label": {
+      "message": "Cupertino Segments"
+    },
+    "widget.cupertino_slider.label": {
+      "message": "Cupertino Slider"
+    },
+    "widget.cupertino_switch.label": {
+      "message": "Cupertino Switch"
+    },
+    "widget.data_grid.label": {
+      "message": "Data Grid"
+    },
+    "widget.data_view.label": {
+      "message": "Data View"
+    },
+    "widget.date_range_picker.label": {
+      "message": "Date Range Picker"
+    },
+    "widget.dateedit.label": {
+      "message": "Date Edit"
+    },
+    "widget.datetimeedit.label": {
+      "message": "Date/Time Edit"
+    },
+    "widget.dial.label": {
+      "message": "Dial"
+    },
+    "widget.diff_viewer.label": {
+      "message": "Diff Viewer"
+    },
+    "widget.divider.label": {
+      "message": "Divider"
+    },
+    "widget.dock_panel.label": {
+      "message": "Dock Panel"
+    },
+    "widget.dockwidget.label": {
+      "message": "Dock Widget"
+    },
+    "widget.double_spin_box.label": {
+      "message": "Double Spin Box"
+    },
+    "widget.dropdown.label": {
+      "message": "Dropdown"
+    },
+    "widget.dropdown_menu.label": {
+      "message": "Dropdown Menu"
+    },
+    "widget.editable_combobox.label": {
+      "message": "Editable Combo Box"
+    },
+    "widget.empty_state.label": {
+      "message": "Empty State"
+    },
+    "widget.fab.label": {
+      "message": "FAB"
+    },
+    "widget.file_dialog.label": {
+      "message": "File Dialog"
+    },
+    "widget.floating_label.label": {
+      "message": "Floating Label"
+    },
+    "widget.font_combobox.label": {
+      "message": "Font Combo Box"
+    },
+    "widget.font_dialog.label": {
+      "message": "Font Dialog"
+    },
+    "widget.font_preview.label": {
+      "message": "Font Preview"
+    },
+    "widget.freeform_shape.label": {
+      "message": "Freeform Shape"
+    },
+    "widget.gantt_widget.label": {
+      "message": "Gantt"
+    },
+    "widget.grid.label": {
+      "message": "Grid"
+    },
+    "widget.grid_widget.label": {
+      "message": "Grid Widget"
+    },
+    "widget.groupbox.label": {
+      "message": "Group Box"
+    },
+    "widget.hero_animation.label": {
+      "message": "Hero Animation"
+    },
+    "widget.icon.label": {
+      "message": "Icon"
+    },
+    "widget.image_gallery.label": {
+      "message": "Image Gallery"
+    },
+    "widget.image_view.label": {
+      "message": "Image View"
+    },
+    "widget.ime_preedit.label": {
+      "message": "IME Preedit"
+    },
+    "widget.inplace_editor.label": {
+      "message": "In-place Editor"
+    },
+    "widget.input_dialog.label": {
+      "message": "Input Dialog"
+    },
+    "widget.key_sequence_edit.label": {
+      "message": "Key Sequence Edit"
+    },
+    "widget.keyboard.label": {
+      "message": "Keyboard"
+    },
+    "widget.label.label": {
+      "message": "Label"
+    },
+    "widget.lcd_number.label": {
+      "message": "LCD Number"
+    },
+    "widget.line.label": {
+      "message": "Line"
+    },
+    "widget.line_chart.label": {
+      "message": "Line Chart"
+    },
+    "widget.lineedit.label": {
+      "message": "Line Edit"
+    },
+    "widget.listbox.label": {
+      "message": "List Box"
+    },
+    "widget.listview.label": {
+      "message": "List View"
+    },
+    "widget.lottie_widget.label": {
+      "message": "Lottie Animation"
+    },
+    "widget.map_view.label": {
+      "message": "Map View"
+    },
+    "widget.markdown_editor.label": {
+      "message": "Markdown Editor"
+    },
+    "widget.masked_edit.label": {
+      "message": "Masked Edit"
+    },
+    "widget.masonry_layout.label": {
+      "message": "Masonry Layout"
+    },
+    "widget.material_navigation_rail.label": {
+      "message": "Navigation Rail"
+    },
+    "widget.material_snackbar.label": {
+      "message": "Snackbar"
+    },
+    "widget.mdiarea.label": {
+      "message": "MDI Area"
+    },
+    "widget.media_player.label": {
+      "message": "Media Player"
+    },
+    "widget.menu.label": {
+      "message": "Menu"
+    },
+    "widget.menu_button.label": {
+      "message": "Menu Button"
+    },
+    "widget.menubar.label": {
+      "message": "Menu Bar"
+    },
+    "widget.menuitem.label": {
+      "message": "Menu Item"
+    },
+    "widget.message_box.label": {
+      "message": "Message Box"
+    },
+    "widget.meter.label": {
+      "message": "Meter"
+    },
+    "widget.mini_canvas.label": {
+      "message": "Mini Canvas"
+    },
+    "widget.mini_chart.label": {
+      "message": "Mini Chart"
+    },
+    "widget.mobile_date_picker.label": {
+      "message": "Mobile Date Picker"
+    },
+    "widget.modal_bottom_sheet.label": {
+      "message": "Modal Bottom Sheet"
+    },
+    "widget.multi_select_combobox.label": {
+      "message": "Multi-Select Combo Box"
+    },
+    "widget.navigation_drawer.label": {
+      "message": "Navigation Drawer"
+    },
+    "widget.navigation_stack.label": {
+      "message": "Navigation Stack"
+    },
+    "widget.notification_center.label": {
+      "message": "Notification Center"
+    },
+    "widget.pager_page_view.label": {
+      "message": "Pager Page View"
+    },
+    "widget.panel.label": {
+      "message": "Panel"
+    },
+    "widget.pi_menu.label": {
+      "message": "Pie Menu"
+    },
+    "widget.pie_chart.label": {
+      "message": "Pie Chart"
+    },
+    "widget.popover.label": {
+      "message": "Popover"
+    },
+    "widget.popup_window.label": {
+      "message": "Popup Window"
+    },
+    "widget.progress_circle.label": {
+      "message": "Progress Circle"
+    },
+    "widget.progressbar.label": {
+      "message": "Progress Bar"
+    },
+    "widget.progress_dialog.label": {
+      "message": "Progress Dialog"
+    },
+    "widget.property_grid.label": {
+      "message": "Property Grid"
+    },
+    "widget.properties_panel.label": {
+      "message": "Properties Panel"
+    },
+    "widget.qrcode.label": {
+      "message": "QR Code"
+    },
+    "widget.radio_button.label": {
+      "message": "Radio Button"
+    },
+    "widget.range_slider.label": {
+      "message": "Range Slider"
+    },
+    "widget.rating.label": {
+      "message": "Rating"
+    },
+    "widget.refresh_control.label": {
+      "message": "Refresh Control"
+    },
+    "widget.ribbon_bar.label": {
+      "message": "Ribbon Bar"
+    },
+    "widget.ribbon_group.label": {
+      "message": "Ribbon Group"
+    },
+    "widget.ribbon_item.label": {
+      "message": "Ribbon Item"
+    },
+    "widget.richedit.label": {
+      "message": "Rich Edit"
+    },
+    "widget.rive_widget.label": {
+      "message": "Rive Animation"
+    },
+    "widget.roller.label": {
+      "message": "Roller"
+    },
+    "widget.safe_area.label": {
+      "message": "Safe Area"
+    },
+    "widget.scrollarea.label": {
+      "message": "Scroll Area"
+    },
+    "widget.scrollbar.label": {
+      "message": "Scroll Bar"
+    },
+    "widget.searchbar.label": {
+      "message": "Search Bar"
+    },
+    "widget.searchbox.label": {
+      "message": "Search Box"
+    },
+    "widget.segmented_button.label": {
+      "message": "Segmented Button"
+    },
+    "widget.segmented_control.label": {
+      "message": "Segmented Control"
+    },
+    "widget.shortcut_editor.label": {
+      "message": "Shortcut Editor"
+    },
+    "widget.skeleton_loader.label": {
+      "message": "Skeleton Loader"
+    },
+    "widget.slider.label": {
+      "message": "Slider"
+    },
+    "widget.sparkline.label": {
+      "message": "Sparkline"
+    },
+    "widget.spinbox.label": {
+      "message": "Spin Box"
+    },
+    "widget.spinner.label": {
+      "message": "Spinner"
+    },
+    "widget.split_button.label": {
+      "message": "Split Button"
+    },
+    "widget.splitter.label": {
+      "message": "Splitter"
+    },
+    "widget.stackedwidget.label": {
+      "message": "Stacked Widget"
+    },
+    "widget.statusbar.label": {
+      "message": "Status Bar"
+    },
+    "widget.stepper.label": {
+      "message": "Stepper"
+    },
+    "widget.swipe_to_dismiss.label": {
+      "message": "Swipe to Dismiss"
+    },
+    "widget.switch.label": {
+      "message": "Switch"
+    },
+    "widget.tab_view.label": {
+      "message": "Tab View"
+    },
+    "widget.tabbar.label": {
+      "message": "Tab Bar"
+    },
+    "widget.table.label": {
+      "message": "Table"
+    },
+    "widget.tabwidget.label": {
+      "message": "Tab Widget"
+    },
+    "widget.tag_input.label": {
+      "message": "Tag Input"
+    },
+    "widget.terminal_view.label": {
+      "message": "Terminal View"
+    },
+    "widget.textarea.label": {
+      "message": "Text Area"
+    },
+    "widget.textedit.label": {
+      "message": "Text Edit"
+    },
+    "widget.tile_view.label": {
+      "message": "Tile View"
+    },
+    "widget.timeedit.label": {
+      "message": "Time Edit"
+    },
+    "widget.timeline_widget.label": {
+      "message": "Timeline"
+    },
+    "widget.toast_stack.label": {
+      "message": "Toast"
+    },
+    "widget.toggle_button.label": {
+      "message": "Toggle Button"
+    },
+    "widget.toolbar.label": {
+      "message": "Tool Bar"
+    },
+    "widget.toolbox.label": {
+      "message": "ToolBox"
+    },
+    "widget.toolbutton.label": {
+      "message": "Tool Button"
+    },
+    "widget.tooltip.label": {
+      "message": "Tooltip"
+    },
+    "widget.tree_table.label": {
+      "message": "Tree Table"
+    },
+    "widget.treeview.label": {
+      "message": "Tree View"
+    },
+    "widget.undo_view.label": {
+      "message": "Undo View"
+    },
+    "widget.video_player.label": {
+      "message": "Video Player"
+    },
+    "widget.virtual_list.label": {
+      "message": "Virtual List"
+    },
+    "widget.virtual_table.label": {
+      "message": "Virtual Table"
+    },
+    "widget.web_engine_view.label": {
+      "message": "Web View"
+    },
+    "widget.wizard.label": {
+      "message": "Wizard"
+    },
+    "a11y.description.tab": {
+      "message": "Tab {index} of {count}"
+    },
+    "a11y.description.progress": {
+      "message": "{value} percent"
+    },
+    "a11y.state.checked": {
+      "message": "Checked"
+    },
+    "a11y.state.unchecked": {
+      "message": "Unchecked"
+    },
+    "a11y.state.selected": {
+      "message": "Selected"
+    },
+    "a11y.state.expanded": {
+      "message": "Expanded"
+    },
+    "a11y.state.collapsed": {
+      "message": "Collapsed"
+    },
+    "placeholder.search": {
+      "message": "Search..."
+    },
+    "placeholder.filter": {
+      "message": "Filter..."
+    },
+    "placeholder.type_here": {
+      "message": "Type here..."
+    },
+    "placeholder.select": {
+      "message": "Select..."
+    },
+    "placeholder.enter_value": {
+      "message": "Enter value..."
+    },
+    "placeholder.enter_text": {
+      "message": "Enter text..."
+    },
+    "nav.previous": {
+      "message": "Previous"
+    },
+    "nav.next": {
+      "message": "Next"
+    },
+    "nav.first": {
+      "message": "First"
+    },
+    "nav.last": {
+      "message": "Last"
+    },
+    "nav.back": {
+      "message": "Back"
+    },
+    "nav.forward": {
+      "message": "Forward"
+    },
+    "nav.up": {
+      "message": "Up"
+    },
+    "nav.down": {
+      "message": "Down"
+    },
+    "nav.goto": {
+      "message": "Go to"
+    },
+    "action.copy": {
+      "message": "Copy"
+    },
+    "action.paste": {
+      "message": "Paste"
+    },
+    "action.cut": {
+      "message": "Cut"
+    },
+    "action.delete": {
+      "message": "Delete"
+    },
+    "action.edit": {
+      "message": "Edit"
+    },
+    "action.add": {
+      "message": "Add"
+    },
+    "action.remove": {
+      "message": "Remove"
+    },
+    "action.clear": {
+      "message": "Clear"
+    },
+    "action.select_all": {
+      "message": "Select All"
+    },
+    "action.deselect_all": {
+      "message": "Deselect All"
+    },
+    "action.invert_selection": {
+      "message": "Invert Selection"
+    },
+    "action.undo": {
+      "message": "Undo"
+    },
+    "action.redo": {
+      "message": "Redo"
+    },
+    "action.refresh": {
+      "message": "Refresh"
+    },
+    "action.properties": {
+      "message": "Properties"
+    },
+    "action.settings": {
+      "message": "Settings"
+    },
+    "action.about": {
+      "message": "About"
+    },
+    "action.quit": {
+      "message": "Quit"
+    },
+    "action.exit": {
+      "message": "Exit"
+    },
+    "action.print": {
+      "message": "Print"
+    },
+    "action.export": {
+      "message": "Export"
+    },
+    "action.import": {
+      "message": "Import"
+    },
+    "action.search": {
+      "message": "Search"
+    },
+    "action.find": {
+      "message": "Find"
+    },
+    "action.replace": {
+      "message": "Replace"
+    },
+    "action.find_next": {
+      "message": "Find Next"
+    },
+    "action.find_prev": {
+      "message": "Find Previous"
+    },
+    "action.zoom_in": {
+      "message": "Zoom In"
+    },
+    "action.zoom_out": {
+      "message": "Zoom Out"
+    },
+    "action.zoom_reset": {
+      "message": "Reset Zoom"
+    },
+    "action.fullscreen": {
+      "message": "Fullscreen"
+    },
+    "action.minimize": {
+      "message": "Minimize"
+    },
+    "action.maximize": {
+      "message": "Maximize"
+    },
+    "action.restore": {
+      "message": "Restore"
+    },
+    "action.close": {
+      "message": "Close"
     }
   }
 }

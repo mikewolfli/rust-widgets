@@ -115,7 +115,7 @@ impl ColorHistory {
         while self.colors.len() > max {
             self.colors.remove(0);
         }
-        if self.selected_index.map_or(false, |i| i >= self.colors.len()) {
+        if self.selected_index.is_some_and(|i| i >= self.colors.len()) {
             self.selected_index = None;
         }
         self.base.request_redraw();

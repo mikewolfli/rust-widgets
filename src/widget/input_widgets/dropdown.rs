@@ -121,12 +121,7 @@ impl Dropdown {
         if !self.expanded {
             return None;
         }
-        for i in 0..self.items.len() {
-            if self.item_rect(i).contains_point(pos) {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.items.len()).position(|i| self.item_rect(i).contains_point(pos))
     }
 }
 
@@ -187,10 +182,8 @@ impl EventHandler for Dropdown {
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.expanded {
                     // Up / Down arrow keys open the list
-                    if *key == 40 || *key == 38 {
-                        if !self.items.is_empty() {
-                            self.expanded = true;
-                        }
+                    if (*key == 40 || *key == 38) && !self.items.is_empty() {
+                        self.expanded = true;
                     }
                     return;
                 }

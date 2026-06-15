@@ -87,6 +87,702 @@
     },
     "color_dialog.current_color": {
       "message": "当前颜色"
+    },
+    "widget.action.label": {
+      "message": "动作"
+    },
+    "widget.activity_indicator.label": {
+      "message": "活动指示器"
+    },
+    "widget.adaptive_scaffold.label": {
+      "message": "自适应骨架"
+    },
+    "widget.animated_image.label": {
+      "message": "动画图片"
+    },
+    "widget.app_bar.label": {
+      "message": "应用栏"
+    },
+    "widget.arc.label": {
+      "message": "弧形"
+    },
+    "widget.audio_visualizer.label": {
+      "message": "音频可视化"
+    },
+    "widget.autocomplete_edit.label": {
+      "message": "自动补全"
+    },
+    "widget.avatar.label": {
+      "message": "头像"
+    },
+    "widget.badge.label": {
+      "message": "徽章"
+    },
+    "widget.bar_chart.label": {
+      "message": "柱状图"
+    },
+    "widget.barcode_scanner.label": {
+      "message": "条形码扫描器"
+    },
+    "widget.bezier_curve_editor.label": {
+      "message": "贝塞尔曲线编辑器"
+    },
+    "widget.bottom_navigation_bar.label": {
+      "message": "底部导航"
+    },
+    "widget.bottom_sheet.label": {
+      "message": "底部弹出面板"
+    },
+    "widget.breadcrumb.label": {
+      "message": "面包屑导航"
+    },
+    "widget.button.label": {
+      "message": "按钮"
+    },
+    "widget.calendar.label": {
+      "message": "日历"
+    },
+    "widget.camera_preview.label": {
+      "message": "相机预览"
+    },
+    "widget.canvas.label": {
+      "message": "画布"
+    },
+    "widget.carousel.label": {
+      "message": "轮播"
+    },
+    "widget.chart.label": {
+      "message": "图表"
+    },
+    "widget.check_list_box.label": {
+      "message": "复选列表框"
+    },
+    "widget.checkbox.label": {
+      "message": "复选框"
+    },
+    "widget.chip.label": {
+      "message": "标签块"
+    },
+    "widget.code_editor.label": {
+      "message": "代码编辑器"
+    },
+    "widget.collapsible_pane.label": {
+      "message": "可折叠面板"
+    },
+    "widget.color_dialog.label": {
+      "message": "颜色对话框"
+    },
+    "widget.color_history.label": {
+      "message": "颜色历史"
+    },
+    "widget.color_picker.label": {
+      "message": "取色器"
+    },
+    "widget.color_well.label": {
+      "message": "颜色块"
+    },
+    "widget.column_view.label": {
+      "message": "列视图"
+    },
+    "widget.combobox.label": {
+      "message": "组合框"
+    },
+    "widget.command_entry.label": {
+      "message": "命令输入框"
+    },
+    "widget.command_link.label": {
+      "message": "命令链接"
+    },
+    "widget.command_palette.label": {
+      "message": "命令面板"
+    },
+    "widget.context_menu.label": {
+      "message": "右键菜单"
+    },
+    "widget.cupertino_alert_dialog.label": {
+      "message": "Cupertino 警告"
+    },
+    "widget.cupertino_date_picker.label": {
+      "message": "Cupertino 日期选择器"
+    },
+    "widget.cupertino_navigation_bar.label": {
+      "message": "Cupertino 导航栏"
+    },
+    "widget.cupertino_segmented_control.label": {
+      "message": "Cupertino 分段控件"
+    },
+    "widget.cupertino_slider.label": {
+      "message": "Cupertino 滑块"
+    },
+    "widget.cupertino_switch.label": {
+      "message": "Cupertino 开关"
+    },
+    "widget.data_grid.label": {
+      "message": "数据网格"
+    },
+    "widget.data_view.label": {
+      "message": "数据视图"
+    },
+    "widget.date_range_picker.label": {
+      "message": "日期范围选择器"
+    },
+    "widget.dateedit.label": {
+      "message": "日期编辑器"
+    },
+    "widget.datetimeedit.label": {
+      "message": "日期/时间编辑器"
+    },
+    "widget.dial.label": {
+      "message": "拨号盘"
+    },
+    "widget.diff_viewer.label": {
+      "message": "差异查看器"
+    },
+    "widget.divider.label": {
+      "message": "分隔线"
+    },
+    "widget.dock_panel.label": {
+      "message": "停靠面板"
+    },
+    "widget.dockwidget.label": {
+      "message": "停靠控件"
+    },
+    "widget.double_spin_box.label": {
+      "message": "双精度数字调节框"
+    },
+    "widget.dropdown.label": {
+      "message": "下拉菜单"
+    },
+    "widget.dropdown_menu.label": {
+      "message": "下拉菜单"
+    },
+    "widget.editable_combobox.label": {
+      "message": "可编辑组合框"
+    },
+    "widget.empty_state.label": {
+      "message": "空状态"
+    },
+    "widget.fab.label": {
+      "message": "浮动操作按钮"
+    },
+    "widget.file_dialog.label": {
+      "message": "文件对话框"
+    },
+    "widget.floating_label.label": {
+      "message": "浮动标签"
+    },
+    "widget.font_combobox.label": {
+      "message": "字体组合框"
+    },
+    "widget.font_dialog.label": {
+      "message": "字体对话框"
+    },
+    "widget.font_preview.label": {
+      "message": "字体预览"
+    },
+    "widget.freeform_shape.label": {
+      "message": "自由形状"
+    },
+    "widget.gantt_widget.label": {
+      "message": "甘特图"
+    },
+    "widget.grid.label": {
+      "message": "网格"
+    },
+    "widget.grid_widget.label": {
+      "message": "网格控件"
+    },
+    "widget.groupbox.label": {
+      "message": "分组框"
+    },
+    "widget.hero_animation.label": {
+      "message": "过渡动画"
+    },
+    "widget.icon.label": {
+      "message": "图标"
+    },
+    "widget.image_gallery.label": {
+      "message": "图片画廊"
+    },
+    "widget.image_view.label": {
+      "message": "图片视图"
+    },
+    "widget.ime_preedit.label": {
+      "message": "输入法预编辑"
+    },
+    "widget.inplace_editor.label": {
+      "message": "就地编辑器"
+    },
+    "widget.input_dialog.label": {
+      "message": "输入对话框"
+    },
+    "widget.key_sequence_edit.label": {
+      "message": "按键序列编辑器"
+    },
+    "widget.keyboard.label": {
+      "message": "键盘"
+    },
+    "widget.label.label": {
+      "message": "标签"
+    },
+    "widget.lcd_number.label": {
+      "message": "LCD 数字"
+    },
+    "widget.line.label": {
+      "message": "线条"
+    },
+    "widget.line_chart.label": {
+      "message": "折线图"
+    },
+    "widget.lineedit.label": {
+      "message": "单行输入框"
+    },
+    "widget.listbox.label": {
+      "message": "列表框"
+    },
+    "widget.listview.label": {
+      "message": "列表视图"
+    },
+    "widget.lottie_widget.label": {
+      "message": "Lottie 动画"
+    },
+    "widget.map_view.label": {
+      "message": "地图视图"
+    },
+    "widget.markdown_editor.label": {
+      "message": "Markdown 编辑器"
+    },
+    "widget.masked_edit.label": {
+      "message": "掩码编辑框"
+    },
+    "widget.masonry_layout.label": {
+      "message": "瀑布流布局"
+    },
+    "widget.material_navigation_rail.label": {
+      "message": "导航导轨"
+    },
+    "widget.material_snackbar.label": {
+      "message": "提示栏"
+    },
+    "widget.mdiarea.label": {
+      "message": "MDI 区域"
+    },
+    "widget.media_player.label": {
+      "message": "媒体播放器"
+    },
+    "widget.menu.label": {
+      "message": "菜单"
+    },
+    "widget.menu_button.label": {
+      "message": "菜单按钮"
+    },
+    "widget.menubar.label": {
+      "message": "菜单栏"
+    },
+    "widget.menuitem.label": {
+      "message": "菜单项"
+    },
+    "widget.message_box.label": {
+      "message": "消息框"
+    },
+    "widget.meter.label": {
+      "message": "仪表"
+    },
+    "widget.mini_canvas.label": {
+      "message": "迷你画布"
+    },
+    "widget.mini_chart.label": {
+      "message": "迷你图表"
+    },
+    "widget.mobile_date_picker.label": {
+      "message": "移动端日期选择器"
+    },
+    "widget.modal_bottom_sheet.label": {
+      "message": "模态底部面板"
+    },
+    "widget.multi_select_combobox.label": {
+      "message": "多选组合框"
+    },
+    "widget.navigation_drawer.label": {
+      "message": "导航抽屉"
+    },
+    "widget.navigation_stack.label": {
+      "message": "导航栈"
+    },
+    "widget.notification_center.label": {
+      "message": "通知中心"
+    },
+    "widget.pager_page_view.label": {
+      "message": "分页视图"
+    },
+    "widget.panel.label": {
+      "message": "面板"
+    },
+    "widget.pi_menu.label": {
+      "message": "饼形菜单"
+    },
+    "widget.pie_chart.label": {
+      "message": "饼图"
+    },
+    "widget.popover.label": {
+      "message": "弹出气泡"
+    },
+    "widget.popup_window.label": {
+      "message": "弹出窗口"
+    },
+    "widget.progress_circle.label": {
+      "message": "圆形进度"
+    },
+    "widget.progressbar.label": {
+      "message": "进度条"
+    },
+    "widget.progress_dialog.label": {
+      "message": "进度对话框"
+    },
+    "widget.property_grid.label": {
+      "message": "属性网格"
+    },
+    "widget.properties_panel.label": {
+      "message": "属性面板"
+    },
+    "widget.qrcode.label": {
+      "message": "二维码"
+    },
+    "widget.radio_button.label": {
+      "message": "单选按钮"
+    },
+    "widget.range_slider.label": {
+      "message": "范围滑块"
+    },
+    "widget.rating.label": {
+      "message": "评分"
+    },
+    "widget.refresh_control.label": {
+      "message": "刷新控件"
+    },
+    "widget.ribbon_bar.label": {
+      "message": "功能区栏"
+    },
+    "widget.ribbon_group.label": {
+      "message": "功能区组"
+    },
+    "widget.ribbon_item.label": {
+      "message": "功能区项"
+    },
+    "widget.richedit.label": {
+      "message": "富文本编辑器"
+    },
+    "widget.rive_widget.label": {
+      "message": "Rive 动画"
+    },
+    "widget.roller.label": {
+      "message": "滚轮选择器"
+    },
+    "widget.safe_area.label": {
+      "message": "安全区域"
+    },
+    "widget.scrollarea.label": {
+      "message": "滚动区域"
+    },
+    "widget.scrollbar.label": {
+      "message": "滚动条"
+    },
+    "widget.searchbar.label": {
+      "message": "搜索栏"
+    },
+    "widget.searchbox.label": {
+      "message": "搜索框"
+    },
+    "widget.segmented_button.label": {
+      "message": "分段按钮"
+    },
+    "widget.segmented_control.label": {
+      "message": "分段控件"
+    },
+    "widget.shortcut_editor.label": {
+      "message": "快捷键编辑器"
+    },
+    "widget.skeleton_loader.label": {
+      "message": "骨架加载"
+    },
+    "widget.slider.label": {
+      "message": "滑块"
+    },
+    "widget.sparkline.label": {
+      "message": "迷你趋势图"
+    },
+    "widget.spinbox.label": {
+      "message": "数字调节框"
+    },
+    "widget.spinner.label": {
+      "message": "加载指示器"
+    },
+    "widget.split_button.label": {
+      "message": "拆分按钮"
+    },
+    "widget.splitter.label": {
+      "message": "分割器"
+    },
+    "widget.stackedwidget.label": {
+      "message": "堆叠控件"
+    },
+    "widget.statusbar.label": {
+      "message": "状态栏"
+    },
+    "widget.stepper.label": {
+      "message": "步骤器"
+    },
+    "widget.swipe_to_dismiss.label": {
+      "message": "滑动关闭"
+    },
+    "widget.switch.label": {
+      "message": "开关"
+    },
+    "widget.tab_view.label": {
+      "message": "标签视图"
+    },
+    "widget.tabbar.label": {
+      "message": "标签栏"
+    },
+    "widget.table.label": {
+      "message": "表格"
+    },
+    "widget.tabwidget.label": {
+      "message": "标签页控件"
+    },
+    "widget.tag_input.label": {
+      "message": "标签输入"
+    },
+    "widget.terminal_view.label": {
+      "message": "终端视图"
+    },
+    "widget.textarea.label": {
+      "message": "文本区域"
+    },
+    "widget.textedit.label": {
+      "message": "文本编辑器"
+    },
+    "widget.tile_view.label": {
+      "message": "磁贴视图"
+    },
+    "widget.timeedit.label": {
+      "message": "时间编辑器"
+    },
+    "widget.timeline_widget.label": {
+      "message": "时间线"
+    },
+    "widget.toast_stack.label": {
+      "message": "提示消息"
+    },
+    "widget.toggle_button.label": {
+      "message": "开关按钮"
+    },
+    "widget.toolbar.label": {
+      "message": "工具栏"
+    },
+    "widget.toolbox.label": {
+      "message": "工具箱"
+    },
+    "widget.toolbutton.label": {
+      "message": "工具按钮"
+    },
+    "widget.tooltip.label": {
+      "message": "工具提示"
+    },
+    "widget.tree_table.label": {
+      "message": "树形表格"
+    },
+    "widget.treeview.label": {
+      "message": "树形视图"
+    },
+    "widget.undo_view.label": {
+      "message": "撤销视图"
+    },
+    "widget.video_player.label": {
+      "message": "视频播放器"
+    },
+    "widget.virtual_list.label": {
+      "message": "虚拟列表"
+    },
+    "widget.virtual_table.label": {
+      "message": "虚拟表格"
+    },
+    "widget.web_engine_view.label": {
+      "message": "网页视图"
+    },
+    "widget.wizard.label": {
+      "message": "向导"
+    },
+    "a11y.description.tab": {
+      "message": "第{index}页，共{count}页"
+    },
+    "a11y.description.progress": {
+      "message": "{value}%"
+    },
+    "a11y.state.checked": {
+      "message": "已选中"
+    },
+    "a11y.state.unchecked": {
+      "message": "未选中"
+    },
+    "a11y.state.selected": {
+      "message": "已选择"
+    },
+    "a11y.state.expanded": {
+      "message": "已展开"
+    },
+    "a11y.state.collapsed": {
+      "message": "已折叠"
+    },
+    "placeholder.search": {
+      "message": "搜索..."
+    },
+    "placeholder.filter": {
+      "message": "筛选..."
+    },
+    "placeholder.type_here": {
+      "message": "在此输入..."
+    },
+    "placeholder.select": {
+      "message": "选择..."
+    },
+    "placeholder.enter_value": {
+      "message": "输入值..."
+    },
+    "placeholder.enter_text": {
+      "message": "输入文本..."
+    },
+    "nav.previous": {
+      "message": "上一个"
+    },
+    "nav.next": {
+      "message": "下一个"
+    },
+    "nav.first": {
+      "message": "第一个"
+    },
+    "nav.last": {
+      "message": "最后一个"
+    },
+    "nav.back": {
+      "message": "后退"
+    },
+    "nav.forward": {
+      "message": "前进"
+    },
+    "nav.up": {
+      "message": "向上"
+    },
+    "nav.down": {
+      "message": "向下"
+    },
+    "nav.goto": {
+      "message": "转到"
+    },
+    "action.copy": {
+      "message": "复制"
+    },
+    "action.paste": {
+      "message": "粘贴"
+    },
+    "action.cut": {
+      "message": "剪切"
+    },
+    "action.delete": {
+      "message": "删除"
+    },
+    "action.edit": {
+      "message": "编辑"
+    },
+    "action.add": {
+      "message": "添加"
+    },
+    "action.remove": {
+      "message": "移除"
+    },
+    "action.clear": {
+      "message": "清除"
+    },
+    "action.select_all": {
+      "message": "全选"
+    },
+    "action.deselect_all": {
+      "message": "取消全选"
+    },
+    "action.invert_selection": {
+      "message": "反选"
+    },
+    "action.undo": {
+      "message": "撤销"
+    },
+    "action.redo": {
+      "message": "重做"
+    },
+    "action.refresh": {
+      "message": "刷新"
+    },
+    "action.properties": {
+      "message": "属性"
+    },
+    "action.settings": {
+      "message": "设置"
+    },
+    "action.about": {
+      "message": "关于"
+    },
+    "action.quit": {
+      "message": "退出"
+    },
+    "action.exit": {
+      "message": "退出"
+    },
+    "action.print": {
+      "message": "打印"
+    },
+    "action.export": {
+      "message": "导出"
+    },
+    "action.import": {
+      "message": "导入"
+    },
+    "action.search": {
+      "message": "搜索"
+    },
+    "action.find": {
+      "message": "查找"
+    },
+    "action.replace": {
+      "message": "替换"
+    },
+    "action.find_next": {
+      "message": "查找下一个"
+    },
+    "action.find_prev": {
+      "message": "查找上一个"
+    },
+    "action.zoom_in": {
+      "message": "放大"
+    },
+    "action.zoom_out": {
+      "message": "缩小"
+    },
+    "action.zoom_reset": {
+      "message": "重置缩放"
+    },
+    "action.fullscreen": {
+      "message": "全屏"
+    },
+    "action.minimize": {
+      "message": "最小化"
+    },
+    "action.maximize": {
+      "message": "最大化"
+    },
+    "action.restore": {
+      "message": "还原"
+    },
+    "action.close": {
+      "message": "关闭"
     }
   }
 }

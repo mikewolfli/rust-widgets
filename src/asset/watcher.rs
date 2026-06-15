@@ -16,7 +16,7 @@
 //! ```
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 
 /// Events produced by the `AssetWatcher`.
@@ -61,24 +61,27 @@ impl AssetWatcher {
         P: Fn(&Path) -> bool + Send + 'static,
     {
         let sender = self.sender.clone();
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| match res {
-            Ok(event) => {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    if let Some(path) = event.paths.first() {
-                        if filter(path) {
-                            if let Err(e) =
-                                sender.send(AssetEvent::FileChanged { path: path.clone() })
-                            {
-                                log::error!("[asset] Watcher send failed: {:?}", e);
+        let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
+            move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        if let Some(path) = event.paths.first() {
+                            if filter(path) {
+                                if let Err(e) =
+                                    sender.send(AssetEvent::FileChanged { path: path.clone() })
+                                {
+                                    log::error!("[asset] Watcher send failed: {:?}", e);
+                                }
                             }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                log::error!("[asset] Watcher error: {:?}", e);
-            }
-        })
+                Err(e) => {
+                    log::error!("[asset] Watcher error: {:?}", e);
+                }
+            },
+            Config::default(),
+        )
         .map_err(|e| format!("Failed to create asset watcher: {}", e))?;
 
         watcher

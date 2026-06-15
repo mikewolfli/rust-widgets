@@ -64,14 +64,14 @@ impl I18nFileWatcher {
         }
     }
     /// Disable hot reload on the global i18n manager
-    pub fn disable_hot_reload() {
+    pub fn disable_hot_reload(&self) {
         let mut guard = get_manager();
         if let Some(ref mut manager) = *guard {
             manager.disable_hot_reload();
         }
     }
     /// Check if hot reload is enabled
-    pub fn is_hot_reload_enabled() -> bool {
+    pub fn is_hot_reload_enabled(&self) -> bool {
         let guard = get_manager();
         guard.as_ref().map(|m| m.is_hot_reload_enabled()).unwrap_or(false)
     }

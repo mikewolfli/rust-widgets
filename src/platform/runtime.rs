@@ -198,9 +198,12 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
                 RuntimeGuiMode::PreviewOrStub
             }
         }
-        "harmony-desktop" | "android-mobile" | "macos-objc2-preview" => {
-            RuntimeGuiMode::PreviewOrStub
-        }
+        "harmony-desktop"
+        | "harmony-state-backend"
+        | "macos-objc2-preview"
+        | "macos-fallback-stub"
+        | "android-state-backend"
+        | "ios-mobile-stub" => RuntimeGuiMode::PreviewOrStub,
         _ => RuntimeGuiMode::PreviewOrStub,
     }
 }

@@ -187,7 +187,7 @@ impl Draw for SearchBar {
         if self.text.is_empty() {
             // Draw placeholder text
             let metrics = context.measure_text(&self.placeholder, &font);
-            if text_width >= metrics.width as u32 {
+            if text_width >= metrics.width {
                 let text_y = rect.y
                     + (rect.height as i32 - metrics.height as i32) / 2
                     + metrics.ascent as i32;
@@ -201,7 +201,7 @@ impl Draw for SearchBar {
         } else {
             // Draw text
             let metrics = context.measure_text(&self.text, &font);
-            if text_width >= metrics.width as u32 {
+            if text_width >= metrics.width {
                 let text_y = rect.y
                     + (rect.height as i32 - metrics.height as i32) / 2
                     + metrics.ascent as i32;

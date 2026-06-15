@@ -616,6 +616,9 @@ pub trait AccessibilityBridge: Send + Sync {
     /// Post a notification that focus moved to a widget.
     fn notify_focus_changed(&self, id: ObjectId);
     /// Set ARIA properties on a widget.
+    /// The default implementation is a no-op. Platform-specific
+    /// accessibility bridges should override this to expose ARIA
+    /// properties to assistive technologies.
     fn set_aria_properties(&self, _id: ObjectId, _props: &AriaProperties) {}
 }
 

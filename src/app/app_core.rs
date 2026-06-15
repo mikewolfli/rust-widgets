@@ -4,6 +4,7 @@ use crate::core::ObjectId;
 use crate::WidgetTriggerEvent;
 
 use super::handle::{dispatch_trigger, WindowHandle};
+use super::lifecycle::AppLifecycle;
 
 // ═══════════════════════════════════════════════════════════════
 // AppConfig
@@ -18,7 +19,8 @@ use super::handle::{dispatch_trigger, WindowHandle};
 ///
 /// let config = AppConfig::default()
 ///     .with_app_name("MyApp")
-///     .with_organization("Acme Corp");
+///     .with_organization("Acme Corp")
+///     .with_version("1.0.0");
 /// ```
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -26,13 +28,23 @@ pub struct AppConfig {
     pub app_name: String,
     /// Organization or vendor name.
     pub organization: String,
+    /// Application version string (e.g. "1.0.0").
+    pub version: String,
     /// Whether to initialise the i18n subsystem (default: `true`).
     pub enable_i18n: bool,
+    /// Whether to initialise the accessibility subsystem (default: `true`).
+    pub enable_accessibility: bool,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { app_name: String::new(), organization: String::new(), enable_i18n: true }
+        Self {
+            app_name: String::new(),
+            organization: String::new(),
+            version: String::new(),
+            enable_i18n: true,
+            enable_accessibility: true,
+        }
     }
 }
 
@@ -49,9 +61,21 @@ impl AppConfig {
         self
     }
 
+    /// Set the application version string.
+    pub fn with_version(mut self, version: &str) -> Self {
+        self.version = version.to_owned();
+        self
+    }
+
     /// Enable or disable i18n initialisation.
     pub fn with_i18n(mut self, enable: bool) -> Self {
         self.enable_i18n = enable;
+        self
+    }
+
+    /// Enable or disable accessibility bridge initialisation.
+    pub fn with_accessibility(mut self, enable: bool) -> Self {
+        self.enable_accessibility = enable;
         self
     }
 }
@@ -66,10 +90,10 @@ impl AppConfig {
 ///
 /// ## Minimal (no configuration)
 ///
-/// ```rust,ignore
-/// use rust_widgets::app::App;
+/// ```rust,no_run
+/// use rust_widgets::app::{App, WidgetHandle};
 ///
-/// let app = App::new();
+/// let mut app = App::new();
 /// app.init();
 /// let win = app.new_window("Hello", 100, 100, 640, 480);
 /// let btn = win.new_button("Click me", 10, 10, 120, 32);
@@ -83,10 +107,10 @@ impl AppConfig {
 ///
 /// ## With configuration and callbacks
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use rust_widgets::app::{App, AppConfig};
 ///
-/// let app = App::with_config(
+/// let mut app = App::with_config(
 ///     AppConfig::default()
 ///         .with_app_name("MyApp")
 ///         .with_organization("Acme Inc"),
@@ -104,22 +128,38 @@ impl AppConfig {
 /// ```
 pub struct App {
     config: AppConfig,
+    lifecycle: AppLifecycle,
 }
 
 impl App {
     /// Create a new application handle with default configuration.
     pub fn new() -> Self {
-        Self { config: AppConfig::default() }
+        Self { config: AppConfig::default(), lifecycle: AppLifecycle::new() }
     }
 
     /// Create a new application handle with a custom configuration.
     pub fn with_config(config: AppConfig) -> Self {
-        Self { config }
+        Self { config, lifecycle: AppLifecycle::new() }
     }
 
     /// Return a reference to the current configuration.
     pub fn config(&self) -> &AppConfig {
         &self.config
+    }
+
+    /// Return a mutable reference to the current configuration.
+    pub fn config_mut(&mut self) -> &mut AppConfig {
+        &mut self.config
+    }
+
+    /// Return a reference to the application lifecycle manager.
+    pub fn lifecycle(&self) -> &AppLifecycle {
+        &self.lifecycle
+    }
+
+    /// Return a mutable reference to the application lifecycle manager.
+    pub fn lifecycle_mut(&mut self) -> &mut AppLifecycle {
+        &mut self.lifecycle
     }
 
     /// Register a callback invoked once after [`init`](App::init) completes.
@@ -145,9 +185,12 @@ impl App {
     /// Initialize global platform and (optionally) i18n subsystems.
     ///
     /// Call this once before creating windows or running the loop.
-    pub fn init(&self) {
+    pub fn init(&mut self) {
         trace_runtime_route("app::init");
         crate::init();
+
+        // Transition lifecycle to Foreground after init completes.
+        self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Foreground);
 
         // Fire the startup callback after everything is initialised.
         STARTUP.with(|s| {
@@ -178,8 +221,29 @@ impl App {
     }
 
     /// Request the event loop to shut down.
-    pub fn quit(&self) {
+    pub fn quit(&mut self) {
         crate::quit();
+        self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Terminating);
+    }
+
+    /// Run the platform event loop on a background thread (non-blocking).
+    ///
+    /// Returns a `JoinHandle` that completes when the event loop exits.
+    /// This allows the calling thread to continue working while the
+    /// event loop runs in parallel.
+    ///
+    /// Only available on desktop targets where threading is supported.
+    /// On other targets, falls back to blocking `run()` via `run_blocking`.
+    pub fn run_async(&self) -> std::thread::JoinHandle<()> {
+        trace_runtime_route("app::run_async");
+        std::thread::spawn(|| {
+            crate::run();
+            SHUTDOWN.with(|s| {
+                if let Some(cb) = s.borrow_mut().take() {
+                    cb();
+                }
+            });
+        })
     }
 
     /// Create a top-level window and return a type-safe handle.

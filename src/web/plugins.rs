@@ -52,8 +52,14 @@ pub trait Plugin: Send + Sync {
     fn info(&self) -> &PluginInfo;
     fn info_mut(&mut self) -> &mut PluginInfo;
     fn on_load(&mut self) -> Result<(), PluginError>;
+    /// Called when the plugin is unloaded from the system.
+    /// The default implementation is a no-op.
+    /// Override to perform cleanup (closing files, releasing resources).
     fn on_unload(&mut self) {}
     fn on_enable(&mut self) -> Result<(), PluginError>;
+    /// Called when the plugin is disabled.
+    /// The default implementation is a no-op.
+    /// Override to handle disable logic (saving state, notifying subsystems).
     fn on_disable(&mut self) {}
     fn handle_message(&mut self, message: &str) -> Option<String>;
     fn as_any(&self) -> &dyn Any;

@@ -109,13 +109,12 @@ impl MultiSelectComboBox {
 
     /// Selects the item at the given index (if enabled). Returns true if selection changed.
     pub fn select(&mut self, index: usize) -> bool {
-        if index < self.items.len() && self.items[index].enabled {
-            if self.selected.insert(index) {
+        if index < self.items.len() && self.items[index].enabled
+            && self.selected.insert(index) {
                 self.emit_selection_changed();
                 self.base.request_redraw();
                 return true;
             }
-        }
         false
     }
 
@@ -336,7 +335,6 @@ impl EventHandler for MultiSelectComboBox {
                         if idx < self.items.len() && self.items[idx].enabled {
                             self.toggle(idx);
                         }
-                        return;
                     }
                 }
             }

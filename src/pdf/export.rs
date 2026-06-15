@@ -8,9 +8,10 @@ use crate::widget::svg::render_widget_to_svg;
 use crate::widget::Draw;
 
 /// Standard page sizes in points (1/72 inch).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PageSize {
     /// A4: 595.28 x 841.89 pt
+    #[default]
     A4,
     /// US Letter: 612.0 x 792.0 pt
     Letter,
@@ -46,25 +47,14 @@ impl PageSize {
     }
 }
 
-impl Default for PageSize {
-    fn default() -> Self {
-        PageSize::A4
-    }
-}
-
 /// Export orientation for the PDF page.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PdfOrientation {
     /// Portrait (tall).
+    #[default]
     Portrait,
     /// Landscape (wide).
     Landscape,
-}
-
-impl Default for PdfOrientation {
-    fn default() -> Self {
-        PdfOrientation::Portrait
-    }
 }
 
 impl PdfOrientation {
@@ -315,11 +305,8 @@ fn build_svg_pdf(pages: &[PdfPage], settings: &PdfExportSettings) -> Result<Vec<
     Ok(out)
 }
 
-/// Build the content stream for a single PDF page embedding its SVG content.
-///
-/// The SVG string is placed inside the stream as a comment block, wrapped
-/// with the PDF graphics state operators so it can be extracted by reader
-/// tools while remaining valid PDF syntax.
+/// Build the content stream for a single PDF page, converting SVG content
+/// into real PDF content operators so viewers render the content visually.
 fn build_content_stream(page: &PdfPage, _settings: &PdfExportSettings) -> String {
     let mut stream = String::new();
 
@@ -331,17 +318,220 @@ fn build_content_stream(page: &PdfPage, _settings: &PdfExportSettings) -> String
         page.height_pt / page.height_px as f32,
     ));
 
-    // Embed the SVG content as a structured comment block
-    stream.push_str("% BEGIN SVG CONTENT\n");
-    for line in page.svg_content.lines() {
-        stream.push_str(&format!("% {}\n", line));
-    }
-    stream.push_str("% END SVG CONTENT\n");
+    // Convert SVG content to real PDF drawing operators
+    stream.push_str(&svg_to_pdf_operators(&page.svg_content));
 
     // Restore graphics state
     stream.push_str("Q\n");
 
     stream
+}
+
+/// Convert SVG content to PDF content-stream operators.
+///
+/// Parses basic SVG primitives (`rect`, `circle`, `path`) and emits
+/// the corresponding PDF operators so the content renders visually.
+fn svg_to_pdf_operators(svg: &str) -> String {
+    let mut pdf = String::new();
+
+    // Scan for SVG elements anywhere in the content (may be nested or on same line).
+    let mut pos = 0;
+    while let Some(tag_start) = svg[pos..].find('<') {
+        let abs_start = pos + tag_start;
+        if abs_start + 1 >= svg.len() {
+            break;
+        }
+        // Find the end of this element (> or />)
+        let tag_end = match svg[abs_start..].find('>') {
+            Some(e) => abs_start + e + 1,
+            None => break,
+        };
+        let element = &svg[abs_start..tag_end];
+        pos = tag_end;
+
+        if element.starts_with("<rect") {
+            let mut x = 0f32;
+            let mut y = 0f32;
+            let mut w = 0f32;
+            let mut h = 0f32;
+            let mut fill: Option<(f32, f32, f32)> = None;
+            let mut stroke: Option<(f32, f32, f32)> = None;
+            let mut has_fill = false;
+            let mut has_stroke = false;
+
+            if let Some(val) = extract_attr(element, "x") {
+                x = val.parse().unwrap_or(0.0);
+            }
+            if let Some(val) = extract_attr(element, "y") {
+                y = val.parse().unwrap_or(0.0);
+            }
+            if let Some(val) = extract_attr(element, "width") {
+                w = val.parse().unwrap_or(0.0);
+            }
+            if let Some(val) = extract_attr(element, "height") {
+                h = val.parse().unwrap_or(0.0);
+            }
+            if let Some(val) = extract_attr(element, "fill") {
+                has_fill = true;
+                fill = parse_svg_color(&val);
+            }
+            if let Some(val) = extract_attr(element, "stroke") {
+                has_stroke = true;
+                stroke = parse_svg_color(&val);
+            }
+
+            if w > 0.0 && h > 0.0 {
+                if let Some((r, g, b)) = fill {
+                    pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", r, g, b));
+                }
+                if let Some((r, g, b)) = stroke {
+                    pdf.push_str(&format!("{:.4} {:.4} {:.4} RG\n", r, g, b));
+                }
+                pdf.push_str(&format!("{:.2} {:.2} {:.2} {:.2} re ", x, y, w, h));
+                if has_fill && has_stroke {
+                    pdf.push_str("B\n");
+                } else if has_fill {
+                    pdf.push_str("f\n");
+                } else if has_stroke {
+                    pdf.push_str("S\n");
+                } else {
+                    pdf.push_str("f\n");
+                }
+            }
+        } else if element.starts_with("<circle") {
+            let cx = extract_attr(element, "cx").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+            let cy = extract_attr(element, "cy").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+            let r = extract_attr(element, "r").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+            if r > 0.0 {
+                if let Some(val) = extract_attr(element, "fill") {
+                    if let Some((rg, g, b)) = parse_svg_color(&val) {
+                        pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", rg, g, b));
+                    }
+                }
+                // Approximate circle with 4 cubic b\u00e9zier curves
+                let k = r * 0.5522847498; // 4/3 * (sqrt(2)-1)
+                pdf.push_str(&format!(
+                    "{} {} m {} {} {} {} {} {} c \
+                     {} {} {} {} {} {} c \
+                     {} {} {} {} {} {} c \
+                     {} {} {} {} {} {} c f\n",
+                    cx,
+                    cy - r,
+                    cx + k,
+                    cy - r,
+                    cx + r,
+                    cy - k,
+                    cx + r,
+                    cy,
+                    cx + r,
+                    cy + k,
+                    cx + k,
+                    cy + r,
+                    cx,
+                    cy + r,
+                    cx - k,
+                    cy + r,
+                    cx - r,
+                    cy + k,
+                    cx - r,
+                    cy,
+                    cx - r,
+                    cy - k,
+                    cx - k,
+                    cy - r,
+                    cx,
+                    cy - r,
+                ));
+            }
+        } else if element.starts_with("<path") {
+            if let Some(d) = extract_attr(element, "d") {
+                if let Some(val) = extract_attr(element, "fill") {
+                    if let Some((rg, g, b)) = parse_svg_color(&val) {
+                        pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", rg, g, b));
+                    }
+                }
+                pdf.push_str(&svg_path_to_pdf(&d));
+            }
+        }
+    }
+
+    pdf
+}
+
+/// Extract the value of an XML attribute by name using simple string search.
+fn extract_attr(s: &str, name: &str) -> Option<String> {
+    let pattern = format!("{}=\"", name);
+    if let Some(start) = s.find(&pattern) {
+        let val_start = start + pattern.len();
+        if let Some(end) = s[val_start..].find('"') {
+            return Some(s[val_start..val_start + end].to_string());
+        }
+    }
+    None
+}
+
+/// Parse an SVG color string (#RRGGBB) into normalized RGB floats (0.0-1.0).
+fn parse_svg_color(color: &str) -> Option<(f32, f32, f32)> {
+    if color.starts_with('#') && color.len() == 7 {
+        let r = u8::from_str_radix(&color[1..3], 16).ok()?;
+        let g = u8::from_str_radix(&color[3..5], 16).ok()?;
+        let b = u8::from_str_radix(&color[5..7], 16).ok()?;
+        Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
+    } else {
+        None
+    }
+}
+
+/// Convert a simplified SVG path `d` string to PDF path operators.
+fn svg_path_to_pdf(d: &str) -> String {
+    let mut pdf = String::new();
+    let parts: Vec<&str> = d.split_whitespace().collect();
+    let mut i = 0;
+    while i < parts.len() {
+        match parts[i] {
+            "M" => {
+                if i + 2 < parts.len() {
+                    pdf.push_str(&format!("{} {} m\n", parts[i + 1], parts[i + 2]));
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            "L" => {
+                if i + 2 < parts.len() {
+                    pdf.push_str(&format!("{} {} l\n", parts[i + 1], parts[i + 2]));
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            "C" => {
+                if i + 6 < parts.len() {
+                    pdf.push_str(&format!(
+                        "{} {} {} {} {} {} c\n",
+                        parts[i + 1],
+                        parts[i + 2],
+                        parts[i + 3],
+                        parts[i + 4],
+                        parts[i + 5],
+                        parts[i + 6]
+                    ));
+                    i += 7;
+                } else {
+                    i += 1;
+                }
+            }
+            "Z" | "z" => {
+                pdf.push_str("h f\n");
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if !pdf.is_empty() && !pdf.ends_with("h f\n") {
+        pdf.push_str("f\n");
+    }
+    pdf
 }
 
 /// Export a slice of drawable widgets to a PDF file.
@@ -487,8 +677,9 @@ mod tests {
         assert!(text.contains("/Type /Pages"));
         assert!(text.contains("/Type /Page"));
         assert!(text.contains("/MediaBox [0 0 595.28 841.89]"));
-        assert!(text.contains("% BEGIN SVG CONTENT"));
-        assert!(text.contains("% END SVG CONTENT"));
+        // SVG content should be rendered as real PDF operators, not comments
+        assert!(text.contains("re f"));
+        assert!(!text.contains("% BEGIN SVG CONTENT"));
         assert!(text.contains("startxref"));
         assert!(text.contains("%%EOF"));
     }

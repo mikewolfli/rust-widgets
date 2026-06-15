@@ -220,7 +220,7 @@ impl Draw for Tooltip {
 
         // Measure text for layout
         let metrics = context.measure_text(&self.text, &font);
-        let text_width = metrics.width as u32;
+        let text_width = metrics.width;
         let glyph_height = metrics.height;
 
         // Clamp content width to max_width

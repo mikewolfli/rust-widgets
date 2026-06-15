@@ -23,7 +23,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
 /// scaffold.add_nav_item("★", "Favorites");
 /// scaffold.add_nav_item("✉", "Messages");
