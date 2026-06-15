@@ -5,7 +5,7 @@
 //! arrow pointing toward the anchor, and auto-dismisses when the user
 //! clicks outside the popover area.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -188,6 +188,7 @@ impl Draw for Popover {
             label,
             &font,
             Color::rgba(150, 150, 150, 200),
+            HorizontalAlignment::Left,
         );
     }
 }
@@ -301,6 +302,7 @@ mod tests {
                 &self.text,
                 &font,
                 Color::BLACK,
+                HorizontalAlignment::Left,
             );
         }
     }

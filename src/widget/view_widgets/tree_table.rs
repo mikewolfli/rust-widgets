@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -336,6 +336,7 @@ impl Draw for TreeTable {
                         &text,
                         &Font::default(),
                         Color::from_rgb(0, 0, 0),
+                        HorizontalAlignment::Left,
                     );
                 }
             }

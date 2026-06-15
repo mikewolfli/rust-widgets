@@ -1,6 +1,6 @@
 //! SplitButton widget with primary action and drop-down action list.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -391,6 +391,7 @@ impl Draw for SplitButton {
             &self.text,
             &Font::default(),
             Color::from_rgb(34, 45, 64),
+            HorizontalAlignment::Left,
         );
 
         context.draw_text(
@@ -398,6 +399,7 @@ impl Draw for SplitButton {
             "v",
             &Font::default(),
             Color::from_rgb(64, 74, 88),
+            HorizontalAlignment::Left,
         );
 
         if self.menu_open {
@@ -423,6 +425,7 @@ impl Draw for SplitButton {
                         &action.label,
                         &Font::default(),
                         Color::from_rgb(34, 45, 64),
+                        HorizontalAlignment::Left,
                     );
                 }
             }

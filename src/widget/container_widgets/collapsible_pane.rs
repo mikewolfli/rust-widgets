@@ -1,5 +1,5 @@
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -196,6 +196,7 @@ impl Draw for CollapsiblePane {
             arrow_char,
             &Font::default(),
             arrow_color,
+            HorizontalAlignment::Left,
         );
 
         // --- Draw title text ---
@@ -212,6 +213,7 @@ impl Draw for CollapsiblePane {
                 &self.title,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
         }
 

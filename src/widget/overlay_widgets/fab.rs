@@ -5,7 +5,7 @@
 //! It displays an icon as a text character (e.g., "+") and supports press
 //! animation, shadow, and click signal emission.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -150,7 +150,7 @@ impl Draw for FAB {
 
             let text_color =
                 if !is_enabled { Color::rgba(255, 255, 255, 120) } else { Color::WHITE };
-            context.draw_text(Point::new(text_x, text_y), &self.icon_text, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y), &self.icon_text, &font, text_color, HorizontalAlignment::Left);
         }
     }
 }

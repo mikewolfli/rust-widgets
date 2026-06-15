@@ -1784,7 +1784,7 @@ pub fn read_widget_property_value(
             }
             _ => Err(CapabilityAccessError::UnsupportedOnWidget),
         },
-        WidgetKind::Panel => match property_name {
+        WidgetKind::Panel | WidgetKind::Frame => match property_name {
             "segment_count" => {
                 if let Some(bc) = widget_as::<Breadcrumb>(widget) {
                     Ok(CapabilityValue::UInt(bc.segments().len() as u64))
@@ -5022,7 +5022,7 @@ pub fn default_widget_property_value(
             _ => return None,
         },
 
-        WidgetKind::Panel => match property_name {
+        WidgetKind::Panel | WidgetKind::Frame => match property_name {
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             _ => return None,

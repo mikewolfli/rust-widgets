@@ -10,6 +10,7 @@ pub enum QueueError {
     Empty,
     Closed,
 }
+#[derive(Debug)]
 pub struct FixedSizeQueue<T, const N: usize = DEFAULT_QUEUE_CAPACITY> {
     buffer: [Option<T>; N],
     head: usize,
@@ -83,6 +84,7 @@ impl<T> PriorityEntry<T> {
         Self { item, priority }
     }
 }
+#[derive(Debug)]
 pub struct PriorityQueue<T> {
     queues: [VecDeque<T>; 8],
     len: usize,
@@ -136,6 +138,7 @@ impl<T> Default for PriorityQueue<T> {
     }
 }
 #[cfg(not(feature = "mini"))]
+#[derive(Debug)]
 pub struct BlockingQueue<T> {
     queue: Mutex<VecDeque<T>>,
     condvar: Condvar,
@@ -226,6 +229,7 @@ impl<T> Default for BlockingQueue<T> {
     }
 }
 #[cfg(not(feature = "mini"))]
+#[derive(Debug)]
 pub struct BoundedQueue<T> {
     queue: Mutex<VecDeque<T>>,
     condvar_not_full: Condvar,

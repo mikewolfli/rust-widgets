@@ -1,5 +1,5 @@
 //! Progress bar widget.
-use crate::core::{Color, Font, Orientation, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -190,6 +190,7 @@ impl Draw for ProgressBar {
                 &text,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
         }
     }

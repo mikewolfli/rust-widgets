@@ -535,7 +535,7 @@ impl LayoutInspector {
         if has_error || has_warning {
             recs.push(Recommendation {
                 title: "Recalculate layout".into(),
-                summary: "Call recalculate() or re-trigger layout.update() to re-apply fixes"
+                summary: "Call layout.update() or re-trigger the layout pass to re-apply fixes"
                     .into(),
                 detail: format!(
                     "LayoutInspector detected {} issue(s). After fixing them, trigger a layout \

@@ -1,5 +1,5 @@
 //! Spin box widget for numeric input.
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -147,7 +147,7 @@ impl SpinBox {
     /// Returns display text.
     fn display_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
-            if self.value == 0 {
+            if self.value == self.minimum {
                 return special.clone();
             }
         }
@@ -317,7 +317,7 @@ impl Draw for SpinBox {
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {
-            context.draw_text(Point::new(text_x, text_y as i32), &display_text, font, text_color);
+            context.draw_text(Point::new(text_x, text_y as i32), &display_text, font, text_color, HorizontalAlignment::Left);
         }
     }
 }

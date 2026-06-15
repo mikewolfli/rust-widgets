@@ -1,5 +1,5 @@
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::image::{Image, ImageFormat};
@@ -105,7 +105,7 @@ impl Draw for ImageView {
             let font = self.style().font.clone().unwrap_or_default();
             let text_x = rect.x + rect.width as i32 / 2 - 4;
             let text_y = rect.y + rect.height as i32 / 2 - 8;
-            context.draw_text(Point::new(text_x, text_y), "?", &font, fg);
+            context.draw_text(Point::new(text_x, text_y), "?", &font, fg, HorizontalAlignment::Left);
         }
     }
 }

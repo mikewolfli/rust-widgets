@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn custom_signal_hub_remove_and_contains() {
-        let mut hub = super::CustomSignalHub::default();
+        let hub = super::CustomSignalHub::default();
         hub.define("test");
         assert!(hub.contains("test"));
         assert_eq!(hub.signal_count(), 1);

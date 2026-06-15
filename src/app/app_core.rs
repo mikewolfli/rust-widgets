@@ -165,9 +165,9 @@ impl App {
     /// Register a callback invoked once after [`init`](App::init) completes.
     ///
     /// Returns `self` so calls can be chained.
-    pub fn on_startup<F: FnOnce() + 'static>(self, f: F) -> Self {
-        STARTUP.with(|s| {
-            *s.borrow_mut() = Some(Box::new(f));
+    pub fn on_startup<F: FnOnce() + Send + 'static>(self, f: F) -> Self {
+        with_startup(|slot| {
+            *slot = Some(Box::new(f));
         });
         self
     }
@@ -175,9 +175,9 @@ impl App {
     /// Register a callback invoked once before the event loop exits.
     ///
     /// Returns `self` so calls can be chained.
-    pub fn on_shutdown<F: FnOnce() + 'static>(self, f: F) -> Self {
-        SHUTDOWN.with(|s| {
-            *s.borrow_mut() = Some(Box::new(f));
+    pub fn on_shutdown<F: FnOnce() + Send + 'static>(self, f: F) -> Self {
+        with_shutdown(|slot| {
+            *slot = Some(Box::new(f));
         });
         self
     }
@@ -193,8 +193,8 @@ impl App {
         self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Foreground);
 
         // Fire the startup callback after everything is initialised.
-        STARTUP.with(|s| {
-            if let Some(cb) = s.borrow_mut().take() {
+        with_startup(|slot| {
+            if let Some(cb) = slot.take() {
                 cb();
             }
         });
@@ -213,8 +213,8 @@ impl App {
         // We also drain any remaining events after the loop ends.
         crate::run();
 
-        SHUTDOWN.with(|s| {
-            if let Some(cb) = s.borrow_mut().take() {
+        with_shutdown(|slot| {
+            if let Some(cb) = slot.take() {
                 cb();
             }
         });
@@ -238,8 +238,8 @@ impl App {
         trace_runtime_route("app::run_async");
         std::thread::spawn(|| {
             crate::run();
-            SHUTDOWN.with(|s| {
-                if let Some(cb) = s.borrow_mut().take() {
+            with_shutdown(|slot| {
+                if let Some(cb) = slot.take() {
                     cb();
                 }
             });
@@ -276,12 +276,31 @@ impl Default for App {
 }
 
 // ── Startup / shutdown one-shot callbacks ─────────────────────
+// Using OnceLock + Mutex instead of thread_local! so callbacks
+// are available across threads (e.g. in run_async).
 
-use std::cell::RefCell;
+use crate::compat::Mutex;
+use std::sync::OnceLock;
 
-thread_local! {
-    static STARTUP: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
-    static SHUTDOWN: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+static STARTUP: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+static SHUTDOWN: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+
+fn with_startup<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Option<Box<dyn FnOnce() + Send>>) -> R,
+{
+    let lock = STARTUP.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut *guard)
+}
+
+fn with_shutdown<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Option<Box<dyn FnOnce() + Send>>) -> R,
+{
+    let lock = SHUTDOWN.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut *guard)
 }
 
 fn trace_runtime_route(stage: &str) {

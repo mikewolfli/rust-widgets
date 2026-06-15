@@ -151,6 +151,8 @@ pub struct Animation {
     start_time: Option<Instant>,
     is_running: bool,
     is_paused: bool,
+    /// Tracks when the animation was paused, used on resume to adjust start_time.
+    pause_start_time: Option<Instant>,
     current_iteration: u32,
     on_complete_callback: Option<Box<dyn FnMut()>>,
 }
@@ -161,6 +163,7 @@ impl Animation {
             start_time: None,
             is_running: false,
             is_paused: false,
+            pause_start_time: None,
             current_iteration: 0,
             on_complete_callback: None,
         }
@@ -175,9 +178,13 @@ impl Animation {
         self.is_running = false;
         self.start_time = None;
         self.current_iteration = 0;
+        if let Some(mut callback) = self.on_complete_callback.take() {
+            callback();
+        }
     }
     pub fn pause(&mut self) {
         self.is_paused = true;
+        self.pause_start_time = Some(Instant::now());
     }
     pub fn is_paused(&self) -> bool {
         self.is_paused
@@ -186,6 +193,7 @@ impl Animation {
         self.is_running = false;
         self.is_paused = false;
         self.start_time = None;
+        self.pause_start_time = None;
         self.current_iteration = 0;
     }
     pub fn on_complete(&mut self, callback: Box<dyn FnMut()>) {
@@ -193,6 +201,14 @@ impl Animation {
     }
     pub fn resume(&mut self) {
         self.is_paused = false;
+        // Adjust start_time forward by the paused duration so the animation
+        // resumes from where it stopped rather than jumping forward.
+        if let Some(pause_start) = self.pause_start_time.take() {
+            let paused_duration = pause_start.elapsed();
+            if let Some(ref mut start) = self.start_time {
+                *start += paused_duration;
+            }
+        }
     }
     pub fn is_running(&self) -> bool {
         self.is_running && !self.is_paused
@@ -245,7 +261,7 @@ impl Animation {
             let animation_elapsed = elapsed - self.config.delay;
             let raw_progress = animation_elapsed.as_secs_f32() / self.config.duration.as_secs_f32();
             if raw_progress >= 1.0 {
-                self.current_iteration = raw_progress as u32;
+                self.current_iteration = raw_progress.floor() as u32;
                 if !self.config.infinite && self.current_iteration >= self.config.iteration_count {
                     self.is_running = false;
                     if let Some(mut callback) = self.on_complete_callback.take() {
@@ -360,13 +376,14 @@ struct ActiveAnimation {
 /// Use `add()` to register a new animation with a progress callback.
 pub struct AnimationDriver {
     animations: HashMap<AnimationId, ActiveAnimation>,
+    property_animations: HashMap<AnimationId, PropertyAnimation>,
     next_id: AnimationId,
 }
 
 impl AnimationDriver {
     /// Creates a new empty animation driver.
     pub fn new() -> Self {
-        Self { animations: HashMap::new(), next_id: 1 }
+        Self { animations: HashMap::new(), property_animations: HashMap::new(), next_id: 1 }
     }
 
     /// Register a new animation and return its ID.
@@ -434,6 +451,15 @@ impl AnimationDriver {
     /// Calls tick callbacks with updated progress and removes completed animations.
     /// Returns the number of still-active (running) animations.
     pub fn advance(&mut self) -> usize {
+        // Phase 1: Advance internal animation state (iteration counting,
+        // on_complete callbacks) by calling update() on every active animation.
+        // This must happen before progress snapshots so is_completed() is accurate.
+        for (_, entry) in self.animations.iter_mut() {
+            if entry.anim.is_running() {
+                entry.anim.update();
+            }
+        }
+
         // Snapshot: collect progress without mutable borrows
         let snap: Vec<(AnimationId, f32)> = self
             .animations
@@ -503,13 +529,18 @@ impl AnimationDriver {
     where
         F: FnMut(f32, f32) + 'static,
     {
-        let _prop = property.into();
+        let prop: String = property.into();
         let config = AnimationConfig::new(duration).with_easing(easing);
         let range = to - from;
-        self.add(config, move |progress| {
+        let id = self.add(config, move |progress| {
             let value = from + range * progress;
             on_tick(value, progress);
-        })
+        });
+        // Store property metadata so callers can inspect active animations
+        let current = from;
+        self.property_animations
+            .insert(id, PropertyAnimation { id, property: prop.clone(), from, to, current });
+        id
     }
 
     /// Convenience: animate with linear easing.
@@ -545,6 +576,14 @@ impl AnimationDriver {
     /// Returns the current progress of an animation, or `None` if not found.
     pub fn get_progress(&self, id: AnimationId) -> Option<f32> {
         self.animations.get(&id).map(|entry| entry.anim.progress())
+    }
+
+    /// Returns the `PropertyAnimation` metadata for a given animation ID, if any.
+    ///
+    /// Only animations created via [`animate`](AnimationDriver::animate) (or its
+    /// convenience wrappers) will have a `PropertyAnimation` entry.
+    pub fn get_property_animation(&self, id: AnimationId) -> Option<&PropertyAnimation> {
+        self.property_animations.get(&id)
     }
 }
 
@@ -1094,7 +1133,7 @@ mod tests {
     #[test]
     fn animation_driver_animate_named_property() {
         let mut driver = AnimationDriver::new();
-        let _id = driver.animate(
+        let id = driver.animate(
             "opacity",
             0.0,
             1.0,
@@ -1103,6 +1142,13 @@ mod tests {
             |_, _| {},
         );
         assert!(!driver.is_empty());
+        // Verify that PropertyAnimation was wired up
+        let prop_anim = driver.get_property_animation(id);
+        assert!(prop_anim.is_some());
+        let pa = prop_anim.unwrap();
+        assert_eq!(pa.property, "opacity");
+        assert!((pa.from - 0.0).abs() < 1e-6);
+        assert!((pa.to - 1.0).abs() < 1e-6);
         driver.advance();
     }
     #[test]

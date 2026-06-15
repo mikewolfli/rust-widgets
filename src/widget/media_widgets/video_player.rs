@@ -5,7 +5,7 @@
 //! and fullscreen button. It emits signals for playback state changes and time
 //! updates.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -30,8 +30,6 @@ pub struct VideoPlayer {
     playback_rate: f32,
     /// Whether the control bar is visible.
     controls_visible: bool,
-    /// Internal flag tracking whether we are dragging the seek bar.
-    _seeking: bool,
     /// Emitted when playback starts.
     pub playback_started: GenericSignal,
     /// Emitted when playback is paused.
@@ -55,7 +53,6 @@ impl VideoPlayer {
             muted: false,
             playback_rate: 1.0,
             controls_visible: true,
-            _seeking: false,
             playback_started: GenericSignal::new(),
             playback_paused: GenericSignal::new(),
             playback_ended: GenericSignal::new(),
@@ -257,6 +254,7 @@ impl Draw for VideoPlayer {
                 text,
                 &font,
                 Color::rgba(180, 180, 180, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -272,6 +270,7 @@ impl Draw for VideoPlayer {
                 play_icon,
                 &font,
                 Color::rgba(255, 255, 255, 180),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -282,8 +281,7 @@ impl Draw for VideoPlayer {
 
         let control_bar_height = 36u32;
         let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
-        let control_bar_rect =
-            Rect::new(rect.x, control_bar_y, rect.width, control_bar_height);
+        let control_bar_rect = Rect::new(rect.x, control_bar_y, rect.width, control_bar_height);
         context.fill_rect(control_bar_rect, Color::rgba(0, 0, 0, 160));
 
         // Play/Pause button.
@@ -293,7 +291,7 @@ impl Draw for VideoPlayer {
         let btn_y = control_bar_y
             + (control_bar_height as i32 - btn_metrics.height as i32) / 2
             + btn_metrics.ascent as i32;
-        context.draw_text(Point::new(btn_x, btn_y), btn_text, &font, Color::WHITE);
+        context.draw_text(Point::new(btn_x, btn_y), btn_text, &font, Color::WHITE, HorizontalAlignment::Left);
 
         // Seek bar.
         let seek_bar_x = btn_x + btn_metrics.width as i32 + 12;
@@ -328,6 +326,7 @@ impl Draw for VideoPlayer {
             &time_text,
             &font,
             Color::rgba(220, 220, 220, 230),
+            HorizontalAlignment::Left,
         );
 
         // Volume icon and mute button.
@@ -343,7 +342,7 @@ impl Draw for VideoPlayer {
         let vol_y = control_bar_y
             + (control_bar_height as i32 - vol_metrics.height as i32) / 2
             + vol_metrics.ascent as i32;
-        context.draw_text(Point::new(vol_x, vol_y), vol_text, &font, Color::WHITE);
+        context.draw_text(Point::new(vol_x, vol_y), vol_text, &font, Color::WHITE, HorizontalAlignment::Left);
 
         // Playback rate indicator.
         if (self.playback_rate - 1.0).abs() > 0.01 {
@@ -358,6 +357,7 @@ impl Draw for VideoPlayer {
                 &rate_text,
                 &font,
                 Color::rgba(255, 220, 100, 230),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -368,7 +368,7 @@ impl Draw for VideoPlayer {
         let fs_y = control_bar_y
             + (control_bar_height as i32 - fs_metrics.height as i32) / 2
             + fs_metrics.ascent as i32;
-        context.draw_text(Point::new(fs_x, fs_y), fs_text, &font, Color::WHITE);
+        context.draw_text(Point::new(fs_x, fs_y), fs_text, &font, Color::WHITE, HorizontalAlignment::Left);
     }
 }
 
@@ -389,23 +389,23 @@ impl EventHandler for VideoPlayer {
                     let control_bar_height = 36u32;
                     let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
 
-                    if pos.y >= control_bar_y && pos.y < rect.y + rect.height as i32
-                        && self.controls_visible {
-                            // Play/pause button click area.
-                            let font = Font::default();
-                            let btn_text = if self.is_playing { "⏸" } else { "▶" };
-                            let btn_metrics =
-                                context::private::measure_text_static(&font, btn_text);
-                            let btn_x = rect.x + 8;
-                            let btn_w = btn_metrics.width as i32 + 4;
-                            let btn_h = btn_metrics.height as i32 + 4;
-                            let btn_rect =
-                                Rect::new(btn_x, control_bar_y, btn_w as u32, btn_h as u32);
-                            if btn_rect.contains_point(*pos) {
-                                self.toggle_play();
-                                return;
-                            }
+                    if pos.y >= control_bar_y
+                        && pos.y < rect.y + rect.height as i32
+                        && self.controls_visible
+                    {
+                        // Play/pause button click area.
+                        let font = Font::default();
+                        let btn_text = if self.is_playing { "⏸" } else { "▶" };
+                        let btn_metrics = context::private::measure_text_static(&font, btn_text);
+                        let btn_x = rect.x + 8;
+                        let btn_w = btn_metrics.width as i32 + 4;
+                        let btn_h = btn_metrics.height as i32 + 4;
+                        let btn_rect = Rect::new(btn_x, control_bar_y, btn_w as u32, btn_h as u32);
+                        if btn_rect.contains_point(*pos) {
+                            self.toggle_play();
+                            return;
                         }
+                    }
 
                     // Click on video area toggles controls visibility or play/pause.
                     if pos.y < control_bar_y {

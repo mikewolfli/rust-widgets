@@ -1,6 +1,6 @@
 //! ColorPicker widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -296,6 +296,7 @@ impl Draw for ColorPicker {
             &self.hex_rgba(),
             &Font::default(),
             Color::from_rgb(53, 66, 84),
+            HorizontalAlignment::Left,
         );
     }
 }

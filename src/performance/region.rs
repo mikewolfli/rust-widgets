@@ -6,8 +6,8 @@ use crate::core::Rect;
 pub struct RegionId(u64);
 impl RegionId {
     pub fn new() -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        Self(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        static COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        Self(COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
     }
 }
 impl Default for RegionId {
@@ -43,6 +43,7 @@ impl DirtyRegion {
     }
 }
 /// Tracks dirty regions, supports merging and optimization.
+#[derive(Debug)]
 pub struct DirtyRegionTracker {
     pub(crate) regions: Vec<DirtyRegion>,
     merged: bool,

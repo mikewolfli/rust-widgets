@@ -89,4 +89,25 @@ impl AnimationGroup {
     pub fn reset(&mut self) {
         self.current_seq_index = 0;
     }
+
+    /// Advance the sequential index when the current sequential animation completes.
+    ///
+    /// Call this each frame while the group is running. Once parallel animations
+    /// are all finished, the sequential index advances by one each time the
+    /// current sequential animation completes.  When `current_seq_index` reaches
+    /// `sequential.len()`, [`is_completed`](AnimationGroup::is_completed) returns
+    /// `true`.
+    pub fn advance(&mut self, driver: &AnimationDriver) {
+        if self.current_seq_index >= self.sequential.len() {
+            return;
+        }
+        // Advance only after parallel animations complete
+        let parallel_done = self
+            .parallel
+            .iter()
+            .all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true));
+        if parallel_done {
+            self.current_seq_index += 1;
+        }
+    }
 }

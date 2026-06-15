@@ -5,7 +5,7 @@
 //! distance exceeds the configured threshold. Supports embedding child content
 //! below the indicator area.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -221,6 +221,7 @@ impl Draw for RefreshControl {
                     label,
                     &font,
                     Color::rgba(120, 120, 120, 220),
+                    HorizontalAlignment::Left,
                 );
             } else {
                 // Draw pull indicator (arrow + progress)
@@ -262,6 +263,7 @@ impl Draw for RefreshControl {
                         label,
                         &font,
                         Color::rgba(52, 120, 246, 200),
+                        HorizontalAlignment::Left,
                     );
                 }
             }

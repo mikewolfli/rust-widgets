@@ -1,4 +1,4 @@
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
@@ -172,6 +172,7 @@ impl Draw for FontComboBox {
             &font_name,
             &Font::default_ui(),
             Color::BLACK,
+            HorizontalAlignment::Left,
         );
     }
     fn uses_custom_drawing(&self) -> bool {

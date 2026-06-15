@@ -415,10 +415,21 @@ impl PaintBackend for SvgPaintBackend {
                 let end_y = center.y + (*radius as f32 * end_angle.sin()) as i32;
                 let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
                 let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
-                self.push_element(format!(
-                    r##"<path d="M {} {} A {} {} 0 {} 1 {} {}" fill="{}" stroke="{}" />"##,
-                    start_x, start_y, radius, radius, large_arc, end_x, end_y, fill, stroke
-                ));
+                if *filled {
+                    // Pie/wedge shape: center → arc start → arc → arc end → close to center
+                    self.push_element(format!(
+                        r##"<path d="M {} {} L {} {} A {} {} 0 {} 1 {} {} Z" fill="{}" stroke="{}" />"##,
+                        center.x, center.y,
+                        start_x, start_y,
+                        radius, radius, large_arc, end_x, end_y,
+                        fill, stroke
+                    ));
+                } else {
+                    self.push_element(format!(
+                        r##"<path d="M {} {} A {} {} 0 {} 1 {} {}" fill="{}" stroke="{}" />"##,
+                        start_x, start_y, radius, radius, large_arc, end_x, end_y, fill, stroke
+                    ));
+                }
             }
 
             // ── Path ────────────────────────────────────────────────────
@@ -453,13 +464,13 @@ impl PaintBackend for SvgPaintBackend {
                 let x = rect.x + offset_x - *spread;
                 let y = rect.y + offset_y - *spread;
                 self.push_element(format!(
-                    r##"<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" filter=\"url(#shadowBlur)\" rx=\"4\" />"##,
+                    r##"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" filter="url(#shadowBlur)" rx="4" />"##,
                     x, y, spread_w, spread_h, color_to_rgba(color)
                 ));
             }
             RenderCommand::Blur { radius } => {
                 self.push_element(format!(
-                    r##"<filter id=\"blur_{}\"><feGaussianBlur stdDeviation=\"{}\" /></filter>"##,
+                    r##"<filter id="blur_{}"><feGaussianBlur stdDeviation="{}" /></filter>"##,
                     radius, radius
                 ));
             }
@@ -471,7 +482,7 @@ impl PaintBackend for SvgPaintBackend {
                     }
                     d.push_str(" Z");
                     self.push_element(format!(
-                        r##"<clipPath id=\"cp\"><path d=\"{}\" /></clipPath>"##,
+                        r##"<clipPath id="cp"><path d="{}" /></clipPath>"##,
                         d
                     ));
                 }

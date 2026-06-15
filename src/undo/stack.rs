@@ -30,11 +30,11 @@ impl UndoStack {
     /// If the previous command has a compatible merge policy, this will
     /// attempt to merge the new command into the previous one instead of
     /// pushing a separate entry.
-    pub fn push(&mut self, mut command: Box<dyn UndoCommand>) {
+    pub fn push(&mut self, command: Box<dyn UndoCommand>) {
         // Try merging with the last command.
         if self.merge_policy_allows(&*command) {
             if let Some(last) = self.undo_stack.last_mut() {
-                if command.try_merge(last.as_ref()) {
+                if last.try_merge(command.as_ref()) {
                     // Merge succeeded — no new entry needed.
                     self.redo_stack.clear();
                     return;
@@ -197,7 +197,10 @@ mod tests {
         fn description(&self) -> CommandDescription {
             CommandDescription {
                 text: format!("Edit: {}", self.text),
-                timestamp: SystemTime::now(),
+                timestamp_ms: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 command_type: "TextCommand",
             }
         }
@@ -248,7 +251,10 @@ mod tests {
         fn description(&self) -> CommandDescription {
             CommandDescription {
                 text: format!("Edit: {}", self.text),
-                timestamp: SystemTime::now(),
+                timestamp_ms: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 command_type: "TextCommand",
             }
         }
@@ -276,9 +282,10 @@ mod tests {
             if previous.description().command_type != "TextCommand" {
                 return false;
             }
-            // Combine text so undoing once undoes the merged operation.
-            self.text =
-                format!("{}{}", previous.description().text.replacen("Edit: ", "", 1), self.text);
+            // Combine text and applied state so undoing once undoes the merged operation.
+            let prev_action = previous.description().text.replacen("Edit: ", "", 1);
+            self.text.push_str(&prev_action);
+            self.applied.push_str(&prev_action);
             true
         }
     }

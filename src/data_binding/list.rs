@@ -92,17 +92,22 @@ impl<T: Clone + Send + 'static> ObservableList<T> {
 
     /// Subscribe to list mutation notifications.
     ///
-    /// The listener receives a key describing which operation occurred
-    /// (`"push"`, `"pop"`, `"insert"`, `"remove"`, or `"clear"`).
+    /// `key` is the subscription identifier. The listener receives `(key, operation)`
+    /// where `operation` is `"push"`, `"pop"`, `"insert"`, `"remove"`, or `"clear"`.
     pub fn subscribe(&mut self, key: &str, listener: BoxedListener) {
         self.listeners.insert(key.to_string(), listener);
+    }
+
+    /// Remove a listener by its subscription key.
+    pub fn unsubscribe(&mut self, key: &str) {
+        self.listeners.remove(key);
     }
 
     fn notify(&mut self, operation: &str) {
         let keys: Vec<String> = self.listeners.keys().cloned().collect();
         for key in &keys {
             if let Some(listener) = self.listeners.get_mut(key) {
-                listener.on_value_changed(operation);
+                listener.on_value_changed(key, operation);
             }
         }
     }
@@ -171,7 +176,7 @@ mod tests {
         let no = notified_op.clone();
         list.subscribe(
             "test",
-            Box::new(FnListener::new(move |op| {
+            Box::new(FnListener::new(move |_key, op| {
                 *no.lock().unwrap() = op.to_string();
             })),
         );
@@ -186,7 +191,7 @@ mod tests {
         let no = notified_op.clone();
         list.subscribe(
             "test",
-            Box::new(FnListener::new(move |op| {
+            Box::new(FnListener::new(move |_key, op| {
                 *no.lock().unwrap() = op.to_string();
             })),
         );
@@ -201,7 +206,7 @@ mod tests {
         let no = notified_op.clone();
         list.subscribe(
             "test",
-            Box::new(FnListener::new(move |op| {
+            Box::new(FnListener::new(move |_key, op| {
                 *no.lock().unwrap() = op.to_string();
             })),
         );
@@ -216,7 +221,7 @@ mod tests {
         let c = count.clone();
         list.subscribe(
             "test",
-            Box::new(FnListener::new(move |_| {
+            Box::new(FnListener::new(move |_, _| {
                 c.fetch_add(1, Ordering::SeqCst);
             })),
         );

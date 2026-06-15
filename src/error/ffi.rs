@@ -97,6 +97,10 @@ impl CAbiSafe for f64 {
         0.0
     }
 }
+
+// ⚠️ `bool` is **not** C‑ABI‑safe (its memory representation is not guaranteed by the ABI).
+// Prefer `u8` (0/1) for `extern "C" fn` return types. This impl exists only
+// to support existing call sites and should not be used for new code.
 impl CAbiSafe for bool {
     fn c_abi_fallback() -> Self {
         false

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -286,6 +286,7 @@ impl Draw for VirtualTable {
                         value,
                         &Font::default(),
                         Color::from_rgb(49, 60, 78),
+                        HorizontalAlignment::Left,
                     );
                 }
                 x += self.column_width as i32;

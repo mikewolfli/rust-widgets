@@ -2,6 +2,7 @@
 use crate::core::{ObjectId, Rect};
 use std::collections::{HashMap, HashSet};
 /// Tracks dirty/clean state for individual widgets.
+#[derive(Debug)]
 pub struct WidgetDirtyState {
     dirty_widgets: HashSet<ObjectId>,
     dirty_rects: HashMap<ObjectId, Rect>,

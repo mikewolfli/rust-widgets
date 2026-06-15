@@ -5,6 +5,7 @@
 pub enum WidgetKind {
     /// Top-level window.
     Window,
+    #[cfg(not(feature = "mini"))]
     Dialog,
     #[cfg(not(feature = "mini"))]
     MessageBox,
@@ -18,6 +19,7 @@ pub enum WidgetKind {
     InputDialog,
     #[cfg(not(feature = "mini"))]
     ProgressDialog,
+    #[cfg(not(feature = "mini"))]
     PopupWindow,
     Button,
     CheckBox,
@@ -40,6 +42,7 @@ pub enum WidgetKind {
     ScrollBar,
     ScrollArea,
     Panel,
+    Frame,
     #[cfg(not(feature = "mini"))]
     DockPanel,
     GroupBox,
@@ -51,8 +54,10 @@ pub enum WidgetKind {
     MdiArea,
     #[cfg(not(feature = "mini"))]
     MenuBar,
+    #[cfg(not(feature = "mini"))]
     Menu,
     /// Individual item inside a menu.
+    #[cfg(not(feature = "mini"))]
     MenuItem,
     #[cfg(not(feature = "mini"))]
     ContextMenu,
@@ -69,6 +74,7 @@ pub enum WidgetKind {
     /// Chart surface widget.
     #[cfg(not(feature = "mini"))]
     Chart,
+    #[cfg(not(feature = "mini"))]
     ToggleButton,
     #[cfg(not(feature = "mini"))]
     CheckListBox,
@@ -149,6 +155,7 @@ pub enum WidgetKind {
     #[cfg(not(feature = "mini"))]
     ToolButton,
     /// Freeform shape widget — a path-based non-rectangular clickable shape.
+    #[cfg(not(feature = "mini"))]
     FreeformShape,
     /// Standalone tab bar widget (decoupled from TabWidget).
     #[cfg(not(feature = "mini"))]

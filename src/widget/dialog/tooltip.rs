@@ -5,6 +5,7 @@
 //! padding, and maximum width. Tooltips are rendered as rounded rectangles with
 //! semi-transparent dark backgrounds and white text.
 
+use crate::core::{HorizontalAlignment};
 use crate::core::ObjectId;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
@@ -244,7 +245,7 @@ impl Draw for Tooltip {
         let text_x = bg_rect.x + self.padding;
         let text_y = bg_rect.y + self.padding + metrics.ascent as i32;
 
-        context.draw_text(Point::new(text_x, text_y), &self.text, &font, self.text_color);
+        context.draw_text(Point::new(text_x, text_y), &self.text, &font, self.text_color, HorizontalAlignment::Left);
     }
 }
 

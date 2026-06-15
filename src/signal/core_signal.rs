@@ -1,6 +1,7 @@
 use crate::compat::HashMap;
+use crate::compat::{Mutex, RwLock};
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 
 /// Slot execution priority. Higher-priority slots fire before lower-priority ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -228,44 +229,52 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Emit a cloned value to all connected (non-blocked) slots.
     ///
-    /// This method **avoids** deadlocks by draining all slot entries under
-    /// a single write lock, invoking every callback **outside** the lock,
-    /// and then re-inserting the non-`once` slots afterwards.  This means
-    /// callbacks may safely call `connect`, `disconnect`, `disconnect_all`,
-    /// or `emit` on **the same Signal** without deadlocking.
+    /// This method safely processes slots **one at a time** by temporarily
+    /// removing each slot's entry from the real storage under a write lock,
+    /// invoking the callback **outside** the lock, and re-inserting it if
+    /// it is not a `once`-slot.  Callbacks may safely call `connect`,
+    /// `disconnect`, `disconnect_all`, `block`, `unblock`, or `emit` on
+    /// **the same Signal** without deadlocking.  Disconnections performed
+    /// during emission correctly modify the signal's real slot storage and
+    /// are properly persisted (or respected if the slot has not yet been
+    /// processed).
     ///
     /// Slots are invoked in priority order (High → Normal → Low).
     /// Blocked slots are skipped entirely.
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
 
-        // 1. Drain all entries under the write lock.
-        let entries: Vec<(ConnectionHandle, SlotEntry<T>)> = {
-            let mut slots = self.inner.slots.write().expect("signal lock poisoned");
-            core::mem::take(&mut *slots).into_iter().collect()
+        // 1. Snapshot handles and priorities under a read lock.
+        let snapshot: Vec<(ConnectionHandle, Priority)> = {
+            let slots = self.inner.slots.read().expect("signal lock poisoned");
+            slots.iter().map(|(h, e)| (*h, e.priority)).collect()
         };
 
-        // 2. Sort by priority (High first, Low last).
-        let mut entries = entries;
-        entries.sort_by_key(|a| a.1.priority.rank());
+        // 2. Sort by priority (High first).
+        let mut snapshot = snapshot;
+        snapshot.sort_by_key(|a| a.1.rank());
 
-        // 3. Invoke callbacks outside the lock — safe for re-entrant signals.
-        let mut to_reinsert = Vec::new();
-        for (handle, mut entry) in entries {
-            if !entry.blocked {
-                (entry.callback)(arc_value.clone());
-            }
-            if !entry.once {
-                to_reinsert.push((handle, entry));
-            }
-        }
+        // 3. Process each slot individually against the real HashMap.
+        //    Each entry is temporarily removed, the callback is invoked
+        //    outside the lock, and non-once entries are re-inserted.
+        for (handle, _priority) in snapshot {
+            // Remove the entry under a write lock.
+            let entry = {
+                let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+                slots.remove(&handle)
+            };
 
-        // 4. Re-insert non-once slots under a fresh write lock.
-        if !to_reinsert.is_empty() {
-            let mut slots = self.inner.slots.write().expect("signal lock poisoned");
-            for (handle, entry) in to_reinsert {
-                slots.insert(handle, entry);
+            if let Some(mut entry) = entry {
+                if !entry.blocked {
+                    (entry.callback)(arc_value.clone());
+                }
+                if !entry.once {
+                    // Re-insert non-once slots.
+                    self.inner.slots.write().expect("signal lock poisoned").insert(handle, entry);
+                }
             }
+            // If entry was disconnected by a prior callback, it is simply skipped.
+            // The disconnect happened against the real HashMap, so it persists.
         }
     }
 

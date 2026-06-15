@@ -2,7 +2,7 @@ use super::{Point, Rect};
 /// Converts a Y coordinate from Cartesian (bottom-left origin) to screen (top-left origin).
 #[inline]
 pub fn to_screen_y(cartesian_y: f32, height: f32) -> f32 {
-    height - cartesian_y
+    flip_y(cartesian_y, height)
 }
 /// Converts a Y coordinate from Cartesian (bottom-left origin) to screen (top-left origin) for i32.
 #[inline]
@@ -12,7 +12,7 @@ pub fn to_screen_y_i32(cartesian_y: i32, height: i32) -> i32 {
 /// Converts a Y coordinate from screen (top-left origin) to Cartesian (bottom-left origin).
 #[inline]
 pub fn to_cartesian_y(screen_y: f32, height: f32) -> f32 {
-    height - screen_y
+    flip_y(screen_y, height)
 }
 /// Converts a Y coordinate from screen (top-left origin) to Cartesian (bottom-left origin) for i32.
 #[inline]
@@ -22,12 +22,12 @@ pub fn to_cartesian_y_i32(screen_y: i32, height: i32) -> i32 {
 /// Converts a Y coordinate from screen (top-left origin) to PDF (bottom-left origin).
 #[inline]
 pub fn to_pdf_y(screen_y: f32, height: f32) -> f32 {
-    height - screen_y
+    flip_y(screen_y, height)
 }
 /// Converts a Y coordinate from PDF (bottom-left origin) to screen (top-left origin).
 #[inline]
 pub fn from_pdf_y(pdf_y: f32, height: f32) -> f32 {
-    height - pdf_y
+    flip_y(pdf_y, height)
 }
 /// Converts a point from Cartesian to screen coordinates.
 #[inline]

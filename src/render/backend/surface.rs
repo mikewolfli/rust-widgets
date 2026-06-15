@@ -176,13 +176,20 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
-    pub fn draw_text(&mut self, origin: Point, text: &str, font: &Font, color: Color) {
+    pub fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) {
         self.backend.execute_command(&RenderCommand::DrawText {
             origin,
             text: text.to_string(),
             font: font.clone(),
             color,
-            alignment: HorizontalAlignment::Left,
+            alignment,
         });
     }
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
@@ -670,7 +677,7 @@ mod tests {
         backend.begin_frame(Color::WHITE);
         let mut ctx = RenderContext::new(&mut backend);
         let font = Font::simple("Arial", 12.0);
-        ctx.draw_text(Point::new(10, 20), "Hello", &font, Color::BLACK);
+        ctx.draw_text(Point::new(10, 20), "Hello", &font, Color::BLACK, HorizontalAlignment::Left);
         backend.end_frame();
 
         let rgba = backend.frame_rgba();

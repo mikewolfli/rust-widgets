@@ -59,12 +59,14 @@ impl<T: Clone + Send + 'static> Computed<T> {
         self.cached.clone()
     }
 
-    /// Mark the computed value as dirty.
+    /// Mark the computed value as dirty and notify listeners immediately.
     ///
     /// Call this when a dependency of the compute function changes. The next
-    /// call to [`get`](Computed::get) will recompute the value.
+    /// call to [`get`](Computed::get) will recompute the value. Listeners are
+    /// notified right away so push-based reactive chains can propagate.
     pub fn invalidate(&mut self) {
         self.dirty = true;
+        self.notify_listeners();
     }
 
     /// Check whether the computed value has been invalidated.
@@ -84,7 +86,7 @@ impl<T: Clone + Send + 'static> Computed<T> {
         let keys: Vec<String> = self.listeners.keys().cloned().collect();
         for key in &keys {
             if let Some(listener) = self.listeners.get_mut(key) {
-                listener.on_value_changed(key);
+                listener.on_value_changed(key, "invalidate");
             }
         }
     }
@@ -148,7 +150,7 @@ mod tests {
         let nc = notified_count.clone();
         c2.subscribe(
             "test",
-            Box::new(FnListener::new(move |_| {
+            Box::new(FnListener::new(move |_, _| {
                 nc.fetch_add(1, Ordering::SeqCst);
             })),
         );
@@ -157,12 +159,15 @@ mod tests {
         assert_eq!(c2.get(), 10);
         assert_eq!(notified_count.load(Ordering::SeqCst), 1);
 
-        // Change value and invalidate
+        // Change value and invalidate — invalidate now notifies listeners immediately
         inner.store(20, Ordering::SeqCst);
         c2.invalidate();
-        // recomputes from 10 to 20, notifies again
-        assert_eq!(c2.get(), 20);
+        // 1 (from first get) + 1 (from invalidate) = 2
         assert_eq!(notified_count.load(Ordering::SeqCst), 2);
+
+        // Now get() recomputes from 10 to 20, notifies again because value changed
+        assert_eq!(c2.get(), 20);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 3);
     }
 
     #[test]

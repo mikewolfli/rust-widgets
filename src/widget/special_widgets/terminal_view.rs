@@ -1,6 +1,6 @@
 //! TerminalView widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -138,6 +138,7 @@ impl Draw for TerminalView {
                 line,
                 &Font::default(),
                 Color::from_rgb(217, 224, 236),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -147,6 +148,7 @@ impl Draw for TerminalView {
             &format!("> {}", self.input_line),
             &Font::default(),
             Color::from_rgb(140, 218, 160),
+            HorizontalAlignment::Left,
         );
     }
 }

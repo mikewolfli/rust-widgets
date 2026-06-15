@@ -187,3 +187,195 @@ pub mod windows {
         }
     }
 }
+
+// ── macOS objc2 clipboard (feature = "macos") ──
+
+/// macOS clipboard backend using objc2 (NSPasteboard via objc2-app-kit).
+#[cfg(all(target_os = "macos", feature = "macos"))]
+pub mod objc2_macos {
+    //! macOS clipboard using objc2 NSPasteboard APIs.
+    //! Uses objc2 runtime messaging with NSPasteboard, NSPasteboardItem, and NSArray.
+
+    use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    use objc2::class;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+
+    /// macOS clipboard backend using objc2 NSPasteboard bindings.
+    pub struct MacOsObjc2Clipboard;
+
+    impl MacOsObjc2Clipboard {
+        /// Get the general pasteboard and clear its contents.
+        #[allow(clippy::missing_safety_doc)]
+        unsafe fn prepare_pasteboard() -> *mut AnyObject {
+            let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+            let _: i64 = msg_send![pb, clearContents];
+            pb
+        }
+
+        /// Read plain text from NSPasteboard.
+        #[allow(clippy::missing_safety_doc)]
+        unsafe fn read_plain_text(pb: *mut AnyObject) -> Option<String> {
+            let items: *mut AnyObject = msg_send![pb, pasteboardItems];
+            let count: usize = msg_send![items, count];
+            if count == 0 {
+                return None;
+            }
+            let item: *mut AnyObject = msg_send![items, objectAtIndex: 0u64];
+            let type_str = NSString::from_str("public.utf8-plain-text");
+            let str_id: *mut AnyObject = msg_send![item, stringForType: &*type_str];
+            if str_id.is_null() {
+                return None;
+            }
+            let c_str: *const std::os::raw::c_char = msg_send![str_id, UTF8String];
+            if c_str.is_null() {
+                return None;
+            }
+            Some(std::ffi::CStr::from_ptr(c_str).to_string_lossy().into_owned())
+        }
+    }
+
+    impl RichClipboardBackend for MacOsObjc2Clipboard {
+        fn set_contents(&self, content: ClipboardContent) -> bool {
+            let text = match &content {
+                ClipboardContent::Text(t) => t.clone(),
+                _ => {
+                    log::warn!("[macOS objc2 clipboard] non-text format not yet supported");
+                    return false;
+                }
+            };
+            let result = std::panic::catch_unwind(|| unsafe {
+                let pb = Self::prepare_pasteboard();
+                let item: *mut AnyObject = msg_send![class!(NSPasteboardItem), alloc];
+                let item: *mut AnyObject = msg_send![item, init];
+                let ns_string = NSString::from_str(&text);
+                let ns_type = NSString::from_str("public.utf8-plain-text");
+                let success: bool = msg_send![item, setString: &*ns_string, forType: &*ns_type];
+                if success {
+                    let arr: *mut AnyObject =
+                        msg_send![class!(NSArray), arrayWithObject: &*ns_string];
+                    let _: bool = msg_send![pb, writeObjects: arr];
+                    true
+                } else {
+                    false
+                }
+            });
+            result.unwrap_or(false)
+        }
+
+        fn get_contents(&self) -> Option<ClipboardContent> {
+            let result = std::panic::catch_unwind(|| unsafe {
+                let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+                Self::read_plain_text(pb).map(ClipboardContent::Text)
+            });
+            result.unwrap_or(None)
+        }
+
+        fn has_format(&self, content_type: &str) -> bool {
+            let result = std::panic::catch_unwind(|| unsafe {
+                let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+                let ns_type = NSString::from_str(content_type);
+                let arr: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: &*ns_type];
+                let available: *mut AnyObject = msg_send![pb, availableTypeFromArray: arr];
+                !available.is_null()
+            });
+            result.unwrap_or(false)
+        }
+    }
+}
+
+// ── Linux clipboard (in-memory mock) ──
+
+/// Linux clipboard backend (in-memory mock).
+///
+/// Uses a simple in-memory store since native Linux clipboard access
+/// requires platform-specific libraries (GTK / Wayland / X11).
+#[cfg(target_os = "linux")]
+pub mod linux {
+    //! Linux clipboard backend (in-memory mock).
+    //!
+    //! Stores clipboard contents in memory. This provides a functional
+    //! clipboard for testing and environments without a desktop session.
+    //! Real Linux clipboard integration can be added later via GTK or
+    //! Wayland data-device protocols.
+
+    use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    use crate::compat::Mutex;
+
+    /// In-memory clipboard backend for Linux.
+    #[derive(Debug, Default)]
+    pub struct LinuxClipboard {
+        content: Mutex<Option<ClipboardContent>>,
+    }
+
+    impl LinuxClipboard {
+        /// Create a new empty Linux clipboard backend.
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl RichClipboardBackend for LinuxClipboard {
+        fn set_contents(&self, content: ClipboardContent) -> bool {
+            *self.content.lock().unwrap() = Some(content);
+            true
+        }
+
+        fn get_contents(&self) -> Option<ClipboardContent> {
+            self.content.lock().unwrap().clone()
+        }
+
+        fn has_format(&self, content_type: &str) -> bool {
+            self.content.lock().unwrap().as_ref().is_some_and(|c| c.content_type() == content_type)
+        }
+    }
+}
+
+// ── WASM clipboard (in-memory mock) ──
+
+/// WASM/WebAssembly clipboard backend (in-memory mock).
+///
+/// Uses a simple in-memory store since the `web-sys` `Clipboard` API
+/// (`navigator.clipboard`) is async and cannot be used synchronously
+/// from the `RichClipboardBackend` trait methods.
+#[cfg(feature = "wasm")]
+pub mod wasm {
+    //! WASM clipboard backend (in-memory mock).
+    //!
+    //! The browser `navigator.clipboard` API is entirely Promise-based,
+    //! making it unsuitable for synchronous trait methods. This in-memory
+    //! backend is fully functional within a single WASM session and matches
+    //! the behavior of `MockClipboard` from `super::clipboard`.
+
+    use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    use crate::compat::Mutex;
+
+    /// In-memory clipboard backend for WASM.
+    #[derive(Debug, Default)]
+    pub struct WasmClipboard {
+        content: Mutex<Option<ClipboardContent>>,
+    }
+
+    impl WasmClipboard {
+        /// Create a new empty WASM clipboard backend.
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl RichClipboardBackend for WasmClipboard {
+        fn set_contents(&self, content: ClipboardContent) -> bool {
+            *self.content.lock().unwrap() = Some(content);
+            true
+        }
+
+        fn get_contents(&self) -> Option<ClipboardContent> {
+            self.content.lock().unwrap().clone()
+        }
+
+        fn has_format(&self, content_type: &str) -> bool {
+            self.content.lock().unwrap().as_ref().is_some_and(|c| c.content_type() == content_type)
+        }
+    }
+}

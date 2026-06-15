@@ -5,7 +5,7 @@
 //! It supports configurable minimum, maximum, step size, and emits a
 //! `value_changed` signal whenever the value changes.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -134,6 +134,7 @@ impl Draw for Stepper {
             } else {
                 Color::rgba(60, 60, 60, 255)
             },
+            HorizontalAlignment::Left,
         );
 
         // --- Plus button (right) ---
@@ -166,6 +167,7 @@ impl Draw for Stepper {
             } else {
                 Color::rgba(60, 60, 60, 255)
             },
+            HorizontalAlignment::Left,
         );
 
         // --- Value text (center) ---
@@ -177,7 +179,7 @@ impl Draw for Stepper {
         } else {
             Color::rgba(30, 30, 30, 255)
         };
-        context.draw_text(Point::new(text_x, text_y), &value_text, &font, text_color);
+        context.draw_text(Point::new(text_x, text_y), &value_text, &font, text_color, HorizontalAlignment::Left);
     }
 }
 

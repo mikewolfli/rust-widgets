@@ -1,5 +1,5 @@
 //! Progress dialog widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -158,6 +158,7 @@ impl Draw for ProgressDialog {
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         // Label
         context.draw_text(
@@ -165,6 +166,7 @@ impl Draw for ProgressDialog {
             &self.label_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // Progress bar
         let bar_y = rect.y + 62;
@@ -188,6 +190,7 @@ impl Draw for ProgressDialog {
             &format!("{}%", pct),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // Cancel button
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
@@ -215,6 +218,7 @@ impl Draw for ProgressDialog {
             &self.cancel_button_text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
     }
 }

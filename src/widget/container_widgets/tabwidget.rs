@@ -1,5 +1,5 @@
 //! Tab widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -319,6 +319,25 @@ impl EventHandler for TabWidget {
             if *button == 1 {
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
+                        // Check if the click is on the close button area
+                        if self.closable {
+                            let close_size = 12;
+                            if let Some(tab_rect) = self.tab_rect(index) {
+                                let close_x = tab_rect.x + tab_rect.width as i32 - close_size - 5;
+                                let close_y =
+                                    tab_rect.y + (tab_rect.height as i32 - close_size) / 2;
+                                let close_rect = Rect::new(
+                                    close_x,
+                                    close_y,
+                                    close_size as u32,
+                                    close_size as u32,
+                                );
+                                if close_rect.contains(*pos) {
+                                    self.tab_close_requested.emit(index);
+                                    return;
+                                }
+                            }
+                        }
                         self.set_current_index(index);
                     }
                 }
@@ -355,14 +374,27 @@ impl Draw for TabWidget {
                 } else {
                     Color::from_rgb(230, 230, 230)
                 };
-                context.fill_rect(tab_rect, bg_color);
-                // Draw tab border
-                let border_color = if !is_enabled || is_current {
-                    Color::from_rgb(200, 200, 200)
-                } else {
-                    Color::from_rgb(180, 180, 180)
+                match self.tab_shape {
+                    TabShape::Rounded => {
+                        let radius = 4;
+                        context.fill_rounded_rect(tab_rect, radius, bg_color);
+                        let border_color = if !is_enabled || is_current {
+                            Color::from_rgb(200, 200, 200)
+                        } else {
+                            Color::from_rgb(180, 180, 180)
+                        };
+                        context.draw_rounded_rect_stroke(tab_rect, radius, border_color, 1);
+                    }
+                    _ => {
+                        context.fill_rect(tab_rect, bg_color);
+                        let border_color = if !is_enabled || is_current {
+                            Color::from_rgb(200, 200, 200)
+                        } else {
+                            Color::from_rgb(180, 180, 180)
+                        };
+                        context.draw_rect(tab_rect, border_color);
+                    }
                 };
-                context.draw_rect(tab_rect, border_color);
                 // Draw tab text
                 let text_color = if !is_enabled {
                     Color::from_rgb(150, 150, 150)
@@ -377,6 +409,7 @@ impl Draw for TabWidget {
                     &tab.title,
                     &Font::default(),
                     text_color,
+                    HorizontalAlignment::Left,
                 );
                 // Draw close button if closable
                 if self.closable {

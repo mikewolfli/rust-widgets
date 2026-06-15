@@ -1,5 +1,5 @@
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TextMetrics};
 use crate::signal::Signal1;
@@ -460,7 +460,7 @@ impl TabBar {
         // Draw tab title.
         let text_x = tab_rect.x + 6;
         let text_y = tab_rect.y + tab_rect.height as i32 / 2;
-        context.draw_text(Point::new(text_x, text_y), &tab.title, &Font::default(), text_color);
+        context.draw_text(Point::new(text_x, text_y), &tab.title, &Font::default(), text_color, HorizontalAlignment::Left);
 
         // Draw close button if closable.
         if let Some(close_rect) = self.close_rect(index) {

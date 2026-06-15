@@ -4,7 +4,7 @@
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
 //! Emits `finished`, `cancelled`, and `step_changed` signals.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -223,7 +223,7 @@ impl Draw for WizardDialog {
                 let label_font = Font::bold("Arial", 11.0);
                 let label_x = cx - 4;
                 let label_y = cy - 6;
-                context.draw_text(Point::new(label_x, label_y), &label, &label_font, text_color);
+                context.draw_text(Point::new(label_x, label_y), &label, &label_font, text_color, HorizontalAlignment::Left);
 
                 // Step title below circle
                 let title_font = if is_active {
@@ -252,6 +252,7 @@ impl Draw for WizardDialog {
                     &display_title,
                     &title_font,
                     title_color,
+                    HorizontalAlignment::Left,
                 );
 
                 // Connect steps with lines
@@ -277,6 +278,7 @@ impl Draw for WizardDialog {
                 "No steps configured",
                 &empty_font,
                 Color::GRAY,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -301,6 +303,7 @@ impl Draw for WizardDialog {
                 &self.steps[self.current_step].title,
                 &title_font,
                 Color::rgba(30, 30, 30, 255),
+                HorizontalAlignment::Left,
             );
 
             // Optional label
@@ -311,6 +314,7 @@ impl Draw for WizardDialog {
                     "(Optional step)",
                     &opt_font,
                     Color::GRAY,
+                    HorizontalAlignment::Left,
                 );
             }
 
@@ -322,6 +326,7 @@ impl Draw for WizardDialog {
                 &info_text,
                 &info_font,
                 Color::GRAY,
+                HorizontalAlignment::Left,
             );
         } else {
             // Empty content area
@@ -333,6 +338,7 @@ impl Draw for WizardDialog {
                 "Add steps to begin",
                 &empty_font,
                 Color::GRAY,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -359,6 +365,7 @@ impl Draw for WizardDialog {
             "Cancel",
             &Font::new("Arial", 12.0, false, false),
             Color::rgba(60, 60, 60, 255),
+            HorizontalAlignment::Left,
         );
 
         // Back button
@@ -377,6 +384,7 @@ impl Draw for WizardDialog {
             "Back",
             &Font::new("Arial", 12.0, false, false),
             if !back_enabled { Color::GRAY } else { Color::rgba(60, 60, 60, 255) },
+            HorizontalAlignment::Left,
         );
 
         // Next/Finish button
@@ -399,6 +407,7 @@ impl Draw for WizardDialog {
             btn_text,
             &Font::bold("Arial", 12.0),
             btn_text_color,
+            HorizontalAlignment::Left,
         );
     }
 }

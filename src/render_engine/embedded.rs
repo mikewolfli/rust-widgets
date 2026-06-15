@@ -181,9 +181,23 @@ impl EmbeddedEngineShared {
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn destroy_window(&self, window_id: u64) {
+        let mut state = self.lock_state();
+        state.windows.remove(&window_id);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn destroy_button(&self, button_id: u64) {
+        let mut state = self.lock_state();
+        state.buttons.remove(&button_id);
+    }
+
     pub(crate) fn quit(&self) {
         let mut state = self.lock_state();
         state.running = false;
+        state.windows.clear();
+        state.buttons.clear();
         state.pending_tasks.clear();
         drop(state);
         #[cfg(not(feature = "mini"))]
@@ -245,6 +259,7 @@ impl EmbeddedEngineShared {
         let mut state = self.lock_state();
         state.pending_tasks.push_back(EmbeddedTask::new(task_id, label, Box::new(action)));
         drop(state);
+        #[cfg(not(feature = "mini"))]
         self.wake_signal.notify_all();
         task_id
     }

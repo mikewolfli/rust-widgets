@@ -20,7 +20,7 @@
 //! │ Group1   │ Group2   │ Group3   │ Group4           │  ← group title row
 //! └──────────────────────────────────────────────────┘
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -725,6 +725,7 @@ impl RibbonBar {
             text,
             &Font::default(),
             text_color,
+            HorizontalAlignment::Left,
         );
     }
 
@@ -798,6 +799,7 @@ impl RibbonBar {
                             &icon_char.to_string(),
                             &Font::default(),
                             Color::from_rgb(50, 50, 150),
+                            HorizontalAlignment::Left,
                         );
                         // Label below
                         let label_y = ir.y + LARGE_ICON_SIZE + 2;
@@ -806,6 +808,7 @@ impl RibbonBar {
                             item.text(),
                             &Font::default(),
                             fg,
+                            HorizontalAlignment::Left,
                         );
                     } else {
                         // Small: icon and text side by side
@@ -815,12 +818,14 @@ impl RibbonBar {
                             &icon_char.to_string(),
                             &Font::default(),
                             Color::from_rgb(50, 50, 150),
+                            HorizontalAlignment::Left,
                         );
                         context.draw_text(
                             Point::new(ir.x + SMALL_ICON_SIZE + 4, ir.y + ir.height as i32 / 2),
                             item.text(),
                             &Font::default(),
                             fg,
+                            HorizontalAlignment::Left,
                         );
                     }
                 }
@@ -845,6 +850,7 @@ impl RibbonBar {
                 group.title(),
                 &Font::default(),
                 Color::from_rgb(80, 80, 80),
+                HorizontalAlignment::Left,
             );
         }
     }

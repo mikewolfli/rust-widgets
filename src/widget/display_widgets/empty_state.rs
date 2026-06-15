@@ -5,7 +5,7 @@
 //! search results, inboxes, and dashboards to communicate "no data" states
 //! rather than showing a blank screen.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -60,10 +60,9 @@ impl EmptyState {
     /// Sets the icon displayed at the top of the empty state.
     ///
     /// This is typically an emoji or a short symbol string (1–2 characters).
-    pub fn set_icon(&mut self, icon: &str) -> &mut Self {
+    pub fn set_icon(&mut self, icon: &str) {
         self.icon = icon.to_string();
         self.base.request_redraw();
-        self
     }
 
     /// Returns the current icon string.
@@ -72,10 +71,9 @@ impl EmptyState {
     }
 
     /// Sets the title text displayed below the icon.
-    pub fn set_title(&mut self, title: &str) -> &mut Self {
+    pub fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
         self.base.request_redraw();
-        self
     }
 
     /// Returns the current title text.
@@ -84,10 +82,9 @@ impl EmptyState {
     }
 
     /// Sets the descriptive message displayed below the title.
-    pub fn set_message(&mut self, message: &str) -> &mut Self {
+    pub fn set_message(&mut self, message: &str) {
         self.message = message.to_string();
         self.base.request_redraw();
-        self
     }
 
     /// Returns the current message text.
@@ -100,10 +97,9 @@ impl EmptyState {
     /// When set to a non-empty string, an action button is rendered at the
     /// bottom of the empty state. Clicking the button emits `action_pressed`.
     /// When set to an empty string, the action button is hidden.
-    pub fn set_action_text(&mut self, action_text: &str) -> &mut Self {
+    pub fn set_action_text(&mut self, action_text: &str) {
         self.action_text = action_text.to_string();
         self.base.request_redraw();
-        self
     }
 
     /// Returns the current action button label text.
@@ -154,7 +150,7 @@ impl Draw for EmptyState {
             |ctx: &mut RenderContext, y: i32, text: &str, font: &Font, color: Color| {
                 let metrics = ctx.measure_text(text, font);
                 let origin = Point::new(center_x - (metrics.width as i32 / 2), y);
-                ctx.draw_text(origin, text, font, color);
+                ctx.draw_text(origin, text, font, color, HorizontalAlignment::Left);
             };
 
         // ── Icon ──
@@ -188,7 +184,13 @@ impl Draw for EmptyState {
         };
         let title_metrics = context.measure_text(&self.title, &title_font);
         let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
-        context.draw_text(title_origin, &self.title, &title_font, title_color);
+        context.draw_text(
+            title_origin,
+            &self.title,
+            &title_font,
+            title_color,
+            HorizontalAlignment::Left,
+        );
 
         // ── Message ──
         let message_font_size = 14;
@@ -214,7 +216,13 @@ impl Draw for EmptyState {
             let line_y = message_y + i as i32 * (message_font_size + 4);
             let line_metrics = context.measure_text(line, &message_font);
             let line_origin = Point::new(center_x - (line_metrics.width as i32 / 2), line_y);
-            context.draw_text(line_origin, line, &message_font, message_color);
+            context.draw_text(
+                line_origin,
+                line,
+                &message_font,
+                message_color,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Action Button ──
@@ -244,7 +252,13 @@ impl Draw for EmptyState {
                 btn_rect.x + (btn_rect.width as i32 - btn_metrics.width as i32) / 2,
                 btn_rect.y + btn_rect.height as i32 / 2,
             );
-            context.draw_text(btn_origin, &self.action_text, &btn_font, btn_text_color);
+            context.draw_text(
+                btn_origin,
+                &self.action_text,
+                &btn_font,
+                btn_text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }
@@ -494,10 +508,10 @@ mod tests {
     #[test]
     fn empty_state_setters_chain() {
         let mut es = EmptyState::new(Rect::new(0, 0, 400, 250));
-        es.set_icon("⭐")
-            .set_title("Not found")
-            .set_message("Try adjusting your filters.")
-            .set_action_text("Clear Filters");
+        es.set_icon("⭐");
+        es.set_title("Not found");
+        es.set_message("Try adjusting your filters.");
+        es.set_action_text("Clear Filters");
         assert_eq!(es.icon(), "⭐");
         assert_eq!(es.title(), "Not found");
         assert_eq!(es.message(), "Try adjusting your filters.");

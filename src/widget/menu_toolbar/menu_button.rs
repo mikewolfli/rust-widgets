@@ -5,7 +5,7 @@
 //! an icon, enabled/disabled state, checked state, and optional submenu items.
 //! Selecting a menu item emits an `item_triggered` signal with the item's ID.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
@@ -272,6 +272,7 @@ impl Draw for MenuButton {
                 } else {
                     Color::rgba(150, 150, 150, 200)
                 },
+                HorizontalAlignment::Left,
             );
             text_offset_x += 22; // space for icon
         }
@@ -280,7 +281,7 @@ impl Draw for MenuButton {
         let text_color =
             if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::from_rgb(33, 33, 33) };
         let text_y = geom.y + geom.height as i32 / 2;
-        context.draw_text(Point::new(text_offset_x, text_y), &self.text, &font, text_color);
+        context.draw_text(Point::new(text_offset_x, text_y), &self.text, &font, text_color, HorizontalAlignment::Left);
 
         // ── Draw dropdown arrow ──
         let arrow_x = geom.x + geom.width as i32 - PADDING - 8;
@@ -335,6 +336,7 @@ impl Draw for MenuButton {
                         item_icon,
                         &icon_font,
                         item_text_color,
+                        HorizontalAlignment::Left,
                     );
                     item_x += 20;
                 }
@@ -344,6 +346,7 @@ impl Draw for MenuButton {
                     &item.text,
                     &item_font,
                     item_text_color,
+                    HorizontalAlignment::Left,
                 );
 
                 // Checkmark for checked items
@@ -355,6 +358,7 @@ impl Draw for MenuButton {
                         "✓",
                         &check_font,
                         Color::from_rgb(25, 118, 210),
+                        HorizontalAlignment::Left,
                     );
                 }
 

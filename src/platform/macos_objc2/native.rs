@@ -16,7 +16,9 @@
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSButtonType, NSSlider, NSTextField, NSWindow, NSWindowStyleMask,
+    NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSMenu, NSMenuItem, NSPopUpButton,
+    NSProgressIndicator, NSScrollView, NSSlider, NSStepper, NSTableColumn, NSTableView,
+    NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -168,4 +170,158 @@ pub(crate) fn create_ns_slider(
     // objc2 init methods reliably return a valid Retained<NSSlider>.
     let slider = unsafe { NSSlider::initWithFrame(mtm.alloc(), rect) };
     slider
+}
+
+pub(crate) fn create_ns_textfield(
+    mtm: MainThreadMarker,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSTextField> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSTextField::initWithFrame on main thread via mtm.
+    let field = unsafe { NSTextField::initWithFrame(mtm.alloc(), rect) };
+    field.setStringValue(&NSString::from_str(text));
+    field.setEditable(true);
+    field.setBezeled(true);
+    field.setDrawsBackground(true);
+    field
+}
+
+pub(crate) fn create_ns_progress(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSProgressIndicator> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSProgressIndicator::initWithFrame on main thread (mtm guard).
+    let progress = unsafe { NSProgressIndicator::initWithFrame(mtm.alloc(), rect) };
+    progress.setIndeterminate(false);
+    progress.setMinValue(0.0);
+    progress.setMaxValue(100.0);
+    progress.setDoubleValue(0.0);
+    progress
+}
+
+pub(crate) fn create_ns_combo_box(
+    mtm: MainThreadMarker,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSPopUpButton> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSPopUpButton::initWithFrame on main thread (mtm guard).
+    let combo = unsafe { NSPopUpButton::initWithFrame_pullsDown(mtm.alloc(), rect, false) };
+    combo.setTitle(&NSString::from_str(text));
+    combo
+}
+
+pub(crate) fn create_ns_list_box(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSScrollView> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSScrollView::initWithFrame on main thread via mtm.
+    let scroll = unsafe { NSScrollView::initWithFrame(mtm.alloc(), rect) };
+    scroll.setHasVerticalScroller(true);
+    scroll.setHasHorizontalScroller(false);
+    scroll.setBorderType(NSBorderType::BezelBorder);
+    scroll.setAutohidesScrollers(true);
+
+    // Create the table view inside the scroll view.
+    let table_rect = NSRect::new(NSPoint::new(0.0, 0.0), scroll.contentSize());
+    // SAFETY: NSTableView::initWithFrame on main thread.
+    let table = unsafe { NSTableView::initWithFrame(mtm.alloc(), table_rect) };
+
+    // Add a single column for list items.
+    let column_id = NSString::from_str("list-column");
+    // SAFETY: NSTableColumn::initWithIdentifier on main thread.
+    let column = unsafe { NSTableColumn::initWithIdentifier(mtm.alloc(), &column_id) };
+    column.setTitle(&NSString::from_str("Items"));
+    table.addTableColumn(&column);
+    table.setHeaderView(None);
+
+    scroll.setDocumentView(Some(&table));
+    scroll
+}
+
+pub(crate) fn create_ns_panel(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSView> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSView::initWithFrame on main thread (mtm guard).
+    let view = unsafe { NSView::initWithFrame(mtm.alloc(), rect) };
+    view
+}
+
+pub(crate) fn create_ns_scroll_view(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSScrollView> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSScrollView::initWithFrame on main thread (mtm guard).
+    let scroll = unsafe { NSScrollView::initWithFrame(mtm.alloc(), rect) };
+    scroll.setHasVerticalScroller(true);
+    scroll.setHasHorizontalScroller(true);
+    scroll.setBorderType(NSBorderType::BezelBorder);
+    scroll.setAutohidesScrollers(true);
+    scroll
+}
+
+pub(crate) fn create_ns_stepper(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<NSStepper> {
+    let rect = make_rect(x, y, width, height);
+    // SAFETY: NSStepper::initWithFrame on main thread (mtm guard).
+    let stepper = unsafe { NSStepper::initWithFrame(mtm.alloc(), rect) };
+    stepper.setMinValue(0.0);
+    stepper.setMaxValue(100.0);
+    stepper.setIncrement(1.0);
+    stepper.setValueWraps(false);
+    stepper.setAutorepeat(true);
+    stepper
+}
+
+pub(crate) fn create_ns_menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
+    // SAFETY: NSMenu::initWithTitle on main thread (mtm guard).
+    let menu = unsafe { NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(title)) };
+    menu.setAutoenablesItems(false);
+    menu
+}
+
+pub(crate) fn create_ns_menu_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    key_equivalent: &str,
+) -> Retained<NSMenuItem> {
+    // SAFETY: NSMenuItem::initWithTitle_action_keyEquivalent on main thread via mtm.
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str(title),
+            None,
+            &NSString::from_str(key_equivalent),
+        )
+    };
+    item
 }

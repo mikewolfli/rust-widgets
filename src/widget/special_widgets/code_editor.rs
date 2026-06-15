@@ -1,6 +1,6 @@
 //! CodeEditor widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -193,6 +193,7 @@ impl Draw for CodeEditor {
                 &format!("{}", idx + 1),
                 &Font::default(),
                 Color::from_rgb(108, 120, 138),
+                HorizontalAlignment::Left,
             );
 
             if let Some(marker) = self.markers.iter().find(|m| m.line == idx) {
@@ -214,6 +215,7 @@ impl Draw for CodeEditor {
                 line,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -222,6 +224,7 @@ impl Draw for CodeEditor {
             &format!("Ln {}, Col {}", self.cursor_line + 1, self.cursor_column + 1),
             &Font::default(),
             Color::from_rgb(88, 102, 124),
+            HorizontalAlignment::Left,
         );
     }
 }

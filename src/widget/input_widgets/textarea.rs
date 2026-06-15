@@ -1,5 +1,5 @@
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -58,7 +58,13 @@ impl TextArea {
             return;
         }
         let max = self.max_length;
-        self.text = if max > 0 && text.len() > max { text[..max].to_string() } else { text };
+        self.text = if max > 0 && text.len() > max {
+            // Use floor_char_boundary to avoid splitting a multi-byte UTF-8 char
+            let boundary = text.floor_char_boundary(max);
+            text[..boundary].to_string()
+        } else {
+            text
+        };
         self.cursor_pos = self.text.len();
         self.changed.emit();
     }
@@ -67,10 +73,15 @@ impl TextArea {
     ///
     /// If `max_length` is greater than zero and the text already meets or exceeds
     /// that limit, the character is not inserted.
+    ///
+    /// SAFETY: Ensures `cursor_pos` is on a valid UTF-8 char boundary before
+    /// inserting. If not, snaps to the nearest char boundary via `floor_char_boundary`.
     pub fn insert(&mut self, ch: char) {
         if self.max_length > 0 && self.text.len() >= self.max_length {
             return;
         }
+        let boundary = self.text.floor_char_boundary(self.cursor_pos);
+        self.cursor_pos = boundary;
         self.text.insert(self.cursor_pos, ch);
         self.cursor_pos += ch.len_utf8();
         self.changed.emit();
@@ -194,16 +205,28 @@ impl EventHandler for TextArea {
                         self.request_redraw();
                     }
                     37 => {
-                        // Left arrow
+                        // Left arrow — move to previous char boundary
                         if self.cursor_pos > 0 {
-                            self.cursor_pos -= 1;
+                            let mut new_pos = self.cursor_pos;
+                            while new_pos > 0 {
+                                new_pos -= 1;
+                                if self.text.is_char_boundary(new_pos) {
+                                    break;
+                                }
+                            }
+                            self.cursor_pos = new_pos;
                             self.request_redraw();
                         }
                     }
                     39 => {
-                        // Right arrow
+                        // Right arrow — move to next char boundary
                         if self.cursor_pos < self.text.len() {
-                            self.cursor_pos += 1;
+                            let mut new_pos = self.cursor_pos + 1;
+                            while new_pos <= self.text.len() && !self.text.is_char_boundary(new_pos)
+                            {
+                                new_pos += 1;
+                            }
+                            self.cursor_pos = new_pos.min(self.text.len());
                             self.request_redraw();
                         }
                     }
@@ -252,6 +275,7 @@ impl Draw for TextArea {
                 &self.placeholder,
                 &Font::default(),
                 placeholder_color,
+                HorizontalAlignment::Left,
             );
         } else if !self.text.is_empty() {
             let mut y = rect.y + padding;
@@ -264,6 +288,7 @@ impl Draw for TextArea {
                     line,
                     &Font::default(),
                     text_color,
+                    HorizontalAlignment::Left,
                 );
                 y += LINE_H;
             }

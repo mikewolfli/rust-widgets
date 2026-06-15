@@ -28,7 +28,7 @@
 //! let mut name = Binding::new("World".to_string());
 //! let mut greeting = String::new();
 //!
-//! name.subscribe("log", Box::new(FnListener::new(|key| {
+//! name.subscribe("log", Box::new(FnListener::new(|key, _op| {
 //!     println!("[{}] name changed!", key);
 //! })));
 //!

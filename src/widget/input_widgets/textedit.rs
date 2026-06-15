@@ -1,5 +1,5 @@
 //! Multi-line text edit widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -129,6 +129,9 @@ impl Widget for TextEdit {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+    fn size_hint(&self) -> Size {
+        Size::new(200, 24)
+    }
 }
 impl EventHandler for TextEdit {
     fn handle_event(&mut self, event: &Event) {
@@ -188,6 +191,7 @@ impl Draw for TextEdit {
                 display_text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
+                HorizontalAlignment::Left,
             );
         }
     }

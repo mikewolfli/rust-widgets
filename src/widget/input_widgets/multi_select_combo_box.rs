@@ -5,7 +5,7 @@
 //! items on/off. The widget emits a `selection_changed` signal with the IDs
 //! of all selected items whenever the selection changes.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -233,7 +233,7 @@ impl Draw for MultiSelectComboBox {
         let text_x = rect.x + padding;
         let text_y = rect.y + padding + 13;
         let summary = self.summary_text();
-        context.draw_text(Point::new(text_x, text_y), &summary, &font, Color::rgba(0, 0, 0, 255));
+        context.draw_text(Point::new(text_x, text_y), &summary, &font, Color::rgba(0, 0, 0, 255), HorizontalAlignment::Left);
 
         // Draw dropdown arrow
         let arrow_x = rect.x + rect.width as i32 - 18;
@@ -243,6 +243,7 @@ impl Draw for MultiSelectComboBox {
             if self.expanded { "▲" } else { "▼" },
             &font,
             Color::rgba(100, 100, 100, 255),
+            HorizontalAlignment::Left,
         );
 
         // Draw dropdown if expanded
@@ -290,6 +291,7 @@ impl Draw for MultiSelectComboBox {
                     "✓",
                     &check_font,
                     checkbox_color,
+                    HorizontalAlignment::Left,
                 );
             }
 
@@ -301,7 +303,7 @@ impl Draw for MultiSelectComboBox {
             } else {
                 Color::rgba(180, 180, 180, 255)
             };
-            context.draw_text(Point::new(item_text_x, item_text_y), &item.text, &font, item_color);
+            context.draw_text(Point::new(item_text_x, item_text_y), &item.text, &font, item_color, HorizontalAlignment::Left);
         }
     }
 }

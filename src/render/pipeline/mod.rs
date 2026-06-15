@@ -12,6 +12,7 @@ mod containers;
 mod pixel_ops;
 mod primitives;
 
+pub(crate) use pixel_ops::set_pixel;
 pub use pixel_ops::{blend_pixel, fill_pixels};
 
 // Re-export internal helper used by surface.rs

@@ -4,7 +4,7 @@
 //! displays a dropdown list of suggestions as the user types. The user can
 //! select a suggestion with the keyboard (Enter) or by clicking.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -227,7 +227,7 @@ impl Draw for AutoCompleteEdit {
         } else {
             Color::rgba(0, 0, 0, 255)
         };
-        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color);
+        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color, HorizontalAlignment::Left);
 
         // Draw dropdown if visible
         if !self.show_dropdown || self.filtered_suggestions.is_empty() {
@@ -264,6 +264,7 @@ impl Draw for AutoCompleteEdit {
                     suggestion,
                     &font,
                     Color::rgba(0, 0, 0, 255),
+                    HorizontalAlignment::Left,
                 );
             }
         }

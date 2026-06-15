@@ -712,19 +712,19 @@ where
     let task = AsyncTask::new(id, f);
     // Push to a global task queue that the event loop drains each frame
     TASK_QUEUE.with(|q| {
-        q.borrow_mut().push(task);
+        q.borrow_mut().push_back(task);
     });
 }
 
 thread_local! {
-    static TASK_QUEUE: std::cell::RefCell<Vec<AsyncTask>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TASK_QUEUE: std::cell::RefCell<std::collections::VecDeque<AsyncTask>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Drain all pending async tasks (called by event loop each frame).
 pub fn drain_tasks() {
     TASK_QUEUE.with(|q| {
         let mut tasks = q.borrow_mut();
-        while let Some(task) = tasks.pop() {
+        while let Some(task) = tasks.pop_front() {
             (task.task)();
         }
     });

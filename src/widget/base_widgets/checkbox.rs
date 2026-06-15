@@ -1,5 +1,5 @@
 //! Checkbox widget implementation.
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -128,6 +128,11 @@ impl EventHandler for CheckBox {
                 if self.base.is_enabled() => {
                     self.toggle();
                 }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. }
+                if self.base.is_enabled() => {
+                    self.toggle();
+                }
             Event::KeyDown((key, _))
                 // Space key toggles checkbox
                 if *key == 32 && self.base.is_enabled() => {
@@ -190,6 +195,7 @@ impl Draw for CheckBox {
                         "x",
                         &Font::default(),
                         check_color,
+                        HorizontalAlignment::Left,
                     );
                 }
                 CheckState::PartiallyChecked => {
@@ -219,7 +225,7 @@ impl Draw for CheckBox {
                 x: checkbox_rect.x + checkbox_rect.width as i32 + 4,
                 y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
             };
-            context.draw_text(text_point, &self.text, &Font::default(), text_color);
+            context.draw_text(text_point, &self.text, &Font::default(), text_color, HorizontalAlignment::Left);
         }
     }
 }
@@ -487,8 +493,8 @@ mod tests {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
         cb.handle_event(&Event::TouchBegin { touch_id: 0, pos: Point::new(10, 10) });
-        // Current implementation does not match TouchBegin – falls through to _
-        assert_eq!(cb.state(), CheckState::Unchecked);
+        // TouchBegin now toggles the checkbox when the touch feature is enabled
+        assert_eq!(cb.state(), CheckState::Checked);
     }
 
     #[cfg(feature = "touch")]

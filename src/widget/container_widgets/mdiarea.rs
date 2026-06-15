@@ -1,5 +1,5 @@
 //! MDI area widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -478,6 +478,7 @@ impl Draw for MdiArea {
                 &subwindow.title,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
             // Draw close button if closable
             if subwindow.closable {

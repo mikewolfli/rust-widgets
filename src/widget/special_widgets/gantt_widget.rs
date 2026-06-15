@@ -1,6 +1,6 @@
 //! GanttWidget for timeline task planning.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -210,6 +210,7 @@ impl Draw for GanttWidget {
                 &task.label,
                 &Font::default(),
                 Color::from_rgb(36, 49, 68),
+                HorizontalAlignment::Left,
             );
 
             let x0 = self.project_x(task.start, track_x, track_w);

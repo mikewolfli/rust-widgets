@@ -1,5 +1,5 @@
 //! Menu widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -364,6 +364,7 @@ impl Draw for Menu {
                     check_sym,
                     &Font::default(),
                     fg,
+                    HorizontalAlignment::Left,
                 );
             }
             context.draw_text(
@@ -371,6 +372,7 @@ impl Draw for Menu {
                 item.text(),
                 &Font::default(),
                 fg,
+                HorizontalAlignment::Left,
             );
             if !item.shortcut().is_empty() {
                 context.draw_text(
@@ -381,6 +383,7 @@ impl Draw for Menu {
                     item.shortcut(),
                     &Font::default(),
                     fg,
+                    HorizontalAlignment::Left,
                 );
             }
             if item.has_submenu() {
@@ -392,6 +395,7 @@ impl Draw for Menu {
                     "▶",
                     &Font::default(),
                     fg,
+                    HorizontalAlignment::Left,
                 );
             }
             y += Self::item_height();

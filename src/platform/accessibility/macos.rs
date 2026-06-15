@@ -171,26 +171,38 @@ mod tests {
     #[test]
     fn test_role_mapping() {
         // Role strings should match expected NSAccessibilityRole constants
-        assert_eq!(ns_accessibility_role(&super::A11yRole::Button), "NSAccessibilityButtonRole");
         assert_eq!(
-            ns_accessibility_role(&super::A11yRole::TextField),
+            ns_accessibility_role(&crate::platform::accessibility::A11yRole::Button),
+            "NSAccessibilityButtonRole"
+        );
+        assert_eq!(
+            ns_accessibility_role(&crate::platform::accessibility::A11yRole::TextField),
             "NSAccessibilityTextFieldRole"
         );
         assert_eq!(
-            ns_accessibility_role(&super::A11yRole::CheckBox),
+            ns_accessibility_role(&crate::platform::accessibility::A11yRole::CheckBox),
             "NSAccessibilityCheckBoxRole"
         );
-        assert_eq!(ns_accessibility_role(&super::A11yRole::Window), "NSAccessibilityWindowRole");
-        assert_eq!(ns_accessibility_role(&super::A11yRole::Unknown), "NSAccessibilityUnknownRole");
+        assert_eq!(
+            ns_accessibility_role(&crate::platform::accessibility::A11yRole::Window),
+            "NSAccessibilityWindowRole"
+        );
+        assert_eq!(
+            ns_accessibility_role(&crate::platform::accessibility::A11yRole::Unknown),
+            "NSAccessibilityUnknownRole"
+        );
     }
 
     #[test]
     fn test_subrole_mapping() {
         assert_eq!(
-            ns_accessibility_subrole(&super::A11yRole::Switch),
+            ns_accessibility_subrole(&crate::platform::accessibility::A11yRole::Switch),
             Some("NSAccessibilitySwitchSubrole")
         );
-        assert_eq!(ns_accessibility_subrole(&super::A11yRole::Button), None);
+        assert_eq!(
+            ns_accessibility_subrole(&crate::platform::accessibility::A11yRole::Button),
+            None
+        );
     }
 
     #[test]

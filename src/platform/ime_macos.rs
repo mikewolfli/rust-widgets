@@ -29,34 +29,83 @@ use std::sync::Mutex;
 
 /// Wrapper that attempts to acquire an `NSTextInputContext` from a raw view
 /// pointer, returning a boxed opaque token if successful.
+///
+/// Uses real `msg_send!` calls to interact with AppKit at runtime.
 #[cfg(feature = "objc2-macos")]
 fn try_activate_nstextinputcontext(
-    _view_ptr: *mut std::ffi::c_void,
+    view_ptr: *mut std::ffi::c_void,
 ) -> Option<Box<dyn std::any::Any + Send>> {
-    // In a full objc2 build this would do:
-    //   let mtm = MainThreadMarker::new()?;
-    //   let view: *mut NSView = view_ptr as *mut NSView;
-    //   let view_ref = unsafe { &*view };
-    //   let ctx = view_ref.inputContext();
-    //   ctx.activate();
-    //   Some(Box::new(ctx) as Box<dyn Any + Send>)
-    //
-    // For now the state-machine fallback is always used; native hook-up
-    // is done by the caller through `set_marked_text` / `commit_text`.
-    let _ = view_ptr;
-    None
+    use objc2::MainThreadMarker;
+
+    // AppKit calls must happen on the main thread.
+    MainThreadMarker::new()?;
+
+    if view_ptr.is_null() {
+        return None;
+    }
+
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::Object;
+
+        // Get the NSTextInputContext from the view via [view inputContext].
+        let view: *mut Object = view_ptr as *mut Object;
+        let ctx: *mut Object = msg_send![view, inputContext];
+        if ctx.is_null() {
+            log::warn!("[macOS IME] View has no NSTextInputContext");
+            return None;
+        }
+
+        // Activate the input context so it receives IME events.
+        let _: () = msg_send![ctx, activate];
+
+        log::debug!("[macOS IME] NSTextInputContext activated");
+
+        // Opaque wrapper to carry the raw pointer through Box<dyn Any + Send>.
+        #[repr(C)]
+        struct ImeCtx(*mut Object);
+        unsafe impl Send for ImeCtx {}
+
+        Some(Box::new(ImeCtx(ctx)) as Box<dyn std::any::Any + Send>)
+    }
 }
 
 /// Synchronise the platform `NSTextInputContext` with our tracked state.
+///
+/// Calls `invalidateCharacterCoordinates` on the stored context so the
+/// IME system re-queries the composition state from the `NSTextInputClient`
+/// (the backing view).
 #[cfg(feature = "objc2-macos")]
 fn sync_nstextinputcontext(
-    _token: &dyn std::any::Any,
+    token: &dyn std::any::Any,
     _marked_text: &str,
     _marked_range: (usize, usize),
     _selected_range: (usize, usize),
 ) {
-    // In production:  [token invalidateCharacterCoordinates];
-    //                 [token setMarkedText:… selectedRange:… replacementRange:…];
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::Object;
+
+        #[repr(C)]
+        struct ImeCtx(*mut Object);
+
+        // SAFETY: The token was created by try_activate_nstextinputcontext,
+        // so the repr(C) layout guarantees downcast_ref works.
+        let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() else {
+            return;
+        };
+
+        let ctx: *mut Object = ime_ctx.0;
+        if ctx.is_null() {
+            return;
+        }
+
+        // Tell the IME that the cursor / composition state changed so it
+        // re-queries our NSTextInputClient for the latest data.
+        let _: () = msg_send![ctx, invalidateCharacterCoordinates];
+
+        log::debug!("[macOS IME] NSTextInputContext synchronised");
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -126,9 +175,27 @@ impl MacOsImeBridge {
     /// This tells the IME where to position the candidate window.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[macOS IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
-        // In production this calls:
-        //   [[NSTextInputContext activeContext] invalidateCharacterCoordinates];
-        // or uses the stored token to update cursor location rects.
+
+        #[cfg(feature = "objc2-macos")]
+        {
+            unsafe {
+                use objc2::msg_send;
+                use objc2::runtime::{AnyClass, Object};
+                use objc2::sel;
+
+                if let Some(cls) = AnyClass::get(c"NSTextInputContext") {
+                    // Guard: the class may be registered without AppKit being
+                    // fully initialised (e.g. in test environments).
+                    let responds: bool = msg_send![cls, respondsToSelector: sel!(activeContext)];
+                    if responds {
+                        let ctx: *mut Object = msg_send![cls, activeContext];
+                        if !ctx.is_null() {
+                            let _: () = msg_send![ctx, invalidateCharacterCoordinates];
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Process a raw key event through the IME subsystem.
@@ -287,7 +354,24 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
-                let _ = token; // [token activate];
+                unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::Object;
+
+                    #[repr(C)]
+                    struct ImeCtx(*mut Object);
+
+                    if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
+                        let ctx: *mut Object = ime_ctx.0;
+                        if !ctx.is_null() {
+                            let _: () = msg_send![ctx, activate];
+                            log::info!(
+                                "[macOS IME] NSTextInputContext activated for widget={}",
+                                widget_id
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -305,7 +389,24 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
-                let _ = token; // [token deactivate];
+                unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::Object;
+
+                    #[repr(C)]
+                    struct ImeCtx(*mut Object);
+
+                    if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
+                        let ctx: *mut Object = ime_ctx.0;
+                        if !ctx.is_null() {
+                            let _: () = msg_send![ctx, deactivate];
+                            log::info!(
+                                "[macOS IME] NSTextInputContext deactivated for widget={}",
+                                widget_id
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -349,8 +450,29 @@ impl ImeBridge for MacOsImeBridge {
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[macOS IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
-        // In production: set the NSTextInputContext's candidate window
-        // position via [NSTextInputContext activeContext] methods.
+
+        #[cfg(feature = "objc2-macos")]
+        {
+            unsafe {
+                use objc2::msg_send;
+                use objc2::runtime::{AnyClass, Object};
+                use objc2::sel;
+
+                if let Some(cls) = AnyClass::get(c"NSTextInputContext") {
+                    // Guard against uninitialised AppKit (e.g. test env).
+                    let responds: bool = msg_send![cls, respondsToSelector: sel!(activeContext)];
+                    if responds {
+                        let ctx: *mut Object = msg_send![cls, activeContext];
+                        if !ctx.is_null() {
+                            // Invalidate character coordinates so the system
+                            // re-queries the cursor rect, updating the candidate
+                            // window position.
+                            let _: () = msg_send![ctx, invalidateCharacterCoordinates];
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn is_active(&self) -> bool {

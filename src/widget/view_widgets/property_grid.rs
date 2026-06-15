@@ -5,7 +5,7 @@
 //! - Value column (right): editable text with alternating row colors
 //!   Supports row selection via click and emits a `selected` signal.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -149,12 +149,14 @@ impl Draw for PropertyGrid {
             "Property",
             &header_font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + name_col_width as i32 + 4, rect.y + 6),
             "Value",
             &header_font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
 
         // Draw a separator line under header
@@ -204,6 +206,7 @@ impl Draw for PropertyGrid {
                 &self.properties[i].name,
                 &Font::bold("Arial", 12.0),
                 name_text_color,
+                HorizontalAlignment::Left,
             );
 
             // Value text
@@ -219,6 +222,7 @@ impl Draw for PropertyGrid {
                 &self.properties[i].value,
                 &value_font,
                 value_color,
+                HorizontalAlignment::Left,
             );
 
             // Row separator

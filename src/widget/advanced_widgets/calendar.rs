@@ -1,5 +1,5 @@
 //! Calendar widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -267,6 +267,7 @@ impl Draw for Calendar {
             &title,
             &Font::default(),
             Color::from_rgb(40, 40, 40),
+            HorizontalAlignment::Left,
         );
         let value = self.selected_date.format(&self.date_format).to_string();
         context.draw_text(
@@ -274,6 +275,7 @@ impl Draw for Calendar {
             &value,
             &Font::default(),
             Color::from_rgb(20, 20, 20),
+            HorizontalAlignment::Left,
         );
     }
 }

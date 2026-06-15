@@ -1,13 +1,8 @@
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, deg_to_rad, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
-/// Converts degrees to radians.
-fn deg_to_rad(deg: f32) -> f32 {
-    deg * std::f32::consts::PI / 180.0
-}
 
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
@@ -106,16 +101,6 @@ impl Arc {
     /// Sets whether the arc is in indeterminate (spinning indicator) mode.
     pub fn set_indeterminate(&mut self, indeterminate: bool) {
         self.indeterminate = indeterminate;
-    }
-
-    /// Returns a reference to the base widget state.
-    pub fn base(&self) -> &BaseWidget {
-        &self.base
-    }
-
-    /// Returns a mutable reference to the base widget state.
-    pub fn base_mut(&mut self) -> &mut BaseWidget {
-        &mut self.base
     }
 
     /// Normalizes the current value to a fraction in [0.0, 1.0].
@@ -250,7 +235,8 @@ impl Draw for Arc {
             // Use a neutral light fill that blends with the parent background.
             // Since we don't have compositing, draw over with a white-ish color
             // that matches the typical canvas background.
-            context.fill_circle(center, inner_radius, Color::WHITE);
+            let bg = self.style().background_color.unwrap_or(Color::TRANSPARENT);
+            context.fill_circle(center, inner_radius, bg);
         }
 
         // Draw the value text in the center of the arc, if enabled.
@@ -265,7 +251,7 @@ impl Draw for Arc {
             let text_y = center.y - (text_height as i32 / 2);
 
             let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-            context.draw_text(Point::new(text_x, text_y), &text, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y), &text, &font, text_color, HorizontalAlignment::Left);
         }
     }
 }

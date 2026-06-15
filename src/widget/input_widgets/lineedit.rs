@@ -1,5 +1,5 @@
 //! Single-line text edit widget.
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -136,25 +136,36 @@ impl LineEdit {
         if text.is_empty() {
             return;
         }
-        // Check max length
-        if let Some(max) = self.max_length {
+        // Check max length and truncate if needed
+        // SAFETY: `available` is bounded by `text.len()`, and we check
+        // `text.len() > available` before slicing, so no panic occurs.
+        // However, to avoid splitting a multi-byte UTF-8 character, we
+        // use `floor_char_boundary` to ensure the slice is on a char boundary.
+        let effective_text = if let Some(max) = self.max_length {
             let available = max.saturating_sub(self.text.len());
             if available == 0 {
                 return;
             }
-            let _text = if text.len() > available { &text[..available] } else { text };
-        }
+            if text.len() > available {
+                let boundary = text.floor_char_boundary(available);
+                &text[..boundary]
+            } else {
+                text
+            }
+        } else {
+            text
+        };
         // Handle selection
         let mut new_text = self.text.clone();
         if let Some(start) = self.selection_start {
             let start = start.min(new_text.len());
             let end = self.cursor_position.min(new_text.len());
             let (start, end) = if start < end { (start, end) } else { (end, start) };
-            new_text.replace_range(start..end, text);
-            self.cursor_position = start + text.len();
+            new_text.replace_range(start..end, effective_text);
+            self.cursor_position = start + effective_text.len();
         } else {
-            new_text.insert_str(self.cursor_position, text);
-            self.cursor_position += text.len();
+            new_text.insert_str(self.cursor_position, effective_text);
+            self.cursor_position += effective_text.len();
         }
         self.selection_start = None;
         self.set_text(new_text);
@@ -376,7 +387,7 @@ impl Draw for LineEdit {
         if !display_text.is_empty() {
             let text_color = style.text_color.unwrap_or(Color::from_rgb(0, 0, 0));
             let font = style.font.clone().unwrap_or_default();
-            context.draw_text(Point::new(text_x, text_y as i32), display_text, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y as i32), display_text, &font, text_color, HorizontalAlignment::Left);
         }
         // Draw cursor if focused
         // Note: Would need focus state tracking

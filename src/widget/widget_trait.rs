@@ -315,8 +315,12 @@ pub trait Widget: EventHandler + Any {
         self.layout_requested_signal().emit();
     }
     /// Returns the preferred size hint for layout calculations.
+    ///
+    /// The default implementation returns `Size::new(0, 0)` (unknown/unconstrained).
+    /// Widgets should override this to provide meaningful content-based size hints
+    /// so that layout containers can properly allocate space.
     fn size_hint(&self) -> Size {
-        self.size()
+        Size::new(0, 0)
     }
 
     /// Apply CSS styles to this widget. The `css` text is parsed and rules matching

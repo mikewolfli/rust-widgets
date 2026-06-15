@@ -286,7 +286,13 @@ impl Default for Color {
 }
 impl From<&str> for Color {
     fn from(s: &str) -> Self {
-        Self::parse_hex(s).unwrap_or(Self::BLACK)
+        match Self::parse_hex(s) {
+            Some(c) => c,
+            None => {
+                log::warn!("Color::from(\"{}\") failed to parse, falling back to BLACK", s);
+                Self::BLACK
+            }
+        }
     }
 }
 impl std::fmt::Display for Color {

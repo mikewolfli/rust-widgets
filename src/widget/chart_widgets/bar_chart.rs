@@ -4,7 +4,7 @@
 //! optional value labels on top. Each bar can have its own color, or all bars
 //! share a default color.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -295,6 +295,7 @@ impl Draw for BarChart {
                     &label,
                     &label_font,
                     Color::DARK_GRAY,
+                    HorizontalAlignment::Left,
                 );
             }
 
@@ -309,6 +310,7 @@ impl Draw for BarChart {
                     &bar.label,
                     &cat_font,
                     Color::DARK_GRAY,
+                    HorizontalAlignment::Left,
                 );
             }
         }

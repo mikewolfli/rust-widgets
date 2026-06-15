@@ -174,7 +174,10 @@ fn compose_scene_to_surface_software(
     backend.set_size(surface.size());
     backend.apply_render_config(surface.render_config());
     scene.compose_with_backend_config(&mut backend, clear, config);
-    surface.buffer = backend.surface.buffer;
+    // Proper double-buffering: copy rendered content into the back buffer,
+    // then present (swap back→front) instead of replacing the entire BackBuffer.
+    surface.buffer.back.copy_from_slice(&backend.surface.buffer.back);
+    surface.buffer.present();
 }
 #[cfg(feature = "quality-management")]
 fn global_quality_manager() -> &'static Mutex<QualityManager> {

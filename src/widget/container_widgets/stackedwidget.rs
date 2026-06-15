@@ -86,6 +86,7 @@ impl StackedWidget {
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.widgets.len() && self.current_index != index {
             self.current_index = index;
+            self.base.request_redraw();
             self.current_changed.emit(index);
         }
     }

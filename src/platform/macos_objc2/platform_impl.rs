@@ -284,7 +284,15 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::LineEdit, text, x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::LineEdit, text, x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let field = super::native::create_ns_textfield(mtm, text, x, y, width, height);
+            super::native::store_native_view(id, &*field as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_label(
         &self,
@@ -348,19 +356,44 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::ProgressBar, "ProgressBar", x, y, width, height)
+        let id =
+            self.insert_widget(MacObjc2HandleKind::ProgressBar, "ProgressBar", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let progress = super::native::create_ns_progress(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*progress as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::ComboBox, "ComboBox", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::ComboBox, "ComboBox", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let combo = super::native::create_ns_combo_box(mtm, "", x, y, width, height);
+            super::native::store_native_view(id, &*combo as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::ListBox, "ListBox", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::ListBox, "ListBox", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let scroll = super::native::create_ns_list_box(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*scroll as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
         // Validate that widget exists and is a ListBox.
@@ -504,7 +537,15 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::Panel, "Panel", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::Panel, "Panel", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let panel = super::native::create_ns_panel(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*panel as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_spin_box(
         &self,
@@ -517,7 +558,15 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::Panel, "SpinBox", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::Panel, "SpinBox", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let stepper = super::native::create_ns_stepper(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*stepper as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_list_view(
         &self,
@@ -530,7 +579,15 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::Panel, "ListView", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::Panel, "ListView", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let list = super::native::create_ns_list_box(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*list as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
     fn create_scroll_area(
         &self,
@@ -543,7 +600,15 @@ impl Platform for MacOSObjc2Platform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(MacObjc2HandleKind::Panel, "ScrollArea", x, y, width, height)
+        let id = self.insert_widget(MacObjc2HandleKind::Panel, "ScrollArea", x, y, width, height);
+
+        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let scroll = super::native::create_ns_scroll_view(mtm, x, y, width, height);
+            super::native::store_native_view(id, &*scroll as *const _ as *mut std::ffi::c_void);
+        }
+
+        id
     }
 
     // ---- Dialog creation ----

@@ -1,6 +1,7 @@
 use crate::compat::HashMap;
 use crate::core::{Color, Rect, Size};
 use core::hash::{Hash, Hasher};
+use std::time::Instant;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TextKey {
     pub text: String,
@@ -42,18 +43,19 @@ pub struct CachedText {
     pub size: Size,
     pub bounds: Rect,
     pub data: Vec<u8>,
-    pub timestamp: u64,
+    pub(crate) access_order: u64,
+    pub created_at: Instant,
 }
 impl CachedText {
     pub fn new(key: TextKey, size: Size, bounds: Rect) -> Self {
-        Self { key, size, bounds, data: Vec::new(), timestamp: 0 }
+        Self { key, size, bounds, data: Vec::new(), access_order: 0, created_at: Instant::now() }
     }
     pub fn with_data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
         self
     }
-    pub fn with_timestamp(mut self, timestamp: u64) -> Self {
-        self.timestamp = timestamp;
+    pub fn with_access_order(mut self, order: u64) -> Self {
+        self.access_order = order;
         self
     }
 }
@@ -72,7 +74,7 @@ pub struct TextCache {
     cache: HashMap<TextKey, CachedText>,
     config: CacheConfig,
     current_memory: usize,
-    current_timestamp: u64,
+    access_counter: u64,
     hits: u64,
     misses: u64,
 }
@@ -82,40 +84,40 @@ impl TextCache {
             cache: HashMap::new(),
             config,
             current_memory: 0,
-            current_timestamp: 0,
+            access_counter: 0,
             hits: 0,
             misses: 0,
         }
     }
     pub fn get(&mut self, key: &TextKey) -> Option<&CachedText> {
-        self.current_timestamp += 1;
-        if let Some(cached) = self.cache.get(key) {
-            if self.is_expired(cached) {
-                self.cache.remove(key);
-                self.misses += 1;
-                return None;
-            }
-            self.hits += 1;
-            Some(self.cache.get(key).unwrap())
-        } else {
+        self.access_counter += 1;
+        // Single lookup: check expiry first, then return if valid
+        if !self.cache.contains_key(key) {
             self.misses += 1;
-            None
+            return None;
         }
+        if self.is_expired(self.cache.get(key).unwrap()) {
+            self.cache.remove(key);
+            self.misses += 1;
+            return None;
+        }
+        self.hits += 1;
+        self.cache.get(key)
     }
     pub fn get_mut(&mut self, key: &TextKey) -> Option<&mut CachedText> {
-        self.current_timestamp += 1;
-        if let Some(cached) = self.cache.get(key) {
-            if self.is_expired(cached) {
-                self.cache.remove(key);
-                self.misses += 1;
-                return None;
-            }
-            self.hits += 1;
-            Some(self.cache.get_mut(key).unwrap())
-        } else {
+        self.access_counter += 1;
+        // Single lookup path for mutable access
+        if !self.cache.contains_key(key) {
             self.misses += 1;
-            None
+            return None;
         }
+        if self.is_expired(self.cache.get(key).unwrap()) {
+            self.cache.remove(key);
+            self.misses += 1;
+            return None;
+        }
+        self.hits += 1;
+        self.cache.get_mut(key)
     }
     pub fn insert(&mut self, cached: CachedText) {
         let size = cached.data.len();
@@ -131,7 +133,7 @@ impl TextCache {
             }
         }
         self.current_memory += size;
-        let cached = cached.with_timestamp(self.current_timestamp);
+        let cached = cached.with_access_order(self.access_counter);
         self.cache.insert(key, cached);
     }
     pub fn remove(&mut self, key: &TextKey) -> Option<CachedText> {
@@ -179,14 +181,14 @@ impl TextCache {
         if self.config.ttl_seconds == 0 {
             return false;
         }
-        let age = self.current_timestamp.saturating_sub(cached.timestamp);
-        age > self.config.ttl_seconds * 60
+        cached.created_at.elapsed() > std::time::Duration::from_secs(self.config.ttl_seconds)
     }
     fn evict_lru(&mut self) -> bool {
         if self.cache.is_empty() {
             return false;
         }
-        let oldest_key = self.cache.iter().min_by_key(|(_, v)| v.timestamp).map(|(k, _)| k.clone());
+        let oldest_key =
+            self.cache.iter().min_by_key(|(_, v)| v.access_order).map(|(k, _)| k.clone());
         if let Some(key) = oldest_key {
             self.remove(&key);
             return true;

@@ -1,5 +1,5 @@
 //! Chart widget.
-use crate::core::{Point, Rect};
+use crate::core::{HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -114,7 +114,13 @@ impl Draw for ChartWidget {
             let text_origin =
                 crate::core::Point { x: rect.x + 4, y: rect.y + rect.height as i32 / 2 };
             let font = Font::simple("Sans", 12.0);
-            context.draw_text(text_origin, "No data", &font, Color::from_rgb(180, 180, 180));
+            context.draw_text(
+                text_origin,
+                "No data",
+                &font,
+                Color::from_rgb(180, 180, 180),
+                HorizontalAlignment::Left,
+            );
             return;
         }
 
@@ -181,6 +187,7 @@ impl ChartWidget {
                     &label_text,
                     &label_font,
                     Color::from_rgb(80, 80, 80),
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -233,6 +240,7 @@ impl ChartWidget {
                     &label_text,
                     &label_font,
                     Color::from_rgb(80, 80, 80),
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -291,6 +299,7 @@ impl ChartWidget {
                     &label_text,
                     &label_font,
                     Color::from_rgb(60, 60, 60),
+                    HorizontalAlignment::Left,
                 );
             }
             start_angle = end_angle;
@@ -331,6 +340,7 @@ impl ChartWidget {
                     &label_text,
                     &label_font,
                     Color::from_rgb(80, 80, 80),
+                    HorizontalAlignment::Left,
                 );
             }
         }

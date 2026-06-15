@@ -8,6 +8,17 @@ use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// State captured when a splitter handle drag begins.
+struct DragState {
+    /// Index of the handle (the gap between pane `idx` and `idx+1`).
+    handle_index: usize,
+    /// Cursor position along the primary axis at drag start.
+    start_pos: f32,
+    /// Pane ratios at drag start (snapshot).
+    start_ratios: Vec<f32>,
+}
+
 /// Splitter widget with deterministic pane-ratio distribution contract.
 ///
 /// Delegates layout calculations to [`SplitterLayout`].
@@ -17,6 +28,7 @@ pub struct Splitter {
     pub pane_layout_changed: Signal1<Vec<f32>>,
     pub orientation_changed: Signal1<Orientation>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    drag_state: Option<DragState>,
 }
 impl Splitter {
     /// Creates an empty splitter with horizontal orientation.
@@ -27,6 +39,7 @@ impl Splitter {
             pane_layout_changed: Signal1::new(),
             orientation_changed: Signal1::new(),
             registry: None,
+            drag_state: None,
         }
     }
     /// Returns splitter orientation.
@@ -187,15 +200,55 @@ impl crate::event::EventHandler for Splitter {
                         acc += r * total;
                     }
                     if (pos_primary - acc).abs() <= handle_width / 2.0 {
-                        // Store drag state: negative index-1 to indicate dragging
-                        // and save the initial position for delta calculation
-                        self.layout.set_ratio(i, self.layout.ratio(i).unwrap_or(1.0));
+                        // Begin drag for handle at index `i`
+                        self.drag_state = Some(DragState {
+                            handle_index: i,
+                            start_pos: pos_primary,
+                            start_ratios: self.layout.ratios().to_vec(),
+                        });
                         break;
                     }
                 }
             }
+            crate::event::Event::MouseMove { pos } if self.drag_state.is_some() => {
+                if let Some(ref ds) = self.drag_state {
+                    let total = if self.orientation() == Orientation::Horizontal {
+                        rect.width as f32
+                    } else {
+                        rect.height as f32
+                    };
+                    let pos_primary = if self.orientation() == Orientation::Horizontal {
+                        pos.x as f32 - rect.x as f32
+                    } else {
+                        pos.y as f32 - rect.y as f32
+                    };
+                    let delta = pos_primary - ds.start_pos;
+                    let i = ds.handle_index;
+                    // Retrieve the two adjacent start ratios
+                    let left = ds.start_ratios.get(i).copied().unwrap_or(0.0);
+                    let right = ds.start_ratios.get(i + 1).copied().unwrap_or(0.0);
+                    // Convert delta from pixels to ratio units: delta / total
+                    let ratio_delta = delta / total;
+                    let new_left = (left + ratio_delta).max(0.0);
+                    let new_right = (right - ratio_delta).max(0.0);
+                    // Re-normalize so the pair keeps the same combined weight relative
+                    // to the unchanged total of all original ratios.
+                    let pair_sum = left + right;
+                    if pair_sum > 0.0 {
+                        let scale = pair_sum / (new_left + new_right);
+                        let adjusted_left = new_left * scale;
+                        let adjusted_right = new_right * scale;
+                        self.layout.set_ratio(i, adjusted_left);
+                        self.layout.set_ratio(i + 1, adjusted_right);
+                        if self.pane_layout_changed.slot_count() > 0 {
+                            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+                        }
+                    }
+                }
+            }
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
-                // Drag ended - normalize ratios
+                // Drag ended - clear drag state and normalize
+                self.drag_state = None;
                 self.layout.normalize_ratios();
                 if self.pane_layout_changed.slot_count() > 0 {
                     self.pane_layout_changed.emit(self.layout.ratios().to_vec());

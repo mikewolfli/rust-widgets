@@ -61,16 +61,19 @@ impl TimerManager {
                         if now >= entry.next_fire {
                             due_events.push(key);
                             if entry.repeating {
-                                entry.next_fire = now + entry.interval;
+                                // Use Instant::now() + interval to avoid cumulative drift.
+                                // If a timer fires late due to load, reset based on current time
+                                // so subsequent firings are not delayed by the accumulated drift.
+                                entry.next_fire = Instant::now() + entry.interval;
                             }
                         }
                     }
                 }
 
-                for (target, id) in &due_events {
-                    if let Some(entry) = guard.timers.get(&(*target, *id)) {
+                for &(target, id) in &due_events {
+                    if let Some(entry) = guard.timers.get(&(target, id)) {
                         if !entry.repeating {
-                            guard.timers.remove(&(*target, *id));
+                            guard.timers.remove(&(target, id));
                         }
                     }
                 }
@@ -110,23 +113,49 @@ impl TimerManager {
 
         let entry = TimerEntry { interval, repeating, next_fire: Instant::now() + interval };
 
-        let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-        guard.timers.insert((target, id), entry);
+        #[cfg(not(feature = "mini"))]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
+            guard.timers.insert((target, id), entry);
+        }
+        #[cfg(feature = "mini")]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            guard.timers.insert((target, id), entry);
+        }
         Ok(())
     }
 
     /// Stop one timer by `(target, id)`.
     pub fn stop_timer(&self, target: ObjectId, id: u32) -> bool {
-        let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-        guard.timers.remove(&(target, id)).is_some()
+        #[cfg(not(feature = "mini"))]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
+            guard.timers.remove(&(target, id)).is_some()
+        }
+        #[cfg(feature = "mini")]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            guard.timers.remove(&(target, id)).is_some()
+        }
     }
 
     /// Stop all timers belonging to one target.
     pub fn stop_timers_for_target(&self, target: ObjectId) -> usize {
-        let mut guard = self.state.lock().unwrap_or_else(recover_lock);
-        let before = guard.timers.len();
-        guard.timers.retain(|(timer_target, _), _| *timer_target != target);
-        before.saturating_sub(guard.timers.len())
+        #[cfg(not(feature = "mini"))]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
+            let before = guard.timers.len();
+            guard.timers.retain(|(timer_target, _), _| *timer_target != target);
+            before.saturating_sub(guard.timers.len())
+        }
+        #[cfg(feature = "mini")]
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let before = guard.timers.len();
+            guard.timers.retain(|(timer_target, _), _| *timer_target != target);
+            before.saturating_sub(guard.timers.len())
+        }
     }
 
     /// Remove all active timers.

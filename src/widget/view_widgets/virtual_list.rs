@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
@@ -317,6 +317,7 @@ impl Draw for VirtualList {
                 &text,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
+                HorizontalAlignment::Left,
             );
         }
     }

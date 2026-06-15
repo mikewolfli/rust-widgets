@@ -5,7 +5,7 @@
 //! optional min/max date constraints. A `date_changed` signal is emitted
 //! whenever the selected date changes.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -253,7 +253,7 @@ impl Draw for CupertinoDatePicker {
                     Color::rgba(130, 130, 150, 210)
                 };
 
-                context.draw_text(Point::new(text_x, text_y), text, &font, text_color);
+                context.draw_text(Point::new(text_x, text_y), text, &font, text_color, HorizontalAlignment::Left);
             }
 
             // Up arrow indicator (top of column)
@@ -268,6 +268,7 @@ impl Draw for CupertinoDatePicker {
                 "^",
                 &arrow_font,
                 arrow_color,
+                HorizontalAlignment::Left,
             );
 
             // Down arrow indicator (bottom of column)
@@ -277,6 +278,7 @@ impl Draw for CupertinoDatePicker {
                 "v",
                 &arrow_font,
                 arrow_color,
+                HorizontalAlignment::Left,
             );
         }
     }

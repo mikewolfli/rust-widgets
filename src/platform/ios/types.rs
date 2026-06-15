@@ -108,8 +108,10 @@ pub struct IosMobilePlatform {
     pub(crate) menus: Mutex<IosMenuState>,
     /// Runtime state for init/run/quit.
     pub(crate) runtime: IosRuntimeState,
-    /// Shared list storage for ComboBox and ListBox widgets.
+    /// Shared list storage for ListBox widgets.
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
+    /// Shared list storage for ComboBox widgets.
+    pub(crate) combo_data: Mutex<HashMap<u64, ListData>>,
 }
 
 impl IosMobilePlatform {
@@ -120,6 +122,7 @@ impl IosMobilePlatform {
             menus: Mutex::new(IosMenuState::default()),
             runtime: IosRuntimeState::new(),
             list_data: Mutex::new(HashMap::new()),
+            combo_data: Mutex::new(HashMap::new()),
         }
     }
 

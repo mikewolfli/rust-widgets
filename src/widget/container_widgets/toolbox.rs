@@ -1,5 +1,5 @@
 //! Tool box widget.
-use crate::core::{Color, Font, ObjectId, Orientation, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -330,6 +330,7 @@ impl Draw for ToolBox {
                     &item.text,
                     &Font::default(),
                     text_color,
+                    HorizontalAlignment::Left,
                 );
             }
         }

@@ -97,6 +97,10 @@ impl Layout for SplitterLayout {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
         self.panes.push(widget_id);
         self.ratios.push((stretch.max(1) as f32).max(0.01));

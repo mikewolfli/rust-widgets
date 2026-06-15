@@ -1,9 +1,11 @@
+use crate::compat::HashMap;
 use crate::core::{Color, Font};
+#[cfg(not(feature = "mini"))]
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// High-level theme definition used by runtime style resolution.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct Theme {
     /// Theme unique name.
     pub name: String,
@@ -20,7 +22,8 @@ pub struct Theme {
 }
 
 /// Semantic color palette tokens.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct Colors {
     /// Default background color.
     pub background: Color,
@@ -96,7 +99,8 @@ impl Color {
 }
 
 /// Font token set used by theme consumers.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct Fonts {
     /// Regular text font token.
     pub regular: Font,
@@ -155,7 +159,8 @@ fn default_display_font() -> Font {
 /// - `extra_small: u32` — 2px for tight spacing
 /// - `huge: u32` — 48px for generous layout gaps
 /// - `massive: u32` — 64px for section separators
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct Spacing {
     /// Small spacing unit.
     pub small: u32,
@@ -168,7 +173,8 @@ pub struct Spacing {
 }
 
 /// Border and elevation behavior tokens.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct Borders {
     /// Default border width.
     pub width: u32,
@@ -179,14 +185,16 @@ pub struct Borders {
 }
 
 /// Style override map used for class-level theme customization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct ThemeOverrides {
     /// Overrides keyed by style/class name.
     pub styles: HashMap<String, ThemeStyleToken>,
 }
 
 /// Optional style tokens used to override resolved widget styles.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct ThemeStyleToken {
     /// Optional background override.
     pub background: Option<Color>,

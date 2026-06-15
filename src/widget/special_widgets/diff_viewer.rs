@@ -1,6 +1,6 @@
 //! DiffViewer widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -166,12 +166,14 @@ impl Draw for DiffViewer {
             "LEFT",
             &Font::default(),
             Color::from_rgb(54, 66, 85),
+            HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(mid_x + 8, rect.y + 16),
             "RIGHT",
             &Font::default(),
             Color::from_rgb(54, 66, 85),
+            HorizontalAlignment::Left,
         );
 
         for (idx, line) in self.lines.iter().take(12).enumerate() {
@@ -201,6 +203,7 @@ impl Draw for DiffViewer {
                     text,
                     &Font::default(),
                     Color::from_rgb(44, 57, 77),
+                    HorizontalAlignment::Left,
                 );
             }
             if let Some(text) = &line.right {
@@ -209,6 +212,7 @@ impl Draw for DiffViewer {
                     text,
                     &Font::default(),
                     Color::from_rgb(44, 57, 77),
+                    HorizontalAlignment::Left,
                 );
             }
         }

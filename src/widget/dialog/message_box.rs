@@ -1,5 +1,5 @@
 //! Message box dialog widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -265,6 +265,7 @@ impl Draw for MessageBox {
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         // Icon
         let icon_sym = self.icon_symbol();
@@ -274,6 +275,7 @@ impl Draw for MessageBox {
                 icon_sym,
                 &Font::default(),
                 self.icon_color(),
+                HorizontalAlignment::Left,
             );
         }
         // Message text
@@ -283,6 +285,7 @@ impl Draw for MessageBox {
             &self.text,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // Buttons
         let btn_h = 28f32;
@@ -309,6 +312,7 @@ impl Draw for MessageBox {
                 &btn.translated_label(),
                 &Font::default(),
                 fg,
+                HorizontalAlignment::Left,
             );
             btn_x += btn_w + 8.0;
         }

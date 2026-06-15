@@ -3,7 +3,7 @@
 //! Provides a visual placeholder for camera preview with controls overlay,
 //! zoom support, mirror mode, and click-to-toggle behaviour.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -174,6 +174,7 @@ impl Draw for CameraPreview {
                 &res_text,
                 &small_font,
                 Color::rgba(200, 200, 200, 200),
+                HorizontalAlignment::Left,
             );
 
             // Draw camera ID
@@ -183,6 +184,7 @@ impl Draw for CameraPreview {
                 &id_text,
                 &small_font,
                 Color::rgba(200, 200, 200, 200),
+                HorizontalAlignment::Left,
             );
 
             // Draw zoom level indicator
@@ -192,6 +194,7 @@ impl Draw for CameraPreview {
                 &zoom_text,
                 &normal_font,
                 Color::rgba(255, 255, 255, 220),
+                HorizontalAlignment::Left,
             );
 
             // Draw mirror indicator
@@ -201,6 +204,7 @@ impl Draw for CameraPreview {
                     "MIRROR",
                     &small_font,
                     Color::rgba(100, 200, 255, 200),
+                    HorizontalAlignment::Left,
                 );
             }
 
@@ -261,6 +265,7 @@ impl Draw for CameraPreview {
                 "Camera Off",
                 &normal_font,
                 Color::rgba(150, 150, 160, 200),
+                HorizontalAlignment::Left,
             );
 
             // Border

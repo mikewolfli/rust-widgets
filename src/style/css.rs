@@ -16,6 +16,7 @@
 
 use crate::core::Color;
 use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
+use crate::widget::WidgetKind;
 
 /// A CSS-parsed selector that stores raw selector parts as strings.
 /// Used for matching during CSS rule application.
@@ -36,6 +37,20 @@ pub enum CssSelector {
 }
 
 impl CssSelector {
+    /// Convert this CSS-parsed selector into the canonical `Selector` enum.
+    pub fn to_selector(&self) -> Selector {
+        match self {
+            CssSelector::Universal => Selector::Universal,
+            CssSelector::Kind(name) => Selector::Kind(widget_kind_from_str(name)),
+            CssSelector::Class(name) => Selector::Class(name.clone()),
+            CssSelector::Id(id) => Selector::Id(id.clone()),
+            CssSelector::State(state) => Selector::State(*state),
+            CssSelector::And(selectors) => {
+                Selector::And(selectors.iter().map(|s| s.to_selector()).collect())
+            }
+        }
+    }
+
     /// Check if this selector matches a widget with the given properties.
     pub fn matches(
         &self,
@@ -71,6 +86,50 @@ pub struct CssRule {
     pub declarations: Vec<CssDeclaration>,
 }
 
+/// Convert a widget kind name string (e.g. "Button", "Label") to a `WidgetKind` variant.
+fn widget_kind_from_str(name: &str) -> WidgetKind {
+    // Case-insensitive matching of all variants common in CSS selectors.
+    match name {
+        n if n.eq_ignore_ascii_case("Window") => WidgetKind::Window,
+        n if n.eq_ignore_ascii_case("Button") => WidgetKind::Button,
+        n if n.eq_ignore_ascii_case("CheckBox") || n.eq_ignore_ascii_case("Checkbox") => {
+            WidgetKind::CheckBox
+        }
+        n if n.eq_ignore_ascii_case("RadioButton") || n.eq_ignore_ascii_case("Radiobutton") => {
+            WidgetKind::RadioButton
+        }
+        n if n.eq_ignore_ascii_case("Label") => WidgetKind::Label,
+        n if n.eq_ignore_ascii_case("LineEdit") => WidgetKind::LineEdit,
+        n if n.eq_ignore_ascii_case("ComboBox") => WidgetKind::ComboBox,
+        n if n.eq_ignore_ascii_case("SpinBox") => WidgetKind::SpinBox,
+        n if n.eq_ignore_ascii_case("ListBox") => WidgetKind::ListBox,
+        n if n.eq_ignore_ascii_case("ProgressBar") => WidgetKind::ProgressBar,
+        n if n.eq_ignore_ascii_case("Slider") => WidgetKind::Slider,
+        n if n.eq_ignore_ascii_case("ScrollBar") => WidgetKind::ScrollBar,
+        n if n.eq_ignore_ascii_case("ScrollArea") => WidgetKind::ScrollArea,
+        n if n.eq_ignore_ascii_case("Panel") => WidgetKind::Panel,
+        n if n.eq_ignore_ascii_case("Frame") => WidgetKind::Frame,
+        n if n.eq_ignore_ascii_case("GroupBox") => WidgetKind::GroupBox,
+        n if n.eq_ignore_ascii_case("TileView") => WidgetKind::TileView,
+        n if n.eq_ignore_ascii_case("Line") => WidgetKind::Line,
+        n if n.eq_ignore_ascii_case("Meter") => WidgetKind::Meter,
+        n if n.eq_ignore_ascii_case("MiniChart") => WidgetKind::MiniChart,
+        n if n.eq_ignore_ascii_case("ImageView") => WidgetKind::ImageView,
+        n if n.eq_ignore_ascii_case("Arc") => WidgetKind::Arc,
+        n if n.eq_ignore_ascii_case("Spinner") => WidgetKind::Spinner,
+        n if n.eq_ignore_ascii_case("Roller") => WidgetKind::Roller,
+        n if n.eq_ignore_ascii_case("Dropdown") => WidgetKind::Dropdown,
+        n if n.eq_ignore_ascii_case("TextArea") => WidgetKind::TextArea,
+        n if n.eq_ignore_ascii_case("Keyboard") => WidgetKind::Keyboard,
+        n if n.eq_ignore_ascii_case("Switch") => WidgetKind::Switch,
+        n if n.eq_ignore_ascii_case("MiniCanvas") => WidgetKind::MiniCanvas,
+        _ => {
+            // Fallback: Window as a safe default for unregistered kinds.
+            WidgetKind::Window
+        }
+    }
+}
+
 /// CSS parser that converts CSS text into `StyleSheet` + property application.
 pub struct CssParser;
 
@@ -84,7 +143,10 @@ impl CssParser {
             store_declarations(&rule.selector_text, rule.declarations.clone());
             // Add a StyleRule entry using Universal selector so the parsed
             // rules are reflected in sheet.rules().
-            let rule_entry = StyleRule::new(Selector::Universal, &rule.selector_text);
+            let selector = Self::parse_selector(&rule.selector_text)
+                .map(|cs| cs.to_selector())
+                .unwrap_or(Selector::Universal);
+            let rule_entry = StyleRule::new(selector, &rule.selector_text);
             sheet.add_rule(rule_entry);
         }
         Ok(sheet)

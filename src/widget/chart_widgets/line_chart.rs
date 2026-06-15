@@ -4,7 +4,7 @@
 //! under the line, and a line connecting data points with configurable stroke.
 //! Axis ranges can be set manually or auto-computed from the data.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -338,6 +338,7 @@ impl Draw for LineChart {
                     &label,
                     &label_font,
                     Color::DARK_GRAY,
+                    HorizontalAlignment::Left,
                 );
             }
             // X-axis labels
@@ -354,6 +355,7 @@ impl Draw for LineChart {
                     &label,
                     &label_font,
                     Color::DARK_GRAY,
+                    HorizontalAlignment::Left,
                 );
             }
         }

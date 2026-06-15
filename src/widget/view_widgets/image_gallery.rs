@@ -4,7 +4,7 @@
 //! a thumbnail strip at the bottom. It supports keyboard navigation (arrow keys),
 //! thumbnail selection via click, and emits a signal when the selected image changes.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -219,6 +219,7 @@ impl Draw for ImageGallery {
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -251,6 +252,7 @@ impl Draw for ImageGallery {
                 display_name,
                 &font,
                 Color::rgba(220, 220, 220, 230),
+                HorizontalAlignment::Left,
             );
 
             // Draw dimensions.
@@ -264,6 +266,7 @@ impl Draw for ImageGallery {
                 &dim_text,
                 &font,
                 Color::rgba(180, 180, 180, 200),
+                HorizontalAlignment::Left,
             );
 
             // Image index indicator.
@@ -276,7 +279,7 @@ impl Draw for ImageGallery {
             let pill_h = index_metrics.height as u32 + 4;
             let pill_rect = Rect::new(index_x - 4, preview_rect.y + 2, pill_w, pill_h);
             context.fill_rounded_rect(pill_rect, 3, Color::rgba(0, 0, 0, 70));
-            context.draw_text(Point::new(index_x, index_y), &index_text, &font, Color::WHITE);
+            context.draw_text(Point::new(index_x, index_y), &index_text, &font, Color::WHITE, HorizontalAlignment::Left);
 
             // Navigation arrows.
             if self.has_previous() {
@@ -291,6 +294,7 @@ impl Draw for ImageGallery {
                     arrow_left,
                     &font,
                     Color::rgba(255, 255, 255, 180),
+                    HorizontalAlignment::Left,
                 );
             }
 
@@ -307,6 +311,7 @@ impl Draw for ImageGallery {
                     arrow_right,
                     &font,
                     Color::rgba(255, 255, 255, 180),
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -384,6 +389,7 @@ impl Draw for ImageGallery {
                         &label_text,
                         &font,
                         Color::rgba(200, 200, 200, 200),
+                        HorizontalAlignment::Left,
                     );
                 }
             }

@@ -1,5 +1,5 @@
 //! Font dialog widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -93,6 +93,7 @@ impl Draw for FontDialog {
             &tr!("dialog.font.select_font"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         let col_w = (rect.width / 3).saturating_sub(6);
         let list_y = rect.y + 38;
@@ -107,6 +108,7 @@ impl Draw for FontDialog {
                 label.as_str(),
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
+                HorizontalAlignment::Left,
             );
             context.fill_rect(
                 Rect::new(col_x as i32, list_y, col_w, list_h),
@@ -127,6 +129,7 @@ impl Draw for FontDialog {
             "AaBbYyZz 0123",
             &self.current_font,
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // OK/Cancel
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
@@ -139,6 +142,7 @@ impl Draw for FontDialog {
             &tr!("dialog.ok"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
@@ -153,6 +157,7 @@ impl Draw for FontDialog {
             &tr!("dialog.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
     }
 }

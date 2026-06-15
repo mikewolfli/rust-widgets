@@ -5,7 +5,7 @@
 //! optional icon, enabled state, and optional children for submenu support.
 //! Selecting an item emits an `item_selected` signal with the item's value.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
@@ -255,6 +255,7 @@ impl Draw for DropdownMenu {
             &display_text,
             &font,
             text_color,
+            HorizontalAlignment::Left,
         );
 
         // ── Draw dropdown arrow ──
@@ -328,6 +329,7 @@ impl Draw for DropdownMenu {
                         item_icon,
                         &icon_font,
                         item_text_color,
+                        HorizontalAlignment::Left,
                     );
                     item_x += 20;
                 }
@@ -338,6 +340,7 @@ impl Draw for DropdownMenu {
                     &item.label,
                     &item_font,
                     item_text_color,
+                    HorizontalAlignment::Left,
                 );
 
                 // Submenu indicator if item has children
@@ -375,6 +378,7 @@ impl Draw for DropdownMenu {
                     "▲",
                     &scroll_font,
                     Color::rgba(150, 150, 150, 180),
+                    HorizontalAlignment::Left,
                 );
             }
             if end < self.items.len() {
@@ -384,6 +388,7 @@ impl Draw for DropdownMenu {
                     "▼",
                     &scroll_font,
                     Color::rgba(150, 150, 150, 180),
+                    HorizontalAlignment::Left,
                 );
             }
         }

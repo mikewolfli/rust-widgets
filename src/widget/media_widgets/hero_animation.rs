@@ -6,7 +6,7 @@
 //! position, size, and opacity interpolation based on a progress value from
 //! 0.0 (source) to 1.0 (target).
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -176,6 +176,7 @@ impl Draw for HeroAnimation {
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -224,6 +225,7 @@ impl Draw for HeroAnimation {
             &progress_text,
             &font,
             Color::rgba(80, 80, 80, 200),
+            HorizontalAlignment::Left,
         );
 
         // Draw source/target labels.
@@ -233,6 +235,7 @@ impl Draw for HeroAnimation {
                 "Source",
                 &font,
                 Color::rgba(33, 118, 210, 200),
+                HorizontalAlignment::Left,
             );
         } else if let (None, Some(_)) = (src, tgt) {
             context.draw_text(
@@ -240,6 +243,7 @@ impl Draw for HeroAnimation {
                 "Target",
                 &font,
                 Color::rgba(76, 175, 80, 200),
+                HorizontalAlignment::Left,
             );
         } else if src.is_some() && tgt.is_some() {
             if t < 0.5 {
@@ -248,6 +252,7 @@ impl Draw for HeroAnimation {
                     "Source → Target",
                     &font,
                     Color::rgba(33, 118, 210, 200),
+                    HorizontalAlignment::Left,
                 );
             } else {
                 context.draw_text(
@@ -255,6 +260,7 @@ impl Draw for HeroAnimation {
                     "Source → Target",
                     &font,
                     Color::rgba(76, 175, 80, 200),
+                    HorizontalAlignment::Left,
                 );
             }
         }

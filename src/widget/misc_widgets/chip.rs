@@ -4,7 +4,7 @@
 //! similar to Android Chip or iOS Tag views. It supports a text label, optional close
 //! button (X), optional selected/active state, and click/close signals.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -180,7 +180,7 @@ impl Draw for Chip {
         };
 
         if !display_text.is_empty() {
-            context.draw_text(text_origin, &display_text, &Font::default(), text_color);
+            context.draw_text(text_origin, &display_text, &Font::default(), text_color, HorizontalAlignment::Left);
         }
 
         // ── Close button ──

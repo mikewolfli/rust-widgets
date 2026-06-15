@@ -109,6 +109,7 @@ pub use container_widgets::tile_view::TileView;
 #[cfg(not(feature = "mini"))]
 pub use container_widgets::toolbox::ToolBox;
 pub type Panel = GroupBox;
+pub use base_widgets::frame::Frame;
 #[cfg(not(feature = "mini"))]
 pub type DockPanel = DockWidget;
 // Re-export container widgets from new additions

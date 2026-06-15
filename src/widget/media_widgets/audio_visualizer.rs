@@ -30,7 +30,7 @@ pub struct AudioVisualizer {
     /// Whether to show peak hold markers.
     peak_hold: bool,
     /// Duration in ms to hold peak values.
-    _peak_hold_duration: u64,
+    peak_hold_duration: u64,
     /// Current peak hold values for each bar.
     peak_values: Vec<f32>,
 }
@@ -48,7 +48,7 @@ impl AudioVisualizer {
             background_color: Color::rgba(20, 20, 30, 255),
             mirror: false,
             peak_hold: false,
-            _peak_hold_duration: 500,
+            peak_hold_duration: 500,
             peak_values: vec![0.0; bar_count],
         }
     }
@@ -141,6 +141,16 @@ impl AudioVisualizer {
     /// Returns whether peak hold is enabled.
     pub fn is_peak_hold_enabled(&self) -> bool {
         self.peak_hold
+    }
+
+    /// Sets the peak hold duration in milliseconds.
+    pub fn set_peak_hold_duration(&mut self, ms: u64) {
+        self.peak_hold_duration = ms;
+    }
+
+    /// Returns the peak hold duration in milliseconds.
+    pub fn peak_hold_duration(&self) -> u64 {
+        self.peak_hold_duration
     }
 }
 
@@ -263,9 +273,11 @@ impl EventHandler for AudioVisualizer {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button: _ } => {
-                // Basic interaction: can be used to toggle pause/resume
+            Event::MousePress { pos: _, button } if *button == 1 => {
+                self.peak_hold = !self.peak_hold;
+                self.base.request_redraw();
             }
+            Event::MousePress { pos: _, button: _ } => {}
             _ => {
                 self.base.handle_event(event);
             }

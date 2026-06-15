@@ -1,6 +1,6 @@
 //! Breadcrumb navigation widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -219,6 +219,7 @@ impl Draw for Breadcrumb {
                 &segment.label,
                 &Font::default(),
                 Color::from_rgb(34, 45, 64),
+                HorizontalAlignment::Left,
             );
 
             x += width;
@@ -228,6 +229,7 @@ impl Draw for Breadcrumb {
                     ">",
                     &Font::default(),
                     Color::from_rgb(120, 128, 142),
+                    HorizontalAlignment::Left,
                 );
                 x += self.separator_width;
             }

@@ -148,7 +148,7 @@ impl WrapLayout {
         }
 
         // Compute row heights and total used height.
-        let mut row_height: Vec<i32> = lines
+        let row_height: Vec<i32> = lines
             .iter()
             .map(|line| line.iter().map(|(_, s)| s.height as i32).max().unwrap_or(0))
             .collect();
@@ -169,11 +169,10 @@ impl WrapLayout {
         let mut results = Vec::new();
         let mut cur_y = start_y;
 
-        for line in &lines {
+        for (line_idx, line) in lines.iter().enumerate() {
             let line_total_w: i32 = line.iter().map(|(_, s)| s.width as i32).sum::<i32>()
                 + (line.len() as i32 - 1).max(0) * gap;
-            let max_h = row_height[0];
-            row_height.remove(0);
+            let max_h = row_height[line_idx];
 
             let start_x = match self.alignment {
                 WrapAlignment::Start => content.x,
@@ -240,7 +239,7 @@ impl WrapLayout {
             cols.push(current_col);
         }
 
-        let mut col_width: Vec<i32> = cols
+        let col_width: Vec<i32> = cols
             .iter()
             .map(|col| col.iter().map(|(_, s)| s.width as i32).max().unwrap_or(0))
             .collect();
@@ -259,11 +258,10 @@ impl WrapLayout {
         let mut results = Vec::new();
         let mut cur_x = start_x;
 
-        for col in &cols {
+        for (col_idx, col) in cols.iter().enumerate() {
             let col_total_h: i32 = col.iter().map(|(_, s)| s.height as i32).sum::<i32>()
                 + (col.len() as i32 - 1).max(0) * gap;
-            let max_w = col_width[0];
-            col_width.remove(0);
+            let max_w = col_width[col_idx];
 
             let start_y = match self.alignment {
                 WrapAlignment::Start => content.y,

@@ -1,5 +1,5 @@
 //! Color dialog widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -156,6 +156,7 @@ impl Draw for ColorDialog {
             &tr!("color_dialog.title"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         // Color picker area (simplified)
         let picker_rect = self.picker_rect();
@@ -171,6 +172,7 @@ impl Draw for ColorDialog {
             &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
@@ -184,6 +186,7 @@ impl Draw for ColorDialog {
             &tr!("common.button.ok"),
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
@@ -198,6 +201,7 @@ impl Draw for ColorDialog {
             &tr!("common.button.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
     }
 }

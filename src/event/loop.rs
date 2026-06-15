@@ -32,6 +32,10 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
+/// Canonical event name for animation frame requests.
+/// Used instead of a string literal to avoid fragile string matching.
+pub const ANIMATION_FRAME_EVENT_NAME: &str = "animation_frame";
+
 /// A handle returned by `request_animation_frame` that can be used to cancel the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AnimationFrameRequest {
@@ -130,17 +134,21 @@ impl EventLoop {
 
                     // Dispatch normal/high priority event immediately
                     if let Some(ref dispatch) = dispatch_fn {
-                        dispatch(target, &event);
-                        #[cfg(feature = "touch")]
-                        if let Some(ref gesture) = maybe_gesture_event {
-                            dispatch(target, gesture);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            dispatch(target, &event);
+                            #[cfg(feature = "touch")]
+                            if let Some(ref gesture) = maybe_gesture_event {
+                                dispatch(target, gesture);
+                            }
+                        }));
+                        if let Err(e) = result {
+                            log::error!("[event-loop] Dispatch panicked: {:?}", e);
                         }
                     } else {
-                        // Fallback: consume values when no dispatch function is set
-                        let _ = target;
-                        let _ = event;
-                        #[cfg(feature = "touch")]
-                        let _ = maybe_gesture_event;
+                        log::warn!(
+                            "[event-loop] No dispatch_fn set — dropping event {:?} for target {:?}",
+                            event, target
+                        );
                     }
                 }
 
@@ -162,16 +170,21 @@ impl EventLoop {
                         };
 
                         if let Some(ref dispatch) = dispatch_fn {
-                            dispatch(target, &event);
-                            #[cfg(feature = "touch")]
-                            if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(target, gesture);
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                dispatch(target, &event);
+                                #[cfg(feature = "touch")]
+                                if let Some(ref gesture) = maybe_gesture_event {
+                                    dispatch(target, gesture);
+                                }
+                            }));
+                            if let Err(e) = result {
+                                log::error!("[event-loop] Dispatch panicked: {:?}", e);
                             }
                         } else {
-                            let _ = target;
-                            let _ = event;
-                            #[cfg(feature = "touch")]
-                            let _ = maybe_gesture_event;
+                            log::warn!(
+                                "[event-loop] No dispatch_fn set — dropping idle event {:?} for target {:?}",
+                                event, target
+                            );
                         }
                     }
                 }
@@ -239,7 +252,7 @@ impl EventLoop {
     ) -> Result<AnimationFrameRequest, String> {
         let id = self.next_anim_frame_id.fetch_add(1, Ordering::SeqCst);
         let event = Event::Custom {
-            name: "animation_frame".to_string(),
+            name: ANIMATION_FRAME_EVENT_NAME.to_string(),
             payload: id.to_le_bytes().to_vec(),
         };
         self.post_event(target, event, EventPriority::Normal)?;
@@ -263,7 +276,14 @@ impl EventLoop {
 
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
-        *self.running.lock().unwrap_or_else(recover_lock)
+        #[cfg(not(feature = "mini"))]
+        {
+            *self.running.lock().unwrap_or_else(recover_lock)
+        }
+        #[cfg(feature = "mini")]
+        {
+            *self.running.lock().unwrap_or_else(|p| p.into_inner())
+        }
     }
 
     /// Start or replace a timer bound to `target` and `timer_id`.
@@ -408,7 +428,7 @@ mod tests {
 
         el.set_dispatch_fn(Arc::new(move |_target, event| {
             if let Event::Custom { name, .. } = event {
-                if name == "animation_frame" {
+                if name == ANIMATION_FRAME_EVENT_NAME {
                     anim_fired_clone.store(true, Ordering::SeqCst);
                 }
             }

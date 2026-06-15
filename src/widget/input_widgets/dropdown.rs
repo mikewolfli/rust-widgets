@@ -4,7 +4,7 @@
 //! expands to show a scrollable list of options. Selecting an item emits
 //! a `changed` signal and collapses the list.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -74,7 +74,11 @@ impl Dropdown {
     /// Emits the `changed` signal whenever the index actually changes or is
     /// clamped to a different value.
     pub fn set_selected_index(&mut self, index: usize) {
-        let clamped = if self.items.is_empty() { 0 } else { index.min(self.items.len() - 1) };
+        let clamped = if self.items.is_empty() {
+            0
+        } else {
+            index.min(self.items.len().saturating_sub(1))
+        };
         if self.selected_index != clamped {
             self.selected_index = clamped;
             self.changed.emit();
@@ -251,12 +255,14 @@ impl Draw for Dropdown {
                 text,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
             context.draw_text(
                 Point::new(arrow_x, label_cy as i32),
                 arrow,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
         } else {
             context.draw_text(
@@ -264,12 +270,14 @@ impl Draw for Dropdown {
                 "(Select)",
                 &Font::default(),
                 placeholder_color,
+                HorizontalAlignment::Left,
             );
             context.draw_text(
                 Point::new(arrow_x, label_cy as i32),
                 arrow,
                 &Font::default(),
                 placeholder_color,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -301,6 +309,7 @@ impl Draw for Dropdown {
                 &self.items[i],
                 &Font::default(),
                 item_color,
+                HorizontalAlignment::Left,
             );
         }
     }

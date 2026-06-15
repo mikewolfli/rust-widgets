@@ -60,6 +60,42 @@ impl Image {
     pub fn data(&self) -> &[u8] {
         &self.data
     }
+
+    /// Decode image from raw bytes.
+    ///
+    /// Supports PNG, JPEG, BMP, and other common formats via the embedded
+    /// image decoder (miniz_oxide for PNG decompression).
+    ///
+    /// Returns an `Image` with RGBA8 pixel data ready for rendering.
+    #[cfg(feature = "image")]
+    pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        let decoded = crate::image::decoder::decode_to_rgba8(data)?;
+        let pixel_data = match decoded.data {
+            crate::image::format::ImageData::Rgba8(d) => d,
+            _ => return Err("Decoded image is not RGBA8".to_string()),
+        };
+        Ok(Self {
+            data: pixel_data,
+            format: ImageFormat::Rgba8,
+            width: decoded.width,
+            height: decoded.height,
+        })
+    }
+
+    /// Load an image from a file path.
+    ///
+    /// Supports PNG, JPEG, BMP, and other common formats.
+    /// The image is decoded into RGBA8 pixel data for rendering.
+    #[cfg(feature = "image")]
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| format!("Failed to open image file '{}': {}", path, e))?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|e| format!("Failed to read image file '{}': {}", path, e))?;
+        Self::from_bytes(&data)
+    }
 }
 impl Default for Image {
     fn default() -> Self {

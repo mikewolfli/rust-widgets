@@ -150,14 +150,18 @@ impl ConstraintLayout {
                     bottom_edge.saturating_sub_unsigned(widget_rect.height) + constraint.offset;
             }
             ConstraintType::CenterX => {
-                let target_center_x = target_rect.x + (target_rect.width as i32) / 2;
-                widget_rect.x =
-                    target_center_x - (widget_rect.width as i32) / 2 + constraint.offset;
+                let target_center_x =
+                    target_rect.x.saturating_add((target_rect.width as i32).saturating_div(2));
+                widget_rect.x = target_center_x
+                    .saturating_sub((widget_rect.width as i32).saturating_div(2))
+                    .saturating_add(constraint.offset);
             }
             ConstraintType::CenterY => {
-                let target_center_y = target_rect.y + (target_rect.height as i32) / 2;
-                widget_rect.y =
-                    target_center_y - (widget_rect.height as i32) / 2 + constraint.offset;
+                let target_center_y =
+                    target_rect.y.saturating_add((target_rect.height as i32).saturating_div(2));
+                widget_rect.y = target_center_y
+                    .saturating_sub((widget_rect.height as i32).saturating_div(2))
+                    .saturating_add(constraint.offset);
             }
             ConstraintType::Width => {
                 let w = (target_rect.width as f32 * constraint.multiplier) as i32;

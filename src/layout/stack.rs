@@ -40,6 +40,9 @@ impl Layout for StackLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         self.items.push(widget_id);
     }

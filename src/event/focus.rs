@@ -40,9 +40,15 @@ impl FocusManager {
         if self.focused_widget == Some(widget_id) {
             return false;
         }
+        let old = self.focused_widget;
         self.focused_widget = Some(widget_id);
         self.focus_changed.emit();
         if let Some(ref cb) = self.on_focus_changed {
+            // Notify the previously focused widget that it lost focus.
+            if let Some(old_id) = old {
+                (cb)(old_id);
+            }
+            // Notify the newly focused widget.
             (cb)(widget_id);
         }
         true
@@ -84,10 +90,13 @@ impl FocusManager {
     /// Remove a widget from the focusable order.
     pub fn unregister_focusable(&mut self, id: ObjectId) {
         self.focusable_widgets.retain(|&x| x != id);
-        // If the removed widget was focused, clear focus.
+        // If the removed widget was focused, clear focus and fire a11y callback.
         if self.focused_widget == Some(id) {
             self.focused_widget = None;
             self.focus_changed.emit();
+            if let Some(ref cb) = self.on_focus_changed {
+                (cb)(id);
+            }
         }
     }
 

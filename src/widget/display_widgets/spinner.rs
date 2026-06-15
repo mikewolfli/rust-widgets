@@ -115,42 +115,6 @@ impl Spinner {
         let radius = (raw_radius - self.thickness as f32 / 2.0 - 1.0).max(1.0);
         Some((Point::new(cx, cy), radius as u32))
     }
-
-    /// Returns a point on the circle at the given angle (in radians).
-    /// Angle 0 is at 3 o'clock (right), positive angles go clockwise.
-    fn point_on_circle(center: Point, radius: u32, angle: f32) -> Point {
-        let r = radius as f32;
-        Point::new(
-            center.x + (r * angle.cos()).round() as i32,
-            center.y + (r * angle.sin()).round() as i32,
-        )
-    }
-
-    /// Draws an arc from `start_angle_rad` to `end_angle_rad` using line segments.
-    fn draw_arc_segments(
-        context: &mut RenderContext,
-        center: Point,
-        radius: u32,
-        start_angle: f32,
-        end_angle: f32,
-        color: Color,
-        stroke_width: u32,
-    ) {
-        const SEGMENTS: u32 = 40;
-        let total_angle = end_angle - start_angle;
-        if total_angle.abs() < 0.001 {
-            return;
-        }
-        let step = total_angle / SEGMENTS as f32;
-
-        let mut prev = Self::point_on_circle(center, radius, start_angle);
-        for i in 1..=SEGMENTS {
-            let angle = start_angle + step * i as f32;
-            let curr = Self::point_on_circle(center, radius, angle);
-            context.draw_line_stroke(prev, curr, color, stroke_width);
-            prev = curr;
-        }
-    }
 }
 
 impl Widget for Spinner {
@@ -206,10 +170,10 @@ impl Draw for Spinner {
         let start_angle = self.angle.to_radians() - std::f32::consts::FRAC_PI_2;
         let end_angle = start_angle + arc_sweep;
 
-        Self::draw_arc_segments(
+        crate::render::draw_arc_segments(
             context,
             center,
-            radius,
+            radius as f32,
             start_angle,
             end_angle,
             effective_arc,

@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 /// Unique identifier for an undo command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommandId(pub u64);
@@ -18,8 +16,9 @@ pub enum MergePolicy {
 pub struct CommandDescription {
     /// Human-readable text (e.g., "Delete text").
     pub text: String,
-    /// Timestamp when the command was created.
-    pub timestamp: SystemTime,
+    /// Timestamp in milliseconds since UNIX epoch when the command was created.
+    /// On no_std targets (mini), this is set to 0.
+    pub timestamp_ms: u64,
     /// Static string identifying the command type.
     pub command_type: &'static str,
 }

@@ -1,4 +1,5 @@
 //! Table widget.
+use crate::core::{HorizontalAlignment};
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -260,6 +261,7 @@ impl Draw for TableWidget {
                             &text,
                             &crate::core::Font::default(),
                             Color::from_rgb(0, 0, 0),
+                            HorizontalAlignment::Left,
                         );
                     }
                     // Draw column separator

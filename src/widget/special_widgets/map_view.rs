@@ -1,6 +1,6 @@
 //! MapView widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -250,6 +250,7 @@ impl Draw for MapView {
                 &marker.label,
                 &Font::default(),
                 Color::from_rgb(33, 43, 56),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -258,6 +259,7 @@ impl Draw for MapView {
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
             &Font::default(),
             Color::from_rgb(45, 58, 74),
+            HorizontalAlignment::Left,
         );
     }
 }

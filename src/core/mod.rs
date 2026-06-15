@@ -43,7 +43,7 @@ mod types;
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
-pub use geometry::{Orientation, Point, Rect, Size};
+pub use geometry::{deg_to_rad, Orientation, Point, Rect, Size};
 pub use mutex_ext::MutexExt;
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,

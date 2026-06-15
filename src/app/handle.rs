@@ -254,6 +254,20 @@ impl WidgetHandle for WindowHandle {
         Self { id }
     }
 
+    /// Override `set_geometry` to store window size in `WindowState` for
+    /// later use by `center_on_screen()` and other geometry-aware methods.
+    fn set_geometry(&self, x: i32, y: i32, w: u32, h: u32) {
+        WINDOW_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(self.id).or_insert_with(Default::default);
+            state.x = x;
+            state.y = y;
+            state.w = w;
+            state.h = h;
+        });
+        crate::set_widget_geometry(self.raw_id(), x, y, w, h);
+    }
+
     fn on_click<F: FnMut() + 'static>(&self, f: F) {
         CLICK_CALLBACKS.with(|map| {
             map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
@@ -325,6 +339,10 @@ impl WindowHandle {
 
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
         PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
+    }
+
+    pub fn new_frame(&self, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
+        FrameHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
     }
 
     pub fn new_spin_box(&self, x: i32, y: i32, w: u32, h: u32) -> SpinBoxHandle {
@@ -1170,6 +1188,10 @@ impl PanelHandle {
 
 #[derive(Clone)]
 struct WindowState {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
     icon: String,
     min_w: u32,
     min_h: u32,
@@ -1184,6 +1206,10 @@ struct WindowState {
 impl std::fmt::Debug for WindowState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowState")
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .field("w", &self.w)
+            .field("h", &self.h)
             .field("icon", &self.icon)
             .field("min_w", &self.min_w)
             .field("min_h", &self.min_h)
@@ -1200,6 +1226,10 @@ impl std::fmt::Debug for WindowState {
 impl Default for WindowState {
     fn default() -> Self {
         Self {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
             icon: String::new(),
             min_w: 0,
             min_h: 0,
@@ -1339,15 +1369,20 @@ impl WindowHandle {
     /// Uses a default virtual screen size of 1920×1080 as a fallback.
     /// Real platforms should query the actual screen geometry.
     pub fn center_on_screen(&self) {
-        // A best-effort centre: we assume a 1920×1080 default virtual
-        // screen.  Real platforms would query the screen size.
-        // We set the window position to roughly the centre of the screen
-        // given the current window dimensions.
+        // Query the stored window geometry to preserve current size.
+        let (win_w, win_h) = WINDOW_STATES.with(|map| {
+            let state = map.borrow().get(&self.raw_id()).cloned().unwrap_or_default();
+            (state.w, state.h)
+        });
         let screen_w = 1920i32;
         let screen_h = 1080i32;
-        // Since we don't have direct access to window geometry here,
-        // we place the window at a reasonable default position.
-        crate::set_widget_geometry(self.raw_id(), screen_w / 4, screen_h / 4, 640, 480);
+        crate::set_widget_geometry(
+            self.raw_id(),
+            (screen_w - win_w as i32) / 2,
+            (screen_h - win_h as i32) / 2,
+            win_w,
+            win_h,
+        );
     }
 }
 

@@ -14,11 +14,4 @@ pub trait Draw {
     fn uses_custom_drawing(&self) -> bool {
         true
     }
-    /// Optional: Request a redraw of the widget.
-    /// The default implementation is a no-op because not all widgets use
-    /// custom drawing. Widgets that implement custom drawing should override
-    /// this to call appropriate redraw mechanisms.
-    fn request_custom_redraw(&self) {
-        // Default implementation is a no-op.
-    }
 }

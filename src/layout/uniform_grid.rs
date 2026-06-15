@@ -1,18 +1,19 @@
 //! Uniform grid layout manager — arranges items in a grid with equal cell sizes.
+use super::grid::GridLayout;
 use super::Layout;
 use crate::core::{ObjectId, Rect};
 
 /// Fixed-grid layout manager where all cells are the same size.
 ///
+/// This is a thin wrapper around [`GridLayout`] with the stretch factors
+/// fixed to `1` so that every cell receives an equal share of the
+/// available space.
+///
 /// Cells are distributed evenly across the available area, respecting
 /// outer margin and inter-cell spacing. Each cell has identical
 /// width and height, computed from the container rect.
 pub struct UniformGridLayout {
-    rows: u32,
-    cols: u32,
-    spacing: u32,
-    margin: u32,
-    cells: Vec<Option<ObjectId>>,
+    inner: GridLayout,
 }
 
 impl UniformGridLayout {
@@ -23,54 +24,48 @@ impl UniformGridLayout {
     /// * `spacing` – Gap between adjacent cells in pixels.
     /// * `margin`  – Outer padding around the entire grid in pixels.
     pub fn new(rows: u32, cols: u32, spacing: u32, margin: u32) -> Self {
-        let safe_rows = rows.max(1);
-        let safe_cols = cols.max(1);
-        Self {
-            rows: safe_rows,
-            cols: safe_cols,
-            spacing,
-            margin,
-            cells: vec![None; (safe_rows * safe_cols) as usize],
-        }
+        let mut inner = GridLayout::new(rows, cols, spacing, margin);
+        // Uniform grid means every cell is the same size, so stretch is 1.
+        inner.set_column_stretch(1);
+        inner.set_row_stretch(1);
+        Self { inner }
     }
 
     /// Assign a widget to a specific cell position.
     ///
     /// Does nothing if `(row, col)` is out of range.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
-        if row < self.rows && col < self.cols {
-            self.cells[(row * self.cols + col) as usize] = Some(widget_id);
-        }
+        self.inner.set_widget(row, col, widget_id);
     }
 
     /// Returns the number of occupied cells (widgets placed in the grid).
     pub fn cell_count(&self) -> usize {
-        self.cells.iter().filter(|cell| cell.is_some()).count()
+        self.inner.cell_count()
     }
 
     /// Returns the total number of cells in the grid (rows × cols).
     pub fn total_cells(&self) -> usize {
-        self.cells.len()
+        self.inner.total_cells()
     }
 
     /// Returns the number of rows.
     pub fn rows(&self) -> u32 {
-        self.rows
+        self.inner.rows()
     }
 
     /// Returns the number of columns.
     pub fn cols(&self) -> u32 {
-        self.cols
+        self.inner.cols()
     }
 
     /// Returns the spacing between cells.
     pub fn spacing(&self) -> u32 {
-        self.spacing
+        self.inner.spacing()
     }
 
     /// Returns the outer margin.
     pub fn margin(&self) -> u32 {
-        self.margin
+        self.inner.margin()
     }
 }
 
@@ -83,64 +78,28 @@ impl Layout for UniformGridLayout {
         self
     }
 
-    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if let Some(slot) = self.cells.iter_mut().find(|cell| cell.is_none()) {
-            *slot = Some(widget_id);
-        }
+    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.inner.add_widget(widget_id, stretch);
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        for cell in &mut self.cells {
-            if *cell == Some(widget_id) {
-                *cell = None;
-            }
-        }
+        self.inner.remove_widget(widget_id);
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
-        self.cells.iter().filter_map(|cell| *cell).collect()
+        self.inner.child_ids()
     }
 
     fn has_child(&self, id: ObjectId) -> bool {
-        self.cells.contains(&Some(id))
+        self.inner.has_child(id)
     }
 
     fn clear(&mut self) {
-        for cell in &mut self.cells {
-            *cell = None;
-        }
+        self.inner.clear();
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        // Avoid division by zero when computing uniform cell size.
-        if self.rows == 0 || self.cols == 0 {
-            return;
-        }
-
-        // Total gap consumed by inter-cell spacing (cols - 1 horizontal,
-        // rows - 1 vertical).
-        let spacing_h = (self.cols - 1) * self.spacing;
-        let spacing_v = (self.rows - 1) * self.spacing;
-
-        // Available inner area after subtracting margins and spacing.
-        let available_w = rect.width.saturating_sub(self.margin * 2).saturating_sub(spacing_h);
-        let available_h = rect.height.saturating_sub(self.margin * 2).saturating_sub(spacing_v);
-
-        // Uniform cell size — all cells share the available space equally.
-        let cell_width = available_w / self.cols;
-        let cell_height = available_h / self.rows;
-
-        for row in 0..self.rows {
-            for col in 0..self.cols {
-                if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
-                    let x =
-                        rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
-                    let y =
-                        rect.y + self.margin as i32 + (row * (cell_height + self.spacing)) as i32;
-                    widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
-                }
-            }
-        }
+        self.inner.update(rect, widgets);
     }
 }
 

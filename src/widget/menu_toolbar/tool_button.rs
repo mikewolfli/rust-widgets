@@ -1,5 +1,5 @@
 //! Tool button widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -197,6 +197,7 @@ impl Draw for ToolButton {
             label,
             &Font::default(),
             fg,
+            HorizontalAlignment::Left,
         );
 
         if has_popup {
@@ -208,6 +209,7 @@ impl Draw for ToolButton {
                 "▾",
                 &Font::default(),
                 fg,
+                HorizontalAlignment::Left,
             );
         }
     }

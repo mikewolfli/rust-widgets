@@ -3,16 +3,32 @@
 use crate::audio::format::AudioFormat;
 use crate::audio::samples::AudioBuffer;
 
+#[cfg(feature = "video-codecs")]
+use super::ffmpeg_encode;
+
 /// Encode an AudioBuffer to bytes in the specified format.
 pub fn encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8>, String> {
     match format {
         AudioFormat::Wav => encode_wav(buffer),
         AudioFormat::Pcm => encode_pcm(buffer),
-        AudioFormat::Mp3 => encode_pcm(buffer), // PCM fallback for MP3 (no external encoder)
-        AudioFormat::Flac => encode_pcm(buffer), // PCM fallback for FLAC
-        AudioFormat::Ogg => encode_pcm(buffer), // PCM fallback for OGG
-        AudioFormat::Aac => encode_pcm(buffer), // PCM fallback for AAC
-        AudioFormat::Opus => encode_pcm(buffer), // PCM fallback for Opus
+        // ── Real encoding via FFmpeg when feature is enabled ──
+        #[cfg(feature = "video-codecs")]
+        AudioFormat::Mp3
+        | AudioFormat::Flac
+        | AudioFormat::Ogg
+        | AudioFormat::Aac
+        | AudioFormat::Opus => ffmpeg_encode(buffer, format),
+        // ── PCM fallback when FFmpeg is not available ──
+        #[cfg(not(feature = "video-codecs"))]
+        AudioFormat::Mp3 => encode_pcm(buffer),
+        #[cfg(not(feature = "video-codecs"))]
+        AudioFormat::Flac => encode_pcm(buffer),
+        #[cfg(not(feature = "video-codecs"))]
+        AudioFormat::Ogg => encode_pcm(buffer),
+        #[cfg(not(feature = "video-codecs"))]
+        AudioFormat::Aac => encode_pcm(buffer),
+        #[cfg(not(feature = "video-codecs"))]
+        AudioFormat::Opus => encode_pcm(buffer),
         AudioFormat::Unknown => Err("Cannot encode to Unknown format".into()),
     }
 }
@@ -99,7 +115,15 @@ mod tests {
 
     #[test]
     fn test_encode_all_formats_succeed() {
-        let buf = AudioBuffer::new(44100, vec![0.0, 0.5, 1.0], 2);
+        // Use enough samples so encoders with minimum frame-size (e.g. FLAC)
+        // have data to work with: ~0.37 seconds of 44100 Hz mono = 16384 samples.
+        let samples: Vec<f32> = (0..16384)
+            .map(|i| {
+                let phase = (i as f32 / 44100.0 * 440.0 * 2.0 * std::f32::consts::PI).sin();
+                phase * 0.5
+            })
+            .collect();
+        let buf = AudioBuffer::new(44100, samples, 2);
         for format in &[
             AudioFormat::Mp3,
             AudioFormat::Flac,
@@ -108,7 +132,7 @@ mod tests {
             AudioFormat::Opus,
         ] {
             let result = encode(&buf, *format);
-            assert!(result.is_ok(), "Encoding to {:?} should succeed", format);
+            assert!(result.is_ok(), "Encoding to {:?} should succeed: {:?}", format, result);
             let data = result.unwrap();
             assert!(!data.is_empty(), "Encoded {:?} data should not be empty", format);
         }

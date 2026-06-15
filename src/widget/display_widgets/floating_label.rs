@@ -5,7 +5,7 @@
 //! contains text. It also supports placeholder text that is shown when the
 //! field is empty and unfocused.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -181,6 +181,7 @@ impl Draw for FloatingLabel {
                     &self.label,
                     &label_font,
                     label_color,
+                    HorizontalAlignment::Left,
                 );
             } else if self.text.is_empty() && !self.is_focused {
                 // Label inline acts as placeholder
@@ -191,6 +192,7 @@ impl Draw for FloatingLabel {
                     &self.label,
                     &input_font,
                     Color::rgba(160, 160, 160, 255),
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -207,6 +209,7 @@ impl Draw for FloatingLabel {
                 &self.placeholder,
                 &input_font,
                 Color::rgba(180, 180, 180, 255),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -219,7 +222,7 @@ impl Draw for FloatingLabel {
             } else {
                 Color::rgba(160, 160, 160, 255)
             };
-            context.draw_text(Point::new(text_x, text_y), &self.text, &input_font, text_color);
+            context.draw_text(Point::new(text_x, text_y), &self.text, &input_font, text_color, HorizontalAlignment::Left);
         }
     }
 }

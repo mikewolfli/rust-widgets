@@ -5,7 +5,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -525,7 +525,7 @@ impl Draw for PieMenu {
 
             let text_color =
                 if self.hovered_index == Some(i) { Color::WHITE } else { self.text_color };
-            context.draw_text(Point::from_f32(lx, ly), label_text, &font, text_color);
+            context.draw_text(Point::from_f32(lx, ly), label_text, &font, text_color, HorizontalAlignment::Left);
         }
 
         // Draw a small center dot

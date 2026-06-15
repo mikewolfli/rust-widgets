@@ -1,6 +1,6 @@
 //! MediaPlayer widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -278,12 +278,14 @@ impl Draw for MediaPlayer {
             title,
             &Font::default(),
             Color::from_rgb(232, 237, 245),
+            HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + 10, rect.y + 36),
             &format!("{} | {} | {}", state, vol, fs),
             &Font::default(),
             Color::from_rgb(190, 202, 220),
+            HorizontalAlignment::Left,
         );
 
         let bar_rect = Rect::new(

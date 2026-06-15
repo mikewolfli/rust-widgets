@@ -5,6 +5,7 @@
 //! interaction patterns) while delegating all widget mechanics to the
 //! underlying control.
 
+use crate::core::{HorizontalAlignment};
 use crate::core::Point;
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
@@ -189,6 +190,7 @@ impl Draw for MaterialSnackbar {
                 &self.message,
                 &font,
                 Color::WHITE,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -206,6 +208,7 @@ impl Draw for MaterialSnackbar {
                 &self.action_text,
                 &action_font,
                 Color::rgba(102, 190, 255, 255), // Material accent blue
+                HorizontalAlignment::Left,
             );
         }
     }
@@ -364,7 +367,7 @@ impl Draw for CupertinoAlertDialog {
             let title_metrics = context.measure_text(&self.title, &title_font);
             let title_x = dialog_x + (dialog_width as i32 - title_metrics.width as i32) / 2;
             let title_y = dialog_y + 24 + title_metrics.height as i32 / 2;
-            context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, Color::BLACK);
+            context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, Color::BLACK, HorizontalAlignment::Left);
         }
 
         // ── Message ──
@@ -378,6 +381,7 @@ impl Draw for CupertinoAlertDialog {
                 &self.message,
                 &msg_font,
                 Color::rgba(100, 100, 100, 255),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -412,6 +416,7 @@ impl Draw for CupertinoAlertDialog {
                 &self.cancel_text,
                 &button_font,
                 Color::rgba(0, 122, 255, 255), // iOS blue
+                HorizontalAlignment::Left,
             );
 
             // Confirm button
@@ -425,6 +430,7 @@ impl Draw for CupertinoAlertDialog {
                 &self.confirm_text,
                 &button_font,
                 Color::rgba(0, 122, 255, 255), // iOS blue
+                HorizontalAlignment::Left,
             );
         } else {
             // Single confirm button centered
@@ -436,6 +442,7 @@ impl Draw for CupertinoAlertDialog {
                 &self.confirm_text,
                 &button_font,
                 Color::rgba(0, 122, 255, 255),
+                HorizontalAlignment::Left,
             );
         }
     }
@@ -790,7 +797,7 @@ impl Draw for MaterialNavigationRail {
             let icon_metrics = context.measure_text(&item.icon, &icon_font);
             let icon_x = rect.x + (rail_width as i32 - icon_metrics.width as i32) / 2;
             let icon_y = item_y + 20 + icon_metrics.height as i32 / 2;
-            context.draw_text(Point::new(icon_x, icon_y), &item.icon, &icon_font, icon_color);
+            context.draw_text(Point::new(icon_x, icon_y), &item.icon, &icon_font, icon_color, HorizontalAlignment::Left);
 
             // ── Label ──
             let label_color = if is_selected {
@@ -801,7 +808,7 @@ impl Draw for MaterialNavigationRail {
             let label_metrics = context.measure_text(&item.label, &label_font);
             let label_x = rect.x + (rail_width as i32 - label_metrics.width as i32) / 2;
             let label_y = item_y + 44 + label_metrics.height as i32 / 2;
-            context.draw_text(Point::new(label_x, label_y), &item.label, &label_font, label_color);
+            context.draw_text(Point::new(label_x, label_y), &item.label, &label_font, label_color, HorizontalAlignment::Left);
         }
     }
 }
@@ -869,7 +876,7 @@ mod tests {
     #[test]
     fn cupertino_switch_event_delegation() {
         let mut cs = CupertinoSwitch::new(Rect::new(0, 0, 60, 30));
-        cs.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cs.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert!(cs.inner().is_checked());
     }
 

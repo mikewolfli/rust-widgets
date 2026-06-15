@@ -5,7 +5,7 @@
 //! A `text_changed` signal is emitted when the text field content changes,
 //! and an `item_selected` signal is emitted when a dropdown item is clicked.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -186,7 +186,7 @@ impl Draw for EditableComboBox {
         let display_text = if self.text.is_empty() && !is_enabled { "" } else { &self.text };
         let text_color =
             if is_enabled { Color::rgba(0, 0, 0, 255) } else { Color::rgba(180, 180, 180, 255) };
-        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color);
+        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color, HorizontalAlignment::Left);
 
         // Draw dropdown arrow
         let arrow_x = rect.x + rect.width as i32 - 20;
@@ -201,6 +201,7 @@ impl Draw for EditableComboBox {
             if self.expanded { "▲" } else { "▼" },
             &font,
             arrow_color,
+            HorizontalAlignment::Left,
         );
 
         // Draw dropdown if expanded
@@ -238,7 +239,7 @@ impl Draw for EditableComboBox {
             } else {
                 Color::rgba(180, 180, 180, 255)
             };
-            context.draw_text(Point::new(item_text_x, item_text_y), item, &font, item_color);
+            context.draw_text(Point::new(item_text_x, item_text_y), item, &font, item_color, HorizontalAlignment::Left);
         }
     }
 }

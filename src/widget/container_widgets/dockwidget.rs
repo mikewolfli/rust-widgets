@@ -1,5 +1,5 @@
 //! Dock widget.
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -369,6 +369,7 @@ impl Draw for DockWidget {
             &self.title,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // Draw close button if enabled
         if self.features.dock_widget_closable {

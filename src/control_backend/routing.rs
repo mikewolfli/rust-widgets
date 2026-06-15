@@ -28,6 +28,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::ScrollBar
             | WidgetKind::ScrollArea
             | WidgetKind::Panel
+            | WidgetKind::Frame
             | WidgetKind::GroupBox
             | WidgetKind::TabWidget
             | WidgetKind::Splitter
@@ -405,6 +406,7 @@ mod tests {
             WidgetKind::ScrollBar,
             WidgetKind::ScrollArea,
             WidgetKind::Panel,
+            WidgetKind::Frame,
             WidgetKind::DockPanel,
             WidgetKind::GroupBox,
             WidgetKind::TabWidget,

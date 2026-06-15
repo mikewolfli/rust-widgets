@@ -482,6 +482,7 @@ impl From<WidgetKind> for AccessibleRole {
             WidgetKind::Avatar => AccessibleRole::Image,
             WidgetKind::EmptyState => AccessibleRole::Group,
             WidgetKind::Carousel => AccessibleRole::TabGroup,
+            WidgetKind::Frame => AccessibleRole::Group,
             _ => AccessibleRole::Unknown,
         }
     }
@@ -574,7 +575,8 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::SegmentedButton
             | WidgetKind::DockPanel
             | WidgetKind::MdiArea
-            | WidgetKind::ScrollArea => A11yRole::Group,
+            | WidgetKind::ScrollArea
+            | WidgetKind::Frame => A11yRole::Group,
             WidgetKind::DatePicker
             | WidgetKind::TimePicker
             | WidgetKind::DateTimePicker

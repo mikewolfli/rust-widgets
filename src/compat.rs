@@ -12,6 +12,89 @@ pub use core::hash::{Hash, Hasher};
 pub use core::sync::atomic;
 pub use core::time::Duration;
 
+// ── RwLock for mini builds (no_std compatible, single-threaded only) ──
+
+/// A simple RwLock implementation for mini (no_std) builds.
+/// Single-threaded only — uses RefCell internally.
+#[cfg(feature = "mini")]
+mod rwlock_mini {
+    use core::cell::{Ref, RefCell, RefMut};
+    use core::ops::{Deref, DerefMut};
+
+    pub struct RwLock<T> {
+        inner: RefCell<T>,
+    }
+
+    /// Poison error that wraps the inner guard (mini never actually poisons).
+    #[derive(Debug)]
+    pub struct RwLockPoisonError<G> {
+        guard: G,
+    }
+
+    impl<G> RwLockPoisonError<G> {
+        pub fn into_inner(self) -> G {
+            self.guard
+        }
+    }
+
+    impl<T> RwLock<T> {
+        pub const fn new(value: T) -> Self {
+            Self { inner: RefCell::new(value) }
+        }
+
+        pub fn read(
+            &self,
+        ) -> Result<RwLockReadGuard<'_, T>, RwLockPoisonError<RwLockReadGuard<'_, T>>> {
+            Ok(RwLockReadGuard { inner: self.inner.borrow() })
+        }
+
+        pub fn write(
+            &self,
+        ) -> Result<RwLockWriteGuard<'_, T>, RwLockPoisonError<RwLockWriteGuard<'_, T>>> {
+            Ok(RwLockWriteGuard { inner: self.inner.borrow_mut() })
+        }
+    }
+
+    pub struct RwLockReadGuard<'a, T> {
+        inner: Ref<'a, T>,
+    }
+
+    impl<'a, T> Deref for RwLockReadGuard<'a, T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.inner
+        }
+    }
+
+    pub struct RwLockWriteGuard<'a, T> {
+        inner: RefMut<'a, T>,
+    }
+
+    impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.inner
+        }
+    }
+
+    impl<'a, T> DerefMut for RwLockWriteGuard<'a, T> {
+        fn deref_mut(&mut self) -> &mut T {
+            &mut self.inner
+        }
+    }
+
+    // SAFETY: Under mini (single-threaded), no concurrent access is possible.
+    unsafe impl<T> Send for RwLock<T> {}
+    unsafe impl<T> Sync for RwLock<T> {}
+}
+
+#[cfg(feature = "mini")]
+pub use rwlock_mini::RwLock;
+
+// Under non-mini, re-export std::sync::RwLock
+#[cfg(not(feature = "mini"))]
+pub use std::sync::RwLock;
+
 // ── alloc re-exports (available in both std and no_std) ──
 pub use alloc::boxed::Box;
 pub use alloc::collections::BTreeMap;

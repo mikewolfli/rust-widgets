@@ -1,4 +1,4 @@
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
@@ -434,6 +434,7 @@ impl Draw for WebEngineView {
             self.url(),
             &Font::default_ui(),
             Color::rgb(100, 100, 100),
+            HorizontalAlignment::Left,
         );
         // Content area hint
         if self.is_loading() {
@@ -442,6 +443,7 @@ impl Draw for WebEngineView {
                 "Loading...",
                 &Font::default_ui(),
                 Color::rgb(150, 150, 150),
+                HorizontalAlignment::Left,
             );
         }
     }

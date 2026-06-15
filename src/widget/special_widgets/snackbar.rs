@@ -1,6 +1,6 @@
 //! Snackbar widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -171,6 +171,7 @@ impl Draw for Snackbar {
             &self.message,
             &Font::default(),
             Color::from_rgb(236, 240, 246),
+            HorizontalAlignment::Left,
         );
 
         if let Some(action_rect) = self.action_rect() {
@@ -182,6 +183,7 @@ impl Draw for Snackbar {
                     label,
                     &Font::default(),
                     Color::from_rgb(238, 244, 252),
+                    HorizontalAlignment::Left,
                 );
             }
         }

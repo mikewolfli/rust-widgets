@@ -23,7 +23,7 @@
 
 use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent};
+use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -375,6 +375,360 @@ impl Platform for IosMobilePlatform {
 
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
+    }
+
+    // ─── Panel ───
+
+    fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::Panel, "Panel", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let panel = super::native::create_ui_panel(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(panel) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
+        }
+
+        id
+    }
+
+    // ─── Scroll Area ───
+
+    fn create_scroll_area(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::Panel, "ScrollArea", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let scroll = super::native::create_ui_scroll(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(scroll) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
+        }
+
+        id
+    }
+
+    // ─── Menu Bar / Menu / Menu Item ───
+
+    fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::MenuBar, "MenuBar", x, y, width, height);
+        // On iOS, menu bars are state-only (no native NSMenu equivalent).
+        id
+    }
+
+    fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::Menu, text, x, y, width, height);
+
+        // Register child relationship in menu state.
+        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        menus.menu_children.entry(parent).or_default().push(id);
+
+        id
+    }
+
+    fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
+        if !matches!(self.kind_of(window), Some(IosHandleKind::Window)) {
+            return false;
+        }
+        if !matches!(self.kind_of(menu_bar), Some(IosHandleKind::MenuBar)) {
+            return false;
+        }
+        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        menus.attached_menu_bar.insert(window, menu_bar);
+        true
+    }
+
+    fn menu_add_item(&self, parent_menu: u64, text: &str, _shortcut: Option<&str>) -> u64 {
+        if self.kind_of(parent_menu).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::MenuItem, text, 0, 0, 0, 0);
+
+        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        menus.menu_children.entry(parent_menu).or_default().push(id);
+
+        id
+    }
+
+    fn poll_menu_triggered(&self) -> Option<u64> {
+        self.menus.lock().expect("ios menus lock poisoned").pending_menu_events.pop_front()
+    }
+
+    fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
+        if self.kind_of(menu_item_id).is_none() {
+            return false;
+        }
+        self.menus
+            .lock()
+            .expect("ios menus lock poisoned")
+            .pending_menu_events
+            .push_back(menu_item_id);
+        true
+    }
+
+    // ─── Widget Trigger Events ───
+
+    fn poll_widget_triggered(&self) -> Option<u64> {
+        self.state.pop_widget_event().map(|event| event.widget_id)
+    }
+
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        self.state.pop_widget_event()
+    }
+
+    fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        if self.kind_of(widget_id).is_none() {
+            return false;
+        }
+        self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
+        true
+    }
+
+    // ─── Tool Bar / Status Bar ───
+
+    fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::ToolBar, "ToolBar", x, y, width, height)
+    }
+
+    fn create_status_bar(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::StatusBar, text, x, y, width, height)
+    }
+
+    // ─── Message Box ───
+
+    fn create_message_box(
+        &self,
+        parent: u64,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::MessageBox, text, x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let alert = super::native::create_ui_alert(mtm, title, text);
+            let ptr = objc2::rc::Retained::into_raw(alert) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+            // Present the alert on the parent window's root view controller.
+            if let Some(parent_ptr) = super::native::get_native_view(parent) {
+                unsafe {
+                    let parent_obj: *mut objc2::runtime::Object = parent_ptr as *mut _;
+                    let root_vc: *mut objc2::runtime::Object =
+                        msg_send![parent_obj, rootViewController];
+                    if !root_vc.is_null() {
+                        let _: () = msg_send![root_vc, presentViewController: &*alert animated: 1u8 completion: 0u64 as *mut objc2::runtime::Object];
+                    }
+                }
+            }
+        }
+
+        id
+    }
+
+    // ─── Dialogs (state-only on iOS) ───
+
+    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::FileDialog, "FileDialog", x, y, width, height)
+    }
+
+    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
+    }
+
+    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::FontDialog, "FontDialog", x, y, width, height)
+    }
+
+    // ─── Spin Box ───
+
+    fn create_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(IosHandleKind::LineEdit, "SpinBox", x, y, width, height)
+    }
+
+    // ─── List View ───
+
+    fn create_list_view(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        let id = self.insert_widget(IosHandleKind::ListBox, "ListView", x, y, width, height);
+
+        #[cfg(feature = "ios-uikit-ffi")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let list_view = super::native::create_ui_list_box(mtm, x, y, width, height);
+            let ptr = objc2::rc::Retained::into_raw(list_view) as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
+            super::native::set_parent(id, parent);
+            super::native::add_as_subview(id, parent);
+        }
+
+        id
+    }
+
+    // ─── Show / Hide ───
+
+    fn show_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, true);
+    }
+
+    fn hide_widget(&self, widget_id: u64) {
+        self.state.set_visible(widget_id, false);
+    }
+
+    // ─── Enabled / Visible ───
+
+    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
+        self.state.set_enabled(widget_id, enabled);
+    }
+
+    fn is_widget_enabled(&self, widget_id: u64) -> bool {
+        self.state.enabled(widget_id)
+    }
+
+    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
+        self.state.set_visible(widget_id, visible);
+    }
+
+    fn is_widget_visible(&self, widget_id: u64) -> bool {
+        self.state.visible(widget_id)
+    }
+
+    // ─── Combo Box (state-backed) ───
+
+    fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(IosHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        let entry = data.entry(combo_box).or_default();
+        entry.items.push(text.to_string());
+        true
+    }
+
+    fn combo_box_clear_items(&self, combo_box: u64) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(IosHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        if let Some(entry) = data.get_mut(&combo_box) {
+            entry.items.clear();
+            entry.current_index = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn combo_box_set_current_index(&self, combo_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(combo_box), Some(IosHandleKind::ComboBox)) {
+            return false;
+        }
+        let mut data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        let entry = match data.get_mut(&combo_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
+    }
+
+    fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
+        let data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.current_index)
+    }
+
+    fn combo_box_item_count(&self, combo_box: u64) -> usize {
+        let data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        data.get(&combo_box).map(|entry| entry.items.len()).unwrap_or(0)
+    }
+
+    fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
+        let data = self.combo_data.lock().expect("ios combo data lock poisoned");
+        data.get(&combo_box).and_then(|entry| entry.items.get(index).cloned())
+    }
+
+    // ─── Remaining List Box methods ───
+
+    fn list_box_set_current_index(&self, list_box: u64, index: usize) -> bool {
+        if !matches!(self.kind_of(list_box), Some(IosHandleKind::ListBox)) {
+            return false;
+        }
+        let mut data = self.list_data.lock().expect("ios list data lock poisoned");
+        let entry = match data.get_mut(&list_box) {
+            Some(e) => e,
+            None => return false,
+        };
+        if index >= entry.items.len() {
+            return false;
+        }
+        entry.current_index = Some(index);
+        true
+    }
+
+    fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
+        let data = self.list_data.lock().expect("ios list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.current_index)
+    }
+
+    fn list_box_item_count(&self, list_box: u64) -> usize {
+        let data = self.list_data.lock().expect("ios list data lock poisoned");
+        data.get(&list_box).map(|entry| entry.items.len()).unwrap_or(0)
+    }
+
+    fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
+        let data = self.list_data.lock().expect("ios list data lock poisoned");
+        data.get(&list_box).and_then(|entry| entry.items.get(index).cloned())
     }
 }
 

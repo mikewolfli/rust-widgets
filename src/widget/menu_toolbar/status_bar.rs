@@ -1,5 +1,5 @@
 //! Status bar widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -62,7 +62,6 @@ impl EventHandler for StatusBar {
 }
 impl Draw for StatusBar {
     fn draw(&mut self, context: &mut RenderContext) {
-        self.base.paint(context);
         let rect = self.geometry();
         // Background
         context.fill_rect(rect, Color::from_rgb(240, 240, 240));
@@ -78,6 +77,7 @@ impl Draw for StatusBar {
                 &self.message,
                 &Font::default(),
                 Color::from_rgb(0, 0, 0),
+                HorizontalAlignment::Left,
             );
         }
         // Permanent message (right side, before size grip)
@@ -92,6 +92,7 @@ impl Draw for StatusBar {
                 &self.permanent_message,
                 &Font::default(),
                 Color::from_rgb(80, 80, 80),
+                HorizontalAlignment::Left,
             );
         }
         // Size grip (bottom-right corner)

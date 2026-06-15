@@ -5,7 +5,7 @@
 //! text is non-empty. It emits `text_changed` with the current text value on
 //! every edit.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -172,7 +172,7 @@ impl Draw for SearchBox {
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
         let text_origin =
             Point::new(text_rect.x + 2, text_rect.y + text_rect.height as i32 / 2 + 4);
-        context.draw_text(text_origin, display_text, font, text_color);
+        context.draw_text(text_origin, display_text, font, text_color, HorizontalAlignment::Left);
 
         // — Clear button (X circle) —
         if !self.text.is_empty() && is_enabled {

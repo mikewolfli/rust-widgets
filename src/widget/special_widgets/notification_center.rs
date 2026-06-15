@@ -1,6 +1,6 @@
 //! NotificationCenter widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -282,12 +282,14 @@ impl Draw for NotificationCenter {
                 &item.title,
                 &Font::default(),
                 Color::from_rgb(40, 51, 68),
+                HorizontalAlignment::Left,
             );
             context.draw_text(
                 Point::new(rect.x + 22, y + 28),
                 &item.message,
                 &Font::default(),
                 Color::from_rgb(91, 103, 121),
+                HorizontalAlignment::Left,
             );
 
             context.draw_line(

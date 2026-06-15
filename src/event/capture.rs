@@ -1,10 +1,13 @@
 //! Pointer capture management.
 use crate::core::ObjectId;
+use core::fmt;
 /// Manages pointer capture for drag operations.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct PointerCaptureManager {
     /// Widget currently capturing pointer events, if any.
     capturing_widget: Option<ObjectId>,
+    /// Callback invoked when a widget loses capture (released or replaced).
+    on_capture_released: Option<Box<dyn Fn(ObjectId)>>,
 }
 impl PointerCaptureManager {
     /// Creates a new pointer capture manager.
@@ -16,24 +19,50 @@ impl PointerCaptureManager {
         self.capturing_widget
     }
     /// Sets pointer capture to a widget.
+    /// If another widget already holds capture, it is released and a
+    /// release notification is fired for the previous holder.
     pub fn set_capture(&mut self, widget_id: ObjectId) -> bool {
         if self.capturing_widget == Some(widget_id) {
             return false;
+        }
+        // Notify previous holder before replacing.
+        if let Some(old) = self.capturing_widget {
+            if let Some(ref cb) = self.on_capture_released {
+                (cb)(old);
+            }
         }
         self.capturing_widget = Some(widget_id);
         true
     }
     /// Releases pointer capture from any widget.
     pub fn release_capture(&mut self) -> bool {
-        if self.capturing_widget.is_none() {
-            return false;
+        if let Some(old) = self.capturing_widget {
+            self.capturing_widget = None;
+            if let Some(ref cb) = self.on_capture_released {
+                (cb)(old);
+            }
+            true
+        } else {
+            false
         }
-        self.capturing_widget = None;
-        true
     }
     /// Checks if a widget has pointer capture.
     pub fn has_capture(&self, widget_id: ObjectId) -> bool {
         self.capturing_widget == Some(widget_id)
+    }
+
+    /// Set a callback invoked when a widget loses capture (via release or replacement).
+    pub fn set_on_capture_released(&mut self, cb: Box<dyn Fn(ObjectId)>) {
+        self.on_capture_released = Some(cb);
+    }
+}
+
+impl fmt::Debug for PointerCaptureManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PointerCaptureManager")
+            .field("capturing_widget", &self.capturing_widget)
+            .field("on_capture_released", &self.on_capture_released.as_ref().map(|_| "<callback>"))
+            .finish()
     }
 }
 

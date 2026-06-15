@@ -1,5 +1,5 @@
 //! File dialog widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -187,6 +187,7 @@ impl Draw for FileDialog {
             &self.title,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         // File list area
         let list_y = rect.y + 38;
@@ -204,6 +205,7 @@ impl Draw for FileDialog {
             &tr!("dialog.file_dialog.file_list_placeholder"),
             &Font::default(),
             Color::from_rgb(150, 150, 150),
+            HorizontalAlignment::Left,
         );
         // Selected files display
         let sel_y = list_y + list_h as i32 + 8;
@@ -212,6 +214,7 @@ impl Draw for FileDialog {
             &tr!("dialog.file_dialog.file_name"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         let fname = self.selected_file().unwrap_or("");
         context.fill_rect(
@@ -227,6 +230,7 @@ impl Draw for FileDialog {
             fname,
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
@@ -245,6 +249,7 @@ impl Draw for FileDialog {
             &ok_label,
             &Font::default(),
             Color::from_rgb(255, 255, 255),
+            HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
@@ -259,6 +264,7 @@ impl Draw for FileDialog {
             &tr!("common.button.cancel"),
             &Font::default(),
             Color::from_rgb(0, 0, 0),
+            HorizontalAlignment::Left,
         );
     }
 }

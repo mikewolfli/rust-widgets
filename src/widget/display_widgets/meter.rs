@@ -4,15 +4,10 @@
 //! 135°) as a background track, a colored arc up to the current value, and
 //! a needle pointing at the value.
 
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{deg_to_rad, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-
-/// Converts degrees to radians.
-fn deg_to_rad(deg: f32) -> f32 {
-    deg * std::f32::consts::PI / 180.0
-}
 
 /// Meter (gauge) widget — displays a value on an arc with a needle indicator.
 pub struct Meter {

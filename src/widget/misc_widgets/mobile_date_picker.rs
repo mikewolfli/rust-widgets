@@ -9,7 +9,7 @@
 //! A `date_changed` signal is emitted with a "YYYY-MM-DD" formatted string
 //! whenever the date changes.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -201,7 +201,7 @@ impl Draw for MobileDatePicker {
                     Color::rgba(130, 130, 150, 210)
                 };
 
-                context.draw_text(Point::new(text_x, text_y), text, &font, text_color);
+                context.draw_text(Point::new(text_x, text_y), text, &font, text_color, HorizontalAlignment::Left);
             }
 
             // Up arrow indicator (top of column)
@@ -216,6 +216,7 @@ impl Draw for MobileDatePicker {
                 "^",
                 &arrow_font,
                 arrow_color,
+                HorizontalAlignment::Left,
             );
 
             // Down arrow indicator (bottom of column)
@@ -225,6 +226,7 @@ impl Draw for MobileDatePicker {
                 "v",
                 &arrow_font,
                 arrow_color,
+                HorizontalAlignment::Left,
             );
         }
     }

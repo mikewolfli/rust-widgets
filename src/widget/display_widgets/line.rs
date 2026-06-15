@@ -4,9 +4,10 @@
 //! line across the widget rectangle. Useful for visually separating sections
 //! in layouts.
 
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::display_widgets::draw_line;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Orientation of the divider line.
@@ -81,9 +82,7 @@ impl EventHandler for Line {
 impl Draw for Line {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        if rect.width == 0 || rect.height == 0 {
-            return;
-        }
+        let is_vertical = self.orientation == LineOrientation::Vertical;
 
         // Resolve line color: preferred explicit color, then style border_color,
         // then a default gray.
@@ -92,38 +91,7 @@ impl Draw for Line {
             .or_else(|| self.style().border_color)
             .unwrap_or(Color::from_rgb(180, 180, 180));
 
-        let thickness = self.thickness.max(1);
-
-        match self.orientation {
-            LineOrientation::Horizontal => {
-                // Draw a horizontal line centered vertically within the widget rect.
-                let mid_y = rect.y + rect.height as i32 / 2;
-                let from = Point::new(rect.x, mid_y);
-                let to = Point::new(rect.x + rect.width as i32, mid_y);
-                context.draw_line_stroke(from, to, line_color, thickness);
-                // When thickness is even, draw an extra single-pixel line offset
-                // upward so the visual center remains accurate.
-                if thickness > 1 && thickness.is_multiple_of(2) {
-                    let extra_from = Point::new(rect.x, mid_y - 1);
-                    let extra_to = Point::new(rect.x + rect.width as i32, mid_y - 1);
-                    context.draw_line_stroke(extra_from, extra_to, line_color, 1);
-                }
-            }
-            LineOrientation::Vertical => {
-                // Draw a vertical line centered horizontally within the widget rect.
-                let mid_x = rect.x + rect.width as i32 / 2;
-                let from = Point::new(mid_x, rect.y);
-                let to = Point::new(mid_x, rect.y + rect.height as i32);
-                context.draw_line_stroke(from, to, line_color, thickness);
-                // When thickness is even, draw an extra single-pixel line offset
-                // left so the visual center remains accurate.
-                if thickness > 1 && thickness.is_multiple_of(2) {
-                    let extra_from = Point::new(mid_x - 1, rect.y);
-                    let extra_to = Point::new(mid_x - 1, rect.y + rect.height as i32);
-                    context.draw_line_stroke(extra_from, extra_to, line_color, 1);
-                }
-            }
-        }
+        draw_line(context, rect, is_vertical, self.thickness, line_color);
     }
 }
 

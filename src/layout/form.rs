@@ -28,9 +28,9 @@ impl FormLayout {
         self.rows.len()
     }
 
-    /// Convenience method that adds a standalone widget with a label string,
+    /// Convenience method that adds a standalone widget,
     /// delegating to [`Layout::add_widget`]. Returns the index of the added item.
-    pub fn add_row(&mut self, _label: &str, widget_id: ObjectId) -> usize {
+    pub fn add_row(&mut self, widget_id: ObjectId) -> usize {
         self.add_widget(widget_id, 0);
         self.items.len().saturating_sub(1)
     }
@@ -63,6 +63,10 @@ impl FormLayout {
 
 impl Layout for FormLayout {
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 

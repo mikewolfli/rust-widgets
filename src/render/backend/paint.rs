@@ -1,8 +1,9 @@
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
 use crate::core::{Color, Font, Size};
+use crate::render::pipeline::set_pixel;
 use crate::render::{
-    RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+    BlendMode, RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
 
 /// Pluggable paint backend strategy used by render scene composition.
@@ -28,11 +29,16 @@ pub trait PaintBackend {
 pub struct SoftwarePaintBackend {
     pub(crate) surface: SoftwareSurface,
     pub(crate) batch_state: BatchState,
+    pub(crate) current_blend_mode: BlendMode,
 }
 impl SoftwarePaintBackend {
     /// Creates a software paint backend with a target size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
-        Self { surface: SoftwareSurface::new(size, dpi_scale), batch_state: BatchState::new() }
+        Self {
+            surface: SoftwareSurface::new(size, dpi_scale),
+            batch_state: BatchState::new(),
+            current_blend_mode: BlendMode::Normal,
+        }
     }
     /// Returns immutable access to the underlying software surface.
     pub fn surface(&self) -> &SoftwareSurface {
@@ -120,15 +126,8 @@ impl PaintBackend for SoftwarePaintBackend {
             RenderCommand::DrawPath { points, closed, color, filled, width } => {
                 self.surface.draw_path(points, *closed, *color, *filled, *width);
             }
-            RenderCommand::BoxShadow {
-                rect,
-                color,
-                offset_x,
-                offset_y,
-                blur_radius: _,
-                spread,
-            } => {
-                // Render as a semi-transparent filled rect with offset and optional spread
+            RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
+                // Render shadow rect with offset and optional spread
                 let spread_rect = crate::core::Rect::new(
                     rect.x + offset_x - *spread,
                     rect.y + offset_y - *spread,
@@ -138,21 +137,111 @@ impl PaintBackend for SoftwarePaintBackend {
                 let shadow_color =
                     Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
                 self.surface.fill_rect(spread_rect, shadow_color);
+                // Apply box blur to the shadow region if blur_radius > 0
+                if *blur_radius > 0 {
+                    let size = self.surface.size();
+                    let w = size.width as usize;
+                    let h = size.height as usize;
+                    if w > 0 && h > 0 {
+                        let back = self.surface.buffer.back_mut();
+                        let radius = (*blur_radius).min(100) as usize;
+                        let blur_x0 = spread_rect.x.max(0) as usize;
+                        let blur_y0 = spread_rect.y.max(0) as usize;
+                        let blur_w = ((spread_rect.x as usize + spread_rect.width as usize).min(w))
+                            .saturating_sub(blur_x0);
+                        let blur_h = ((spread_rect.y as usize + spread_rect.height as usize)
+                            .min(h))
+                        .saturating_sub(blur_y0);
+                        box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
+                    }
+                }
             }
             RenderCommand::Blur { radius } => {
-                // Software backend: no-op (advanced visual effect)
-                let _ = radius;
+                let r = (*radius).min(100) as usize;
+                if r == 0 {
+                    return;
+                }
+                let size = self.surface.size();
+                let w = size.width as usize;
+                let h = size.height as usize;
+                if w == 0 || h == 0 {
+                    return;
+                }
+                let back = self.surface.buffer.back_mut();
+                box_blur_region(back, w, h, 0, 0, w, h, r);
             }
             RenderCommand::ClipPath { points } => {
-                // Software backend: approximate clip path via filled polygon
-                let _ = points;
+                // Approximate clip path: push bounding rect of points
+                if points.is_empty() {
+                    return;
+                }
+                let min_x = points.iter().map(|p| p.x).min().unwrap();
+                let max_x = points.iter().map(|p| p.x).max().unwrap();
+                let min_y = points.iter().map(|p| p.y).min().unwrap();
+                let max_y = points.iter().map(|p| p.y).max().unwrap();
+                if min_x < max_x && min_y < max_y {
+                    let cw = (max_x - min_x) as u32;
+                    let ch = (max_y - min_y) as u32;
+                    if cw > 0 && ch > 0 {
+                        self.surface.push_clip(min_x, min_y, cw, ch);
+                    }
+                }
             }
-            RenderCommand::SetBlendMode { mode: _ } => {
-                // Software backend: blend mode is a no-op by default
+            RenderCommand::SetBlendMode { mode } => {
+                self.current_blend_mode = *mode;
             }
             RenderCommand::DrawConicGradient { center, start_angle, stops } => {
-                // Software backend: approximate conic gradient with a filled rect
-                let _ = (center, start_angle, stops);
+                if stops.is_empty() {
+                    return;
+                }
+                let size = self.surface.size();
+                let w = size.width as usize;
+                let h = size.height as usize;
+                if w == 0 || h == 0 {
+                    return;
+                }
+                let back = self.surface.buffer.back_mut();
+                let cx = center.x as f32;
+                let cy = center.y as f32;
+                let angle_offset = *start_angle;
+                // Iterate over all pixels on the surface
+                for py in 0..h {
+                    for px in 0..w {
+                        let dx = px as f32 - cx;
+                        let dy = py as f32 - cy;
+                        let mut t = dy.atan2(dx) + std::f32::consts::PI;
+                        t = (t + angle_offset) % (2.0 * std::f32::consts::PI);
+                        let pos = t / (2.0 * std::f32::consts::PI);
+                        // Find the two stops surrounding pos
+                        let color = if pos <= stops[0].0 {
+                            stops[0].1
+                        } else if pos >= stops.last().unwrap().0 {
+                            stops.last().unwrap().1
+                        } else {
+                            let mut lo = 0usize;
+                            let mut hi = stops.len() - 1;
+                            while hi - lo > 1 {
+                                let mid = (lo + hi) / 2;
+                                if stops[mid].0 <= pos {
+                                    lo = mid;
+                                } else {
+                                    hi = mid;
+                                }
+                            }
+                            let t_local =
+                                (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
+                            let ca = stops[lo].1;
+                            let cb = stops[hi].1;
+                            Color::rgba(
+                                (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
+                                (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
+                                (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
+                                (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
+                            )
+                        };
+                        set_pixel(back, w as u32, px as u32, py as u32, color);
+                    }
+                }
             }
         }
     }
@@ -182,6 +271,98 @@ impl PaintBackend for SoftwarePaintBackend {
     }
     fn render_config(&self) -> SoftwareRenderConfig {
         self.surface.render_config()
+    }
+}
+
+/// Apply a separable box blur to a rectangular region of an RGBA pixel buffer.
+///
+/// The region is expanded by `radius` in each direction to correctly blur
+/// edge pixels. The horizontal pass is applied first, followed by the
+/// vertical pass, using a single intermediate buffer sized to the expanded
+/// region.
+fn box_blur_region(
+    back: &mut [u8],
+    w: usize,
+    h: usize,
+    region_x: usize,
+    region_y: usize,
+    region_w: usize,
+    region_h: usize,
+    radius: usize,
+) {
+    if w == 0 || h == 0 || region_w == 0 || region_h == 0 || radius == 0 {
+        return;
+    }
+    // Expand region by radius in all directions (clamped to surface bounds)
+    let ex0 = region_x.saturating_sub(radius);
+    let ey0 = region_y.saturating_sub(radius);
+    let ex1 = (region_x + region_w + radius).min(w);
+    let ey1 = (region_y + region_h + radius).min(h);
+    let ew = ex1 - ex0;
+    let eh = ey1 - ey0;
+    if ew == 0 || eh == 0 {
+        return;
+    }
+    // Copy expanded region to temp buffer
+    let mut temp = vec![0u8; ew * eh * 4];
+    for y in 0..eh {
+        let src_start = ((ey0 + y) * w + ex0) * 4;
+        let dst_start = y * ew * 4;
+        temp[dst_start..dst_start + ew * 4].copy_from_slice(&back[src_start..src_start + ew * 4]);
+    }
+    // Horizontal blur pass: read from temp, write back to temp (in-place)
+    for y in 0..eh {
+        for x in 0..ew {
+            let sx = ex0 + x;
+            let mut r_sum = 0u32;
+            let mut g_sum = 0u32;
+            let mut b_sum = 0u32;
+            let mut a_sum = 0u32;
+            let mut count = 0u32;
+            let x_min = sx.saturating_sub(radius);
+            let x_max = (sx + radius).min(w - 1);
+            for kx in x_min..=x_max {
+                let kx_local = kx.saturating_sub(ex0);
+                let ti = (y * ew + kx_local) * 4;
+                r_sum += temp[ti] as u32;
+                g_sum += temp[ti + 1] as u32;
+                b_sum += temp[ti + 2] as u32;
+                a_sum += temp[ti + 3] as u32;
+                count += 1;
+            }
+            let di = (y * ew + x) * 4;
+            temp[di] = (r_sum / count) as u8;
+            temp[di + 1] = (g_sum / count) as u8;
+            temp[di + 2] = (b_sum / count) as u8;
+            temp[di + 3] = (a_sum / count) as u8;
+        }
+    }
+    // Vertical blur pass: read from temp, write to back buffer
+    for x in 0..ew {
+        for y in 0..eh {
+            let sy = ey0 + y;
+            let mut r_sum = 0u32;
+            let mut g_sum = 0u32;
+            let mut b_sum = 0u32;
+            let mut a_sum = 0u32;
+            let mut count = 0u32;
+            let y_min = sy.saturating_sub(radius);
+            let y_max = (sy + radius).min(h - 1);
+            for ky in y_min..=y_max {
+                let ky_local = ky.saturating_sub(ey0);
+                let ti = (ky_local * ew + x) * 4;
+                r_sum += temp[ti] as u32;
+                g_sum += temp[ti + 1] as u32;
+                b_sum += temp[ti + 2] as u32;
+                a_sum += temp[ti + 3] as u32;
+                count += 1;
+            }
+            let di = (sy * w + ex0 + x) * 4;
+            back[di] = (r_sum / count) as u8;
+            back[di + 1] = (g_sum / count) as u8;
+            back[di + 2] = (b_sum / count) as u8;
+            back[di + 3] = (a_sum / count) as u8;
+        }
     }
 }
 

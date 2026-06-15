@@ -1,6 +1,6 @@
 //! TimelineWidget for basic time-range visualization.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -255,6 +255,7 @@ impl Draw for TimelineWidget {
                     &item.label,
                     &Font::default(),
                     Color::from_rgb(34, 47, 67),
+                    HorizontalAlignment::Left,
                 );
 
                 let x0 = self.project_x(item.start, track_x, track_w);

@@ -51,7 +51,7 @@ impl Frame {
     /// Creates a frame.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Panel, geometry, "Frame"),
+            base: BaseWidget::new(WidgetKind::Frame, geometry, "Frame"),
             frame_shape: FrameShape::Box,
             frame_shadow: FrameShadow::Plain,
             line_width: 1.0,
@@ -102,6 +102,10 @@ impl Frame {
     }
     /// Sets widget.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        // Remove old child from widget tree before replacing
+        if let Some(old) = self.widget {
+            self.base.remove_child(old);
+        }
         self.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child(widget_id);
@@ -560,8 +564,8 @@ mod tests {
         let f_a = Frame::new(Rect::new(0, 0, 100, 50));
         let f_b = Frame::new(Rect::new(0, 0, 100, 50));
         assert_ne!(f_a.id(), f_b.id());
-        assert_eq!(f_a.kind(), WidgetKind::Panel);
-        assert_eq!(f_b.kind(), WidgetKind::Panel);
+        assert_eq!(f_a.kind(), WidgetKind::Frame);
+        assert_eq!(f_b.kind(), WidgetKind::Frame);
     }
 
     #[test]

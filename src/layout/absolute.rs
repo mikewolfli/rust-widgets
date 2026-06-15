@@ -163,14 +163,15 @@ impl Default for Constraint {
     }
 }
 pub struct AbsoluteLayout {
-    children: Vec<(Box<dyn Widget>, AbsolutePosition, Option<Constraint>)>,
+    children: Vec<(Option<Box<dyn Widget>>, AbsolutePosition, Option<Constraint>)>,
+    widget_ids: Vec<ObjectId>,
 }
 impl AbsoluteLayout {
     pub fn new() -> Self {
-        Self { children: Vec::new() }
+        Self { children: Vec::new(), widget_ids: Vec::new() }
     }
     pub fn add_child(&mut self, child: Box<dyn Widget>, position: AbsolutePosition) {
-        self.children.push((child, position, None));
+        self.children.push((Some(child), position, None));
     }
     pub fn add_child_with_constraint(
         &mut self,
@@ -178,17 +179,22 @@ impl AbsoluteLayout {
         position: AbsolutePosition,
         constraint: Constraint,
     ) {
-        self.children.push((child, position, Some(constraint)));
+        self.children.push((Some(child), position, Some(constraint)));
     }
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            Some(self.children.remove(index).0)
+            let (widget, _, _) = self.children.remove(index);
+            if let Some(ref w) = widget {
+                self.widget_ids.retain(|id| *id != w.id());
+            }
+            widget
         } else {
             None
         }
     }
     pub fn clear_children(&mut self) {
         self.children.clear();
+        self.widget_ids.clear();
     }
     pub fn child_count(&self) -> usize {
         self.children.len()
@@ -197,7 +203,10 @@ impl AbsoluteLayout {
         let parent_size = parent_rect.size();
         let mut positions = Vec::new();
         for (child, position, constraint) in &self.children {
-            let child_size = child.size_hint();
+            let child_size = match child {
+                Some(w) => w.size_hint(),
+                None => Size::new(0, 0),
+            };
             let constrained_size = if let Some(constraint) = constraint {
                 constraint.apply(child_size)
             } else {
@@ -252,32 +261,65 @@ impl Default for AbsoluteLayout {
     }
 }
 
+impl AbsoluteLayout {
+    fn widget_id_for_index(&self, index: usize) -> Option<ObjectId> {
+        // Prefer stored widget_ids (from add_widget), fall back to children's own ID.
+        self.widget_ids
+            .get(index)
+            .copied()
+            .or_else(|| self.children.get(index).and_then(|(w, _, _)| w.as_ref().map(|w| w.id())))
+    }
+}
+
 impl Layout for AbsoluteLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        // AbsoluteLayout manages children via add_child()/add_child_with_constraint().
-        log::debug!(
-            "[layout] AbsoluteLayout.add_widget ignored for widget {}: use add_child()",
-            widget_id
-        );
+        if !self.widget_ids.contains(&widget_id) {
+            self.widget_ids.push(widget_id);
+        }
+        // Also add to children so layout() and update() find this widget.
+        if !self.children.iter().any(|(w, _, _)| w.as_ref().map_or(false, |w| w.id() == widget_id))
+        {
+            self.children.push((None, AbsolutePosition::new(0, 0), None));
+        }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        // AbsoluteLayout manages children via remove_child().
-        log::debug!(
-            "[layout] AbsoluteLayout.remove_widget ignored for widget {}: use remove_child()",
-            widget_id
-        );
+        self.widget_ids.retain(|id| *id != widget_id);
+        self.children.retain(|(w, _, _)| w.as_ref().map_or(true, |w| w.id() != widget_id));
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         let positions = self.layout(rect);
         for (i, child_rect) in positions.iter().enumerate() {
-            widgets(i as ObjectId, *child_rect);
+            if let Some(id) = self.widget_id_for_index(i) {
+                widgets(id, *child_rect);
+            }
         }
+    }
+
+    fn child_ids(&self) -> Vec<ObjectId> {
+        let mut ids: Vec<ObjectId> = self.widget_ids.clone();
+        for (w, _, _) in &self.children {
+            if let Some(widget) = w {
+                if !ids.contains(&widget.id()) {
+                    ids.push(widget.id());
+                }
+            }
+        }
+        ids
+    }
+
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.widget_ids.contains(&id)
+            || self.children.iter().any(|(w, _, _)| w.as_ref().map_or(false, |w| w.id() == id))
     }
 }
 #[cfg(test)]

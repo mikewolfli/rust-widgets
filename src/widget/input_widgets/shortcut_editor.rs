@@ -5,7 +5,7 @@
 //! Supports filtering by text, editing keybindings by clicking them, and
 //! organizing shortcuts by category.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -208,6 +208,7 @@ impl Draw for ShortcutEditor {
             } else {
                 Color::rgba(50, 50, 50, 255)
             },
+            HorizontalAlignment::Left,
         );
         y += 24;
 
@@ -237,6 +238,7 @@ impl Draw for ShortcutEditor {
                 category,
                 &cat_font,
                 Color::rgba(80, 80, 80, 255),
+                HorizontalAlignment::Left,
             );
             y += row_height;
 
@@ -256,6 +258,7 @@ impl Draw for ShortcutEditor {
                     &name_text,
                     &name_font,
                     Color::rgba(30, 30, 30, 255),
+                    HorizontalAlignment::Left,
                 );
 
                 // Key binding (right-aligned)
@@ -272,7 +275,7 @@ impl Draw for ShortcutEditor {
                 // Measure approximate key text width
                 let key_x =
                     rect.x + rect.width as i32 - margin - (key_text.len() as i32 * 8).min(150);
-                context.draw_text(Point::new(key_x, y), &key_text, &key_font, key_color);
+                context.draw_text(Point::new(key_x, y), &key_text, &key_font, key_color, HorizontalAlignment::Left);
 
                 y += row_height;
             }

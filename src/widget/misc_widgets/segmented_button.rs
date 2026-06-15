@@ -5,7 +5,7 @@
 //! displays a text label and an optional icon. The active/highlighted segment uses
 //! a filled background to indicate selection.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -277,6 +277,7 @@ impl Draw for SegmentedButton {
                     &segment.text,
                     &font,
                     text_color,
+                    HorizontalAlignment::Left,
                 );
             }
         }

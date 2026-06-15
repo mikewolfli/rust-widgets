@@ -1,6 +1,6 @@
 //! MarkdownEditor widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -176,6 +176,7 @@ impl Draw for MarkdownEditor {
             &header,
             &Font::default(),
             Color::from_rgb(41, 54, 73),
+            HorizontalAlignment::Left,
         );
 
         for (idx, line) in self.text.lines().take(10).enumerate() {
@@ -190,7 +191,7 @@ impl Draw for MarkdownEditor {
             };
             let rendered =
                 if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
-            context.draw_text(Point::new(rect.x + 12, y), rendered, &Font::default(), color);
+            context.draw_text(Point::new(rect.x + 12, y), rendered, &Font::default(), color, HorizontalAlignment::Left);
         }
     }
 }

@@ -1,5 +1,5 @@
 //! Radio button widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -126,7 +126,7 @@ impl Draw for RadioButton {
         // Draw text label
         let text_color = style.text_color.unwrap_or(Color::from_rgb(60u8, 60, 60));
         let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
-        context.draw_text(text_pos, &self.text, &Font::default(), text_color);
+        context.draw_text(text_pos, &self.text, &Font::default(), text_color, HorizontalAlignment::Left);
     }
 }
 

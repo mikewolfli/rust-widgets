@@ -27,8 +27,13 @@ type EventClosure = Box<dyn FnMut(&Event) + Send>;
 // but the Send bound allows use in Arc<Mutex<...>> contexts.
 // The interior HashMap is only accessed via &mut self, providing
 // exclusive access, so there is no data race risk.
+//
+// NOTE: We do NOT implement Sync because Box<dyn FnMut(...) + Send> is
+// not Sync — FnMut is not Sync. The &self methods (contains, len, is_empty)
+// do not invoke closures, so this is safe in practice, but implementing
+// Sync would be unsound according to Rust's type system because &self
+// access to the HashMap requires V: Sync.
 unsafe impl Send for SimpleRegistry {}
-unsafe impl Sync for SimpleRegistry {}
 
 impl Default for SimpleRegistry {
     fn default() -> Self {

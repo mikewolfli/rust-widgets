@@ -6,7 +6,7 @@
 //! half (previous) or right half (next) of the widget. Dot indicators at the
 //! bottom show the current position within the page sequence.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -136,7 +136,7 @@ impl Draw for Carousel {
                 + metrics.ascent as i32;
             let text_color =
                 if !is_enabled { Color::rgba(255, 255, 255, 160) } else { Color::WHITE };
-            context.draw_text(Point::new(text_x, text_y), &page.title, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y), &page.title, &font, text_color, HorizontalAlignment::Left);
         }
 
         // ── Dot page indicators ─────────────────────────────────────
@@ -177,7 +177,7 @@ impl EventHandler for Carousel {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 {
                     let rect = self.geometry();
                     let mid_x = rect.x + (rect.width as i32) / 2;
@@ -293,11 +293,11 @@ mod tests {
     fn carousel_mouse_press_navigates() {
         let mut c = default_carousel();
         // Click left half → previous (but at 0, so stays)
-        c.handle_event(&Event::MousePress { pos: Point::new(50, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(50, 100), button: 1 });
         assert_eq!(c.current(), 0);
 
         // Click right half → next
-        c.handle_event(&Event::MousePress { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
         assert_eq!(c.current(), 1);
     }
 

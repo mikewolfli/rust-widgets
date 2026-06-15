@@ -4,7 +4,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -188,6 +188,7 @@ impl Draw for TabView {
                 &display_text,
                 &font,
                 text_color,
+                HorizontalAlignment::Left,
             );
         }
 

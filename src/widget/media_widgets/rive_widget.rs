@@ -5,7 +5,7 @@
 //! signal when the animation finishes. Animated shapes are rendered
 //! based on the animation progress value.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -554,6 +554,7 @@ impl Draw for RiveWidget {
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -633,7 +634,7 @@ impl Draw for RiveWidget {
             name_metrics.height as u32 + 4,
         );
         context.fill_rounded_rect(name_bg, 3, Color::rgba(0, 0, 0, 50));
-        context.draw_text(Point::new(name_x, name_y), &name_text, &font, Color::WHITE);
+        context.draw_text(Point::new(name_x, name_y), &name_text, &font, Color::WHITE, HorizontalAlignment::Left);
 
         // Draw progress percentage at top-right.
         let progress_text = format!("{:.0}%", self.animation_progress * 100.0);
@@ -643,7 +644,7 @@ impl Draw for RiveWidget {
         let p_bg =
             Rect::new(px - 2, rect.y + 1, p_metrics.width as u32 + 8, p_metrics.height as u32 + 4);
         context.fill_rounded_rect(p_bg, 3, Color::rgba(0, 0, 0, 50));
-        context.draw_text(Point::new(px, py), &progress_text, &font, Color::WHITE);
+        context.draw_text(Point::new(px, py), &progress_text, &font, Color::WHITE, HorizontalAlignment::Left);
 
         // Play/pause icon.
         let status = if self.is_playing { "▶" } else { "⏸" };
@@ -656,6 +657,7 @@ impl Draw for RiveWidget {
             } else {
                 Color::rgba(180, 100, 40, 200)
             },
+            HorizontalAlignment::Left,
         );
 
         // State machine inputs count.
@@ -669,6 +671,7 @@ impl Draw for RiveWidget {
                 &input_text,
                 &font,
                 Color::rgba(120, 80, 160, 180),
+                HorizontalAlignment::Left,
             );
         }
 

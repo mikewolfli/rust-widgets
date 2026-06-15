@@ -1,6 +1,6 @@
 //! CommandPalette productivity widget.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -292,6 +292,7 @@ impl Draw for CommandPalette {
             &format!("> {}", self.query),
             &Font::default(),
             Color::from_rgb(24, 36, 52),
+            HorizontalAlignment::Left,
         );
 
         let mut y = rect.y + self.row_height as i32;
@@ -319,6 +320,7 @@ impl Draw for CommandPalette {
                     &line,
                     &Font::default(),
                     Color::from_rgb(35, 45, 60),
+                    HorizontalAlignment::Left,
                 );
             }
 

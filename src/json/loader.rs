@@ -30,7 +30,7 @@ use crate::json::{
 use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
     Button, CheckBox, ComboBox, GroupBox, Label, LineEdit, ListBox, ProgressBar, RadioButton,
-    ScrollArea, ScrollBar, Slider, SpinBox, Widget,
+    ScrollArea, ScrollBar, Slider, SpinBox, Switch, Widget,
 };
 #[cfg(not(feature = "mini"))]
 use crate::widget::{
@@ -645,6 +645,13 @@ impl JsonLoader {
                     pb.set_inverted_appearance(inv);
                 }
                 Ok(Box::new(pb))
+            }
+            "switch" | "toggle" => {
+                let mut sw = Switch::new(geometry);
+                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
+                    sw.set_checked(checked);
+                }
+                Ok(Box::new(sw))
             }
             "groupbox" | "panel" => {
                 let mut gb = GroupBox::new(geometry);

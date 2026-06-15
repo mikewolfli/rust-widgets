@@ -1,5 +1,5 @@
 //! Label widget implementation.
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
@@ -25,6 +25,9 @@ impl Label {
     }
     /// Sets label text.
     pub fn set_text(&mut self, text: String) {
+        if text == self.text {
+            return;
+        }
         self.text = text;
         self.base.request_redraw();
     }
@@ -68,12 +71,17 @@ impl Draw for Label {
         // Draw text
         if !self.text.is_empty() {
             let text_color = self.style().text_color.unwrap_or(Color::from_rgb(0, 0, 0));
-            context.draw_text(
-                Point::new(rect.x, rect.y),
-                &self.text,
-                &self.font().cloned().unwrap_or_default(),
-                text_color,
-            );
+            let font = self.font().cloned().unwrap_or_default();
+            // Compute text width approximately (8px per char)
+            let text_width = self.text.len() as u32 * 8;
+            let text_x = match self.alignment {
+                crate::core::Alignment::Center => {
+                    rect.x + (rect.width.saturating_sub(text_width) / 2) as i32
+                }
+                crate::core::Alignment::Right => rect.x + rect.width as i32 - text_width as i32,
+                _ => rect.x,
+            };
+            context.draw_text(Point::new(text_x, rect.y), &self.text, &font, text_color, HorizontalAlignment::Left);
         }
         // Draw border if specified
         if let Some(border_color) = self.style().border_color {

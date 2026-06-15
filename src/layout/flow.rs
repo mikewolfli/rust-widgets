@@ -2,6 +2,21 @@ use super::Layout;
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 use core::fmt;
+
+/// Internal child entry that holds a widget ID and optionally the widget object.
+/// Ensures `add_widget` (ID only) and `add_child` (full widget) use the same list.
+struct FlowChild {
+    widget_id: ObjectId,
+    widget: Option<Box<dyn Widget>>,
+    /// Default size used when widget is absent (added via `add_widget`).
+    default_size: Size,
+}
+
+impl FlowChild {
+    fn size_hint(&self) -> Size {
+        self.widget.as_ref().map(|w| w.size_hint()).unwrap_or(self.default_size)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
     #[default]
@@ -38,8 +53,7 @@ impl Default for FlowLayoutConfig {
 }
 pub struct FlowLayout {
     config: FlowLayoutConfig,
-    children: Vec<Box<dyn Widget>>,
-    widget_ids: Vec<ObjectId>,
+    children: Vec<FlowChild>,
 }
 impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -51,21 +65,30 @@ impl fmt::Debug for FlowLayout {
 }
 impl FlowLayout {
     pub fn new() -> Self {
-        Self { config: FlowLayoutConfig::default(), children: Vec::new(), widget_ids: Vec::new() }
+        Self { config: FlowLayoutConfig::default(), children: Vec::new() }
     }
     pub fn with_config(config: FlowLayoutConfig) -> Self {
-        Self { config, children: Vec::new(), widget_ids: Vec::new() }
+        Self { config, children: Vec::new() }
     }
     pub fn add_child(&mut self, child: Box<dyn Widget>) {
-        self.children.push(child);
+        let widget_id = child.id();
+        let default_size = child.size_hint();
+        self.children.push(FlowChild { widget_id, widget: Some(child), default_size });
     }
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            Some(self.children.remove(index))
+            self.children.remove(index).widget
         } else {
             None
         }
     }
+    /// Override the default size hint for a child added via `add_widget` (no widget ref).
+    pub fn set_child_size(&mut self, widget_id: ObjectId, size: Size) {
+        if let Some(child) = self.children.iter_mut().find(|c| c.widget_id == widget_id) {
+            child.default_size = size;
+        }
+    }
+
     pub fn clear_children(&mut self) {
         self.children.clear();
     }
@@ -272,54 +295,248 @@ impl Layout for FlowLayout {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if !self.widget_ids.contains(&widget_id) {
-            self.widget_ids.push(widget_id);
+        // Push to the unified children list so layout and update stay in sync.
+        if !self.children.iter().any(|c| c.widget_id == widget_id) {
+            // Use a reasonable default size (100x100) so layout doesn't collapse
+            // children added without a widget reference. The caller can later
+            // set the actual size via `set_child_size` or through the Widget trait.
+            self.children.push(FlowChild {
+                widget_id,
+                widget: None,
+                default_size: Size::new(100, 100),
+            });
         }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.widget_ids.retain(|id| *id != widget_id);
-        // Also remove from children if matched by positional index
-        let idx = self.children.len().saturating_sub(1);
-        if idx < self.children.len() {
-            // Can't easily map ObjectId to Box<dyn Widget>, just sync IDs
-        }
+        self.children.retain(|c| c.widget_id != widget_id);
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         let positions = self.layout(rect);
         for (i, child_rect) in positions.iter().enumerate() {
-            // Map positional index to actual ObjectId if available
-            let target_id = self.widget_ids.get(i).copied().unwrap_or(i as ObjectId);
-            widgets(target_id, *child_rect);
+            if let Some(child) = self.children.get(i) {
+                widgets(child.widget_id, *child_rect);
+            }
         }
+    }
+
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.children.iter().map(|c| c.widget_id).collect()
+    }
+
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.children.iter().any(|c| c.widget_id == id)
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal test widget that returns a fixed size hint.
+    struct TestWidget {
+        id: ObjectId,
+        size: Size,
+    }
+    impl TestWidget {
+        fn new(id: ObjectId, width: u32, height: u32) -> Self {
+            Self { id, size: Size::new(width, height) }
+        }
+    }
+    impl crate::event::EventHandler for TestWidget {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Widget for TestWidget {
+        fn id(&self) -> ObjectId {
+            self.id
+        }
+        fn size_hint(&self) -> Size {
+            self.size
+        }
+    }
+
+    // --- Empty layout tests ---
+
     #[test]
-    fn test_flow_layout_horizontal() {
-        let mut layout = FlowLayout::new();
-        layout.config.direction = FlowDirection::Horizontal;
-        layout.config.spacing = 10;
+    fn test_empty_layout_returns_empty() {
+        let layout = FlowLayout::new();
         let positions = layout.layout(Rect::new(0, 0, 300, 200));
         assert!(positions.is_empty());
     }
+
     #[test]
-    fn test_flow_layout_vertical() {
-        let mut layout = FlowLayout::new();
-        layout.config.direction = FlowDirection::Vertical;
-        layout.config.spacing = 10;
-        let positions = layout.layout(Rect::new(0, 0, 300, 200));
-        assert!(positions.is_empty());
-    }
-    #[test]
-    fn test_flow_layout_alignment() {
+    fn test_empty_layout_center_alignment() {
         let mut layout = FlowLayout::new();
         layout.config.alignment = FlowAlignment::Center;
         let positions = layout.layout(Rect::new(0, 0, 300, 200));
         assert!(positions.is_empty());
+    }
+
+    // --- Child positioning tests via add_child (with full widget) ---
+
+    #[test]
+    fn test_horizontal_positions_children_in_a_row() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 10;
+        layout.config.padding = 0;
+
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 60, 30)));
+
+        let positions = layout.layout(Rect::new(0, 0, 300, 200));
+        assert_eq!(positions.len(), 2);
+        // First child at (0, 0), second immediately after with 10px spacing
+        assert_eq!(positions[0], Rect::new(0, 0, 40, 20));
+        assert_eq!(positions[1], Rect::new(50, 0, 60, 30));
+    }
+
+    #[test]
+    fn test_vertical_positions_children_in_a_column() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Vertical;
+        layout.config.spacing = 5;
+        layout.config.padding = 0;
+
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 30, 50)));
+
+        let positions = layout.layout(Rect::new(0, 0, 300, 200));
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0], Rect::new(0, 0, 40, 20));
+        assert_eq!(positions[1], Rect::new(0, 25, 30, 50));
+    }
+
+    #[test]
+    fn test_horizontal_wrap_to_next_row() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.config.wrap = true;
+
+        // Three 60px children in a 125px-wide container: row1 gets two, row2 gets one.
+        layout.add_child(Box::new(TestWidget::new(1, 60, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 60, 20)));
+        layout.add_child(Box::new(TestWidget::new(3, 60, 20)));
+
+        let positions = layout.layout(Rect::new(0, 0, 125, 100));
+        assert_eq!(positions.len(), 3);
+        assert_eq!(positions[0], Rect::new(0, 0, 60, 20)); // row 1, child 1
+        assert_eq!(positions[1], Rect::new(60, 0, 60, 20)); // row 1, child 2
+        assert_eq!(positions[2], Rect::new(0, 20, 60, 20)); // row 2, child 3
+    }
+
+    #[test]
+    fn test_vertical_wrap_to_next_column() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Vertical;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.config.wrap = true;
+
+        // Three 50px children in a 105px-tall container: col1 gets two, col2 gets one.
+        layout.add_child(Box::new(TestWidget::new(1, 30, 50)));
+        layout.add_child(Box::new(TestWidget::new(2, 30, 50)));
+        layout.add_child(Box::new(TestWidget::new(3, 30, 50)));
+
+        let positions = layout.layout(Rect::new(0, 0, 200, 105));
+        assert_eq!(positions.len(), 3);
+        assert_eq!(positions[0], Rect::new(0, 0, 30, 50)); // col 1, child 1
+        assert_eq!(positions[1], Rect::new(0, 50, 30, 50)); // col 1, child 2
+        assert_eq!(positions[2], Rect::new(30, 0, 30, 50)); // col 2, child 3
+    }
+
+    #[test]
+    fn test_layout_honors_padding() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 0;
+        layout.config.padding = 10;
+
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+
+        let positions = layout.layout(Rect::new(0, 0, 100, 50));
+        assert_eq!(positions.len(), 1);
+        // Content starts at (10, 10) due to padding
+        assert_eq!(positions[0], Rect::new(10, 10, 40, 20));
+    }
+
+    #[test]
+    fn test_horizontal_clips_child_taller_than_container() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+
+        // A child taller than the available content height is clipped (break).
+        layout.add_child(Box::new(TestWidget::new(1, 50, 30)));
+
+        let positions = layout.layout(Rect::new(0, 0, 200, 20));
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn test_horizontal_clips_after_first_child_when_second_exceeds_height() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+
+        // Two children: first fits height (20), second exceeds it (30).
+        layout.add_child(Box::new(TestWidget::new(1, 50, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 50, 30)));
+
+        let positions = layout.layout(Rect::new(0, 0, 200, 25));
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0], Rect::new(0, 0, 50, 20));
+    }
+
+    #[test]
+    fn test_add_widget_sets_default_size() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.padding = 0;
+        layout.config.spacing = 0;
+
+        layout.add_widget(42, 0); // no widget ref → uses default_size 100x100
+
+        let positions = layout.layout(Rect::new(0, 0, 300, 200));
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0], Rect::new(0, 0, 100, 100));
+    }
+
+    #[test]
+    fn test_set_child_size_overrides_default() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.padding = 0;
+        layout.config.spacing = 0;
+
+        layout.add_widget(42, 0);
+        layout.set_child_size(42, Size::new(50, 30));
+
+        let positions = layout.layout(Rect::new(0, 0, 300, 200));
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0], Rect::new(0, 0, 50, 30));
+    }
+
+    #[test]
+    fn test_preferred_size_with_children() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = 10;
+        layout.config.padding = 0;
+
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 60, 30)));
+
+        // width = 40 + 10 + 60 = 110, height = max(20,30) = 30
+        assert_eq!(layout.preferred_size(), Size::new(110, 30));
     }
 }

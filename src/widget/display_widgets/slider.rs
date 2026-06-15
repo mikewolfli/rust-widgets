@@ -269,14 +269,22 @@ impl EventHandler for Slider {
             Event::MousePress { pos, button } if *button == 1 => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
-                let value = self.pixel_pos_to_value(pos.x as f32);
+                let pixel = match self.orientation {
+                    Orientation::Horizontal => pos.x as f32,
+                    Orientation::Vertical => pos.y as f32,
+                };
+                let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
-                let value = self.pixel_pos_to_value(pos.x as f32);
+                let pixel = match self.orientation {
+                    Orientation::Horizontal => pos.x as f32,
+                    Orientation::Vertical => pos.y as f32,
+                };
+                let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
@@ -295,12 +303,20 @@ impl EventHandler for Slider {
                 }
             }
             Event::MouseMove { pos } if self.mouse_pressed => {
-                let value = self.pixel_pos_to_value(pos.x as f32);
+                let pixel = match self.orientation {
+                    Orientation::Horizontal => pos.x as f32,
+                    Orientation::Vertical => pos.y as f32,
+                };
+                let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } if self.mouse_pressed => {
-                let value = self.pixel_pos_to_value(pos.x as f32);
+                let pixel = match self.orientation {
+                    Orientation::Horizontal => pos.x as f32,
+                    Orientation::Vertical => pos.y as f32,
+                };
+                let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             Event::KeyPress { key, modifiers: _ } => {

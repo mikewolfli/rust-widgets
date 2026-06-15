@@ -4,7 +4,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 /// Callback type for theme mode change notifications.
-pub type ModeChangedCallback = Rc<RefCell<Option<Box<dyn FnMut(ThemeMode)>>>>;
+pub type ModeChangedCallback = Rc<RefCell<Vec<Box<dyn FnMut(ThemeMode)>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub enum WidgetState {
@@ -124,7 +124,7 @@ pub struct ThemeStateManager {
     dark_theme: StatefulTheme,
     current_mode: ThemeMode,
     auto_switch_threshold: Option<(u8, u8)>,
-    /// Callback invoked when the theme mode changes.
+    /// Callbacks invoked when the theme mode changes.
     on_mode_changed: ModeChangedCallback,
 }
 impl ThemeStateManager {
@@ -134,14 +134,14 @@ impl ThemeStateManager {
             dark_theme: dark,
             current_mode: ThemeMode::Light,
             auto_switch_threshold: None,
-            on_mode_changed: Rc::new(RefCell::new(None)),
+            on_mode_changed: Rc::new(RefCell::new(Vec::new())),
         }
     }
     pub fn set_mode(&mut self, mode: ThemeMode) {
         let old_mode = self.current_mode;
         self.current_mode = mode;
         if old_mode != mode {
-            if let Some(callback) = self.on_mode_changed.borrow_mut().as_mut() {
+            for callback in self.on_mode_changed.borrow_mut().iter_mut() {
                 callback(mode);
             }
         }
@@ -192,11 +192,13 @@ impl ThemeStateManager {
     /// Registers a callback that is invoked when the theme mode changes.
     ///
     /// The callback receives the new `ThemeMode` value.
+    /// Multiple callbacks can be registered; they will all be invoked
+    /// in registration order when the mode changes.
     pub fn on_mode_changed<F>(&self, callback: F)
     where
         F: FnMut(ThemeMode) + 'static,
     {
-        *self.on_mode_changed.borrow_mut() = Some(Box::new(callback));
+        self.on_mode_changed.borrow_mut().push(Box::new(callback));
     }
 }
 impl Default for ThemeStateManager {

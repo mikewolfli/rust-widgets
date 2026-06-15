@@ -5,7 +5,7 @@
 //! when the animation finishes. Shapes defined in the Lottie JSON are parsed
 //! and rendered using the RenderContext.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -835,6 +835,7 @@ impl Draw for LottieWidget {
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -870,6 +871,7 @@ impl Draw for LottieWidget {
             &counter_text,
             &font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
 
         // Play/pause indicator at top-left.
@@ -884,6 +886,7 @@ impl Draw for LottieWidget {
             } else {
                 Color::rgba(180, 100, 40, 230)
             },
+            HorizontalAlignment::Left,
         );
 
         // Progress bar at bottom.

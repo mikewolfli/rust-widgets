@@ -4,7 +4,7 @@
 //! navigation. Users can switch pages via left/right arrow keys or programmatic
 //! control. A dot indicator at the bottom shows the current page position.
 
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -141,7 +141,7 @@ impl Draw for TileView {
         let cy = rect.y + rect.height as i32 / 2;
         let text_x = cx - (metrics.width as i32 / 2);
         let text_y = cy - (metrics.height as i32 / 2);
-        context.draw_text(Point::new(text_x, text_y), &text, &font, text_color);
+        context.draw_text(Point::new(text_x, text_y), &text, &font, text_color, HorizontalAlignment::Left);
 
         // Draw page indicator dots at the bottom.
         let dot_count = self.page_count;

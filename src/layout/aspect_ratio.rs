@@ -207,9 +207,10 @@ mod tests {
     }
 }
 
-// Helper used only in tests — but visible for external callers too
+/// Helper for constructing a layout pre-populated with a child.
+#[cfg(test)]
 impl AspectRatioLayout {
-    /// Create a new aspect ratio layout with an initial child.
+    /// Create a new aspect ratio layout with an initial child (test-only helper).
     ///
     /// # Panics
     ///

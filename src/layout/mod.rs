@@ -131,15 +131,7 @@ pub trait Layout {
     /// Enables mutable downcasting from `dyn Layout` to concrete types.
     /// Required for mutation access to concrete layout implementations
     /// through the trait object.
-    ///
-    /// The default implementation returns `self`, which works when the
-    /// concrete type is `Sized + 'static`. Override for unsized layouts.
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: Sized + 'static,
-    {
-        self
-    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 #[cfg(test)]
 mod tests {

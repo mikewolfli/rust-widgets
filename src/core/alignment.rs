@@ -178,8 +178,9 @@ impl Alignment {
     pub const fn is_bottom(&self) -> bool {
         matches!(self, Self::Bottom)
     }
-    /// Creates a combined alignment from horizontal and vertical components.
-    pub fn from_components(
+    /// Splits a horizontal and vertical alignment into their generic (Self, Self) components.
+    /// Returns (horizontal_alignment, vertical_alignment).
+    pub fn split_components(
         horizontal: HorizontalAlignment,
         vertical: VerticalAlignment,
     ) -> (Self, Self) {

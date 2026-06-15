@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2::runtime::Object;
+use objc2::runtime::{AnyClass, Object};
 use objc2::MainThreadMarker;
 use objc2_foundation::{CGPoint, CGRect, CGSize, NSString};
 use objc2_ui_kit::{
@@ -385,4 +385,129 @@ pub(crate) fn create_ui_list_box(
     let table =
         unsafe { UITableView::initWithFrame_style(mtm.alloc(), frame, UITableViewStyle::Plain) };
     table
+}
+
+/// Create a native UIView (generic panel container).
+pub(crate) fn create_ui_panel(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<UIView> {
+    let frame = make_rect(x, y, width, height);
+    // SAFETY: UIView::initWithFrame on main thread (mtm).
+    // Retained<UIView> is guaranteed valid by objc2.
+    let panel = unsafe { UIView::initWithFrame(mtm.alloc(), frame) };
+    panel.setBackgroundColor(UIColor::clear());
+    panel
+}
+
+/// Create a native UIScrollView.
+pub(crate) fn create_ui_scroll(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<Object> {
+    let frame = make_rect(x, y, width, height);
+    // SAFETY: UIScrollView is created via msg_send! on the main thread.
+    // alloc/initWithFrame returns a valid retained object.
+    // The BOOL parameter `setScrollEnabled:` takes YES (1) to enable scrolling.
+    unsafe {
+        let cls = AnyClass::get(c"UIScrollView").unwrap();
+        let scroll: Retained<Object> = msg_send![cls, alloc];
+        let scroll: Retained<Object> = msg_send![scroll, initWithFrame: frame];
+        let yes: u8 = 1;
+        let _: () = msg_send![&*scroll, setScrollEnabled: yes];
+        // Set content size to frame size initially (no scrollable overflow).
+        let _: () = msg_send![&*scroll, setContentSize: frame.size];
+        scroll
+    }
+}
+
+/// Create a native UIAlertController (message box equivalent on iOS).
+///
+/// Returns a prepared alert with a single "OK" action.
+pub(crate) fn create_ui_alert(
+    _mtm: MainThreadMarker,
+    title: &str,
+    text: &str,
+) -> Retained<Object> {
+    // SAFETY: UIAlertController and UIAlertAction are created via msg_send!.
+    // `alertControllerWithTitle:message:preferredStyle:` returns a retained
+    // UIAlertController. `UIAlertControllerStyleAlert` = 1.
+    // `actionWithTitle:style:handler:` returns a retained UIAlertAction.
+    // `UIAlertActionStyleDefault` = 0. The nil handler is safe.
+    unsafe {
+        let cls = AnyClass::get(c"UIAlertController").unwrap();
+        let title_str = NSString::from_str(title);
+        let text_str = NSString::from_str(text);
+        let alert: Retained<Object> = msg_send![cls,
+            alertControllerWithTitle: &*title_str
+            message: &*text_str
+            preferredStyle: 1u64
+        ];
+
+        let action_cls = AnyClass::get(c"UIAlertAction").unwrap();
+        let ok_str = NSString::from_str("OK");
+        let action: Retained<Object> = msg_send![action_cls,
+            actionWithTitle: &*ok_str
+            style: 0u64
+            handler: 0u64 as *mut Object
+        ];
+        let _: () = msg_send![&*alert, addAction: &*action];
+
+        alert
+    }
+}
+
+/// Create a native UIStackView (stack widget equivalent on iOS).
+pub(crate) fn create_ui_stack(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<Object> {
+    let frame = make_rect(x, y, width, height);
+    // SAFETY: UIStackView is created via msg_send! on the main thread.
+    // alloc/initWithFrame returns a valid retained object.
+    // UILayoutConstraintAxisVertical = 1 (vertical stack).
+    unsafe {
+        let cls = AnyClass::get(c"UIStackView").unwrap();
+        let stack: Retained<Object> = msg_send![cls, alloc];
+        let stack: Retained<Object> = msg_send![stack, initWithFrame: frame];
+        let axis: u64 = 1; // UILayoutConstraintAxisVertical
+        let _: () = msg_send![&*stack, setAxis: axis];
+        let spacing: f64 = 8.0;
+        let _: () = msg_send![&*stack, setSpacing: spacing];
+        stack
+    }
+}
+
+/// Create a native UIActivityIndicatorView (spinner equivalent on iOS).
+pub(crate) fn create_ui_spinner(
+    mtm: MainThreadMarker,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Retained<Object> {
+    let frame = make_rect(x, y, width, height);
+    // SAFETY: UIActivityIndicatorView is created via msg_send! on the main thread.
+    // alloc/initWithActivityIndicatorStyle returns a valid retained object.
+    // UIActivityIndicatorViewStyleMedium = 100.
+    unsafe {
+        let cls = AnyClass::get(c"UIActivityIndicatorView").unwrap();
+        let spinner: Retained<Object> = msg_send![cls, alloc];
+        let style: u64 = 100; // UIActivityIndicatorViewStyleMedium
+        let spinner: Retained<Object> = msg_send![spinner, initWithActivityIndicatorStyle: style];
+        let _: () = msg_send![&*spinner, setFrame: frame];
+        // Start animating by default
+        let yes: u8 = 1;
+        let _: () = msg_send![&*spinner, startAnimating];
+        spinner
+    }
 }

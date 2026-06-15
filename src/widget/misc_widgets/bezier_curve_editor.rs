@@ -4,7 +4,7 @@
 //! a grid background, snap-to-grid support, and drag interaction. It can be used to design
 //! custom easing functions for animations.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -326,12 +326,14 @@ impl Draw for BezierCurveEditor {
             &cp1_label,
             &font,
             Color::rgba(33, 118, 210, 200),
+            HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 26),
             &cp2_label,
             &font,
             Color::rgba(76, 175, 80, 200),
+            HorizontalAlignment::Left,
         );
 
         // ── Endpoint markers ──

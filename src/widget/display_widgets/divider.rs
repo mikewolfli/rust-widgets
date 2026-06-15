@@ -7,6 +7,7 @@
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::display_widgets::draw_line;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Divider/Separator widget for visually separating content sections.
@@ -67,31 +68,7 @@ impl Widget for Divider {
 impl Draw for Divider {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let thickness = self.thickness.max(1);
-
-        if self.vertical {
-            // Draw a vertical line centered horizontally in the rect.
-            let x = rect.x + (rect.width as i32 / 2);
-            let top = rect.y;
-            let bottom = rect.y + (rect.height as i32).saturating_sub(1);
-            context.draw_line_stroke(
-                crate::core::Point::new(x, top),
-                crate::core::Point::new(x, bottom),
-                self.color,
-                thickness,
-            );
-        } else {
-            // Draw a horizontal line centered vertically in the rect.
-            let y = rect.y + (rect.height as i32 / 2);
-            let left = rect.x;
-            let right = rect.x + (rect.width as i32).saturating_sub(1);
-            context.draw_line_stroke(
-                crate::core::Point::new(left, y),
-                crate::core::Point::new(right, y),
-                self.color,
-                thickness,
-            );
-        }
+        draw_line(context, rect, self.vertical, self.thickness, self.color);
     }
 }
 

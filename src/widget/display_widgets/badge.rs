@@ -5,7 +5,7 @@
 //! levels (Info, Success, Warning, Error) and a dot mode that shows only a
 //! colored dot without text. When the count is set to 0, the badge hides itself.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -198,7 +198,7 @@ impl Draw for Badge {
             + ((pill_rect.height as i32 - glyph_height as i32) / 2).max(0)
             + metrics.ascent as i32;
 
-        context.draw_text(Point::new(text_x, text_y), &text_str, &font, Color::WHITE);
+        context.draw_text(Point::new(text_x, text_y), &text_str, &font, Color::WHITE, HorizontalAlignment::Left);
     }
 }
 

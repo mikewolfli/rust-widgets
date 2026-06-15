@@ -1,11 +1,12 @@
 //! Update batching for coallescing frame updates.
 use super::region::DirtyRegionTracker;
+use crate::compat::Instant;
 use crate::core::Rect;
 /// Coalesces update rects into batches based on timeout thresholds.
 pub struct UpdateBatcher {
     pending_updates: Vec<Rect>,
     batch_timeout_ms: u64,
-    last_batch: Option<std::time::Instant>,
+    last_batch: Option<Instant>,
 }
 impl UpdateBatcher {
     pub fn new(batch_timeout_ms: u64) -> Self {
@@ -34,7 +35,7 @@ impl UpdateBatcher {
             tracker.add(rect);
         }
         tracker.merge();
-        self.last_batch = Some(std::time::Instant::now());
+        self.last_batch = Some(Instant::now());
         tracker.regions.into_iter().map(|r| r.rect).collect()
     }
     /// Flush pending updates and render only dirty regions.

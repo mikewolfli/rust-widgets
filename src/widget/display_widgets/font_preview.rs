@@ -3,7 +3,7 @@
 //! Displays a preview of a font family at configurable sizes, with sample
 //! text, alphabet samples, and pangrams. Supports bold and italic styles.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -156,6 +156,7 @@ impl Draw for FontPreview {
             &info_text,
             &info_font,
             Color::rgba(100, 100, 100, 255),
+            HorizontalAlignment::Left,
         );
 
         let line_height = 18;
@@ -169,6 +170,7 @@ impl Draw for FontPreview {
                 &self.preview_text,
                 &preview_font,
                 Color::BLACK,
+                HorizontalAlignment::Left,
             );
             y += (self.font_size * 1.4) as i32;
         }
@@ -193,6 +195,7 @@ impl Draw for FontPreview {
                 text,
                 &sample_font,
                 Color::rgba(60, 60, 60, 255),
+                HorizontalAlignment::Left,
             );
             y += 22;
         }

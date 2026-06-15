@@ -4,7 +4,7 @@
 //! topmost page along with a navigation bar. It supports push, pop, and pop-to-root
 //! operations, similar to SwiftUI NavigationStack or UINavigationController.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -177,6 +177,7 @@ impl Draw for NavigationStack {
                 back_text,
                 &back_font,
                 back_color,
+                HorizontalAlignment::Left,
             );
         }
 
@@ -192,6 +193,7 @@ impl Draw for NavigationStack {
             &title,
             &title_font,
             text_color,
+            HorizontalAlignment::Left,
         );
 
         // ── Draw content area background (light fill) ──

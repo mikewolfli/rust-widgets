@@ -4,7 +4,7 @@
 //! a [`Signal1<(u32, u32)>`] with the key code and modifiers on press.
 //! Special keys (Enter, Backspace, Space) also emit dedicated signals.
 
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -291,19 +291,8 @@ impl EventHandler for Keyboard {
         }
 
         match event {
-            Event::MouseDown((pos, _button)) => {
-                let key_code = self.key_at_position(*pos).and_then(|(r, c)| {
-                    self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
-                });
-                if let Some(code) = key_code {
-                    if code == 16 {
-                        self.toggle_shift();
-                    } else {
-                        self.emit_key_signals(code);
-                    }
-                    self.base.clicked.emit();
-                }
-            }
+            // Only handle MousePress (modern variant) to avoid double-trigger
+            // with MouseDown (legacy variant).
             Event::MousePress { pos, button: _ } => {
                 let key_code = self.key_at_position(*pos).and_then(|(r, c)| {
                     self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
@@ -427,6 +416,7 @@ impl Draw for Keyboard {
                         &label,
                         &default_font,
                         text_color,
+                        HorizontalAlignment::Left,
                     );
                 }
 
@@ -629,11 +619,11 @@ mod tests {
 
         // Row 2, col 0 is the Shift key. Simulate a click on it.
         let shift_pos = Point::new(10, 90); // Roughly in row 2.
-        kbd.handle_event(&Event::MouseDown((shift_pos, 1)));
+        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1 });
         assert!(kbd.is_shifted());
 
         // Press again to toggle back.
-        kbd.handle_event(&Event::MouseDown((shift_pos, 1)));
+        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1 });
         assert!(!kbd.is_shifted());
     }
 

@@ -1,5 +1,5 @@
 //! List box widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -387,6 +387,7 @@ impl Draw for ListBox {
                     text,
                     &Font::default(),
                     text_color,
+                    HorizontalAlignment::Left,
                 );
             }
             // Draw item separator

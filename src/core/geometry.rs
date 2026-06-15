@@ -566,6 +566,13 @@ pub enum Orientation {
     /// Main axis is vertical.
     Vertical,
 }
+
+/// Converts degrees to radians.
+#[inline]
+pub fn deg_to_rad(deg: f32) -> f32 {
+    deg * std::f32::consts::PI / 180.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@
 //! supports play/pause/stop controls, loop count configuration, and emits signals
 //! when animation finishes or the current frame changes.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -282,6 +282,7 @@ impl Draw for AnimatedImage {
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
+                HorizontalAlignment::Left,
             );
             return;
         }
@@ -342,6 +343,7 @@ impl Draw for AnimatedImage {
                 &counter_text,
                 &font,
                 Color::WHITE,
+                HorizontalAlignment::Left,
             );
         }
     }

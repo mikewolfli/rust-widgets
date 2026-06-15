@@ -125,7 +125,10 @@ impl NativeCapabilityContract {
 pub trait Platform: Send + Sync {
     /// Returns self as a `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn core::any::Any {
-        panic!("as_any not implemented — override in concrete platform backend");
+        // Safe fallback — unsized coercion on a unit type avoids panicking.
+        // Concrete backends should override with a self-referencing impl.
+        static UNIT: () = ();
+        &UNIT as &dyn core::any::Any
     }
     /// Returns backend identifier string.
     fn backend_name(&self) -> &'static str;

@@ -1,9 +1,8 @@
 use super::{Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides};
+use crate::compat::HashMap;
 use crate::core::{Color, Font};
 use crate::signal::Signal;
 use crate::style::{Margin, Padding, Shadow, WidgetStyle};
-use std::collections::HashMap;
-use std::fs;
 
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
@@ -26,19 +25,21 @@ impl ThemeManager {
     }
 
     /// Loads and registers a theme from a JSON file path.
+    #[cfg(not(feature = "mini"))]
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
+        let content = std::fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
         self.themes.insert(theme.name.clone(), theme);
         Ok(())
     }
 
     /// Serializes the current active theme to a JSON file at the given path.
+    #[cfg(not(feature = "mini"))]
     pub fn save_theme(&self, path: &str) -> Result<(), String> {
         let theme = self.current_theme().ok_or_else(|| "No active theme to save".to_string())?;
         let json = serde_json::to_string_pretty(theme)
             .map_err(|e| format!("Failed to serialize theme: {}", e))?;
-        fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {}", e))?;
+        std::fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {}", e))?;
         Ok(())
     }
 

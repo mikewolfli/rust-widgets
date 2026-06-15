@@ -1,5 +1,6 @@
 //! Toggle button widget.
 use crate::core::Rect;
+use crate::core::{HorizontalAlignment};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -140,6 +141,7 @@ impl Draw for ToggleButton {
             &self.text,
             &crate::core::Font::default(),
             text_color,
+            HorizontalAlignment::Left,
         );
     }
 }

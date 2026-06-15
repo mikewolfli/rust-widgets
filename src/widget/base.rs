@@ -4,7 +4,6 @@ use super::WidgetKind;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::object::Object;
-use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 
@@ -214,10 +213,6 @@ impl BaseWidget {
     }
     pub fn set_mouse_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
-    }
-    pub fn paint(&mut self, context: &mut RenderContext) {
-        // Default paint implementation - subclasses should override
-        let _ = context;
     }
     pub fn request_redraw(&self) {
         self.redraw_requested.emit();

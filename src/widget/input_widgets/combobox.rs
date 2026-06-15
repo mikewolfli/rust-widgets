@@ -1,5 +1,5 @@
 //! Combo box widget.
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -280,10 +280,10 @@ impl Draw for ComboBox {
         let font = style.font.clone().unwrap_or_default();
         let current_text = self.current_text();
         if !current_text.is_empty() {
-            context.draw_text(Point::new(text_x, text_y as i32), &current_text, &font, text_color);
+            context.draw_text(Point::new(text_x, text_y as i32), &current_text, &font, text_color, HorizontalAlignment::Left);
         } else if self.items.is_empty() {
             // Draw placeholder
-            context.draw_text(Point::new(text_x, text_y as i32), "(Empty)", &font, text_color);
+            context.draw_text(Point::new(text_x, text_y as i32), "(Empty)", &font, text_color, HorizontalAlignment::Left);
         }
     }
 }

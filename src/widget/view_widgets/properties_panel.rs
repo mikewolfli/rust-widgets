@@ -5,7 +5,7 @@
 //! Supports filter text for search, editable values (text, number, bool, color,
 //! choice, file), and emits `property_changed` on edits.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -284,6 +284,7 @@ impl Draw for PropertiesPanel {
                 category,
                 &font,
                 Color::DARK_GRAY,
+                HorizontalAlignment::Left,
             );
             y += ROW_HEIGHT as i32;
 
@@ -306,6 +307,7 @@ impl Draw for PropertiesPanel {
                     &entry.name,
                     &font,
                     Color::FOREGROUND,
+                    HorizontalAlignment::Left,
                 );
 
                 // Property value (with label-style background)
@@ -322,6 +324,7 @@ impl Draw for PropertiesPanel {
                     &display,
                     &font,
                     if entry.editable { Color::BLACK } else { Color::GRAY },
+                    HorizontalAlignment::Left,
                 );
 
                 // Draw bottom border line

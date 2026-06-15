@@ -5,7 +5,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -293,6 +293,7 @@ impl Draw for FindReplaceDialog {
             "Find:",
             &font,
             Color::FOREGROUND,
+            HorizontalAlignment::Left,
         );
         x += label_width as i32 + GAP;
 
@@ -310,6 +311,7 @@ impl Draw for FindReplaceDialog {
             display_text,
             &font,
             Color::BLACK,
+            HorizontalAlignment::Left,
         );
         x = input_rect.x + input_rect.width as i32 + GAP;
 
@@ -322,6 +324,7 @@ impl Draw for FindReplaceDialog {
             "Aa",
             &font,
             if self.match_case { Color::WHITE } else { Color::DARK_GRAY },
+            HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -334,6 +337,7 @@ impl Draw for FindReplaceDialog {
             "W",
             &font,
             if self.whole_word { Color::WHITE } else { Color::DARK_GRAY },
+            HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -346,6 +350,7 @@ impl Draw for FindReplaceDialog {
             ".*",
             &font,
             if self.use_regex { Color::WHITE } else { Color::DARK_GRAY },
+            HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -358,6 +363,7 @@ impl Draw for FindReplaceDialog {
             "H",
             &font,
             if self.highlight_all { Color::WHITE } else { Color::DARK_GRAY },
+            HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -369,6 +375,7 @@ impl Draw for FindReplaceDialog {
             "\u{25B2}",
             &font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
         x += 24 + GAP;
 
@@ -380,6 +387,7 @@ impl Draw for FindReplaceDialog {
             "\u{25BC}",
             &font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
 
         // ── Replace row: label + input + buttons ──
@@ -392,6 +400,7 @@ impl Draw for FindReplaceDialog {
             "Rpl:",
             &font,
             Color::FOREGROUND,
+            HorizontalAlignment::Left,
         );
         x2 += label_width as i32 + GAP;
 
@@ -407,6 +416,7 @@ impl Draw for FindReplaceDialog {
             r_text,
             &font,
             Color::BLACK,
+            HorizontalAlignment::Left,
         );
         x2 = r_input_rect.x + r_input_rect.width as i32 + GAP;
 
@@ -418,6 +428,7 @@ impl Draw for FindReplaceDialog {
             "R",
             &font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
         x2 += 28;
 
@@ -429,6 +440,7 @@ impl Draw for FindReplaceDialog {
             "RA",
             &font,
             Color::WHITE,
+            HorizontalAlignment::Left,
         );
     }
 }

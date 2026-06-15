@@ -3,7 +3,7 @@
 //! Renders a viewfinder area with scanning animation, corner brackets,
 //! and detected barcode result overlay.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -294,13 +294,17 @@ impl Draw for BarcodeScanner {
 
         // Scanning animation line (when active)
         if self.is_scanning {
+            // Animation speed is proportional to scan_interval:
+            // shorter interval = faster sweep, longer interval = slower sweep.
+            // Default scan_interval (100) / 5 = 20, matching the previous hardcoded value.
+            let speed_divisor = (self.scan_interval / 5).max(1);
             let scan_line_y = vf_rect.y
                 + 10
                 + ((std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64
-                    / 20)
+                    / speed_divisor)
                     % (vf_rect.height as u64 - 20)) as i32;
             context.draw_line_stroke(
                 Point::new(vf_rect.x + 4, scan_line_y),
@@ -322,6 +326,7 @@ impl Draw for BarcodeScanner {
                 &format_text,
                 &small_font,
                 Color::rgba(100, 255, 150, 255),
+                HorizontalAlignment::Left,
             );
 
             let display_data = if result.data.len() > 30 {
@@ -334,6 +339,7 @@ impl Draw for BarcodeScanner {
                 &display_data,
                 &normal_font,
                 Color::rgba(255, 255, 255, 220),
+                HorizontalAlignment::Left,
             );
         }
 

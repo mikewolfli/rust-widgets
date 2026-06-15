@@ -3,12 +3,19 @@
 //! Both types delegate to [`WebViewCore`] to avoid ~95% code duplication.
 //! Each wrapper adds only its own unique signals and behavior on top of this core.
 //!
-//! # Simulated Navigation
+//! # Navigation
 //!
-//! All navigation methods are **simulated** — no real web engine is used.
+//! By default, all navigation methods are **simulated** — no real web engine is used.
 //! Progress callbacks are emitted as 0% → 50% → 100% to allow UI bindings
-//! to observe load lifecycle events. For real web content, wire a real
-//! WebEngine/WebView backend.
+//! to observe load lifecycle events.
+//!
+//! Enable the `web-http` feature (`cargo build --features web-http`) to replace the
+//! simulated progress with real HTTP fetching via `ureq`. In that mode, `http://` and
+//! `https://` URLs are fetched over the network; responses are stored as content and
+//! the HTML `<title>` is extracted automatically.
+//!
+//! Regardless of feature selection, `file://` URLs and the `simulation_engine` trait
+//! always take priority over the real HTTP path.
 
 use super::history::{BrowserHistory, SessionHistory};
 use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
@@ -150,13 +157,23 @@ impl WebViewCore {
         self.set_url(url.to_string());
     }
 
-    /// SIMULATED: No real web engine — this simulates URL navigation with
-    /// 0% → 50% → 100% progress callbacks.
+    /// Navigate to the given URL.
     ///
-    /// Validates that the URL starts with a supported scheme (`http://`,
-    /// `https://`, or `file://`) before accepting it. If the URL is invalid
-    /// or the simulation engine returns an error, the navigation is refused
-    /// and the error is logged.
+    /// Validates the URL scheme (`http://`, `https://`, or `file://`) before
+    /// accepting it. If a [`SimulationEngine`] is set, it takes priority — the
+    /// engine's returned content replaces any real or simulated data.
+    ///
+    /// # Real HTTP fetching (`web-http` feature)
+    ///
+    /// When the `web-http` feature is enabled, `http://` and `https://` URLs
+    /// are fetched over the network using `ureq`. The response body is stored
+    /// as content and the HTML `<title>` is extracted automatically.
+    /// `file://` URLs always fall back to simulated progress.
+    ///
+    /// # Simulated mode (default)
+    ///
+    /// Without `web-http`, progress is emitted as 0% → 50% → 100% with a brief
+    /// delay, mimicking load lifecycle events without actual network access.
     pub fn set_url(&mut self, url: String) {
         // Validate URL scheme.
         if !url.starts_with("http://")
@@ -176,7 +193,7 @@ impl WebViewCore {
             return;
         }
 
-        // Delegate to simulation engine if one is set.
+        // Delegate to simulation engine if one is set (primarily for testing).
         if let Some(ref mut engine) = self.simulation_engine {
             match engine.simulate_navigation(&url) {
                 Ok(content) => {
@@ -196,15 +213,68 @@ impl WebViewCore {
         self.loading_started.emit(url.clone());
         self.history.navigate(url.clone());
 
-        // Emit progress at 50%.
-        self.load_progress = 50;
-        self.loading_progress.emit(self.load_progress);
+        // ── Real HTTP fetch (web-http feature) ──
+        #[cfg(feature = "web-http")]
+        {
+            if url.starts_with("http://") || url.starts_with("https://") {
+                self.load_progress = 10;
+                self.loading_progress.emit(self.load_progress);
+
+                match ureq::get(&url).call() {
+                    Ok(response) => {
+                        self.load_progress = 60;
+                        self.loading_progress.emit(self.load_progress);
+
+                        match response.into_body().read_to_string() {
+                            Ok(body) => {
+                                self.content = body;
+                                // Try to extract title from HTML.
+                                if let Some(title_start) = self.content.find("<title>") {
+                                    let after = &self.content[title_start..];
+                                    if let Some(title_end) = after.find("</title>") {
+                                        self.title = after[7..title_end].to_string();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "[web] Failed to read response body from '{}': {}",
+                                    url,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[web] HTTP request failed for '{}': {}", url, e);
+                        self.loading = false;
+                        self.loading_finished.emit(self.url.clone());
+                        self.update_navigation_state();
+                        self.base.request_redraw();
+                        return;
+                    }
+                }
+            } else {
+                // file:// URL fallback — simulated progress.
+                self.load_progress = 50;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        // ── Simulated mode (no web-http feature) ──
+        #[cfg(not(feature = "web-http"))]
+        {
+            // Emit progress at 50%.
+            self.load_progress = 50;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
 
         // Emit progress at 100% and finish.
         self.load_progress = 100;
         self.loading = false;
         self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
+        self.title_changed.emit(self.title.clone());
         self.update_navigation_state();
         self.browser_history.add_entry(self.url.clone(), self.title.clone());
         self.base.request_redraw();

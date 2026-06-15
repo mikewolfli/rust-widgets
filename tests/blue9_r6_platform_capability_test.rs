@@ -248,6 +248,7 @@ fn widget_kind_variants_are_exhaustive() {
         "ScrollBar",
         "ScrollArea",
         "Panel",
+        "Frame",
         "DockPanel",
         "GroupBox",
         "TabWidget",
@@ -307,8 +308,8 @@ fn widget_kind_variants_are_exhaustive() {
 
     assert_eq!(
         variants.len(),
-        81,
-        "WidgetKind variant count mismatch — expected 81, got {}",
+        82,
+        "WidgetKind variant count mismatch — expected 82, got {}",
         variants.len()
     );
 }

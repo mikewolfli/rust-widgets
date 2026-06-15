@@ -107,7 +107,7 @@ impl EventHandler for Switch {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } | Event::MouseRelease { pos: _, button } => {
+            Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
                     self.toggle();
                 }
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn switch_mouse_press_toggles() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert!(sw.is_checked());
     }
 

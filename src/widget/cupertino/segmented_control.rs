@@ -4,7 +4,7 @@
 //! segment has a sliding highlight. Clicking a segment selects it and emits
 //! a `value_changed` signal with the segment index.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -128,7 +128,7 @@ impl Draw for CupertinoSegmentedControl {
             } else {
                 Color::rgba(100, 100, 100, 255)
             };
-            context.draw_text(Point::new(text_x, text_y), seg, &font, color);
+            context.draw_text(Point::new(text_x, text_y), seg, &font, color, HorizontalAlignment::Left);
         }
     }
 }

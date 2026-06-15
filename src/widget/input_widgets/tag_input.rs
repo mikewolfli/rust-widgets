@@ -4,7 +4,7 @@
 //! to create a tag chip. Each tag is displayed as a rounded chip with an X button for removal.
 //! It emits `tags_changed` with the current list of tags on every change.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -208,7 +208,7 @@ impl Draw for TagInput {
             let text_color = Color::WHITE;
             let text_x = current_x + TAG_PADDING;
             let text_origin = Point::new(text_x, chip_y + TAG_HEIGHT / 2);
-            context.draw_text(text_origin, tag, &default_font, text_color);
+            context.draw_text(text_origin, tag, &default_font, text_color, HorizontalAlignment::Left);
 
             // Close button circle
             let close_center = self.tag_close_center(current_x, chip_width, chip_y);
@@ -261,7 +261,7 @@ impl Draw for TagInput {
             &self.input_buffer
         };
         let text_origin = Point::new(input_x + 4, chip_y + TAG_HEIGHT / 2);
-        context.draw_text(text_origin, display_text, &default_font, input_text_color);
+        context.draw_text(text_origin, display_text, &default_font, input_text_color, HorizontalAlignment::Left);
 
         // ── Cursor (when focused and input is active) ──
         if self.focused && is_enabled {

@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -122,6 +122,7 @@ audio-output = ["cpal"]
 js-engine = ["boa_engine"]
 webkit-engine = ["dep:webkit2gtk"]
 video-codecs = ["dep:ffmpeg-next"]
+web-http = ["dep:ureq"]
 
 unstable-pipeline-routing = []
 unstable-special-widgets = []
@@ -181,6 +182,7 @@ log = "0.4"
 minimp3 = "0.5"
 miniz_oxide = { version = "0.8", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
+ureq = { version = "3.0", optional = true, features = [] }
 symphonia = { version = "0.5", default-features = false, features = [
     "all",
 ], optional = true }

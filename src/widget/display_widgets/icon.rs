@@ -5,7 +5,7 @@
 //! Warning, Error, etc.). Each icon is drawn using basic shapes — lines, circles,
 //! rectangles, and paths — through the render context.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -1131,6 +1131,7 @@ impl Icon {
             "?",
             &crate::core::Font::simple("sans-serif", 12.0),
             c,
+            HorizontalAlignment::Left,
         );
     }
 }
@@ -1153,6 +1154,15 @@ impl Draw for Icon {
         }
         let is_enabled = self.base.is_enabled();
         if !is_enabled {
+            let original_color = self.color;
+            // Compute grayscale: average of R, G, B channels
+            let gray =
+                ((original_color.r as u16 + original_color.g as u16 + original_color.b as u16) / 3)
+                    as u8;
+            // Use muted gray at half alpha for disabled appearance
+            self.color = Color::rgba(gray, gray, gray, original_color.a / 2);
+            self.draw_icon(context);
+            self.color = original_color;
             return;
         }
         self.draw_icon(context);

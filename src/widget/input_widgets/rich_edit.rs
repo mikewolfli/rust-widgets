@@ -1,4 +1,5 @@
 //! Rich text editor widget.
+use crate::core::{HorizontalAlignment};
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -124,6 +125,7 @@ impl Draw for RichEdit {
                 line,
                 &crate::core::Font::default(),
                 Color::from_rgb(0, 0, 0),
+                HorizontalAlignment::Left,
             );
         }
     }

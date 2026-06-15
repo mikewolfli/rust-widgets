@@ -4,7 +4,7 @@
 //! Unlike the existing SearchBox, this widget is designed for mobile-style
 //! search UX with active state management and a cancel button.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -143,6 +143,7 @@ impl Draw for SearchBar {
                 cancel_text,
                 &cancel_font,
                 Color::rgba(52, 120, 246, 255),
+                HorizontalAlignment::Left,
             );
         }
 
@@ -196,6 +197,7 @@ impl Draw for SearchBar {
                     &self.placeholder,
                     &font,
                     Color::rgba(160, 160, 160, 255),
+                    HorizontalAlignment::Left,
                 );
             }
         } else {
@@ -210,6 +212,7 @@ impl Draw for SearchBar {
                     &self.text,
                     &font,
                     Color::rgba(40, 40, 40, 255),
+                    HorizontalAlignment::Left,
                 );
             }
 

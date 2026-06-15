@@ -1,5 +1,5 @@
 //! Tool bar widget.
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -333,6 +333,7 @@ impl Draw for ToolBar {
                 item.text(),
                 &Font::default(),
                 fg,
+                HorizontalAlignment::Left,
             );
         }
     }

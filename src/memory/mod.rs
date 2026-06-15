@@ -51,6 +51,7 @@ impl Default for AllocationOptions {
         Self { alignment: 8, zeroed: false }
     }
 }
+#[derive(Debug)]
 pub struct ArenaAllocator {
     buffer: NonNull<u8>,
     layout: Layout,
@@ -109,6 +110,7 @@ impl Drop for ArenaAllocator {
     }
 }
 unsafe impl Send for ArenaAllocator {}
+#[derive(Debug)]
 pub struct StackAllocator {
     buffer: Vec<u8>,
     offset: usize,
@@ -237,6 +239,17 @@ impl MemoryMonitor {
 impl Default for MemoryMonitor {
     fn default() -> Self {
         Self::new(1024 * 1024 * 100, 1024 * 1024 * 200)
+    }
+}
+
+impl core::fmt::Debug for MemoryMonitor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemoryMonitor")
+            .field("stats", &self.stats)
+            .field("pressure", &self.pressure)
+            .field("warning_threshold", &self.warning_threshold)
+            .field("critical_threshold", &self.critical_threshold)
+            .finish()
     }
 }
 #[cfg(test)]

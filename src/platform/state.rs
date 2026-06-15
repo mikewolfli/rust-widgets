@@ -257,7 +257,7 @@ where
         }
         self.drop_events.lock().expect("backend state drop lock poisoned").push_back(DropEvent {
             source_widget_id,
-            target_widget_id: source_widget_id,
+            target_widget_id: 0, // Not yet known — target is determined at drop time
             mime: mime.to_string(),
             payload: payload.to_vec(),
         });
@@ -292,7 +292,10 @@ where
     /// Pop widget trigger event.
     /// Reserved for event processing in platform backends.
     pub fn pop_widget_trigger(&self) -> Option<ObjectId> {
-        self.pop_menu_event()
+        // Pop the widget_id from the widget_events queue (typed variant),
+        // extracting just the widget_id. This is the widget-side counterpart
+        // of push_widget_event / inject_widget_trigger_event.
+        self.pop_widget_event().map(|e| e.widget_id)
     }
     /// Pop typed widget trigger event.
     /// Reserved for event processing in platform backends (typed variant).
@@ -320,7 +323,8 @@ mod tests {
 
     #[test]
     fn is_kind_returns_true_for_matching_kind() {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
         enum TestKind {
             Button,
             Label,
@@ -338,7 +342,8 @@ mod tests {
 
     #[test]
     fn is_kind_returns_false_for_nonexistent_widget() {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
         enum TestKind {
             Widget,
         }

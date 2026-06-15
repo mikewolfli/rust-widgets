@@ -1,5 +1,5 @@
 //! Group box widget.
-use crate::core::{Alignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Alignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -208,6 +208,7 @@ impl Draw for GroupBox {
                 &self.title,
                 &Font::default(),
                 text_color,
+                HorizontalAlignment::Left,
             );
         }
     }

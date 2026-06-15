@@ -4,7 +4,7 @@
 //! rendered with an underline style to indicate the preedit (uncommitted) state,
 //! similar to how operating systems render inline IME composition text.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -88,7 +88,7 @@ impl Draw for ImePreedit {
         let rect = self.geometry();
 
         // Draw the preedit text
-        context.draw_text(Point::new(rect.x, rect.y), &self.text, &self.font, self.text_color);
+        context.draw_text(Point::new(rect.x, rect.y), &self.text, &self.font, self.text_color, HorizontalAlignment::Left);
 
         // Draw composition underline below the text
         // Estimate text width based on character count × approximate font size

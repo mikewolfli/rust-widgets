@@ -1,5 +1,5 @@
 //! Window widget and platform integration.
-use crate::core::{Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -37,6 +37,7 @@ impl Window {
     /// Updates window title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
+        self.base.request_redraw();
     }
     /// Returns the title bar height.
     pub fn title_bar_height(&self) -> u32 {
@@ -109,10 +110,17 @@ impl Draw for Window {
         let title_bar_rect = Rect::new(rect.x, rect.y, rect.width, title_bar_height);
         context.fill_rect(title_bar_rect, title_bar_color);
         // Draw title text
-        let title_font = Font::new("Arial", 12.0, false, false);
+        let title_font =
+            self.font().cloned().unwrap_or_else(|| Font::new("Arial", 12.0, false, false));
         let title_x = rect.x + 10;
         let title_y = rect.y + title_bar_height as i32 / 2;
-        context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, title_text_color);
+        context.draw_text(
+            Point::new(title_x, title_y),
+            &self.title,
+            &title_font,
+            title_text_color,
+            HorizontalAlignment::Left,
+        );
         // Draw window border
         if border_width > 0 {
             context.draw_rect_stroke(rect, border_color, border_width);
@@ -120,7 +128,7 @@ impl Draw for Window {
         // Draw window controls (close button)
         let close_button_size = self.close_button_size;
         let close_button_rect = Rect::new(
-            rect.x + rect.width as f32 as i32 - close_button_size as i32 - 10,
+            rect.right() - close_button_size as i32 - 10,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
@@ -146,9 +154,10 @@ impl Draw for Window {
         context.draw_line(x3, x4, Color::WHITE);
         // Draw minimize button
         let minimize_button_rect = Rect::new(
-            rect.x + rect.width as i32
+            rect.right()
                 - close_button_size as i32
-                - (self.button_spacing * 2 + self.close_button_size * 2) as i32,
+                - (self.button_spacing * 2 + self.close_button_size * 2) as i32
+                - 10,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,
@@ -163,9 +172,10 @@ impl Draw for Window {
         );
         // Draw maximize button
         let maximize_button_rect = Rect::new(
-            rect.x + rect.width as f32 as i32
+            rect.right()
                 - close_button_size as i32
-                - (self.button_spacing + self.close_button_size) as i32,
+                - (self.button_spacing + self.close_button_size) as i32
+                - 10,
             rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
             close_button_size,
             close_button_size,

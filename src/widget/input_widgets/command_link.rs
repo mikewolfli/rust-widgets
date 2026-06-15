@@ -1,4 +1,4 @@
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -105,7 +105,7 @@ impl Draw for CommandLink {
         let text_font = Font::new("Arial", 12.0, false, true);
         let text_x = rect.x + padding.left as i32;
         let text_y = rect.y + padding.top as i32 + 12;
-        context.draw_text(Point::new(text_x, text_y), &self.text, &text_font, current_text_color);
+        context.draw_text(Point::new(text_x, text_y), &self.text, &text_font, current_text_color, HorizontalAlignment::Left);
         // Draw description if present
         if !self.description.is_empty() {
             let desc_font = Font::new("Arial", 10.0, false, false);
@@ -117,6 +117,7 @@ impl Draw for CommandLink {
                 &self.description,
                 &desc_font,
                 desc_color,
+                HorizontalAlignment::Left,
             );
         }
         // Draw underline for hover state

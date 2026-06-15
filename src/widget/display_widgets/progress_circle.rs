@@ -5,7 +5,7 @@
 //! mode (showing actual progress) and indeterminate mode (animated spinning arc).
 //! The track and progress colors, as well as stroke width, are customizable.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -25,6 +25,7 @@ pub struct ProgressCircle {
     track_color: Color,
     progress_color: Color,
     stroke_width: f32,
+    diameter: u32,
 }
 
 impl ProgressCircle {
@@ -39,6 +40,7 @@ impl ProgressCircle {
             track_color: Color::rgba(220, 220, 220, 200),
             progress_color: Color::PRIMARY,
             stroke_width: 4.0,
+            diameter: geometry.width.min(geometry.height),
         }
     }
 
@@ -91,6 +93,17 @@ impl ProgressCircle {
         self.stroke_width
     }
 
+    /// Returns the diameter of the progress circle.
+    pub fn diameter(&self) -> u32 {
+        self.diameter
+    }
+
+    /// Sets the diameter of the progress circle.
+    pub fn set_diameter(&mut self, diameter: u32) {
+        self.diameter = diameter.max(1);
+        self.base.request_redraw();
+    }
+
     /// Sets the stroke width for both track and progress arcs.
     pub fn set_stroke_width(&mut self, width: f32) {
         self.stroke_width = width.max(0.5);
@@ -111,41 +124,6 @@ impl ProgressCircle {
         }
         Some((Point::new(cx, cy), radius))
     }
-
-    /// Returns a point on the circle at the given angle (in radians).
-    /// Angle 0 is at 3 o'clock (right), angles increase clockwise.
-    fn point_on_circle(center: Point, radius: f32, angle: f32) -> Point {
-        Point::new(
-            center.x + (radius * angle.cos()) as i32,
-            center.y + (radius * angle.sin()) as i32,
-        )
-    }
-
-    /// Draws an arc from `start_angle` to `end_angle` using line segments.
-    fn draw_arc_segments(
-        context: &mut RenderContext,
-        center: Point,
-        radius: f32,
-        start_angle: f32,
-        end_angle: f32,
-        color: Color,
-        stroke_width: u32,
-    ) {
-        let segments = 40; // Number of segments for a smooth arc
-        let total_angle = end_angle - start_angle;
-        if total_angle.abs() < 0.001 {
-            return;
-        }
-        let step = total_angle / segments as f32;
-
-        let mut prev = Self::point_on_circle(center, radius, start_angle);
-        for i in 1..=segments {
-            let angle = start_angle + step * i as f32;
-            let curr = Self::point_on_circle(center, radius, angle);
-            context.draw_line_stroke(prev, curr, color, stroke_width);
-            prev = curr;
-        }
-    }
 }
 
 impl Widget for ProgressCircle {
@@ -155,6 +133,10 @@ impl Widget for ProgressCircle {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(self.diameter.max(60), self.diameter.max(60))
     }
 }
 
@@ -193,7 +175,7 @@ impl Draw for ProgressCircle {
 
             let prog_color =
                 if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
-            Self::draw_arc_segments(
+            crate::render::draw_arc_segments(
                 context,
                 center,
                 radius,
@@ -210,7 +192,7 @@ impl Draw for ProgressCircle {
 
             let prog_color =
                 if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
-            Self::draw_arc_segments(
+            crate::render::draw_arc_segments(
                 context,
                 center,
                 radius,

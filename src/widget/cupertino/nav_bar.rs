@@ -4,7 +4,7 @@
 //! iOS 13+ large title nav bar), back button with arrow, and translucent
 //! background effect.
 
-use crate::core::{Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -125,6 +125,7 @@ impl Draw for CupertinoNavigationBar {
                     &self.title,
                     &title_font,
                     Color::BLACK,
+                    HorizontalAlignment::Left,
                 );
             }
         } else {
@@ -140,6 +141,7 @@ impl Draw for CupertinoNavigationBar {
                     &self.title,
                     &title_font,
                     Color::BLACK,
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -160,6 +162,7 @@ impl Draw for CupertinoNavigationBar {
                 arrow_symbol,
                 &arrow_font,
                 Color::rgba(0, 122, 255, 255), // iOS blue
+                HorizontalAlignment::Left,
             );
 
             // Draw text label next to arrow
@@ -172,6 +175,7 @@ impl Draw for CupertinoNavigationBar {
                     &self.back_button_text,
                     &label_font,
                     Color::rgba(0, 122, 255, 255),
+                    HorizontalAlignment::Left,
                 );
             }
         }
