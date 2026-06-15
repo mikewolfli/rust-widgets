@@ -1,7 +1,6 @@
-use crate::compat::HashMap;
+use crate::compat::{HashMap, Instant};
 use crate::core::{Color, Rect, Size};
 use core::hash::{Hash, Hasher};
-use std::time::Instant;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TextKey {
     pub text: String,

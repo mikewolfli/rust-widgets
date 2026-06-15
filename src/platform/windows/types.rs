@@ -211,7 +211,8 @@ pub struct WindowsPlatform {
     pub menu_state: Win32MenuState,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
     /// Platform IME bridge for text input method integration (Windows TSF).
-    pub ime_bridge: crate::platform::ime_stubs::windows::WindowsImeBridge,
+    /// Uses `ime_windows::WindowsImeBridge` (real state machine, no fake COM vtables).
+    pub ime_bridge: crate::platform::ime_windows::WindowsImeBridge,
     /// Platform rich clipboard backend.
     pub clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,
     /// Platform accessibility bridge for UIAutomation notifications.
@@ -258,7 +259,7 @@ impl WindowsPlatform {
             runtime_running: AtomicBool::new(false),
             #[cfg(target_os = "windows")]
             menu_state: Win32MenuState::new(),
-            ime_bridge: crate::platform::ime_stubs::windows::WindowsImeBridge,
+            ime_bridge: crate::platform::ime_windows::WindowsImeBridge::new(),
             clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,
             #[cfg(target_os = "windows")]
             a11y_bridge: crate::platform::accessibility::windows::WindowsAccessibilityBridge::new(),

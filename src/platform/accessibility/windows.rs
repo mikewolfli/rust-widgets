@@ -199,6 +199,7 @@ pub fn uia_control_type_id(role: &super::A11yRole) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::accessibility::A11yRole;
 
     #[test]
     fn test_bridge_send_sync() {
@@ -213,15 +214,15 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             assert_eq!(
-                uia_control_type_id(&super::A11yRole::Button),
+                uia_control_type_id(&A11yRole::Button),
                 uia_constants::UIA_BUTTON_CONTROL_TYPE
             );
             assert_eq!(
-                uia_control_type_id(&super::A11yRole::TextField),
+                uia_control_type_id(&A11yRole::TextField),
                 uia_constants::UIA_EDIT_CONTROL_TYPE
             );
             assert_eq!(
-                uia_control_type_id(&super::A11yRole::Window),
+                uia_control_type_id(&A11yRole::Window),
                 uia_constants::UIA_WINDOW_CONTROL_TYPE
             );
         }

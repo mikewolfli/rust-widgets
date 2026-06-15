@@ -8,9 +8,6 @@
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
-// Conditional no_std for mini builds (BLUE13 Phase 3)
-// TODO(BLUE13): Re-enable no_std when all direct `std::` calls are migrated to `compat::`
-// #![cfg_attr(feature = "mini", no_std)]
 // Required unconditionally — `alloc` is available in both std (re-exported)
 // and no_std contexts. `core` is always available via `extern crate std` under
 // std, but we need direct `alloc::` paths in `compat` for no_std builds.

@@ -103,6 +103,12 @@ impl ControlBackend for NativeControlBackend {
     ) -> ObjectId {
         get_platform().create_combo_box(parent, x, y, width, height)
     }
+    fn combo_box_add_item(&self, widget_id: ObjectId, text: &str) -> bool {
+        get_platform().combo_box_add_item(widget_id, text)
+    }
+    fn combo_box_clear_items(&self, widget_id: ObjectId) -> bool {
+        get_platform().combo_box_clear_items(widget_id)
+    }
     fn create_list_box(
         &self,
         parent: ObjectId,
@@ -112,6 +118,15 @@ impl ControlBackend for NativeControlBackend {
         height: u32,
     ) -> ObjectId {
         get_platform().create_list_box(parent, x, y, width, height)
+    }
+    fn list_box_add_item(&self, widget_id: ObjectId, text: &str) -> bool {
+        get_platform().list_box_add_item(widget_id, text)
+    }
+    fn list_box_remove_item(&self, widget_id: ObjectId, index: usize) -> bool {
+        get_platform().list_box_remove_item(widget_id, index)
+    }
+    fn list_box_clear_items(&self, widget_id: ObjectId) -> bool {
+        get_platform().list_box_clear_items(widget_id)
     }
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         get_platform().create_panel(parent, x, y, width, height)
@@ -214,6 +229,21 @@ impl ControlBackend for NativeControlBackend {
     }
     fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
         get_platform().get_widget_accessibility_name(widget_id)
+    }
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        get_platform().set_clipboard_text(text)
+    }
+    fn get_clipboard_text(&self) -> String {
+        get_platform().get_clipboard_text()
+    }
+    fn begin_drag(&self, source: ObjectId, mime_type: &str, payload: &[u8]) -> bool {
+        get_platform().begin_drag(source, mime_type, payload)
+    }
+    fn poll_drop_event(&self) -> Option<crate::platform::DropEvent> {
+        get_platform().poll_drop_event()
+    }
+    fn inject_drop_event(&self, event: crate::platform::DropEvent) -> bool {
+        get_platform().inject_drop_event(event)
     }
     fn create_dialog(
         &self,

@@ -34,10 +34,37 @@ impl<T: Clone + Send + 'static> Binding<T> {
     }
 
     /// Set a new value and notify all listeners.
+    ///
+    /// Notifications are dispatched **outside** the Mutex lock to prevent
+    /// re-entrancy deadlocks (e.g. when a TwoWayListener tries to lock the
+    /// same binding's Mutex while propagating a value change).
+    ///
+    /// Listeners are temporarily removed from the map, notified, then
+    /// restored (unless a new listener was subscribed under the same key
+    /// during notification, in which case the new one takes precedence).
     pub fn set(&self, value: T) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.value = value;
-        inner.notify_listeners();
+        // ── Phase 1: Lock, update value, take all listeners ──
+        let mut listeners: Vec<(String, BoxedListener)>;
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.value = value;
+            listeners = inner.listeners.drain().collect();
+        } // Mutex lock released.
+
+        // ── Phase 2: Notify outside lock (safe from re-entrancy) ──
+        for (key, ref mut listener) in &mut listeners {
+            listener.on_value_changed(key, "set");
+        }
+
+        // ── Phase 3: Restore listeners that weren't re-subscribed ──
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            for (key, listener) in listeners {
+                // If no new listener was subscribed under this key
+                // during notification, put the original one back.
+                inner.listeners.entry(key).or_insert(listener);
+            }
+        }
     }
 
     /// Subscribe to value changes.
@@ -92,15 +119,8 @@ impl<T: Clone + Send + 'static> Binding<T> {
 }
 
 impl<T: Clone + Send + 'static> BindingInner<T> {
-    fn notify_listeners(&mut self) {
-        let keys: Vec<String> = self.listeners.keys().cloned().collect();
-        for key in &keys {
-            if let Some(listener) = self.listeners.get_mut(key) {
-                listener.on_value_changed(key, "set");
-            }
-        }
-    }
-
+    /// Set value without notifying listeners.
+    /// Used by TwoWayListener to propagate changes silently.
     fn set_no_notify(&mut self, value: T) {
         self.value = value;
     }

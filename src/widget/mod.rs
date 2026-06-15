@@ -324,7 +324,7 @@ pub type Toolbox = ToolBox;
 #[cfg(not(feature = "mini"))]
 pub type DoubleSpinBox = SpinBox;
 #[cfg(not(feature = "mini"))]
-pub type Wizard = Panel;
+pub type Wizard = WizardDialog;
 // ── P3-6: WidgetKind variant type aliases ──
 #[cfg(not(feature = "mini"))]
 pub type DataView = VirtualList;

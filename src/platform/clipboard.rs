@@ -19,6 +19,7 @@ pub enum ClipboardContent {
     /// RGBA image data.
     Image { width: u32, height: u32, data: Vec<u8> },
     /// List of file URLs.
+    #[cfg(not(feature = "mini"))]
     Files(Vec<PathBuf>),
 }
 
@@ -30,6 +31,7 @@ impl ClipboardContent {
             Self::Html { .. } => "text/html",
             Self::Rtf(_) => "text/rtf",
             Self::Image { .. } => "image/png",
+            #[cfg(not(feature = "mini"))]
             Self::Files(_) => "text/uri-list",
         }
     }
@@ -169,6 +171,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "mini"))]
     fn test_clipboard_files_format() {
         let files = ClipboardContent::Files(vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()]);
         assert_eq!(files.content_type(), "text/uri-list");

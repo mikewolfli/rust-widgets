@@ -5,8 +5,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
     #[cfg(not(feature = "mini"))]
     {
         match kind {
-            WidgetKind::TabBar
-            | WidgetKind::Window
+            WidgetKind::Window
             | WidgetKind::Dialog
             | WidgetKind::MessageBox
             | WidgetKind::FileDialog
@@ -49,8 +48,6 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::Calendar
             | WidgetKind::LCDNumber
             | WidgetKind::FontComboBox
-            | WidgetKind::PieMenu
-            | WidgetKind::RibbonBar
             | WidgetKind::Arc
             | WidgetKind::Spinner
             | WidgetKind::Roller
@@ -84,6 +81,9 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::UndoView
             | WidgetKind::CommandLink
             | WidgetKind::FreeformShape
+            | WidgetKind::TabBar
+            | WidgetKind::PieMenu
+            | WidgetKind::RibbonBar
             | WidgetKind::WebEngineView
             | WidgetKind::WebEnginePage
             | WidgetKind::WebEngineSettings
@@ -190,7 +190,6 @@ mod tests {
     fn native_preferred_widget_kinds() {
         // Widgets expected to prefer native backend.
         let native_preferred = [
-            WidgetKind::TabBar,
             WidgetKind::Window,
             WidgetKind::Dialog,
             WidgetKind::MessageBox,
@@ -233,8 +232,6 @@ mod tests {
             WidgetKind::Calendar,
             WidgetKind::LCDNumber,
             WidgetKind::FontComboBox,
-            WidgetKind::PieMenu,
-            WidgetKind::RibbonBar,
             WidgetKind::Arc,
             WidgetKind::Spinner,
             WidgetKind::Roller,
@@ -284,6 +281,9 @@ mod tests {
             WidgetKind::UndoView,
             WidgetKind::CommandLink,
             WidgetKind::FreeformShape,
+            WidgetKind::TabBar,
+            WidgetKind::PieMenu,
+            WidgetKind::RibbonBar,
             WidgetKind::WebEngineView,
             WidgetKind::WebEnginePage,
             WidgetKind::WebEngineSettings,
@@ -297,7 +297,6 @@ mod tests {
             WidgetKind::StackedWidget,
             WidgetKind::Action,
             WidgetKind::ToolButton,
-            WidgetKind::Toolbox,
             WidgetKind::Switch,
             WidgetKind::SearchBox,
             WidgetKind::Chip,
@@ -456,7 +455,6 @@ mod tests {
             WidgetKind::WebEngineContextMenuRequest,
             WidgetKind::Action,
             WidgetKind::ToolButton,
-            WidgetKind::Toolbox,
             WidgetKind::FreeformShape,
             WidgetKind::TabBar,
             WidgetKind::PieMenu,

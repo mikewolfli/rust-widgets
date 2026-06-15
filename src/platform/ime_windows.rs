@@ -9,8 +9,6 @@
 //! machine that correctly tracks marked text, composition start offsets,
 //! and cursor positions.
 
-#![cfg(target_os = "windows")]
-
 use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 use std::sync::Mutex;
@@ -21,7 +19,7 @@ use std::sync::Mutex;
 // ──────────────────────────────────────────────
 
 /// Opaque wrapper around a TSF thread manager COM pointer.
-#[cfg(target_os = "windows")]
+/// Available on all platforms; TSF COM calls are only made on Windows.
 struct TsfThreadMgr {
     // In a full implementation this holds:
     //   thread_mgr: winapi::um::ctfutb::ITfThreadMgr,
@@ -30,7 +28,6 @@ struct TsfThreadMgr {
     _private: (),
 }
 
-#[cfg(target_os = "windows")]
 impl TsfThreadMgr {
     /// Attempt to create a TSF thread manager by calling
     /// `CoCreateInstance(CLSID_TF_ThreadMgr, …)`.
@@ -45,6 +42,11 @@ impl TsfThreadMgr {
         //
         // For headless/test builds, return None to fall back to
         // state-machine mode.
+        #[cfg(target_os = "windows")]
+        {
+            // Real implementation would call CoCreateInstance for CLSID_TF_ThreadMgr.
+            // For now, TSF is not yet wired — log and fall back to state machine.
+        }
         log::warn!("[Windows IME] TSF not available — using state-machine fallback");
         None
     }
@@ -72,6 +74,8 @@ pub struct WindowsImeBridge {
 
     // ── Native TSF handle ──
     /// Whether the TSF subsystem was successfully initialised.
+    /// Kept for future TSF COM call guarding; currently test-accessible.
+    #[allow(dead_code)]
     tsf_available: Mutex<bool>,
     /// Opaque TSF thread manager handle (kept alive for the bridge lifetime).
     #[allow(dead_code)]
@@ -171,7 +175,6 @@ impl WindowsImeBridge {
 
         let len = text.len();
         let cursor = if sel_start >= 0 && sel_end >= 0 {
-            let start = sel_start as usize;
             let end = sel_end as usize;
             end.min(len)
         } else {

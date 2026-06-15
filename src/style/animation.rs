@@ -1,7 +1,7 @@
 use crate::compat::HashMap;
+use crate::compat::{Duration, Instant};
 use crate::core::Color;
 use crate::style::theme_state::{StatefulTheme, WidgetState};
-use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EasingFunction {
     #[default]
@@ -229,7 +229,9 @@ impl Animation {
             return 0.0;
         }
         let animation_elapsed = elapsed - self.config.delay;
-        let raw_progress = animation_elapsed.as_secs_f32() / self.config.duration.as_secs_f32();
+        // Guard against division by zero when duration is ZERO (default).
+        let duration_secs = self.config.duration.as_secs_f32().max(f32::EPSILON);
+        let raw_progress = animation_elapsed.as_secs_f32() / duration_secs;
         let progress =
             if self.config.infinite { raw_progress % 1.0 } else { (raw_progress % 1.0).min(1.0) };
         let eased_progress = self.config.easing.apply(progress);
