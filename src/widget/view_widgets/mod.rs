@@ -3,6 +3,9 @@
 //! Contains list, tree, table, and property view widgets.
 pub mod data_grid;
 pub mod data_source;
+/// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
+#[cfg(not(feature = "mini"))]
+pub mod grid_table;
 #[cfg(not(feature = "mini"))]
 pub mod image_gallery;
 pub mod list_view;
@@ -20,6 +23,8 @@ pub use data_grid::{ColumnFilter, DataGrid, SortSpec};
 pub use data_source::{
     IncrementalTableDataSource, ListModelDataSource, TableModelDataSource, TreeModelDataSource,
 };
+#[cfg(not(feature = "mini"))]
+pub use grid_table::{GridTableSelectionMode, GridTableSortSpec, GridTableWidget};
 #[cfg(not(feature = "mini"))]
 pub use image_gallery::{GalleryImage, ImageGallery};
 pub use list_view::ListView;

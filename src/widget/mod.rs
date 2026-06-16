@@ -176,7 +176,9 @@ pub use nav_widgets::navigation_drawer::NavigationDrawer;
 pub use nav_widgets::navigation_stack::NavigationEvent;
 #[cfg(not(feature = "mini"))]
 pub use nav_widgets::navigation_stack::NavigationStack;
+#[cfg(not(feature = "mini"))]
 pub use nav_widgets::tab_view::TabPage;
+#[cfg(not(feature = "mini"))]
 pub use nav_widgets::tab_view::TabView;
 // Re-export chart widgets
 #[cfg(not(feature = "mini"))]
@@ -188,6 +190,7 @@ pub use chart_widgets::pie_chart::{PieChart, PieSlice};
 #[cfg(not(feature = "mini"))]
 pub use chart_widgets::sparkline::Sparkline;
 // Re-export media widgets
+#[cfg(not(feature = "mini"))]
 pub use media_widgets::animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
 #[cfg(not(feature = "mini"))]
 pub use media_widgets::audio_visualizer::AudioVisualizer;
@@ -295,6 +298,7 @@ pub use view_widgets::tree_view::TreeModel;
 #[cfg(not(feature = "mini"))]
 pub use view_widgets::{
     data_grid::{ColumnFilter, DataGrid, SortSpec},
+    grid_table::GridTableWidget,
     image_gallery::{GalleryImage, ImageGallery},
     list_view::{ListModel, ListView, VecListModel},
     properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue},
@@ -338,3 +342,13 @@ pub type DatePicker = DateEdit;
 pub type TimePicker = TimeEdit;
 #[cfg(not(feature = "mini"))]
 pub type DateTimePicker = DateTimeEdit;
+#[cfg(not(feature = "mini"))]
+pub type Grid = GridWidget;
+#[cfg(not(feature = "mini"))]
+pub type Chart = ChartWidget;
+#[cfg(not(feature = "mini"))]
+pub type GridTable = GridTableWidget;
+#[cfg(not(feature = "mini"))]
+pub type Table = TableWidget;
+#[cfg(not(feature = "mini"))]
+pub type FreeformShape = FreeformShapeWidget;

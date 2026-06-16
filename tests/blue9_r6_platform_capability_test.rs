@@ -1,3 +1,5 @@
+#![cfg(not(feature = "mini"))]
+
 //! R6 Platform Capability Matrix Integration Test (blue9_r6)
 //!
 //! This test verifies:

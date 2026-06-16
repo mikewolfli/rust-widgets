@@ -79,10 +79,8 @@ impl TouchEventTranslator {
                 vec![Event::MousePress { pos, button: 0 }, Event::MouseEnter { pos }]
             }
             Event::TouchMove { pos, touch_id } => {
-                if let std::collections::hash_map::Entry::Occupied(mut e) =
-                    self.active_touches.entry(touch_id)
-                {
-                    e.insert((pos.x, pos.y));
+                if let Some(pos_ref) = self.active_touches.get_mut(&touch_id) {
+                    *pos_ref = (pos.x, pos.y);
                     vec![Event::MouseMove { pos }]
                 } else {
                     Vec::new()

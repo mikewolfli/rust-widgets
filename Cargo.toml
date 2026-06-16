@@ -224,6 +224,7 @@ winapi = { version = "0.3", features = [
     "winuser", "commctrl", "commdlg", "winbase", "synchapi",
     "wingdi", "shellapi", "ole2", "combaseapi", "objbase",
     "knownfolders", "shlobj", "errhandlingapi",
+    "libloaderapi",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

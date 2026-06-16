@@ -317,10 +317,9 @@ impl PerformanceReport {
         )
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "mini"))]
     use std::thread::sleep;
     #[test]
     fn test_profiler() {

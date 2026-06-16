@@ -19,6 +19,7 @@ pub use core::time::Duration;
 #[cfg(feature = "mini")]
 mod rwlock_mini {
     use core::cell::{Ref, RefCell, RefMut};
+    use core::fmt;
     use core::ops::{Deref, DerefMut};
 
     pub struct RwLock<T> {
@@ -59,6 +60,12 @@ mod rwlock_mini {
         inner: Ref<'a, T>,
     }
 
+    impl<'a, T> fmt::Debug for RwLockReadGuard<'a, T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("RwLockReadGuard").finish_non_exhaustive()
+        }
+    }
+
     impl<'a, T> Deref for RwLockReadGuard<'a, T> {
         type Target = T;
         fn deref(&self) -> &T {
@@ -80,6 +87,12 @@ mod rwlock_mini {
     impl<'a, T> DerefMut for RwLockWriteGuard<'a, T> {
         fn deref_mut(&mut self) -> &mut T {
             &mut self.inner
+        }
+    }
+
+    impl<'a, T> fmt::Debug for RwLockWriteGuard<'a, T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("RwLockWriteGuard").finish_non_exhaustive()
         }
     }
 
@@ -412,13 +425,13 @@ impl Instant {
     pub fn elapsed(&self) -> Duration {
         Duration::ZERO
     }
-    pub fn duration_since(&self, _other: &Instant) -> Duration {
+    pub fn duration_since(&self, _other: Instant) -> Duration {
         Duration::ZERO
     }
-    pub fn checked_duration_since(&self, _other: &Instant) -> Option<Duration> {
+    pub fn checked_duration_since(&self, _other: Instant) -> Option<Duration> {
         Some(Duration::ZERO)
     }
-    pub fn saturating_duration_since(&self, _other: &Instant) -> Duration {
+    pub fn saturating_duration_since(&self, _other: Instant) -> Duration {
         Duration::ZERO
     }
     pub fn checked_add(&self, _duration: Duration) -> Option<Instant> {
@@ -430,6 +443,27 @@ impl Instant {
     pub fn as_nanos(&self) -> u64 {
         0
     }
+}
+
+#[cfg(feature = "mini")]
+impl core::ops::Add<Duration> for Instant {
+    type Output = Instant;
+    fn add(self, _other: Duration) -> Instant {
+        self
+    }
+}
+
+#[cfg(feature = "mini")]
+impl core::ops::Sub<Duration> for Instant {
+    type Output = Instant;
+    fn sub(self, _other: Duration) -> Instant {
+        self
+    }
+}
+
+#[cfg(feature = "mini")]
+impl core::ops::AddAssign<Duration> for Instant {
+    fn add_assign(&mut self, _other: Duration) {}
 }
 
 #[cfg(not(feature = "mini"))]

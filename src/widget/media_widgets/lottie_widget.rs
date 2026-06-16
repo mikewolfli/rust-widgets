@@ -5,7 +5,7 @@
 //! when the animation finishes. Shapes defined in the Lottie JSON are parsed
 //! and rendered using the RenderContext.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -153,8 +153,7 @@ pub struct LottieFill {
     pub color: LottieColor,
     pub opacity: LottieAnimated,
     /// Fill rule: 0 = even-odd, 1 = non-zero (winding).
-    #[allow(dead_code)]
-    pub fill_rule: u32,
+    pub _fill_rule: u32,
 }
 
 /// A stroke shape ("st").
@@ -164,11 +163,9 @@ pub struct LottieStroke {
     pub opacity: LottieAnimated,
     pub width: LottieAnimated,
     /// Line cap style: 0 = butt, 1 = round, 2 = square.
-    #[allow(dead_code)]
-    pub line_cap: u32,
+    pub _line_cap: u32,
     /// Line join style: 0 = miter, 1 = round, 2 = bevel.
-    #[allow(dead_code)]
-    pub line_join: u32,
+    pub _line_join: u32,
 }
 
 /// A shape within a layer.
@@ -179,7 +176,6 @@ pub enum LottieShape {
     Fill(LottieFill),
     Stroke(LottieStroke),
     /// "sh" (path) and "gs" (group) are not yet implemented.
-    #[allow(dead_code)]
     Other(String),
 }
 
@@ -187,8 +183,7 @@ pub enum LottieShape {
 #[derive(Debug, Clone)]
 pub struct LottieTransform {
     /// Anchor point (a).
-    #[allow(dead_code)]
-    pub anchor: LottieAnimated,
+    pub _anchor: LottieAnimated,
     /// Position (p).
     pub position: LottieAnimated,
     /// Scale (s) — percentage, [100, 100] = 100%.
@@ -202,7 +197,7 @@ pub struct LottieTransform {
 impl Default for LottieTransform {
     fn default() -> Self {
         Self {
-            anchor: LottieAnimated { base: vec![0.0, 0.0], keyframes: Vec::new() },
+            _anchor: LottieAnimated { base: vec![0.0, 0.0], keyframes: Vec::new() },
             position: LottieAnimated { base: vec![0.0, 0.0], keyframes: Vec::new() },
             scale: LottieAnimated { base: vec![100.0, 100.0], keyframes: Vec::new() },
             rotation: LottieAnimated { base: vec![0.0], keyframes: Vec::new() },
@@ -217,21 +212,19 @@ pub struct LottieLayer {
     /// Layer index.
     pub index: i32,
     /// Parent layer index (or -1 if none).
-    #[allow(dead_code)]
-    pub parent: i32,
+    pub _parent: i32,
     /// Shapes in this layer.
     pub shapes: Vec<LottieShape>,
     /// Transform for this layer.
     pub transform: LottieTransform,
     /// Layer opacity (derived from transform opacity or ef).
-    #[allow(dead_code)]
-    pub opacity: f64,
+    pub _opacity: f64,
 }
 
 impl LottieLayer {
     fn from_json(layer_val: &serde_json::Value) -> Option<Self> {
         let index = layer_val.get("ind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let parent = layer_val.get("parent").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+        let _parent = layer_val.get("parent").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
 
         // Parse transform ("ks" or "tr").
         let ks_val = layer_val.get("ks").or_else(|| layer_val.get("tr"));
@@ -248,13 +241,13 @@ impl LottieLayer {
             Vec::new()
         };
 
-        let opacity = transform.opacity.at_frame_scalar(0.0) / 100.0;
+        let _opacity = transform.opacity.at_frame_scalar(0.0) / 100.0;
 
-        Some(Self { index, parent, shapes, transform, opacity })
+        Some(Self { index, _parent, shapes, transform, _opacity })
     }
 
     fn parse_transform(val: &serde_json::Value) -> LottieTransform {
-        let anchor = val
+        let _anchor = val
             .get("a")
             .and_then(|v| v.get("k"))
             .map(LottieAnimated::from_json)
@@ -278,7 +271,7 @@ impl LottieLayer {
             .and_then(|v| v.get("k"))
             .map(LottieAnimated::from_json)
             .unwrap_or_else(|| LottieAnimated { base: vec![100.0], keyframes: Vec::new() });
-        LottieTransform { anchor, position, scale, rotation, opacity }
+        LottieTransform { _anchor, position, scale, rotation, opacity }
     }
 
     fn parse_shape(val: &serde_json::Value) -> Option<LottieShape> {
@@ -335,8 +328,8 @@ impl LottieLayer {
                     .and_then(|v| v.get("k"))
                     .map(LottieAnimated::from_json)
                     .unwrap_or_else(|| LottieAnimated { base: vec![100.0], keyframes: Vec::new() });
-                let fill_rule = val.get("r").and_then(|v| v.as_i64()).unwrap_or(1) as u32;
-                Some(LottieShape::Fill(LottieFill { color, opacity, fill_rule }))
+                let _fill_rule = val.get("r").and_then(|v| v.as_i64()).unwrap_or(1) as u32;
+                Some(LottieShape::Fill(LottieFill { color, opacity, _fill_rule }))
             }
             "st" => {
                 let color_val = val.get("c")?.get("k")?;
@@ -351,14 +344,14 @@ impl LottieLayer {
                     .and_then(|v| v.get("k"))
                     .map(LottieAnimated::from_json)
                     .unwrap_or_else(|| LottieAnimated { base: vec![1.0], keyframes: Vec::new() });
-                let line_cap = val.get("lc").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                let line_join = val.get("lj").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                let _line_cap = val.get("lc").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                let _line_join = val.get("lj").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
                 Some(LottieShape::Stroke(LottieStroke {
                     color,
                     opacity,
                     width,
-                    line_cap,
-                    line_join,
+                    _line_cap,
+                    _line_join,
                 }))
             }
             other => Some(LottieShape::Other(other.to_string())),

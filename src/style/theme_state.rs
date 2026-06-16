@@ -1,10 +1,10 @@
 use crate::compat::HashMap;
-use crate::compat::Mutex;
 use crate::core::Color;
-use alloc::sync::Arc;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 
 /// Callback type for theme mode change notifications.
-pub type ModeChangedCallback = Arc<Mutex<Vec<Box<dyn FnMut(ThemeMode)>>>>;
+pub type ModeChangedCallback = Rc<RefCell<Vec<Box<dyn FnMut(ThemeMode)>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub enum WidgetState {
@@ -134,17 +134,16 @@ impl ThemeStateManager {
             dark_theme: dark,
             current_mode: ThemeMode::Light,
             auto_switch_threshold: None,
-            on_mode_changed: Arc::new(Mutex::new(Vec::new())),
+            on_mode_changed: Rc::new(RefCell::new(Vec::new())),
         }
     }
     pub fn set_mode(&mut self, mode: ThemeMode) {
         let old_mode = self.current_mode;
         self.current_mode = mode;
         if old_mode != mode {
-            if let Ok(mut guard) = self.on_mode_changed.lock() {
-                for callback in guard.iter_mut() {
-                    callback(mode);
-                }
+            let mut guard = self.on_mode_changed.borrow_mut();
+            for callback in guard.iter_mut() {
+                callback(mode);
             }
         }
     }
@@ -200,9 +199,8 @@ impl ThemeStateManager {
     where
         F: FnMut(ThemeMode) + 'static,
     {
-        if let Ok(mut guard) = self.on_mode_changed.lock() {
-            guard.push(Box::new(callback));
-        }
+        let mut guard = self.on_mode_changed.borrow_mut();
+        guard.push(Box::new(callback));
     }
 }
 impl Default for ThemeStateManager {
@@ -250,15 +248,13 @@ mod tests {
         let light = StatefulTheme::new("light");
         let dark = StatefulTheme::new("dark");
         let mut manager = ThemeStateManager::new(light, dark);
-        let fired = Arc::new(Mutex::new(false));
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(false));
         let fired_clone = fired.clone();
         manager.on_mode_changed(move |_mode| {
-            if let Ok(mut guard) = fired_clone.lock() {
-                *guard = true;
-            }
+            *fired_clone.borrow_mut() = true;
         });
         manager.set_mode(ThemeMode::Dark);
-        let is_fired = fired.lock().map(|g| *g).unwrap_or(false);
+        let is_fired = *fired.borrow();
         assert!(is_fired, "callback should have been invoked on mode change");
     }
 }

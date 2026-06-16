@@ -4,6 +4,7 @@
 //! - `trait_def.rs` — the `ControlBackend` trait definition only
 //! - `mock.rs` — test mock (`TestBackend`) and associated unit tests
 
+#[cfg(test)]
 mod mock;
 // BLUE11: Allow module inception; `trait_def` is the trait definition sub-module
 // inside `trait_def/` parent directory.

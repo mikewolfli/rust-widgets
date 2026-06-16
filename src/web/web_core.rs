@@ -578,7 +578,7 @@ macro_rules! delegate_widget {
 
 pub(crate) use delegate_widget;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use super::*;
     use crate::core::Rect;

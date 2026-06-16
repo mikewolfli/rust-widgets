@@ -1,9 +1,11 @@
 //! Linux backend shell.
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::platform::state::BackendState;
 use crate::platform::WidgetTriggerEvent;
-use std::collections::{HashMap, VecDeque};
+use alloc::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LinuxHandleKind {
     Window,
@@ -69,6 +71,8 @@ pub struct LinuxPlatform {
     pub(crate) runtime: LinuxRuntimeState,
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     pub(crate) native: Mutex<LinuxNativeState>,
+    /// Platform IME bridge for text input method integration.
+    pub(crate) ime_bridge: crate::platform::ime_linux::LinuxImeBridge,
     /// Shared list storage for ComboBox and ListBox widgets.
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
@@ -104,6 +108,7 @@ impl LinuxPlatform {
             runtime: LinuxRuntimeState::new(),
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
+            ime_bridge: crate::platform::ime_linux::LinuxImeBridge::new(),
             list_data: Mutex::new(HashMap::new()),
         }
     }

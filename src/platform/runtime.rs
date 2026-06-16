@@ -1,7 +1,4 @@
 use crate::compat::OnceLock;
-#[cfg(not(feature = "mini"))]
-#[allow(unused_imports)]
-use crate::core::PlatformFamily;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "embedded")))]
@@ -19,9 +16,6 @@ pub use crate::platform::types::*;
 use crate::platform::wayland::WaylandPlatform;
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
-#[cfg(not(feature = "mini"))]
-#[allow(unused_imports)]
-use crate::platform::StubPlatform;
 
 // ---------------------------------------------------------------------------
 // Linux runtime auto-detection: Wayland vs X11/GTK

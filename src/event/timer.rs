@@ -192,7 +192,7 @@ impl IdleTask {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use super::*;
     use crate::event::EventQueue;

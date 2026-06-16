@@ -97,7 +97,7 @@ pub fn wire_focus_manager_to_a11y(fm: &mut crate::event::focus::FocusManager) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use crate::event::focus::FocusManager;
 

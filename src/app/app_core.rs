@@ -291,7 +291,7 @@ where
 {
     let lock = STARTUP.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 fn with_shutdown<F, R>(f: F) -> R
@@ -300,7 +300,7 @@ where
 {
     let lock = SHUTDOWN.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 fn trace_runtime_route(stage: &str) {

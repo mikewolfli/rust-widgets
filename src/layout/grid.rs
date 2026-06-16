@@ -7,8 +7,8 @@ pub struct GridLayout {
     cols: u32,
     spacing: u32,
     margin: u32,
-    column_stretch: u32,
-    row_stretch: u32,
+    column_stretches: Vec<u32>,
+    row_stretches: Vec<u32>,
     cells: Vec<Option<ObjectId>>,
 }
 impl GridLayout {
@@ -21,8 +21,8 @@ impl GridLayout {
             cols: safe_cols,
             spacing,
             margin,
-            column_stretch: 1,
-            row_stretch: 1,
+            column_stretches: vec![1; safe_cols as usize],
+            row_stretches: vec![1; safe_rows as usize],
             cells: vec![None; (safe_rows * safe_cols) as usize],
         }
     }
@@ -57,24 +57,64 @@ impl GridLayout {
         self.margin
     }
 
-    /// Returns the column stretch factor.
+    /// Returns the uniform column stretch factor (first column's value).
     pub fn column_stretch(&self) -> u32 {
-        self.column_stretch
+        self.column_stretches.first().copied().unwrap_or(1)
     }
 
-    /// Sets the column stretch factor.
+    /// Sets the uniform column stretch factor (applied to all columns).
     pub fn set_column_stretch(&mut self, stretch: u32) {
-        self.column_stretch = stretch.max(1);
+        let stretch = stretch.max(1);
+        for s in &mut self.column_stretches {
+            *s = stretch;
+        }
     }
 
-    /// Returns the row stretch factor.
+    /// Returns the stretch factor for a specific column.
+    pub fn column_stretch_for_col(&self, col: u32) -> u32 {
+        self.column_stretches.get(col as usize).copied().unwrap_or(1)
+    }
+
+    /// Sets the stretch factor for a specific column.
+    pub fn set_column_stretch_for_col(&mut self, col: u32, stretch: u32) {
+        if col < self.cols {
+            self.column_stretches[col as usize] = stretch.max(1);
+        }
+    }
+
+    /// Returns a slice of all column stretch factors.
+    pub fn column_stretches(&self) -> &[u32] {
+        &self.column_stretches
+    }
+
+    /// Returns the uniform row stretch factor (first row's value).
     pub fn row_stretch(&self) -> u32 {
-        self.row_stretch
+        self.row_stretches.first().copied().unwrap_or(1)
     }
 
-    /// Sets the row stretch factor.
+    /// Sets the uniform row stretch factor (applied to all rows).
     pub fn set_row_stretch(&mut self, stretch: u32) {
-        self.row_stretch = stretch.max(1);
+        let stretch = stretch.max(1);
+        for s in &mut self.row_stretches {
+            *s = stretch;
+        }
+    }
+
+    /// Returns the stretch factor for a specific row.
+    pub fn row_stretch_for_row(&self, row: u32) -> u32 {
+        self.row_stretches.get(row as usize).copied().unwrap_or(1)
+    }
+
+    /// Sets the stretch factor for a specific row.
+    pub fn set_row_stretch_for_row(&mut self, row: u32, stretch: u32) {
+        if row < self.rows {
+            self.row_stretches[row as usize] = stretch.max(1);
+        }
+    }
+
+    /// Returns a slice of all row stretch factors.
+    pub fn row_stretches(&self) -> &[u32] {
+        &self.row_stretches
     }
 }
 impl Layout for GridLayout {
@@ -117,31 +157,102 @@ impl Layout for GridLayout {
             .saturating_sub(self.margin * 2)
             .saturating_sub((self.rows - 1) * self.spacing);
 
-        // Calculate column widths proportionally by stretch factor
-        let total_col_stretch = self.cols * self.column_stretch;
-        let total_row_stretch = self.rows * self.row_stretch;
+        // Calculate column widths and x-offsets based on per-column stretch factors
+        let total_col_stretch: u32 = self.column_stretches.iter().sum();
+        // Calculate row heights and y-offsets based on per-row stretch factors
+        let total_row_stretch: u32 = self.row_stretches.iter().sum();
+
+        // Precompute cumulative column width sums for x-offsets (fraction-aware)
+        let mut col_widths: Vec<u32> = Vec::with_capacity(self.cols as usize);
+        let mut col_x_offsets: Vec<i32> = Vec::with_capacity(self.cols as usize);
+        let mut current_x: i32 = 0;
+        for col in 0..self.cols {
+            let cell_width = if total_col_stretch > 0 {
+                let cw = (available_width as u64 * self.column_stretches[col as usize] as u64
+                    / total_col_stretch as u64) as u32;
+                cw
+            } else {
+                available_width / self.cols
+            };
+            col_widths.push(cell_width);
+            col_x_offsets.push(current_x);
+            current_x += cell_width as i32 + self.spacing as i32;
+        }
+
+        // Precompute cumulative row height sums for y-offsets (fraction-aware)
+        let mut row_heights: Vec<u32> = Vec::with_capacity(self.rows as usize);
+        let mut row_y_offsets: Vec<i32> = Vec::with_capacity(self.rows as usize);
+        let mut current_y: i32 = 0;
+        for row in 0..self.rows {
+            let cell_height = if total_row_stretch > 0 {
+                let ch = (available_height as u64 * self.row_stretches[row as usize] as u64
+                    / total_row_stretch as u64) as u32;
+                ch
+            } else {
+                available_height / self.rows
+            };
+            row_heights.push(cell_height);
+            row_y_offsets.push(current_y);
+            current_y += cell_height as i32 + self.spacing as i32;
+        }
+
+        // Distribute the remainder width/height across columns/rows (biggest-bucket algorithm)
+        let total_width: u32 = col_widths.iter().sum::<u32>() + self.spacing * (self.cols - 1);
+        let remainder_w = available_width.saturating_sub(total_width);
+        if remainder_w > 0 && !col_widths.is_empty() {
+            // Distribute remainder to columns with largest stretch first
+            let mut indices: Vec<usize> = (0..self.cols as usize).collect();
+            indices.sort_by(|&a, &b| self.column_stretches[b].cmp(&self.column_stretches[a]));
+            let mut remaining = remainder_w;
+            for &idx in &indices {
+                let add = remaining / (self.cols as u32 - idx as u32).max(1);
+                if add > 0 {
+                    col_widths[idx] += add;
+                    remaining -= add;
+                }
+            }
+            if remaining > 0 {
+                col_widths[indices[0]] += remaining;
+            }
+        }
+
+        let total_height: u32 = row_heights.iter().sum::<u32>() + self.spacing * (self.rows - 1);
+        let remainder_h = available_height.saturating_sub(total_height);
+        if remainder_h > 0 && !row_heights.is_empty() {
+            let mut indices: Vec<usize> = (0..self.rows as usize).collect();
+            indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
+            let mut remaining = remainder_h;
+            for &idx in &indices {
+                let add = remaining / (self.rows as u32 - idx as u32).max(1);
+                if add > 0 {
+                    row_heights[idx] += add;
+                    remaining -= add;
+                }
+            }
+            if remaining > 0 {
+                row_heights[indices[0]] += remaining;
+            }
+        }
+
+        // Recompute offsets after remainder distribution
+        current_x = 0;
+        for col in 0..self.cols {
+            col_x_offsets[col as usize] = current_x;
+            current_x += col_widths[col as usize] as i32 + self.spacing as i32;
+        }
+        current_y = 0;
+        for row in 0..self.rows {
+            row_y_offsets[row as usize] = current_y;
+            current_y += row_heights[row as usize] as i32 + self.spacing as i32;
+        }
 
         for row in 0..self.rows {
             for col in 0..self.cols {
                 if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
-                    // Proportional width/height based on stretch
-                    let cell_width = if total_col_stretch > 0 {
-                        (available_width as u64 * self.column_stretch as u64
-                            / total_col_stretch as u64) as u32
-                    } else {
-                        available_width / self.cols
-                    };
-                    let cell_height = if total_row_stretch > 0 {
-                        (available_height as u64 * self.row_stretch as u64
-                            / total_row_stretch as u64) as u32
-                    } else {
-                        available_height / self.rows
-                    };
-
-                    let x =
-                        rect.x + self.margin as i32 + (col * (cell_width + self.spacing)) as i32;
-                    let y =
-                        rect.y + self.margin as i32 + (row * (cell_height + self.spacing)) as i32;
+                    let cell_width = col_widths[col as usize];
+                    let cell_height = row_heights[row as usize];
+                    let x = rect.x + self.margin as i32 + col_x_offsets[col as usize];
+                    let y = rect.y + self.margin as i32 + row_y_offsets[row as usize];
                     widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
                 }
             }

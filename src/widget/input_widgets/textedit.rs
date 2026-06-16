@@ -15,6 +15,21 @@ pub struct TextEdit {
     pub text_changed: Signal1<String>,
     pub cursor_position_changed: Signal1<usize>,
 }
+
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let len = s.len();
+    if index >= len {
+        return len;
+    }
+    let bytes = s.as_bytes();
+    // Find the last UTF-8 start byte at or before `index`
+    let mut i = index;
+    while i > 0 && bytes[i] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    i
+}
+
 impl TextEdit {
     /// Creates an empty text edit with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -60,7 +75,7 @@ impl TextEdit {
         // Truncate if needed (using floor_char_boundary to avoid mid-char panic)
         if let Some(max) = max_length {
             if self.text.len() > max {
-                let boundary = self.text.floor_char_boundary(max);
+                let boundary = floor_char_boundary(&self.text, max);
                 self.text.truncate(boundary);
                 self.text_changed.emit(self.text.clone());
             }

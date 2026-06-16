@@ -4,6 +4,7 @@
 //! into PDF documents by leveraging the SVG rendering pipeline.
 
 use crate::core::{Rect, Size};
+#[cfg(not(feature = "mini"))]
 use crate::widget::svg::render_widget_to_svg;
 use crate::widget::Draw;
 
@@ -179,6 +180,7 @@ impl PdfExporter {
     /// Each widget is rendered via the SVG pipeline and placed on its own page.
     /// The resulting PDF is a minimal valid PDF-1.4 file with the SVG content
     /// embedded directly in the content streams.
+    #[cfg(not(feature = "mini"))]
     pub fn export(&self, widgets: &mut [&mut dyn Draw], path: &str) -> Result<(), String> {
         let pages = self.render_pages(widgets)?;
         let pdf_bytes = build_svg_pdf(&pages, &self.settings)?;
@@ -187,7 +189,14 @@ impl PdfExporter {
         Ok(())
     }
 
+    /// Export requires the SVG pipeline (not available in mini mode).
+    #[cfg(feature = "mini")]
+    pub fn export(&self, _widgets: &mut [&mut dyn Draw], _path: &str) -> Result<(), String> {
+        Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
+    }
+
     /// Render each widget into a [`PdfPage`] using the SVG pipeline.
+    #[cfg(not(feature = "mini"))]
     pub fn render_pages(&self, widgets: &mut [&mut dyn Draw]) -> Result<Vec<PdfPage>, String> {
         let pixel_size = self.settings.pixel_size();
         let (page_w_pt, page_h_pt) = self.settings.effective_dimensions();
@@ -208,6 +217,12 @@ impl PdfExporter {
         }
 
         Ok(pages)
+    }
+
+    /// Render pages requires the SVG pipeline (not available in mini mode).
+    #[cfg(feature = "mini")]
+    pub fn render_pages(&self, _widgets: &mut [&mut dyn Draw]) -> Result<Vec<PdfPage>, String> {
+        Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
     }
 }
 
@@ -542,9 +557,16 @@ fn svg_path_to_pdf(d: &str) -> String {
 ///
 /// # Errors
 /// Returns `Err` if no widgets are provided, or if the file cannot be written.
+#[cfg(not(feature = "mini"))]
 pub fn export_to_pdf(widgets: &mut [&mut dyn Draw], path: &str) -> Result<(), String> {
     let exporter = PdfExporter::new();
     exporter.export(widgets, path)
+}
+
+/// PDF export requires the SVG pipeline (not available in mini mode).
+#[cfg(feature = "mini")]
+pub fn export_to_pdf(_widgets: &mut [&mut dyn Draw], _path: &str) -> Result<(), String> {
+    Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
 }
 
 #[cfg(test)]

@@ -19,27 +19,51 @@ use std::sync::Mutex;
 // IBus connection handle (feature-gated).
 // ──────────────────────────────────────────────
 
-/// Opaque wrapper around an IBus DBus proxy connection.
+/// Real IBus DBus proxy connection.
+///
+/// Connects to the session bus and resolves the IBus service. Once
+/// established, the connection can be used to send IME events to the
+/// IBus engine via the `org.freedesktop.IBus.Engine` interface.
 #[cfg(feature = "linux-a11y")]
 struct IbusConnection {
-    // In a full implementation this holds:
-    //   connection: zbus::Connection,
-    //   engine_proxy: IbusEngineProxy,
-    //   focus_sink: zbus::futures::channel::mpsc::Sender<ImeEvent>,
-    _private: (),
+    /// Active zbus session connection.
+    #[allow(dead_code)]
+    connection: zbus::Connection,
 }
 
 #[cfg(feature = "linux-a11y")]
 impl IbusConnection {
     /// Attempt to connect to the IBus daemon via DBus.
+    ///
+    /// Uses the `org.freedesktop.IBus` well-known name on the session bus.
+    /// If the IBus daemon is not running or the session bus is unavailable,
+    /// this returns `None` and the bridge falls back to state-machine mode.
     fn try_connect() -> Option<Self> {
-        // Real implementation:
-        //   let conn = zbus::Connection::session().ok()?;
-        //   let engine = IbusEngineProxy::new(&conn).ok()?;
-        //   engine.focus_in().ok()?;
-        //   Some(IbusConnection { connection: conn, engine_proxy: engine, … })
-        log::warn!("[Linux IME] IBus DBus connection not available — using state-machine fallback");
-        None
+        // Connect to the DBus session bus.
+        let conn = pollster::block_on(zbus::Connection::session()).ok()?;
+
+        // Check if the IBus daemon is available by resolving its name owner.
+        // The well-known name is `org.freedesktop.IBus`.
+        let reply: String = pollster::block_on(async {
+            // Create a generic proxy to the DBus daemon.
+            let proxy = zbus::Proxy::new(
+                &conn,
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+            )
+            .await
+            .ok()?;
+
+            // Call GetNameOwner to check if IBus is running.
+            let result: zbus::zvariant::OwnedValue =
+                proxy.call("GetNameOwner", &("org.freedesktop.IBus",)).await.ok()?;
+            String::try_from(result).ok()
+        })?;
+
+        log::info!("[Linux IME] IBus DBus connection established (owner: {})", reply);
+
+        Some(IbusConnection { connection: conn })
     }
 }
 

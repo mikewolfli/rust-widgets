@@ -1,3 +1,5 @@
+#![cfg(not(feature = "mini"))]
+
 //! Snapshot/visual regression tests (BLUE11 R3.10).
 //!
 //! These tests render widgets to SVG and compare against stored snapshots.

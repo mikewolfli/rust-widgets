@@ -2431,6 +2431,7 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub(crate) fn menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Menu,
@@ -2605,6 +2606,7 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
 
 #[cfg(not(feature = "mini"))]
 #[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "mini"))]
 pub(crate) fn segmented_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
@@ -2649,6 +2651,7 @@ pub(crate) fn grid_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub(crate) fn freeform_shape_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FreeformShape,
@@ -3134,6 +3137,7 @@ pub(crate) const TILE_VIEW_PROPERTIES: &[PropertySchema] = &[
 // ── Always-available widget capability functions ──────────────────
 
 #[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "mini"))]
 pub(crate) fn toggle_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
@@ -3288,6 +3292,7 @@ pub(crate) fn tile_view_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub(crate) fn date_time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateTimePicker,

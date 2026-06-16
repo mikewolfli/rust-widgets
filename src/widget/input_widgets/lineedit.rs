@@ -148,7 +148,7 @@ impl LineEdit {
                 return;
             }
             if text.len() > available {
-                let boundary = text.floor_char_boundary(available);
+                let boundary = floor_char_boundary(text, available);
                 &text[..boundary]
             } else {
                 text
@@ -400,6 +400,21 @@ impl Draw for LineEdit {
         // Draw cursor if focused
         // Note: Would need focus state tracking
     }
+}
+
+/// Manual implementation of `floor_char_boundary` for MSRV compatibility
+/// (stable since Rust 1.91, but MSRV is 1.87).
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let len = s.len();
+    if index >= len {
+        return len;
+    }
+    let bytes = s.as_bytes();
+    let mut i = index;
+    while i > 0 && bytes[i] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    i
 }
 
 #[cfg(test)]

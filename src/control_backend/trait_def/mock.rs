@@ -6,7 +6,6 @@ use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 
 /// A minimal test backend that implements ControlBackend for testing defaults.
-#[allow(dead_code)]
 struct TestBackend;
 
 impl ControlBackend for TestBackend {

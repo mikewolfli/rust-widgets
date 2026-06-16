@@ -522,11 +522,396 @@ pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, Stri
         ImageFormat::Pnm => encode_pnm(image),
         ImageFormat::Jpeg => encode_jpeg(image),
         ImageFormat::Rgba8 | ImageFormat::Rgb8 => Ok(image.data.as_bytes().to_vec()),
+        ImageFormat::Gif => encode_gif(image),
+        ImageFormat::Tiff => encode_tiff(image),
+        ImageFormat::Svg | ImageFormat::Svgz => encode_svg(image),
         _ => Err(format!("Encoding to {:?} is not yet supported", format)),
     }
 }
 
-/// Encode to PNG format (minimal, no compression).
+// ============================================================================
+// GIF encoder — minimal GIF89a with global color table and LZW compression
+// ============================================================================
+
+/// Build a 256-entry color palette from pixel data.
+/// Collects unique colors up to 256; if more exist, falls back to a 216-entry
+/// web-safe palette + 40 extra grays (so all 256 entries are filled).
+fn build_gif_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
+    let total = rgba.len() / 4;
+    let mut seen: Vec<[u8; 3]> = Vec::new();
+    let mut used = std::collections::HashSet::new();
+
+    for i in 0..total {
+        let off = i * 4;
+        let rgb = [rgba[off], rgba[off + 1], rgba[off + 2]];
+        let key = ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32;
+        if used.insert(key) && seen.len() < 256 {
+            seen.push(rgb);
+        }
+    }
+
+    if seen.len() <= 256 {
+        // Pad to exactly 256 with black
+        while seen.len() < 256 {
+            seen.push([0, 0, 0]);
+        }
+        return seen;
+    }
+
+    // Fallback: web-safe palette (6x6x6 = 216) + 40 grays
+    let mut palette: Vec<[u8; 3]> = Vec::with_capacity(256);
+    for r in 0..6u8 {
+        for g in 0..6u8 {
+            for b in 0..6u8 {
+                palette.push([r * 51, g * 51, b * 51]);
+            }
+        }
+    }
+    for i in 0..40 {
+        let v = (i as u8).wrapping_mul(6).wrapping_add(3);
+        palette.push([v, v, v]);
+    }
+    palette
+}
+
+/// Find the nearest palette color index via Euclidean distance (squared).
+fn nearest_palette_index(r: u8, g: u8, b: u8, palette: &[[u8; 3]]) -> u8 {
+    let mut best = 0u8;
+    let mut best_dist = u32::MAX;
+    for (idx, &[pr, pg, pb]) in palette.iter().enumerate() {
+        let dr = r as i32 - pr as i32;
+        let dg = g as i32 - pg as i32;
+        let db = b as i32 - pb as i32;
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+        if dist < best_dist {
+            best_dist = dist;
+            best = idx as u8;
+        }
+    }
+    best
+}
+
+/// GIF LZW encoder — writes packed bit codes into sub-blocks.
+struct GifLzwWriter {
+    out: Vec<u8>,
+    sub_block: Vec<u8>,
+    bit_buf: u64,
+    bit_count: u8,
+}
+
+impl GifLzwWriter {
+    fn new() -> Self {
+        Self { out: Vec::new(), sub_block: Vec::new(), bit_buf: 0, bit_count: 0 }
+    }
+
+    fn flush_sub_block(&mut self) {
+        if !self.sub_block.is_empty() {
+            self.out.push(self.sub_block.len() as u8);
+            self.out.extend_from_slice(&self.sub_block);
+            self.sub_block.clear();
+        }
+    }
+
+    fn write_code(&mut self, code: u16, code_size: u8) {
+        self.bit_buf |= (code as u64) << self.bit_count;
+        self.bit_count += code_size;
+        while self.bit_count >= 8 {
+            self.sub_block.push(self.bit_buf as u8);
+            self.bit_buf >>= 8;
+            self.bit_count -= 8;
+            if self.sub_block.len() == 255 {
+                self.flush_sub_block();
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.bit_count > 0 {
+            self.sub_block.push(self.bit_buf as u8);
+        }
+        self.flush_sub_block();
+        self.out.push(0); // block terminator
+    }
+}
+
+/// Encode a sequence of indices using GIF LZW.
+fn gif_lzw_encode(indices: &[u8], min_code_size: u8) -> Vec<u8> {
+    let clear_code = 1u16 << min_code_size;
+    let eoi_code = clear_code + 1;
+    let max_entries = 4096u16;
+
+    // Initial dictionary: each single-byte value -> code
+    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(max_entries as usize);
+    for i in 0..(1u16 << min_code_size) {
+        dict.push(vec![i as u8]);
+    }
+    dict.push(Vec::new()); // clear_code placeholder
+    dict.push(Vec::new()); // eoi_code placeholder
+
+    let mut writer = GifLzwWriter::new();
+    let mut code_size = min_code_size + 1;
+    let mut next_code = eoi_code + 1;
+
+    writer.write_code(clear_code, code_size);
+
+    if indices.is_empty() {
+        writer.write_code(eoi_code, code_size);
+        writer.finish();
+        return writer.out;
+    }
+
+    let mut w = vec![indices[0]];
+
+    for &k in &indices[1..] {
+        let mut wk = w.clone();
+        wk.push(k);
+
+        let found = dict.iter().position(|entry| *entry == wk);
+        if found.is_some() {
+            w = wk;
+        } else {
+            let code = dict.iter().position(|entry| *entry == w).unwrap();
+            writer.write_code(code as u16, code_size);
+
+            if next_code < max_entries {
+                dict.push(wk);
+                next_code += 1;
+                if next_code == (1u16 << (code_size + 1)) && code_size < 12 {
+                    code_size += 1;
+                }
+            } else {
+                writer.write_code(clear_code, code_size);
+                dict.truncate((1usize << (min_code_size as usize)) + 2);
+                next_code = eoi_code + 1;
+                code_size = min_code_size + 1;
+            }
+            w = vec![k];
+        }
+    }
+
+    let code = dict.iter().position(|entry| *entry == w).unwrap();
+    writer.write_code(code as u16, code_size);
+    writer.write_code(eoi_code, code_size);
+    writer.finish();
+
+    writer.out
+}
+
+/// Encode to GIF format (GIF89a, static image).
+fn encode_gif(image: &DecodedImage) -> Result<Vec<u8>, String> {
+    let rgba = image.as_rgba8();
+    let pixels = rgba.as_bytes();
+    let w = image.width;
+    let h = image.height;
+
+    if w == 0 || h == 0 {
+        return Err("Cannot encode GIF with zero dimensions".into());
+    }
+
+    let palette = build_gif_palette(pixels);
+    let palette_size = palette.len();
+    let bits_per_pixel: u8 = if palette_size <= 2 {
+        1
+    } else if palette_size <= 4 {
+        2
+    } else if palette_size <= 16 {
+        4
+    } else {
+        8
+    };
+    let size_field = bits_per_pixel - 1;
+    let min_code_size = bits_per_pixel;
+
+    // Map each pixel to its nearest palette index
+    let mut indices: Vec<u8> = Vec::with_capacity((w * h) as usize);
+    for i in 0..(w * h) as usize {
+        let off = i * 4;
+        let r = pixels.get(off).copied().unwrap_or(0);
+        let g = pixels.get(off + 1).copied().unwrap_or(0);
+        let b = pixels.get(off + 2).copied().unwrap_or(0);
+        indices.push(nearest_palette_index(r, g, b, &palette));
+    }
+
+    let mut out: Vec<u8> = Vec::new();
+
+    // 1. Header
+    out.extend_from_slice(b"GIF89a");
+
+    // 2. Logical Screen Descriptor
+    out.extend_from_slice(&(w as u16).to_le_bytes());
+    out.extend_from_slice(&(h as u16).to_le_bytes());
+    let gct_flag = 0x80u8; // global color table present
+    let color_res = 0x70u8; // 8 bits per primary
+    out.push(gct_flag | color_res | size_field);
+    out.push(0); // background color index
+    out.push(0); // pixel aspect ratio
+
+    // 3. Global Color Table
+    for &[r, g, b] in &palette {
+        out.push(r);
+        out.push(g);
+        out.push(b);
+    }
+
+    // 4. Image Descriptor
+    out.push(0x2C); // image separator
+    out.extend_from_slice(&0u16.to_le_bytes()); // left
+    out.extend_from_slice(&0u16.to_le_bytes()); // top
+    out.extend_from_slice(&(w as u16).to_le_bytes());
+    out.extend_from_slice(&(h as u16).to_le_bytes());
+    out.push(0); // packed field: no local color table
+
+    // 5. Table-Based Image Data
+    out.push(min_code_size);
+    let lzw_data = gif_lzw_encode(&indices, min_code_size);
+    out.extend_from_slice(&lzw_data);
+
+    // 6. Trailer
+    out.push(0x3B);
+
+    Ok(out)
+}
+
+// ============================================================================
+// TIFF encoder — minimal little-endian TIFF with uncompressed RGBA strips
+// ============================================================================
+
+/// Write a TIFF IFD entry (12 bytes).  Inline values must fit in 4 bytes.
+fn tiff_ifd_entry(buf: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: &[u8]) {
+    buf.extend_from_slice(&tag.to_le_bytes());
+    buf.extend_from_slice(&typ.to_le_bytes());
+    buf.extend_from_slice(&count.to_le_bytes());
+    let mut val = [0u8; 4];
+    val[..value.len().min(4)].copy_from_slice(value);
+    buf.extend_from_slice(&val);
+}
+
+/// Encode to TIFF format (uncompressed RGBA).
+fn encode_tiff(image: &DecodedImage) -> Result<Vec<u8>, String> {
+    let rgba = image.as_rgba8();
+    let pixels = rgba.as_bytes();
+    let w = image.width;
+    let h = image.height;
+
+    if w == 0 || h == 0 {
+        return Err("Cannot encode TIFF with zero dimensions".into());
+    }
+
+    let samples_per_pixel: u16 = 4;
+    let row_bytes = w as usize * samples_per_pixel as usize;
+    let strip_size = row_bytes * h as usize;
+
+    // Layout:
+    //   0-1    "II"
+    //   2-3    0x002a (LE)
+    //   4-7    IFD offset = 8
+    //
+    //   8-9    entry count
+    //   10-... IFD entries (9 x 12 = 108 bytes)
+    //   118-121  next IFD offset = 0
+    //   122-...  BitsPerSample array (8 bytes: 4 x u16)
+    //   130-...  pixel strip data
+
+    let ifd_offset: u32 = 8;
+    let num_entries: u16 = 9;
+    let ifd_body_start = 8u32 + 2; // after count field
+    let ifd_end = ifd_body_start + num_entries as u32 * 12 + 4; // +4 for next IFD
+    let bps_array_offset = ifd_end;
+    let strip_offset = bps_array_offset + 8; // 4 x u16 for BitsPerSample
+
+    let mut out = Vec::new();
+
+    // TIFF header
+    out.extend_from_slice(b"II");
+    out.extend_from_slice(&0x002Au16.to_le_bytes());
+    out.extend_from_slice(&ifd_offset.to_le_bytes());
+
+    // IFD entry count
+    out.extend_from_slice(&num_entries.to_le_bytes());
+
+    // Tag 256: ImageWidth (LONG, count=1)
+    tiff_ifd_entry(&mut out, 256, 4, 1, &w.to_le_bytes());
+    // Tag 257: ImageLength (LONG, count=1)
+    tiff_ifd_entry(&mut out, 257, 4, 1, &h.to_le_bytes());
+    // Tag 258: BitsPerSample (SHORT, count=4) -> offset to array
+    tiff_ifd_entry(&mut out, 258, 3, 4, &bps_array_offset.to_le_bytes());
+    // Tag 259: Compression = 1 (uncompressed, SHORT, count=1)
+    tiff_ifd_entry(&mut out, 259, 3, 1, &1u16.to_le_bytes());
+    // Tag 262: PhotometricInterpretation = 2 (RGB, SHORT, count=1)
+    tiff_ifd_entry(&mut out, 262, 3, 1, &2u16.to_le_bytes());
+    // Tag 273: StripOffsets (LONG, count=1)
+    tiff_ifd_entry(&mut out, 273, 4, 1, &strip_offset.to_le_bytes());
+    // Tag 277: SamplesPerPixel (SHORT, count=1)
+    tiff_ifd_entry(&mut out, 277, 3, 1, &samples_per_pixel.to_le_bytes());
+    // Tag 278: RowsPerStrip (LONG, count=1)
+    tiff_ifd_entry(&mut out, 278, 4, 1, &h.to_le_bytes());
+    // Tag 279: StripByteCounts (LONG, count=1)
+    tiff_ifd_entry(&mut out, 279, 4, 1, &(strip_size as u32).to_le_bytes());
+
+    // Next IFD offset
+    out.extend_from_slice(&0u32.to_le_bytes());
+
+    // BitsPerSample array: all 8
+    for _ in 0..4 {
+        out.extend_from_slice(&8u16.to_le_bytes());
+    }
+
+    // Pixel data (uncompressed RGBA)
+    out.extend_from_slice(pixels);
+
+    Ok(out)
+}
+
+// ============================================================================
+// SVG encoder — wraps a base64-encoded PNG in an SVG element
+// ============================================================================
+
+/// Minimal base64 encoding (RFC 4648).
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        // Emit 4 characters
+        for j in (0..4).rev() {
+            let idx = ((triple >> (j * 6)) & 0x3F) as usize;
+            out.push(CHARS[idx] as char);
+        }
+        // Replace padding
+        if chunk.len() < 3 {
+            let pad = 3 - chunk.len();
+            for k in 0..pad {
+                let pos = out.len() - 1 - k;
+                unsafe {
+                    out.as_bytes_mut()[pos] = b'=';
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Encode to SVG format by embedding a base64-encoded PNG.
+fn encode_svg(image: &DecodedImage) -> Result<Vec<u8>, String> {
+    let w = image.width;
+    let h = image.height;
+
+    let png_bytes = encode_png(image)?;
+    let b64 = base64_encode(&png_bytes);
+
+    let xml = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">
+  <image href="data:image/png;base64,{}" width="{}" height="{}"/>
+</svg>"#,
+        w, h, b64, w, h
+    );
+
+    Ok(xml.into_bytes())
+}
+
 fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let rgba = image.as_rgba8();
     let pixels = rgba.as_bytes();
@@ -848,5 +1233,68 @@ mod tests {
         assert!(bmp.starts_with(b"BM"));
         let jpeg = encode(&img, ImageFormat::Jpeg).unwrap();
         assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+    }
+
+    #[test]
+    fn encode_gif_roundtrip() {
+        let img = make_test_image();
+        let encoded = encode_gif(&img).unwrap();
+        assert!(encoded.starts_with(b"GIF89a"), "GIF must start with GIF89a");
+        assert!(encoded.ends_with(&[0x3B]), "GIF must end with trailer 0x3B");
+        assert!(encoded.len() > 20, "GIF output too short: {}", encoded.len());
+    }
+
+    #[test]
+    fn encode_gif_dispatch() {
+        let img = make_test_image();
+        let gif = encode(&img, ImageFormat::Gif).unwrap();
+        assert!(gif.starts_with(b"GIF89a"));
+    }
+
+    #[test]
+    fn encode_tiff_roundtrip() {
+        let img = make_test_image();
+        let encoded = encode_tiff(&img).unwrap();
+        assert!(encoded.starts_with(b"II"), "TIFF must start with II");
+        // Check for TIFF magic 0x002A at offset 2
+        assert!(encoded.len() >= 4);
+        assert_eq!(encoded[2..4], [0x2A, 0x00], "TIFF magic must be 0x002A");
+        assert!(encoded.len() > 50, "TIFF output too short: {}", encoded.len());
+    }
+
+    #[test]
+    fn encode_tiff_dispatch() {
+        let img = make_test_image();
+        let tiff = encode(&img, ImageFormat::Tiff).unwrap();
+        assert!(tiff.starts_with(b"II"));
+    }
+
+    #[test]
+    fn encode_svg_roundtrip() {
+        let img = make_test_image();
+        let encoded = encode_svg(&img).unwrap();
+        let s = String::from_utf8_lossy(&encoded);
+        assert!(s.starts_with("<svg"), "SVG must start with <svg");
+        assert!(s.contains("xmlns="), "SVG must contain xmlns attribute");
+        assert!(s.contains("data:image/png;base64,"), "SVG must embed base64 PNG");
+        assert!(s.contains("width=\"2\""), "SVG must have width attribute");
+        assert!(s.contains("height=\"2\""), "SVG must have height attribute");
+        assert!(s.ends_with("/>\n</svg>"), "SVG must end with </svg>");
+    }
+
+    #[test]
+    fn encode_svg_dispatch() {
+        let img = make_test_image();
+        let svg = encode(&img, ImageFormat::Svg).unwrap();
+        let s = String::from_utf8_lossy(&svg);
+        assert!(s.starts_with("<svg"));
+    }
+
+    #[test]
+    fn encode_svgz_dispatch() {
+        let img = make_test_image();
+        let svgz = encode(&img, ImageFormat::Svgz).unwrap();
+        let s = String::from_utf8_lossy(&svgz);
+        assert!(s.starts_with("<svg"));
     }
 }

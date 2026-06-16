@@ -11,6 +11,19 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let len = s.len();
+    if index >= len {
+        return len;
+    }
+    let bytes = s.as_bytes();
+    let mut i = index;
+    while i > 0 && bytes[i] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    i
+}
+
 /// A single shortcut entry in the editor.
 #[derive(Debug, Clone)]
 pub struct ShortcutEntry {
@@ -250,7 +263,7 @@ impl Draw for ShortcutEditor {
                 // Command name
                 let name_text = if entry.name.len() > 30 {
                     // Use floor_char_boundary to avoid mid-char panic
-                    let boundary = entry.name.floor_char_boundary(27);
+                    let boundary = floor_char_boundary(&entry.name, 27);
                     format!("{}...", &entry.name[..boundary])
                 } else {
                     entry.name.clone()

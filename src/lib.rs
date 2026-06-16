@@ -26,7 +26,7 @@ pub mod asset;
 #[cfg(feature = "audio")]
 pub mod audio;
 /// Desktop-only: C ABI bindings for desktop runtime.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(feature = "mini")))]
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;
@@ -120,7 +120,8 @@ macro_rules! tr {
         $key.to_string()
     }};
 }
-/// Application lifecycle wrapper and type-safe widget handles.
+/// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
+#[cfg(not(feature = "mini"))]
 pub mod app;
 #[cfg(feature = "chart")]
 /// Charting primitives.
@@ -134,21 +135,40 @@ pub mod pdf;
 /// Print and preview support.
 pub mod print;
 /// Initialize global platform and i18n subsystems.
+#[cfg(not(feature = "mini"))]
 pub fn init() {
     trace_runtime_route("init");
     init_runtime_backend();
     init_i18n_runtime();
 }
+/// Stub init for mini mode (no platform runtime).
+#[cfg(feature = "mini")]
+pub fn init() {
+    log::info!("rust_widgets: mini mode init (no platform runtime)");
+}
 /// Run platform main event loop.
+#[cfg(not(feature = "mini"))]
 pub fn run() {
     trace_runtime_route("run");
     run_runtime_backend();
 }
+/// Stub run for mini mode (no platform runtime).
+#[cfg(feature = "mini")]
+pub fn run() {
+    log::info!("rust_widgets: mini mode run (no platform event loop)");
+}
 /// Request platform event loop shutdown.
+#[cfg(not(feature = "mini"))]
 pub fn quit() {
     trace_runtime_route("quit");
     quit_runtime_backend();
 }
+/// Stub quit for mini mode (no platform runtime).
+#[cfg(feature = "mini")]
+pub fn quit() {
+    log::info!("rust_widgets: mini mode quit (no platform to shut down)");
+}
+#[cfg(not(feature = "mini"))]
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
         log::info!(
@@ -228,7 +248,10 @@ fn runtime_route_name() -> &'static str {
 fn runtime_route_name() -> &'static str {
     "embedded-render-engine"
 }
-#[cfg(not(any(feature = "embedded", feature = "profile-embedded-mini")))]
+#[cfg(all(
+    not(any(feature = "embedded", feature = "profile-embedded-mini")),
+    not(feature = "mini")
+))]
 fn init_runtime_backend() {
     platform::init();
 }
@@ -236,7 +259,7 @@ fn init_runtime_backend() {
 fn init_runtime_backend() {
     render_engine::default_render_engine().init();
 }
-#[cfg(not(feature = "embedded"))]
+#[cfg(all(not(feature = "embedded"), not(feature = "mini")))]
 fn run_runtime_backend() {
     platform::run();
 }
@@ -244,7 +267,7 @@ fn run_runtime_backend() {
 fn run_runtime_backend() {
     render_engine::default_render_engine().run();
 }
-#[cfg(not(feature = "embedded"))]
+#[cfg(all(not(feature = "embedded"), not(feature = "mini")))]
 fn quit_runtime_backend() {
     platform::quit();
 }
@@ -275,6 +298,7 @@ fn init_i18n_runtime() {
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }
+#[cfg(not(feature = "mini"))]
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance
 /// Create a top-level window with specified title and geometry.
@@ -285,6 +309,7 @@ fn init_i18n_runtime() {
 /// ```
 /// let window_id = rust_widgets::create_window("My App", 100, 100, 800, 600);
 /// ```
+#[cfg(not(feature = "mini"))]
 pub fn create_window(
     title: &str,
     x: i32,
@@ -294,6 +319,7 @@ pub fn create_window(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_window(title, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a button control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_button()`.
@@ -307,6 +333,7 @@ pub fn create_button(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_button(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a checkbox control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_checkbox()`.
@@ -320,6 +347,7 @@ pub fn create_checkbox(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_checkbox(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a line edit control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_line_edit()`.
@@ -333,6 +361,7 @@ pub fn create_line_edit(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_line_edit(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a label control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_label()`.
@@ -346,6 +375,7 @@ pub fn create_label(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_label(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a radio button control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_radio_button()`.
@@ -359,6 +389,7 @@ pub fn create_radio_button(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_radio_button(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a slider control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_slider()`.
@@ -371,6 +402,7 @@ pub fn create_slider(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_slider(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a progress bar control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_progress_bar()`.
@@ -383,6 +415,7 @@ pub fn create_progress_bar(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_progress_bar(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a combo box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_combo_box()`.
@@ -395,6 +428,7 @@ pub fn create_combo_box(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_combo_box(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a list box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_list_box()`.
@@ -407,6 +441,7 @@ pub fn create_list_box(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_list_box(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a panel control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_panel()`.
@@ -419,6 +454,7 @@ pub fn create_panel(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_panel(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a message box dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_message_box()`.
@@ -433,6 +469,7 @@ pub fn create_message_box(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_message_box(parent, title, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a file dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_file_dialog()`.
@@ -445,6 +482,7 @@ pub fn create_file_dialog(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_file_dialog(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a color dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_color_dialog()`.
@@ -457,6 +495,7 @@ pub fn create_color_dialog(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_color_dialog(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a font dialog as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_font_dialog()`.
@@ -469,6 +508,7 @@ pub fn create_font_dialog(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_font_dialog(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a spin box control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_spin_box()`.
@@ -481,6 +521,7 @@ pub fn create_spin_box(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_spin_box(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 /// Create a list view control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_list_view()`.
@@ -496,6 +537,7 @@ pub fn create_list_view(
 /// Create a scroll area control as a child of specified parent.
 ///
 /// This is a convenience wrapper around `platform::get_platform().create_scroll_area()`.
+#[cfg(not(feature = "mini"))]
 pub fn create_scroll_area(
     parent: crate::core::ObjectId,
     x: i32,
@@ -508,18 +550,21 @@ pub fn create_scroll_area(
 /// Show a widget by its object id.
 ///
 /// This is a convenience wrapper around `platform::get_platform().show_widget()`.
+#[cfg(not(feature = "mini"))]
 pub fn show_widget(widget_id: crate::core::ObjectId) {
     platform::get_platform().show_widget(widget_id);
 }
 /// Hide a widget by its object id.
 ///
 /// This is a convenience wrapper around `platform::get_platform().hide_widget()`.
+#[cfg(not(feature = "mini"))]
 pub fn hide_widget(widget_id: crate::core::ObjectId) {
     platform::get_platform().hide_widget(widget_id);
 }
 /// Set geometry of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_geometry()`.
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_geometry(
     widget_id: crate::core::ObjectId,
     x: i32,
@@ -532,87 +577,109 @@ pub fn set_widget_geometry(
 /// Set text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
     platform::get_platform().set_widget_text(widget_id, text);
 }
 /// Get text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().get_widget_text()`.
+#[cfg(not(feature = "mini"))]
 pub fn get_widget_text(widget_id: crate::core::ObjectId) -> String {
     platform::get_platform().get_widget_text(widget_id)
 }
 /// Set enabled state of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_enabled()`.
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_enabled(widget_id: crate::core::ObjectId, enabled: bool) {
     platform::get_platform().set_widget_enabled(widget_id, enabled);
 }
 /// Check if a widget is enabled.
 ///
 /// This is a convenience wrapper around `platform::get_platform().is_widget_enabled()`.
+#[cfg(not(feature = "mini"))]
 pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_enabled(widget_id)
 }
 /// Set visibility of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_visible()`.
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
     platform::get_platform().set_widget_visible(widget_id, visible);
 }
 /// Check if a widget is visible.
 ///
 /// This is a convenience wrapper around `platform::get_platform().is_widget_visible()`.
+#[cfg(not(feature = "mini"))]
 pub fn is_widget_visible(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_visible(widget_id)
 }
 // ComboBox operations
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
     platform::get_platform().combo_box_add_item(combo_box, text)
 }
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_clear_items(combo_box: crate::core::ObjectId) -> bool {
     platform::get_platform().combo_box_clear_items(combo_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_set_current_index(combo_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().combo_box_set_current_index(combo_box, index)
 }
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_current_index(combo_box: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().combo_box_current_index(combo_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_item_count(combo_box: crate::core::ObjectId) -> usize {
     platform::get_platform().combo_box_item_count(combo_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn combo_box_item_text(combo_box: crate::core::ObjectId, index: usize) -> Option<String> {
     platform::get_platform().combo_box_item_text(combo_box, index)
 }
 // ListBox operations
+#[cfg(not(feature = "mini"))]
 pub fn list_box_add_item(list_box: crate::core::ObjectId, text: &str) -> bool {
     platform::get_platform().list_box_add_item(list_box, text)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_remove_item(list_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().list_box_remove_item(list_box, index)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_clear_items(list_box: crate::core::ObjectId) -> bool {
     platform::get_platform().list_box_clear_items(list_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_set_current_index(list_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().list_box_set_current_index(list_box, index)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_current_index(list_box: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().list_box_current_index(list_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_item_count(list_box: crate::core::ObjectId) -> usize {
     platform::get_platform().list_box_item_count(list_box)
 }
+#[cfg(not(feature = "mini"))]
 pub fn list_box_item_text(list_box: crate::core::ObjectId, index: usize) -> Option<String> {
     platform::get_platform().list_box_item_text(list_box, index)
 }
 // Event polling
+#[cfg(not(feature = "mini"))]
 pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
     platform::get_platform().poll_widget_triggered()
 }
+#[cfg(not(feature = "mini"))]
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
     platform::get_platform().poll_widget_trigger_event()
 }
+#[cfg(not(feature = "mini"))]
 pub fn inject_widget_trigger_event(
     widget_id: crate::core::ObjectId,
     kind: WidgetTriggerKind,
@@ -620,18 +687,22 @@ pub fn inject_widget_trigger_event(
     platform::get_platform().inject_widget_trigger_event(widget_id, kind)
 }
 // Clipboard
+#[cfg(not(feature = "mini"))]
 pub fn set_clipboard_text(text: &str) -> bool {
     platform::get_platform().set_clipboard_text(text)
 }
+#[cfg(not(feature = "mini"))]
 pub fn get_clipboard_text() -> String {
     platform::get_platform().get_clipboard_text()
 }
 /// Returns the platform's rich clipboard backend, if available.
+#[cfg(not(feature = "mini"))]
 pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>
 {
     platform::get_platform().clipboard_backend()
 }
 // Menu operations
+#[cfg(not(feature = "mini"))]
 pub fn create_menu_bar(
     parent: crate::core::ObjectId,
     x: i32,
@@ -641,6 +712,7 @@ pub fn create_menu_bar(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_menu_bar(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 pub fn create_menu(
     parent: crate::core::ObjectId,
     text: &str,
@@ -651,12 +723,14 @@ pub fn create_menu(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_menu(parent, text, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 pub fn attach_menu_bar_to_window(
     window: crate::core::ObjectId,
     menu_bar: crate::core::ObjectId,
 ) -> bool {
     platform::get_platform().attach_menu_bar_to_window(window, menu_bar)
 }
+#[cfg(not(feature = "mini"))]
 pub fn menu_add_item(
     parent_menu: crate::core::ObjectId,
     text: &str,
@@ -664,13 +738,16 @@ pub fn menu_add_item(
 ) -> crate::core::ObjectId {
     platform::get_platform().menu_add_item(parent_menu, text, shortcut)
 }
+#[cfg(not(feature = "mini"))]
 pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
     platform::get_platform().poll_menu_triggered()
 }
+#[cfg(not(feature = "mini"))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
     platform::get_platform().inject_menu_trigger(menu_item_id)
 }
 // ToolBar and StatusBar
+#[cfg(not(feature = "mini"))]
 pub fn create_tool_bar(
     parent: crate::core::ObjectId,
     x: i32,
@@ -680,6 +757,7 @@ pub fn create_tool_bar(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_tool_bar(parent, x, y, width, height)
 }
+#[cfg(not(feature = "mini"))]
 pub fn create_status_bar(
     parent: crate::core::ObjectId,
     text: &str,
@@ -691,36 +769,48 @@ pub fn create_status_bar(
     platform::get_platform().create_status_bar(parent, text, x, y, width, height)
 }
 // Drag and Drop
+#[cfg(not(feature = "mini"))]
 pub fn begin_drag(source_widget_id: crate::core::ObjectId, mime: &str, payload: &[u8]) -> bool {
     platform::get_platform().begin_drag(source_widget_id, mime, payload)
 }
+#[cfg(not(feature = "mini"))]
 pub fn poll_drop_event() -> Option<DropEvent> {
     platform::get_platform().poll_drop_event()
 }
+#[cfg(not(feature = "mini"))]
 pub fn inject_drop_event(event: DropEvent) -> bool {
     platform::get_platform().inject_drop_event(event)
 }
 // IME and Accessibility
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
     platform::get_platform().set_widget_ime_enabled(widget_id, enabled)
 }
+#[cfg(not(feature = "mini"))]
 pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_ime_enabled(widget_id)
 }
 /// Returns the platform's IME bridge, if available.
+#[cfg(not(feature = "mini"))]
 pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBridge> {
     platform::get_platform().ime_bridge()
 }
+#[cfg(not(feature = "mini"))]
 pub fn set_widget_accessibility_name(widget_id: crate::core::ObjectId, name: &str) -> bool {
     platform::get_platform().set_widget_accessibility_name(widget_id, name)
 }
+#[cfg(not(feature = "mini"))]
 pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String {
     platform::get_platform().get_widget_accessibility_name(widget_id)
 }
 // Re-exports from platform module for convenience
+#[cfg(not(feature = "mini"))]
 pub use platform::{
     capabilities, dpi_scale_factor, get_platform, init as platform_init, quit as platform_quit,
-    run as platform_run, runtime_gui_mode, runtime_gui_mode_for, CapabilityContract,
-    DesktopBackend, DropEvent, EmbeddedCapabilityContract, MobileBackend, NativeCapabilityContract,
-    PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent, WidgetTriggerKind,
+    run as platform_run, runtime_gui_mode, runtime_gui_mode_for,
+};
+pub use platform::{
+    CapabilityContract, DesktopBackend, DropEvent, EmbeddedCapabilityContract, MobileBackend,
+    NativeCapabilityContract, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
+    WidgetTriggerKind,
 };

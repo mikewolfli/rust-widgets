@@ -726,9 +726,12 @@ impl AsyncTask {
     }
 }
 
-use std::sync::mpsc::{self, TryRecvError};
-use std::sync::{Mutex, OnceLock};
+#[cfg(not(feature = "mini"))]
+use crate::compat::mpsc::{self, TryRecvError};
+#[cfg(not(feature = "mini"))]
+use crate::compat::{Mutex, OnceLock};
 
+#[cfg(not(feature = "mini"))]
 fn channel() -> &'static (mpsc::Sender<AsyncTask>, Mutex<mpsc::Receiver<AsyncTask>>) {
     static CHANNEL: OnceLock<(mpsc::Sender<AsyncTask>, Mutex<mpsc::Receiver<AsyncTask>>)> =
         OnceLock::new();
@@ -743,6 +746,7 @@ fn channel() -> &'static (mpsc::Sender<AsyncTask>, Mutex<mpsc::Receiver<AsyncTas
 /// Safe to call from any thread; the task will be delivered to the event loop
 /// via a global `mpsc` channel. The event loop drains tasks each frame via
 /// [`drain_tasks()`].
+#[cfg(not(feature = "mini"))]
 pub fn schedule_task<F>(id: u64, f: F)
 where
     F: FnOnce() + Send + 'static,
@@ -754,6 +758,7 @@ where
 }
 
 /// Drain all pending async tasks (called by event loop each frame).
+#[cfg(not(feature = "mini"))]
 pub fn drain_tasks() {
     let (_, rx_mutex) = channel();
     let Ok(rx) = rx_mutex.lock() else { return };

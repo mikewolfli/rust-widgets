@@ -1,10 +1,11 @@
 //! Harmony desktop backend shell.
 use super::super::WidgetTriggerEvent;
+use crate::compat::HashMap;
+use crate::compat::Mutex;
 use crate::platform::state::BackendState;
-use std::collections::{HashMap, VecDeque};
+use alloc::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HarmonyHandleKind {
     Window,

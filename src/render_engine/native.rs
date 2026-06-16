@@ -2,6 +2,7 @@
 
 use super::engine_trait::RenderEngine;
 use crate::core::RuntimeProfile;
+#[cfg(not(feature = "mini"))]
 use crate::platform::get_platform;
 
 /// Native desktop engine backed by platform adapters.
@@ -20,6 +21,7 @@ impl Default for NativeRenderEngine {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 impl RenderEngine for NativeRenderEngine {
     fn name(&self) -> &'static str {
         "native-render-engine"

@@ -1,4 +1,5 @@
 use crate::core::RuntimeProfile;
+#[cfg(not(feature = "mini"))]
 use crate::platform::runtime::get_platform;
 pub use crate::platform::types::*;
 
@@ -19,6 +20,7 @@ fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
     }
 }
 /// Negotiate capabilities using profile-specific contracts with deterministic fallbacks.
+#[cfg(not(feature = "mini"))]
 pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContract {
     match profile {
         RuntimeProfile::Full => get_platform()
@@ -30,4 +32,9 @@ pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContr
             .map(CapabilityContract::Embedded)
             .unwrap_or(CapabilityContract::Embedded(fallback_embedded_capability_contract())),
     }
+}
+/// Capability negotiation not available in mini mode.
+#[cfg(feature = "mini")]
+pub fn negotiate_capability_contract(_profile: RuntimeProfile) -> CapabilityContract {
+    CapabilityContract::Native(fallback_native_capability_contract())
 }

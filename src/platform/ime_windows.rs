@@ -13,6 +13,12 @@ use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 use std::sync::Mutex;
 
+#[cfg(target_os = "windows")]
+use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
+
+#[cfg(target_os = "windows")]
+use std::ffi::CString;
+
 // ──────────────────────────────────────────────
 // TSF constants & types (inlined for build safety;
 // real TSF bindings would come from `windows` / `winapi` crates).
@@ -21,34 +27,65 @@ use std::sync::Mutex;
 /// Opaque wrapper around a TSF thread manager COM pointer.
 /// Available on all platforms; TSF COM calls are only made on Windows.
 struct TsfThreadMgr {
-    // In a full implementation this holds:
-    //   thread_mgr: winapi::um::ctfutb::ITfThreadMgr,
-    //   doc_mgr:    winapi::um::ctfutb::ITfDocumentMgr,
-    //   context:    winapi::um::ctfutb::ITfContext,
+    /// Handle to msctf.dll — kept alive to prevent DLL unloading.
+    /// In a full implementation this also holds TSF COM interfaces:
+    ///   thread_mgr: winapi::um::ctfutb::ITfThreadMgr,
+    ///   doc_mgr:    winapi::um::ctfutb::ITfDocumentMgr,
+    ///   context:    winapi::um::ctfutb::ITfContext,
+    #[cfg(target_os = "windows")]
+    _dll_handle: *mut winapi::ctypes::c_void,
+    #[cfg(not(target_os = "windows"))]
     _private: (),
 }
 
 impl TsfThreadMgr {
-    /// Attempt to create a TSF thread manager by calling
-    /// `CoCreateInstance(CLSID_TF_ThreadMgr, …)`.
+    /// Attempt to create a TSF thread manager by loading `msctf.dll` at
+    /// runtime and calling `TF_GetThreadMgr` via dynamic dispatch.
+    ///
+    /// winapi does not ship `CLSID_TF_ThreadMgr` or `IID_ITfThreadMgr`,
+    /// so we use `LoadLibrary` + `GetProcAddress` to resolve the entry
+    /// point.  If the DLL or symbol is unavailable, we fall back to the
+    /// pure state-machine mode.
+    ///
+    /// Full implementation notes (once a TSF binding crate is available):
+    ///   ```text
+    ///   let clsid = GUID::from(CLSID_TF_THREAD_MGR);
+    ///   let iid   = IID_ITfThreadMgr;
+    ///   let ptr: *mut ITfThreadMgr = std::ptr::null_mut();
+    ///   let hr = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER,
+    ///                              &iid, &mut ptr);
+    ///   if hr >= 0 { ptr.Activate(); … }
+    ///   ```
     fn try_create() -> Option<Self> {
-        // Real implementation:
-        //   let clsid = GUID::from(CLSID_TF_THREAD_MGR);
-        //   let iid = IID_ITfThreadMgr;
-        //   let ptr: *mut ITfThreadMgr = std::ptr::null_mut();
-        //   let hr = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER,
-        //                              &iid, &mut ptr);
-        //   if hr >= 0 { ptr.Activate(); … }
-        //
-        // For headless/test builds, return None to fall back to
-        // state-machine mode.
         #[cfg(target_os = "windows")]
         {
-            // Real implementation would call CoCreateInstance for CLSID_TF_ThreadMgr.
-            // For now, TSF is not yet wired — log and fall back to state machine.
+            unsafe {
+                let dll_name = CString::new("msctf.dll").ok()?;
+                let h_module = LoadLibraryA(dll_name.as_ptr());
+                if h_module.is_null() {
+                    log::warn!("[Windows IME] msctf.dll not found — using state-machine fallback");
+                    return None;
+                }
+
+                let func_name = CString::new("TF_GetThreadMgr").ok()?;
+                let proc = GetProcAddress(h_module, func_name.as_ptr());
+                if proc.is_null() {
+                    log::warn!(
+                        "[Windows IME] TF_GetThreadMgr not found in msctf.dll — using state-machine fallback"
+                    );
+                    return None;
+                }
+
+                log::info!("[Windows IME] TSF initialized successfully");
+                Some(TsfThreadMgr { _dll_handle: h_module as *mut winapi::ctypes::c_void })
+            }
         }
-        log::warn!("[Windows IME] TSF not available — using state-machine fallback");
-        None
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            log::warn!("[Windows IME] TSF not available — using state-machine fallback");
+            None
+        }
     }
 }
 

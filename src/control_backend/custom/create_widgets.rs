@@ -354,7 +354,10 @@ impl ControlBackend for super::CustomPaintControlBackend {
                 y,
                 width,
                 height,
+                #[cfg(not(feature = "mini"))]
                 widget_kind: WidgetKind::Menu,
+                #[cfg(feature = "mini")]
+                widget_kind: WidgetKind::Panel,
             },
         );
         widget_id
@@ -383,7 +386,10 @@ impl ControlBackend for super::CustomPaintControlBackend {
                 y: 0,
                 width: 0,
                 height: 0,
+                #[cfg(not(feature = "mini"))]
                 widget_kind: WidgetKind::MenuItem,
+                #[cfg(feature = "mini")]
+                widget_kind: WidgetKind::Panel,
             },
         );
         widget_id
@@ -1102,7 +1108,10 @@ impl ControlBackend for super::CustomPaintControlBackend {
                 y,
                 width,
                 height,
+                #[cfg(not(feature = "mini"))]
                 widget_kind: WidgetKind::ToggleButton,
+                #[cfg(feature = "mini")]
+                widget_kind: WidgetKind::Button,
             },
         );
         widget_id

@@ -173,6 +173,7 @@ mod tests {
         assert!(!sw.is_checked());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn switch_svg_output() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));

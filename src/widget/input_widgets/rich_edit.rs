@@ -4,6 +4,19 @@ use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let len = s.len();
+    if index >= len {
+        return len;
+    }
+    let bytes = s.as_bytes();
+    let mut i = index;
+    while i > 0 && bytes[i] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    i
+}
 /// Rich text/code editor baseline widget contract.
 pub struct RichEdit {
     base: BaseWidget,
@@ -157,11 +170,7 @@ impl Draw for RichEdit {
         // Draw border
         context.draw_rect(
             rect,
-            if self.read_only {
-                Color::rgb(220, 220, 220)
-            } else {
-                Color::rgb(180, 180, 180)
-            },
+            if self.read_only { Color::rgb(220, 220, 220) } else { Color::rgb(180, 180, 180) },
         );
         // Draw text content — all lines
         let font = crate::core::Font::default();
@@ -219,7 +228,7 @@ impl crate::event::EventHandler for RichEdit {
                     8 => {
                         // Backspace — delete char before cursor
                         if cursor > 0 {
-                            let boundary = self.text.floor_char_boundary(cursor - 1);
+                            let boundary = floor_char_boundary(&self.text, cursor - 1);
                             self.text.drain(boundary..cursor);
                             let new_cursor = boundary;
                             self.selection = Some((new_cursor, new_cursor));
@@ -230,7 +239,7 @@ impl crate::event::EventHandler for RichEdit {
                     127 => {
                         // Delete — delete char after cursor
                         if cursor < self.text.len() {
-                            let end = self.text.floor_char_boundary(cursor + 1);
+                            let end = floor_char_boundary(&self.text, cursor + 1);
                             // Ensure we advance at least one char
                             let end = if end == cursor { cursor + 1 } else { end };
                             self.text.drain(cursor..end.min(self.text.len()));
@@ -250,7 +259,7 @@ impl crate::event::EventHandler for RichEdit {
                     37 if *modifiers == 0 => {
                         // Left arrow — move cursor left by one char
                         if cursor > 0 {
-                            let boundary = self.text.floor_char_boundary(cursor - 1);
+                            let boundary = floor_char_boundary(&self.text, cursor - 1);
                             self.selection = Some((boundary, boundary));
                             self.cursor_position_changed.emit(boundary);
                         }
@@ -258,7 +267,7 @@ impl crate::event::EventHandler for RichEdit {
                     39 if *modifiers == 0 => {
                         // Right arrow — move cursor right by one char
                         if cursor < self.text.len() {
-                            let next = self.text.floor_char_boundary(cursor + 1);
+                            let next = floor_char_boundary(&self.text, cursor + 1);
                             self.selection = Some((next, next));
                             self.cursor_position_changed.emit(next);
                         }

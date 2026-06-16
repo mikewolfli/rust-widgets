@@ -66,7 +66,7 @@ pub struct MacOSPlatform {
     /// List-box selected index per logical widget id.
     pub(crate) list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
     /// Platform IME bridge for text input method integration.
-    pub(crate) ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge,
+    pub(crate) ime_bridge: crate::platform::ime_macos::MacOsImeBridge,
     /// Platform rich clipboard backend.
     pub(crate) clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
     /// Platform accessibility bridge for NSAccessibility notifications.
@@ -251,7 +251,7 @@ impl MacOSPlatform {
             combo_box_selection: Mutex::new(HashMap::new()),
             list_box_items: Mutex::new(HashMap::new()),
             list_box_selection: Mutex::new(HashMap::new()),
-            ime_bridge: crate::platform::ime_stubs::macos::MacOsImeBridge::new(),
+            ime_bridge: crate::platform::ime_macos::MacOsImeBridge::new(),
             clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
             a11y_bridge: MacOSAccessibilityBridge::new(),
         }

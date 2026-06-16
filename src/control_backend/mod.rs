@@ -5,6 +5,7 @@
 
 pub mod custom;
 pub mod dispatcher;
+#[cfg(not(feature = "mini"))]
 pub mod native;
 pub mod routing;
 pub mod trait_def;
@@ -14,6 +15,7 @@ pub mod types;
 #[cfg(feature = "controls-custom")]
 pub use custom::CustomPaintControlBackend;
 pub use dispatcher::{active_control_policy, get_control_backend, get_control_backend_for_widget};
+#[cfg(not(feature = "mini"))]
 pub use native::NativeControlBackend;
 pub use routing::route_preference_for_widget_kind;
 pub use trait_def::ControlBackend;
@@ -51,6 +53,7 @@ mod tests {
         let _ = _take_trait_object;
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn native_control_backend_re_exported() {
         let backend = NativeControlBackend::new();

@@ -233,6 +233,7 @@ fn test_rw_error_not_implemented_display() {
 // Widget creation chaining (no platform needed — purely logical)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_app_new() {
     // App can be created without a running platform
@@ -241,6 +242,7 @@ fn test_app_new() {
     // App::new() should not panic — construction succeeds without platform
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_app_with_config() {
     use rust_widgets::app::{App, AppConfig};
@@ -252,6 +254,7 @@ fn test_app_with_config() {
     assert!(app.config().enable_i18n);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_app_with_config_i18n_disabled() {
     use rust_widgets::app::{App, AppConfig};
@@ -259,6 +262,7 @@ fn test_app_with_config_i18n_disabled() {
     assert!(!app.config().enable_i18n);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_app_default_is_new() {
     use rust_widgets::app::App;
@@ -268,6 +272,7 @@ fn test_app_default_is_new() {
     assert_eq!(a.config().app_name, b.config().app_name);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_window_handle_roundtrip() {
     use rust_widgets::app::WindowHandle;
@@ -279,6 +284,7 @@ fn test_window_handle_roundtrip() {
     assert_eq!(win2.raw_id(), win.raw_id());
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_widget_handle_trait_methods() {
     use rust_widgets::app::ButtonHandle;
@@ -297,6 +303,7 @@ fn test_widget_handle_trait_methods() {
     btn.enable();
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_message_box_handle_no_widget_methods() {
     use rust_widgets::app::MessageBoxHandle;
@@ -309,6 +316,7 @@ fn test_message_box_handle_no_widget_methods() {
     mb.close();
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_combo_box_handle_specific_ops() {
     use rust_widgets::app::ComboBoxHandle;
@@ -319,6 +327,7 @@ fn test_combo_box_handle_specific_ops() {
     let _ = cb.item_count();
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_list_box_handle_specific_ops() {
     use rust_widgets::app::ListBoxHandle;
@@ -330,6 +339,7 @@ fn test_list_box_handle_specific_ops() {
     let _ = lb.item_count();
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_handle_from_raw_and_back() {
     use rust_widgets::app::*;
@@ -341,6 +351,7 @@ fn test_handle_from_raw_and_back() {
     assert_eq!(slider.raw_id(), 9);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_handle_debug_and_clone() {
     use rust_widgets::app::ButtonHandle;
@@ -354,6 +365,7 @@ fn test_handle_debug_and_clone() {
 // JSON declarative engine integration tests (BLUE4.md §11.2)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_loads_minimal_window() {
     use rust_widgets::json::JsonLoader;
@@ -364,6 +376,7 @@ fn json_engine_loads_minimal_window() {
     assert!(layout.id("main").is_some(), "window id should be registered");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_loads_button_and_label() {
     use rust_widgets::json::JsonLoader;
@@ -382,6 +395,7 @@ fn json_engine_loads_button_and_label() {
     layout.label("status").expect("label should be findable");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_loads_with_layout_vbox() {
     use rust_widgets::json::JsonLoader;
@@ -400,6 +414,7 @@ fn json_engine_loads_with_layout_vbox() {
     layout.button("btn2").expect("btn2 should exist");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_loads_all_widget_types() {
     use rust_widgets::json::JsonLoader;
@@ -431,6 +446,7 @@ fn json_engine_loads_all_widget_types() {
     assert!(grid_id >= 1);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_event_handler_fires() {
     use rust_widgets::json::{invoke_global_handler, register_global_handler, EventHandlerContext};
@@ -448,6 +464,7 @@ fn json_engine_event_handler_fires() {
     assert!(invoked, "registered handler should be invoked");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_unknown_handler_is_silent() {
     use rust_widgets::json::{invoke_global_handler, EventHandlerContext};
@@ -460,6 +477,7 @@ fn json_engine_unknown_handler_is_silent() {
     assert!(!invoked, "unregistered handler should return false");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_parse_error_returns_error_message() {
     use rust_widgets::json::JsonLoader;
@@ -472,6 +490,7 @@ fn json_engine_parse_error_returns_error_message() {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_widget_by_name_typed() {
     use rust_widgets::json::JsonLoader;
@@ -480,6 +499,7 @@ fn json_engine_widget_by_name_typed() {
     let _btn = layout.button("ok").expect("button should be findable by name");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_widget_by_name_not_found() {
     use rust_widgets::json::JsonLoader;
@@ -489,6 +509,7 @@ fn json_engine_widget_by_name_not_found() {
     assert!(result.is_err(), "non-existent widget should return error");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_groupbox_title_property() {
     use rust_widgets::json::JsonLoader;
@@ -497,6 +518,7 @@ fn json_engine_groupbox_title_property() {
     layout.panel("gb").expect("groupbox should be findable");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_grid_with_spacing() {
     use rust_widgets::json::JsonLoader;
@@ -506,6 +528,7 @@ fn json_engine_grid_with_spacing() {
     assert!(grid_id >= 1, "grid should have a valid id");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn json_engine_convenience_methods() {
     use rust_widgets::json::JsonLoader;
@@ -529,6 +552,7 @@ fn json_engine_convenience_methods() {
     layout.combo_box("combo1").expect("combo_box convenience");
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_app_on_startup_and_shutdown_chaining() {
     use rust_widgets::app::App;
@@ -537,6 +561,7 @@ fn test_app_on_startup_and_shutdown_chaining() {
     // Chaining succeeds without panicking
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_dispatch_trigger_no_callback() {
     use rust_widgets::app::dispatch_trigger;
@@ -546,6 +571,7 @@ fn test_dispatch_trigger_no_callback() {
     assert!(!result);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_all_widget_handle_types_exist() {
     // Compile-time check that all handle types are constructable
@@ -566,6 +592,7 @@ fn test_all_widget_handle_types_exist() {
     let _ = MessageBoxHandle::from_raw(14);
 }
 
+#[cfg(not(feature = "mini"))]
 #[test]
 fn test_new_widgets_module_exports_exist() {
     // Verify that BLUE11 R10 new widgets are accessible from the widget crate root

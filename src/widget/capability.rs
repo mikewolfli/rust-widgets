@@ -106,7 +106,7 @@ pub use access::*;
 
 pub mod registration;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 pub mod tests;
 
 impl Default for WidgetFactory {
@@ -272,10 +272,15 @@ impl WidgetFactory {
     /// Check whether a widget instance matches a given capability's concrete type.
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
         match canonical_name {
+            #[cfg(not(feature = "mini"))]
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
+            #[cfg(not(feature = "mini"))]
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
+            #[cfg(not(feature = "mini"))]
             "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
+            #[cfg(not(feature = "mini"))]
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
+            #[cfg(not(feature = "mini"))]
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             _ => true,
         }

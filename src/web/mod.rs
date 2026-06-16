@@ -29,6 +29,7 @@ mod tests {
     use super::*;
     use crate::core::Rect;
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn test_mod_web_core_types_accessible() {
         let core = web_core::WebViewCore::new(

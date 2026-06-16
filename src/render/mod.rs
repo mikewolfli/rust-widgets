@@ -119,10 +119,10 @@ pub use gpu::{GpuCapability, GpuRenderer};
 #[cfg(feature = "projection")]
 pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionRenderConfig};
 
-/// Web rendering types — available on desktop targets
-#[cfg(feature = "desktop")]
+/// Web rendering types — available on desktop targets (not in mini mode)
+#[cfg(all(feature = "desktop", not(feature = "mini")))]
 pub use web::engine::WebEngine;
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(feature = "mini")))]
 pub use web::view::WebView;
 
 /// Shared helper accessible to surface.rs and backend

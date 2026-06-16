@@ -170,7 +170,8 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::ImageGallery
             | WidgetKind::AudioVisualizer
             | WidgetKind::CameraPreview
-            | WidgetKind::BarcodeScanner => ControlRoutePreference::CustomRequired,
+            | WidgetKind::BarcodeScanner
+            | WidgetKind::GridTable => ControlRoutePreference::CustomRequired,
         }
     }
     #[cfg(feature = "mini")]
@@ -361,6 +362,19 @@ mod tests {
             WidgetKind::CupertinoDatePicker,
             WidgetKind::EditableComboBox,
             WidgetKind::DateRangePicker,
+            // Media/animation widgets (custom painted)
+            WidgetKind::AnimatedImage,
+            WidgetKind::HeroAnimation,
+            WidgetKind::BezierCurveEditor,
+            WidgetKind::LottieWidget,
+            WidgetKind::RiveWidget,
+            WidgetKind::VideoPlayer,
+            WidgetKind::ImageGallery,
+            WidgetKind::AudioVisualizer,
+            WidgetKind::CameraPreview,
+            WidgetKind::BarcodeScanner,
+            // Data table widgets
+            WidgetKind::GridTable,
         ];
         for kind in &custom_required {
             assert_eq!(
@@ -535,6 +549,19 @@ mod tests {
             WidgetKind::MiniChart,
             WidgetKind::ImageView,
             WidgetKind::MiniCanvas,
+            // Media/animation widgets
+            WidgetKind::AnimatedImage,
+            WidgetKind::HeroAnimation,
+            WidgetKind::BezierCurveEditor,
+            WidgetKind::LottieWidget,
+            WidgetKind::RiveWidget,
+            WidgetKind::VideoPlayer,
+            WidgetKind::ImageGallery,
+            WidgetKind::AudioVisualizer,
+            WidgetKind::CameraPreview,
+            WidgetKind::BarcodeScanner,
+            // Data table widgets
+            WidgetKind::GridTable,
         ];
         for kind in &all {
             let preference = route_preference_for_widget_kind(*kind);

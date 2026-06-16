@@ -44,7 +44,7 @@ pub struct Colors {
     /// Disabled-state color.
     pub disabled: Color,
     /// Informational state color.
-    #[serde(default = "default_info_color")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_info_color"))]
     pub info: Color,
 }
 
@@ -111,19 +111,19 @@ pub struct Fonts {
     /// Monospace font token.
     pub monospace: Font,
     /// Caption / footnote font token (small, secondary text).
-    #[serde(default = "default_caption_font")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_caption_font"))]
     pub caption: Font,
     /// Body text font token (default paragraph text).
-    #[serde(default = "default_body_font")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_body_font"))]
     pub body: Font,
     /// Title font token (section or widget titles).
-    #[serde(default = "default_title_font")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_title_font"))]
     pub title: Font,
     /// Headline font token (prominent section headings).
-    #[serde(default = "default_headline_font")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_headline_font"))]
     pub headline: Font,
     /// Display font token (large, decorative text).
-    #[serde(default = "default_display_font")]
+    #[cfg_attr(not(feature = "mini"), serde(default = "default_display_font"))]
     pub display: Font,
 }
 

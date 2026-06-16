@@ -51,7 +51,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.value = value;
-            listeners = inner.listeners.drain().collect();
+            listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
         } // Mutex lock released.
 
         // ── Phase 2: Notify outside lock (safe from re-entrancy) ──

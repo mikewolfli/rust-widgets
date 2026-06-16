@@ -285,15 +285,14 @@ impl Layout for AbsoluteLayout {
             self.widget_ids.push(widget_id);
         }
         // Also add to children so layout() and update() find this widget.
-        if !self.children.iter().any(|(w, _, _)| w.as_ref().map_or(false, |w| w.id() == widget_id))
-        {
+        if !self.children.iter().any(|(w, _, _)| w.as_ref().is_some_and(|w| w.id() == widget_id)) {
             self.children.push((None, AbsolutePosition::new(0, 0), None));
         }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.widget_ids.retain(|id| *id != widget_id);
-        self.children.retain(|(w, _, _)| w.as_ref().map_or(true, |w| w.id() != widget_id));
+        self.children.retain(|(w, _, _)| w.as_ref().is_none_or(|w| w.id() != widget_id));
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -319,7 +318,7 @@ impl Layout for AbsoluteLayout {
 
     fn has_child(&self, id: ObjectId) -> bool {
         self.widget_ids.contains(&id)
-            || self.children.iter().any(|(w, _, _)| w.as_ref().map_or(false, |w| w.id() == id))
+            || self.children.iter().any(|(w, _, _)| w.as_ref().is_some_and(|w| w.id() == id))
     }
 }
 #[cfg(test)]

@@ -119,7 +119,7 @@ impl Platform for WaylandPlatform {
         // on each iteration to dispatch pending native Wayland events.
         // Meanwhile, this thread blocks waiting for the quit signal.
         let mut event_loop = EventLoop::new();
-        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
         if let Some(pump) = create_event_loop_pump() {
             event_loop.set_native_pump(pump);
         }
@@ -947,7 +947,7 @@ pub(crate) struct WaylandSession {
 /// dispatches pending Wayland events through `dispatch_pending()`.
 ///
 /// Returns `None` if the active platform is not Wayland.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
 pub fn create_event_loop_pump() -> Option<Box<dyn Fn() + Send + Sync>> {
     let platform = crate::platform::runtime::get_platform();
     let wayland = platform.as_any().downcast_ref::<WaylandPlatform>()?;

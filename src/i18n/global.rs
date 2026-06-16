@@ -1,5 +1,5 @@
 //! i18n global - global functions and static instances
-use crate::compat::Mutex;
+use crate::compat::{Mutex, MutexGuard};
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
 use crate::i18n::types::TranslationFile;
@@ -86,7 +86,7 @@ pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> S
     }
 }
 /// Get the global i18n manager
-pub fn get_manager() -> std::sync::MutexGuard<'static, Option<I18nManager>> {
+pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>> {
     GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 /// Check and reload all modified translation files

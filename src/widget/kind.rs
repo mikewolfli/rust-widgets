@@ -1,7 +1,11 @@
 //! Widget kind enum — discrete categories supported by the widget model layer.
 
+#[cfg(not(feature = "mini"))]
+use serde::{Deserialize, Serialize};
+
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
 pub enum WidgetKind {
     /// Top-level window.
     Window,
@@ -411,4 +415,7 @@ pub enum WidgetKind {
     /// BarcodeScanner — barcode/QR code scanner viewfinder with detection.
     #[cfg(not(feature = "mini"))]
     BarcodeScanner,
+    /// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
+    #[cfg(not(feature = "mini"))]
+    GridTable,
 }

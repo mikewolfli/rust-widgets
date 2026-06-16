@@ -1,11 +1,15 @@
 use super::types::{LinuxHandleKind, LinuxPlatform};
 use crate::compat::OnceLock;
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use crate::core::MutexExt;
 use crate::core::PlatformFamily;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use gtk::prelude::*;
 use std::sync::atomic::Ordering;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
@@ -315,6 +319,10 @@ impl Platform for LinuxPlatform {
     }
     fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
         self.create_font_dialog_impl(_parent, _x, _y, width, height)
+    }
+
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        Some(&self.ime_bridge)
     }
 
     #[cfg(target_os = "linux")]

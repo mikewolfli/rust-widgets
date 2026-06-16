@@ -181,14 +181,12 @@ impl EmbeddedEngineShared {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn destroy_window(&self, window_id: u64) {
+    pub(crate) fn _destroy_window(&self, window_id: u64) {
         let mut state = self.lock_state();
         state.windows.remove(&window_id);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn destroy_button(&self, button_id: u64) {
+    pub(crate) fn _destroy_button(&self, button_id: u64) {
         let mut state = self.lock_state();
         state.buttons.remove(&button_id);
     }
@@ -380,10 +378,15 @@ mod tests {
     #[test]
     fn embedded_target_fps_clamps() {
         let _guard = test_guard();
+        // Reset to default first — other tests may leave the global state
+        // at a non-default value since the embedded engine is a process-wide singleton.
+        set_embedded_target_fps(DEFAULT_EMBEDDED_TARGET_FPS);
         assert_eq!(set_embedded_target_fps(0), MIN_EMBEDDED_TARGET_FPS);
         assert_eq!(set_embedded_target_fps(999), MAX_EMBEDDED_TARGET_FPS);
         assert_eq!(set_embedded_target_fps(72), 72);
         assert_eq!(embedded_target_fps(), 72);
+        // Clean up for subsequent tests
+        set_embedded_target_fps(DEFAULT_EMBEDDED_TARGET_FPS);
     }
 
     #[test]

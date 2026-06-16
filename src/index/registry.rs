@@ -10,35 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::ObjectId;
 
-/// Kinds of widgets tracked by the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
-pub enum WidgetKind {
-    Window,
-    Button,
-    Label,
-    CheckBox,
-    RadioButton,
-    LineEdit,
-    TextEdit,
-    ComboBox,
-    ListBox,
-    Slider,
-    ScrollBar,
-    ProgressBar,
-    Panel,
-    TabWidget,
-    GridWidget,
-    Frame,
-    Dialog,
-    SpinBox,
-    ListView,
-    ScrollArea,
-    MessageBox,
-    FileDialog,
-    ColorDialog,
-    FontDialog,
-}
+pub use crate::widget::WidgetKind;
 
 /// Metadata stored for each registered widget.
 #[derive(Debug, Clone)]

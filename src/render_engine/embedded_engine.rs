@@ -2,6 +2,7 @@
 
 use super::embedded::embedded_engine_shared;
 use super::engine_trait::RenderEngine;
+#[cfg(not(feature = "mini"))]
 use super::native::NativeRenderEngine;
 use crate::core::RuntimeProfile;
 
@@ -61,6 +62,7 @@ impl RenderEngine for EmbeddedRenderEngine {
 }
 
 /// Build default engine for compile-time profile.
+#[cfg(not(feature = "mini"))]
 pub fn default_render_engine() -> Box<dyn RenderEngine> {
     if cfg!(feature = "embedded") {
         Box::new(EmbeddedRenderEngine::new())
@@ -68,8 +70,13 @@ pub fn default_render_engine() -> Box<dyn RenderEngine> {
         Box::new(NativeRenderEngine::new())
     }
 }
+/// Default render engine in mini mode uses the embedded engine.
+#[cfg(feature = "mini")]
+pub fn default_render_engine() -> Box<dyn RenderEngine> {
+    Box::new(EmbeddedRenderEngine::new())
+}
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use super::*;
     use crate::render_engine::embedded::{set_embedded_target_fps, submit_embedded_task};

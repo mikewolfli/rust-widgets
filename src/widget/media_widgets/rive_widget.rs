@@ -5,7 +5,7 @@
 //! signal when the animation finishes. Animated shapes are rendered
 //! based on the animation progress value.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -121,14 +121,11 @@ impl RiveAnimatedShape {
 #[derive(Debug, Clone)]
 struct RiveAnimationData {
     /// Name of the animation.
-    #[allow(dead_code)]
-    name: String,
+    _name: String,
     /// Duration of the animation in frames.
-    #[allow(dead_code)]
-    duration_frames: u32,
+    _duration_frames: u32,
     /// Frame rate.
-    #[allow(dead_code)]
-    frame_rate: f32,
+    _frame_rate: f32,
     /// Shapes in this animation.
     shapes: Vec<RiveAnimatedShape>,
 }
@@ -136,8 +133,8 @@ struct RiveAnimationData {
 impl RiveAnimationData {
     /// Parse from a JSON value that describes the animation.
     fn from_json(name: &str, val: &serde_json::Value) -> Self {
-        let duration_frames = val.get("duration").and_then(|v| v.as_u64()).unwrap_or(60) as u32;
-        let frame_rate = val.get("fr").and_then(|v| v.as_f64()).unwrap_or(60.0) as f32;
+        let _duration_frames = val.get("duration").and_then(|v| v.as_u64()).unwrap_or(60) as u32;
+        let _frame_rate = val.get("fr").and_then(|v| v.as_f64()).unwrap_or(60.0) as f32;
 
         let shapes = if let Some(shapes_arr) = val.get("shapes").and_then(|v| v.as_array()) {
             shapes_arr
@@ -220,15 +217,15 @@ impl RiveAnimationData {
             ]
         };
 
-        RiveAnimationData { name: name.to_string(), duration_frames, frame_rate, shapes }
+        Self { _name: name.to_string(), _duration_frames, _frame_rate, shapes }
     }
 
     /// Create default animation data for a named animation with no JSON.
     fn default_for(name: &str) -> Self {
         RiveAnimationData {
-            name: name.to_string(),
-            duration_frames: 60,
-            frame_rate: 60.0,
+            _name: name.to_string(),
+            _duration_frames: 60,
+            _frame_rate: 60.0,
             shapes: vec![
                 RiveAnimatedShape {
                     shape_type: RiveShapeType::Rectangle,
@@ -634,7 +631,13 @@ impl Draw for RiveWidget {
             name_metrics.height as u32 + 4,
         );
         context.fill_rounded_rect(name_bg, 3, Color::rgba(0, 0, 0, 50));
-        context.draw_text(Point::new(name_x, name_y), &name_text, &font, Color::WHITE, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(name_x, name_y),
+            &name_text,
+            &font,
+            Color::WHITE,
+            HorizontalAlignment::Left,
+        );
 
         // Draw progress percentage at top-right.
         let progress_text = format!("{:.0}%", self.animation_progress * 100.0);
@@ -644,7 +647,13 @@ impl Draw for RiveWidget {
         let p_bg =
             Rect::new(px - 2, rect.y + 1, p_metrics.width as u32 + 8, p_metrics.height as u32 + 4);
         context.fill_rounded_rect(p_bg, 3, Color::rgba(0, 0, 0, 50));
-        context.draw_text(Point::new(px, py), &progress_text, &font, Color::WHITE, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(px, py),
+            &progress_text,
+            &font,
+            Color::WHITE,
+            HorizontalAlignment::Left,
+        );
 
         // Play/pause icon.
         let status = if self.is_playing { "▶" } else { "⏸" };

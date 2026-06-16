@@ -336,7 +336,7 @@ mod tests {
         let mut bw = make_base();
         assert!(bw.tooltip().is_empty());
 
-        bw.set_tooltip("Help text".to_string());
+        bw.set_tooltip(crate::compat::into_mini("Help text"));
         assert_eq!(bw.tooltip(), "Help text");
     }
 

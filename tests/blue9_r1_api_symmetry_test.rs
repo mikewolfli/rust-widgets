@@ -1,3 +1,5 @@
+#![cfg(not(feature = "mini"))]
+
 use rust_widgets::core::Rect;
 use rust_widgets::widget::menu_toolbar::menu::MenuItem;
 use rust_widgets::{BaseWidget, ListModel, ListView, Menu, MenuBar, RibbonBar, TableModel};

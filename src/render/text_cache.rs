@@ -91,7 +91,7 @@ impl TextCache {
     pub fn get(&mut self, key: &TextKey) -> Option<&CachedText> {
         self.access_counter += 1;
         // Check expiry with an immutable lookup first
-        let needs_removal = self.cache.get(key).map_or(false, |entry| self.is_expired(entry));
+        let needs_removal = self.cache.get(key).is_some_and(|entry| self.is_expired(entry));
         if needs_removal {
             self.cache.remove(key);
             self.misses += 1;
@@ -114,7 +114,7 @@ impl TextCache {
     pub fn get_mut(&mut self, key: &TextKey) -> Option<&mut CachedText> {
         self.access_counter += 1;
         // Check expiry with an immutable lookup first
-        let needs_removal = self.cache.get(key).map_or(false, |entry| self.is_expired(entry));
+        let needs_removal = self.cache.get(key).is_some_and(|entry| self.is_expired(entry));
         if needs_removal {
             self.cache.remove(key);
             self.misses += 1;

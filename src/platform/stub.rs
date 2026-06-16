@@ -49,6 +49,8 @@ pub struct StubPlatform {
     list_box_items: Mutex<HashMap<ObjectId, Vec<String>>>,
     /// In-memory list-box selected index by logical list widget id.
     list_box_selection: Mutex<HashMap<ObjectId, Option<usize>>>,
+    /// Platform IME bridge for testing.
+    pub(crate) ime_bridge: crate::platform::ime::MockImeBridge,
 }
 
 impl StubPlatform {
@@ -63,6 +65,7 @@ impl StubPlatform {
             combo_box_selection: Mutex::new(HashMap::new()),
             list_box_items: Mutex::new(HashMap::new()),
             list_box_selection: Mutex::new(HashMap::new()),
+            ime_bridge: crate::platform::ime::MockImeBridge::new(),
         }
     }
 
@@ -648,6 +651,10 @@ impl Platform for StubPlatform {
 
     fn get_clipboard_text(&self) -> String {
         self.state.clipboard_text()
+    }
+
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        Some(&self.ime_bridge)
     }
 
     fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {

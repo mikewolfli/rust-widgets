@@ -1,5 +1,5 @@
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -26,6 +26,20 @@ pub struct TextArea {
     focused: bool,
     /// Signal emitted when text changes.
     pub changed: GenericSignal,
+}
+
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let len = s.len();
+    if index >= len {
+        return len;
+    }
+    let bytes = s.as_bytes();
+    // Find the last UTF-8 start byte at or before `index`
+    let mut i = index;
+    while i > 0 && bytes[i] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    i
 }
 
 impl TextArea {
@@ -65,7 +79,7 @@ impl TextArea {
         let max = self.max_length;
         self.text = if max > 0 && text.len() > max {
             // Use floor_char_boundary to avoid splitting a multi-byte UTF-8 char
-            let boundary = text.floor_char_boundary(max);
+            let boundary = floor_char_boundary(&text, max);
             text[..boundary].to_string()
         } else {
             text
@@ -85,7 +99,7 @@ impl TextArea {
         if self.max_length > 0 && self.text.len() >= self.max_length {
             return;
         }
-        let boundary = self.text.floor_char_boundary(self.cursor_pos);
+        let boundary = floor_char_boundary(&self.text, self.cursor_pos);
         self.cursor_pos = boundary;
         self.text.insert(self.cursor_pos, ch);
         self.cursor_pos += ch.len_utf8();

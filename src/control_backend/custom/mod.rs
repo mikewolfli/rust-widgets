@@ -1,6 +1,6 @@
+use crate::compat::Mutex;
 use crate::control_backend::types::CustomControlState;
 use crate::core::ObjectId;
-use std::sync::Mutex;
 
 /// Custom-painted control backend scaffold.
 pub struct CustomPaintControlBackend {
