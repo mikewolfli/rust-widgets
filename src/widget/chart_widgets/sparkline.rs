@@ -4,7 +4,7 @@
 //! to show trends or patterns in a compact space. This widget draws a mini
 //! line connecting data values with an optional last-point highlight.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -157,6 +157,10 @@ impl Widget for Sparkline {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(200, 40)
     }
 }
 

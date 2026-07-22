@@ -217,6 +217,11 @@ impl Widget for Menu {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(200, 200)
+    }
+
     fn show(&mut self) {
         self.about_to_show.emit();
         self.base.show();

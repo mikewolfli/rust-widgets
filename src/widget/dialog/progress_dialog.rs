@@ -1,5 +1,5 @@
 //! Progress dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -66,42 +66,52 @@ impl ProgressDialog {
     }
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
+        self.base.request_redraw();
     }
     pub fn set_label_text(&mut self, t: impl Into<String>) {
         self.label_text = t.into();
+        self.base.request_redraw();
     }
     pub fn set_minimum(&mut self, min: i32) {
         self.minimum = min;
+        self.base.request_redraw();
     }
     pub fn set_maximum(&mut self, max: i32) {
         self.maximum = max;
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, min: i32, max: i32) {
         self.minimum = min;
         self.maximum = max;
+        self.base.request_redraw();
     }
     pub fn set_auto_close(&mut self, v: bool) {
         self.auto_close = v;
+        self.base.request_redraw();
     }
     pub fn set_auto_reset(&mut self, v: bool) {
         self.auto_reset = v;
+        self.base.request_redraw();
     }
     pub fn set_cancel_button_text(&mut self, t: impl Into<String>) {
         self.cancel_button_text = t.into();
+        self.base.request_redraw();
     }
     pub fn is_modal(&self) -> bool {
         self.modal
     }
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+        self.base.request_redraw();
     }
     pub fn set_value(&mut self, value: i32) {
         self.value = value.clamp(self.minimum, self.maximum);
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }
+        self.base.request_redraw();
     }
     pub fn reset(&mut self) {
         self.value = self.minimum;
@@ -127,6 +137,10 @@ impl Widget for ProgressDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(350, 120)
     }
 }
 impl EventHandler for ProgressDialog {

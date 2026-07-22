@@ -93,6 +93,7 @@ impl Action {
     /// Sets the inner [`CmdAction`]'s id.
     pub fn set_command_id(&mut self, id: impl Into<String>) {
         self.cmd.id = id.into();
+        self.base.request_redraw();
     }
     /// Clears the link to the command action.
     pub fn clear_command_id(&mut self) {
@@ -149,19 +150,23 @@ impl Action {
         self.text = text.into();
         self.cmd.text = self.text.clone();
         self.changed.emit();
+        self.base.request_redraw();
     }
     pub fn set_icon_text(&mut self, text: impl Into<String>) {
         self.icon_text = text.into();
         self.changed.emit();
+        self.base.request_redraw();
     }
     pub fn set_shortcut(&mut self, shortcut: impl Into<String>) {
         self.shortcut = shortcut.into();
         self.changed.emit();
+        self.base.request_redraw();
     }
     /// Delegates to inner [`CmdAction::set_checkable`].
     pub fn set_checkable(&mut self, checkable: bool) {
         self.cmd.set_checkable(checkable);
         self.changed.emit();
+        self.base.request_redraw();
     }
     /// Delegates to inner [`CmdAction::set_checked`].
     pub fn set_checked(&mut self, checked: bool) {
@@ -171,6 +176,7 @@ impl Action {
             self.toggled.emit(self.cmd.is_checked());
             self.changed.emit();
         }
+        self.base.request_redraw();
     }
     /// Delegates to inner [`CmdAction::trigger`] and emits widget `triggered`.
     pub fn trigger(&mut self) {
@@ -187,6 +193,10 @@ impl Widget for Action {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(100, 28)
     }
 }
 impl EventHandler for Action {

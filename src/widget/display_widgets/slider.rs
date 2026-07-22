@@ -102,6 +102,7 @@ impl Slider {
         self.value = clamped;
         self.slider_position = clamped;
         self.value_changed.emit(self.value);
+        self.base.request_redraw();
     }
     /// Returns single step value.
     pub fn single_step(&self) -> i32 {
@@ -110,6 +111,7 @@ impl Slider {
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
+        self.base.request_redraw();
     }
     /// Returns page step value.
     pub fn page_step(&self) -> i32 {
@@ -118,6 +120,7 @@ impl Slider {
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
+        self.base.request_redraw();
     }
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
@@ -126,6 +129,7 @@ impl Slider {
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
+        self.base.request_redraw();
     }
     /// Returns tick position.
     pub fn tick_position(&self) -> TickPosition {
@@ -134,6 +138,7 @@ impl Slider {
     /// Sets tick position.
     pub fn set_tick_position(&mut self, position: TickPosition) {
         self.tick_position = position;
+        self.base.request_redraw();
     }
     /// Returns tick interval.
     pub fn tick_interval(&self) -> i32 {
@@ -142,6 +147,7 @@ impl Slider {
     /// Sets tick interval.
     pub fn set_tick_interval(&mut self, interval: i32) {
         self.tick_interval = interval.max(0);
+        self.base.request_redraw();
     }
     /// Returns whether tracking is enabled.
     pub fn tracking(&self) -> bool {
@@ -1046,10 +1052,8 @@ mod tests {
     #[test]
     fn widget_style_roundtrip() {
         let mut s = make_slider();
-        let style = WidgetStyle {
-            background_color: Some(Color::rgb(255, 0, 0)),
-            ..WidgetStyle::default()
-        };
+        let style =
+            WidgetStyle { background_color: Some(Color::rgb(255, 0, 0)), ..WidgetStyle::default() };
         s.set_style(style.clone());
         assert_eq!(s.style().background_color, Some(Color::rgb(255, 0, 0)));
     }

@@ -122,6 +122,7 @@ impl TabWidget {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
@@ -177,6 +178,7 @@ impl TabWidget {
         if index < self.tabs.len() && self.current_index != index {
             self.current_index = index;
             self.current_changed.emit(index);
+            self.base.request_redraw();
         }
     }
     /// Returns current tab widget.
@@ -200,6 +202,7 @@ impl TabWidget {
         if let Some(tab) = self.tabs.get_mut(index) {
             tab.title = text;
         }
+        self.base.request_redraw();
     }
     /// Returns tab position.
     pub fn tab_position(&self) -> TabPosition {
@@ -208,6 +211,7 @@ impl TabWidget {
     /// Sets tab position.
     pub fn set_tab_position(&mut self, position: TabPosition) {
         self.tab_position = position;
+        self.base.request_redraw();
     }
     /// Returns tab shape.
     pub fn tab_shape(&self) -> TabShape {
@@ -216,6 +220,7 @@ impl TabWidget {
     /// Sets tab shape.
     pub fn set_tab_shape(&mut self, shape: TabShape) {
         self.tab_shape = shape;
+        self.base.request_redraw();
     }
     /// Returns whether tabs are closable.
     pub fn closable(&self) -> bool {
@@ -224,6 +229,7 @@ impl TabWidget {
     /// Sets closable state.
     pub fn set_closable(&mut self, closable: bool) {
         self.closable = closable;
+        self.base.request_redraw();
     }
     /// Returns whether tabs are movable.
     pub fn movable(&self) -> bool {
@@ -232,6 +238,7 @@ impl TabWidget {
     /// Sets movable state.
     pub fn set_movable(&mut self, movable: bool) {
         self.movable = movable;
+        self.base.request_redraw();
     }
     /// Returns tab rectangle at index.
     fn tab_rect(&self, index: usize) -> Option<Rect> {
@@ -310,6 +317,10 @@ impl Widget for TabWidget {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 200)
     }
 }
 impl EventHandler for TabWidget {
@@ -399,11 +410,8 @@ impl Draw for TabWidget {
                     }
                 };
                 // Draw tab text
-                let text_color = if !is_enabled {
-                    Color::rgb(150, 150, 150)
-                } else {
-                    Color::rgb(0, 0, 0)
-                };
+                let text_color =
+                    if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
                 context.draw_text(
                     Point::new(
                         tab_rect.x + tab_rect.width as i32 / 2,

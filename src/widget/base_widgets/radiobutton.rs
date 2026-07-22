@@ -1,5 +1,5 @@
 //! Radio button widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -80,6 +80,11 @@ impl Widget for RadioButton {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        let text_w = self.text().len() as u32 * 8 + 24;
+        Size::new(text_w.max(75), 24)
     }
 }
 impl EventHandler for RadioButton {

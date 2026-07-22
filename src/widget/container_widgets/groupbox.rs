@@ -1,5 +1,5 @@
 //! Group box widget.
-use crate::core::{HorizontalAlignment, Alignment, Color, Font, Point, Rect};
+use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -39,6 +39,7 @@ impl GroupBox {
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
+        self.base.request_redraw();
     }
     /// Returns alignment.
     pub fn alignment(&self) -> Alignment {
@@ -47,6 +48,7 @@ impl GroupBox {
     /// Sets alignment.
     pub fn set_alignment(&mut self, alignment: Alignment) {
         self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns whether group box is checkable.
     pub fn is_checkable(&self) -> bool {
@@ -116,6 +118,10 @@ impl Widget for GroupBox {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(200, 150)
     }
 }
 impl EventHandler for GroupBox {

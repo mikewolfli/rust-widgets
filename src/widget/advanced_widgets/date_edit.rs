@@ -1,5 +1,5 @@
 //! Date editor widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -103,25 +103,31 @@ impl DateEdit {
         if date.is_valid() && date >= self.minimum && date <= self.maximum && self.date != date {
             self.date = date;
             self.date_changed.emit(date);
+            self.base.request_redraw();
         }
     }
     pub fn set_minimum_date(&mut self, date: Date) {
         self.minimum = date;
+        self.base.request_redraw();
     }
     pub fn set_maximum_date(&mut self, date: Date) {
         self.maximum = date;
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum dates in one call.
     /// This is a convenience writer; query bounds via `minimum_date()` and `maximum_date()`.
     pub fn set_date_range(&mut self, min: Date, max: Date) {
         self.minimum = min;
         self.maximum = max;
+        self.base.request_redraw();
     }
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
+        self.base.request_redraw();
     }
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
+        self.base.request_redraw();
     }
     pub fn step_up(&mut self) {
         let mut d = self.date;
@@ -163,6 +169,10 @@ impl Widget for DateEdit {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(120, 28)
     }
 }
 impl EventHandler for DateEdit {

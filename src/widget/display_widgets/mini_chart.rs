@@ -57,6 +57,7 @@ impl MiniChart {
     /// Sets the chart type (Line or Bar).
     pub fn set_chart_type(&mut self, t: ChartType) {
         self.chart_type = t;
+        self.base.request_redraw();
     }
 
     /// Returns the current chart type.
@@ -67,6 +68,7 @@ impl MiniChart {
     /// Sets the chart data points.
     pub fn set_data(&mut self, data: Vec<DataPoint>) {
         self.data = data;
+        self.base.request_redraw();
     }
 
     /// Returns the current data points.
@@ -79,6 +81,7 @@ impl MiniChart {
         let (a, b) = if min <= max { (min, max) } else { (max, min) };
         self.min_value = a;
         self.max_value = b;
+        self.base.request_redraw();
     }
 }
 

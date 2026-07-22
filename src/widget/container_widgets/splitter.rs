@@ -53,6 +53,7 @@ impl Splitter {
         }
         self.layout.set_orientation(orientation);
         self.orientation_changed.emit(orientation);
+        self.base.request_redraw();
     }
     /// Returns pane count.
     pub fn pane_count(&self) -> usize {
@@ -92,6 +93,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.base.request_redraw();
         true
     }
     /// Sets all pane ratios.
@@ -102,6 +104,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.base.request_redraw();
         true
     }
     /// Normalizes ratios to sum to 1.
@@ -112,6 +115,7 @@ impl Splitter {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
 }
 impl Widget for Splitter {
@@ -120,6 +124,10 @@ impl Widget for Splitter {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 200)
     }
 }
 impl Draw for Splitter {

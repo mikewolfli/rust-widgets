@@ -213,6 +213,10 @@ impl Widget for DateRangePicker {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(500, 300)
+    }
 }
 
 impl Draw for DateRangePicker {

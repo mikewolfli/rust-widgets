@@ -31,9 +31,13 @@ fn c_string_to_jstring(env: &mut JNIEnv<'_>, ptr: *const std::ffi::c_char) -> js
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: The caller guarantees `ptr` is a valid NUL-terminated C string
+    // obtained from CString::into_raw() or a compatible FFI source.
     let rust_str = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
     // Free the C string that was allocated by the C ABI layer
     if !ptr.is_null() {
+        // SAFETY: `ptr` was obtained from CString::into_raw() in the C ABI layer,
+        // so rw_free_string will reclaim and deallocate it correctly.
         unsafe {
             crate::bindings::rw_free_string(ptr as *mut std::ffi::c_char);
         }

@@ -17,29 +17,96 @@ extern "C" {
 #define RW_ERROR_NOT_IMPLEMENTED                      1
 #define RW_ERROR_UNSUPPORTED_OPERATION                2
 #define RW_ERROR_INVALID_ARGUMENT                     3
+#define RW_ERROR_GENERAL                              999
 #define RW_ERROR_NULL_POINTER                         4
 #define RW_ERROR_OUT_OF_MEMORY                        5
 #define RW_ERROR_LOCK_POISONED                        6
+#define RW_ERROR_EW_SUCCESS                           0
+#define RW_ERROR_EW_NOT_IMPLEMENTED                   1
+#define RW_ERROR_EW_UNSUPPORTED_OPERATION             2
+#define RW_ERROR_EW_INVALID_ARGUMENT                  3
+#define RW_ERROR_EW_GENERAL                           999
+#define RW_ERROR_EW_NULL_POINTER                      4
+#define RW_ERROR_EW_OUT_OF_MEMORY                     5
+#define RW_ERROR_EW_LOCK_POISONED                     6
 
 /* --- Widget --- */
 #define RW_ERROR_WIDGET_BASE_NOT_IMPL                 100
 #define RW_ERROR_WIDGET_NOT_FOUND                     101
 #define RW_ERROR_WIDGET_INVALID_STATE                 102
 #define RW_ERROR_WIDGET_DEPRECATED                    103
+#define RW_ERROR_EW_WIDGET_BASE_NOT_IMPL              100
+#define RW_ERROR_EW_WIDGET_NOT_FOUND                  101
+#define RW_ERROR_EW_WIDGET_INVALID_STATE              102
+#define RW_ERROR_EW_WIDGET_DEPRECATED                 103
 
 /* --- Platform --- */
 #define RW_ERROR_PLATFORM_UNSUPPORTED                 200
 #define RW_ERROR_PLATFORM_INIT_FAILED                 201
 #define RW_ERROR_CLIPBOARD_FAILED                     202
 #define RW_ERROR_DRAG_DROP_FAILED                     203
+#define RW_ERROR_EW_PLATFORM_UNSUPPORTED              200
+#define RW_ERROR_EW_PLATFORM_INIT_FAILED              201
+#define RW_ERROR_EW_CLIPBOARD_FAILED                  202
+#define RW_ERROR_EW_DRAG_DROP_FAILED                  203
 
 /* --- Render --- */
 #define RW_ERROR_RENDER_CONTEXT_INVALID               300
 #define RW_ERROR_RENDER_PIPELINE_FAILED               301
+#define RW_ERROR_EW_RENDER_CONTEXT_INVALID            300
+#define RW_ERROR_EW_RENDER_PIPELINE_FAILED            301
 
 /* --- I/O --- */
 #define RW_ERROR_I18N_LOAD_FAILED                     400
 #define RW_ERROR_FILE_NOT_FOUND                       401
+#define RW_ERROR_EW_I18N_LOAD_FAILED                  400
+#define RW_ERROR_EW_FILE_NOT_FOUND                    401
+
+/* --- EW aliases --- */
+#define EW_ERROR_SUCCESS                              RW_ERROR_SUCCESS
+#define EW_ERROR_NOT_IMPLEMENTED                      RW_ERROR_NOT_IMPLEMENTED
+#define EW_ERROR_UNSUPPORTED_OPERATION                RW_ERROR_UNSUPPORTED_OPERATION
+#define EW_ERROR_INVALID_ARGUMENT                     RW_ERROR_INVALID_ARGUMENT
+#define EW_ERROR_GENERAL                              RW_ERROR_GENERAL
+#define EW_ERROR_NULL_POINTER                         RW_ERROR_NULL_POINTER
+#define EW_ERROR_OUT_OF_MEMORY                        RW_ERROR_OUT_OF_MEMORY
+#define EW_ERROR_LOCK_POISONED                        RW_ERROR_LOCK_POISONED
+#define EW_ERROR_EW_SUCCESS                           RW_ERROR_EW_SUCCESS
+#define EW_ERROR_EW_NOT_IMPLEMENTED                   RW_ERROR_EW_NOT_IMPLEMENTED
+#define EW_ERROR_EW_UNSUPPORTED_OPERATION             RW_ERROR_EW_UNSUPPORTED_OPERATION
+#define EW_ERROR_EW_INVALID_ARGUMENT                  RW_ERROR_EW_INVALID_ARGUMENT
+#define EW_ERROR_EW_GENERAL                           RW_ERROR_EW_GENERAL
+#define EW_ERROR_EW_NULL_POINTER                      RW_ERROR_EW_NULL_POINTER
+#define EW_ERROR_EW_OUT_OF_MEMORY                     RW_ERROR_EW_OUT_OF_MEMORY
+#define EW_ERROR_EW_LOCK_POISONED                     RW_ERROR_EW_LOCK_POISONED
+
+#define EW_ERROR_WIDGET_BASE_NOT_IMPL                 RW_ERROR_WIDGET_BASE_NOT_IMPL
+#define EW_ERROR_WIDGET_NOT_FOUND                     RW_ERROR_WIDGET_NOT_FOUND
+#define EW_ERROR_WIDGET_INVALID_STATE                 RW_ERROR_WIDGET_INVALID_STATE
+#define EW_ERROR_WIDGET_DEPRECATED                    RW_ERROR_WIDGET_DEPRECATED
+#define EW_ERROR_EW_WIDGET_BASE_NOT_IMPL              RW_ERROR_EW_WIDGET_BASE_NOT_IMPL
+#define EW_ERROR_EW_WIDGET_NOT_FOUND                  RW_ERROR_EW_WIDGET_NOT_FOUND
+#define EW_ERROR_EW_WIDGET_INVALID_STATE              RW_ERROR_EW_WIDGET_INVALID_STATE
+#define EW_ERROR_EW_WIDGET_DEPRECATED                 RW_ERROR_EW_WIDGET_DEPRECATED
+
+#define EW_ERROR_PLATFORM_UNSUPPORTED                 RW_ERROR_PLATFORM_UNSUPPORTED
+#define EW_ERROR_PLATFORM_INIT_FAILED                 RW_ERROR_PLATFORM_INIT_FAILED
+#define EW_ERROR_CLIPBOARD_FAILED                     RW_ERROR_CLIPBOARD_FAILED
+#define EW_ERROR_DRAG_DROP_FAILED                     RW_ERROR_DRAG_DROP_FAILED
+#define EW_ERROR_EW_PLATFORM_UNSUPPORTED              RW_ERROR_EW_PLATFORM_UNSUPPORTED
+#define EW_ERROR_EW_PLATFORM_INIT_FAILED              RW_ERROR_EW_PLATFORM_INIT_FAILED
+#define EW_ERROR_EW_CLIPBOARD_FAILED                  RW_ERROR_EW_CLIPBOARD_FAILED
+#define EW_ERROR_EW_DRAG_DROP_FAILED                  RW_ERROR_EW_DRAG_DROP_FAILED
+
+#define EW_ERROR_RENDER_CONTEXT_INVALID               RW_ERROR_RENDER_CONTEXT_INVALID
+#define EW_ERROR_RENDER_PIPELINE_FAILED               RW_ERROR_RENDER_PIPELINE_FAILED
+#define EW_ERROR_EW_RENDER_CONTEXT_INVALID            RW_ERROR_EW_RENDER_CONTEXT_INVALID
+#define EW_ERROR_EW_RENDER_PIPELINE_FAILED            RW_ERROR_EW_RENDER_PIPELINE_FAILED
+
+#define EW_ERROR_I18N_LOAD_FAILED                     RW_ERROR_I18N_LOAD_FAILED
+#define EW_ERROR_FILE_NOT_FOUND                       RW_ERROR_FILE_NOT_FOUND
+#define EW_ERROR_EW_I18N_LOAD_FAILED                  RW_ERROR_EW_I18N_LOAD_FAILED
+#define EW_ERROR_EW_FILE_NOT_FOUND                    RW_ERROR_EW_FILE_NOT_FOUND
 
 
 /* ------------------------------------------------------------------ */

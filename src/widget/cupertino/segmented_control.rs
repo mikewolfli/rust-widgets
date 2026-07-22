@@ -4,7 +4,7 @@
 //! segment has a sliding highlight. Clicking a segment selects it and emits
 //! a `value_changed` signal with the segment index.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -89,6 +89,10 @@ impl Widget for CupertinoSegmentedControl {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 32)
     }
 
     fn kind(&self) -> WidgetKind {

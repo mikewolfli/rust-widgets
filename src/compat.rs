@@ -382,16 +382,22 @@ impl<T> OnceLock<T> {
     pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
         if !self.initialized.load(core::sync::atomic::Ordering::Acquire) {
             let val = f();
+            // SAFETY: Under mini (single-threaded), no concurrent access is possible.
+            // The Acquire-Release ordering on `initialized` guarantees that the write
+            // in `get_or_init` is visible to any subsequent `get` call.
             unsafe {
                 (*self.data.get()).write(val);
             }
             self.initialized.store(true, core::sync::atomic::Ordering::Release);
         }
+        // SAFETY: Once `initialized` is true, the data has been written and will not
+        // be mutated again. The Acquire ordering ensures we see the write above.
         unsafe { (*self.data.get()).assume_init_ref() }
     }
 
     pub fn get(&self) -> Option<&T> {
         if self.initialized.load(core::sync::atomic::Ordering::Acquire) {
+            // SAFETY: Same as get_or_init — once initialized, data is immutable.
             Some(unsafe { (*self.data.get()).assume_init_ref() })
         } else {
             None

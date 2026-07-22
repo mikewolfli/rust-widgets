@@ -1,5 +1,5 @@
 //! Time editor widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -95,22 +95,27 @@ impl TimeEdit {
         if time.is_valid() && time >= self.minimum && time <= self.maximum && self.time != time {
             self.time = time;
             self.time_changed.emit(time);
+            self.base.request_redraw();
         }
     }
     pub fn set_minimum_time(&mut self, time: Time) {
         self.minimum = time;
+        self.base.request_redraw();
     }
     pub fn set_maximum_time(&mut self, time: Time) {
         self.maximum = time;
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum times in one call.
     /// This is a convenience writer; query bounds via `minimum_time()` and `maximum_time()`.
     pub fn set_time_range(&mut self, min: Time, max: Time) {
         self.minimum = min;
         self.maximum = max;
+        self.base.request_redraw();
     }
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
+        self.base.request_redraw();
     }
     pub fn step_up(&mut self) {
         let mut t = self.time;
@@ -156,6 +161,10 @@ impl Widget for TimeEdit {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(100, 28)
     }
 }
 impl EventHandler for TimeEdit {

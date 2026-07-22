@@ -42,57 +42,79 @@ impl ErrorId {
     pub const UNSUPPORTED_OPERATION: Self = Self(2);
     pub const INVALID_ARGUMENT: Self = Self(3);
     pub const GENERAL: Self = Self(999);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const NULL_POINTER: Self = Self(4);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const OUT_OF_MEMORY: Self = Self(5);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const LOCK_POISONED: Self = Self(6);
 
     // --- Widget (100–199) ---
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const WIDGET_NOT_FOUND: Self = Self(101);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const WIDGET_INVALID_STATE: Self = Self(102);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const WIDGET_DEPRECATED: Self = Self(103);
 
     // --- Platform (200–299) ---
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const PLATFORM_UNSUPPORTED: Self = Self(200);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const PLATFORM_INIT_FAILED: Self = Self(201);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const CLIPBOARD_FAILED: Self = Self(202);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const DRAG_DROP_FAILED: Self = Self(203);
 
     // --- Render (300–399) ---
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const RENDER_CONTEXT_INVALID: Self = Self(300);
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const RENDER_PIPELINE_FAILED: Self = Self(301);
 
     // --- I/O (400–499) ---
-    /// Reserved — not yet wired.
-    #[deprecated(note = "planned for future use; not yet wired into any code path")]
+    /// Reserved — not yet wired into any code path.
     pub const I18N_LOAD_FAILED: Self = Self(400);
     pub const FILE_NOT_FOUND: Self = Self(401);
+
+    // --- EW alias constants (compatibility) ---
+    pub const EW_SUCCESS: Self = Self(0);
+    pub const EW_NOT_IMPLEMENTED: Self = Self(1);
+    pub const EW_UNSUPPORTED_OPERATION: Self = Self(2);
+    pub const EW_INVALID_ARGUMENT: Self = Self(3);
+    pub const EW_GENERAL: Self = Self(999);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_NULL_POINTER: Self = Self(4);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_OUT_OF_MEMORY: Self = Self(5);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_LOCK_POISONED: Self = Self(6);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_WIDGET_BASE_NOT_IMPL: Self = Self(100);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_WIDGET_NOT_FOUND: Self = Self(101);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_WIDGET_INVALID_STATE: Self = Self(102);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_WIDGET_DEPRECATED: Self = Self(103);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_PLATFORM_UNSUPPORTED: Self = Self(200);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_PLATFORM_INIT_FAILED: Self = Self(201);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_CLIPBOARD_FAILED: Self = Self(202);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_DRAG_DROP_FAILED: Self = Self(203);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_RENDER_CONTEXT_INVALID: Self = Self(300);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_RENDER_PIPELINE_FAILED: Self = Self(301);
+    /// Reserved — not yet wired into any code path.
+    pub const EW_I18N_LOAD_FAILED: Self = Self(400);
+    pub const EW_FILE_NOT_FOUND: Self = Self(401);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +170,7 @@ impl RwError {
 
 impl fmt::Display for RwError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[RW-{:03}] {}", self.id.0, self.message)
+        write!(f, "[EW-{:03}] {}", self.id.0, self.message)
     }
 }
 
@@ -235,5 +257,18 @@ mod tests {
     fn rw_error_msg_not_success() {
         let e = RwError::msg("test");
         assert_ne!(e.id, ErrorId::SUCCESS);
+    }
+
+    #[test]
+    fn ew_error_alias_values_match() {
+        assert_eq!(ErrorId::EW_SUCCESS.0, ErrorId::SUCCESS.0);
+        assert_eq!(ErrorId::EW_INVALID_ARGUMENT.0, ErrorId::INVALID_ARGUMENT.0);
+        assert_eq!(ErrorId::EW_FILE_NOT_FOUND.0, ErrorId::FILE_NOT_FOUND.0);
+    }
+
+    #[test]
+    fn rw_error_display_prefix_uses_ew() {
+        let err = RwError::new(ErrorId::INVALID_ARGUMENT, "bad input");
+        assert!(err.to_string().starts_with("[EW-"));
     }
 }

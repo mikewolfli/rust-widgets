@@ -4,7 +4,7 @@
 //! expands to show a scrollable list of options. Selecting an item emits
 //! a `changed` signal and collapses the list.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -61,6 +61,7 @@ impl Dropdown {
         self.items = new_items;
         self.selected_index = 0;
         self.changed.emit();
+        self.base.request_redraw();
     }
 
     /// Returns the currently-selected index (may be out of range if the list
@@ -74,14 +75,12 @@ impl Dropdown {
     /// Emits the `changed` signal whenever the index actually changes or is
     /// clamped to a different value.
     pub fn set_selected_index(&mut self, index: usize) {
-        let clamped = if self.items.is_empty() {
-            0
-        } else {
-            index.min(self.items.len().saturating_sub(1))
-        };
+        let clamped =
+            if self.items.is_empty() { 0 } else { index.min(self.items.len().saturating_sub(1)) };
         if self.selected_index != clamped {
             self.selected_index = clamped;
             self.changed.emit();
+            self.base.request_redraw();
         }
     }
 
@@ -103,11 +102,13 @@ impl Dropdown {
     /// Expands or collapses the dropdown list.
     pub fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
+        self.base.request_redraw();
     }
 
     /// Toggles the expanded / collapsed state.
     pub fn toggle(&mut self) {
         self.expanded = !self.expanded;
+        self.base.request_redraw();
     }
 
     // ─── helpers ────────────────────────────────────────────────────────

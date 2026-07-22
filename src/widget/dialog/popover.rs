@@ -5,7 +5,7 @@
 //! arrow pointing toward the anchor, and auto-dismisses when the user
 //! clicks outside the popover area.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -134,6 +134,10 @@ impl Widget for Popover {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(200, 150)
     }
 }
 

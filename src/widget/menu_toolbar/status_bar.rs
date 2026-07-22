@@ -1,5 +1,5 @@
 //! Status bar widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -42,9 +42,11 @@ impl StatusBar {
     }
     pub fn set_permanent_message(&mut self, msg: impl Into<String>) {
         self.permanent_message = msg.into();
+        self.base.request_redraw();
     }
     pub fn set_size_grip_enabled(&mut self, enabled: bool) {
         self.size_grip_enabled = enabled;
+        self.base.request_redraw();
     }
 }
 impl Widget for StatusBar {
@@ -53,6 +55,10 @@ impl Widget for StatusBar {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 24)
     }
 }
 impl EventHandler for StatusBar {

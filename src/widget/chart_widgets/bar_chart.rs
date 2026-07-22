@@ -4,7 +4,7 @@
 //! optional value labels on top. Each bar can have its own color, or all bars
 //! share a default color.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -204,6 +204,10 @@ impl Widget for BarChart {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(400, 300)
     }
 }
 

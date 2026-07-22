@@ -4,7 +4,7 @@
 //! a [`Signal1<(u32, u32)>`] with the key code and modifiers on press.
 //! Special keys (Enter, Backspace, Space) also emit dedicated signals.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -82,6 +82,7 @@ impl Keyboard {
             KeyboardLayout::Qwerty => self.build_qwerty_layout(),
             KeyboardLayout::Numeric => self.build_numeric_layout(),
         }
+        self.base.request_redraw();
     }
 
     /// Return the current layout variant.
@@ -133,6 +134,7 @@ impl Keyboard {
     /// Toggle the shift state between uppercase and lowercase.
     pub fn toggle_shift(&mut self) {
         self.shift = !self.shift;
+        self.base.request_redraw();
     }
 
     /// Return the current shift state.
@@ -143,6 +145,7 @@ impl Keyboard {
     /// Set whether lowercase letters are shown when shift is off.
     pub fn set_lowercase(&mut self, enabled: bool) {
         self.lowercase = enabled;
+        self.base.request_redraw();
     }
 
     /// Return whether lowercase mode is enabled.

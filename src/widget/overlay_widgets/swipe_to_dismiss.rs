@@ -123,6 +123,10 @@ impl Widget for SwipeToDismiss {
         &mut self.base
     }
 
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 60)
+    }
+
     fn kind(&self) -> WidgetKind {
         WidgetKind::SwipeToDismiss
     }

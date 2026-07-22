@@ -103,13 +103,14 @@ impl Draw for ImageView {
 
             // Draw "?" centered in the placeholder.
             let fg = self.style().text_color.unwrap_or(Color::rgb(120, 120, 120));
-            let font = self.style().font.clone().unwrap_or_default();
+            let default_font = crate::core::Font::default();
+            let font = self.style().font.as_ref().unwrap_or(&default_font);
             let text_x = rect.x + rect.width as i32 / 2 - 4;
             let text_y = rect.y + rect.height as i32 / 2 - 8;
             context.draw_text(
                 Point::new(text_x, text_y),
                 "?",
-                &font,
+                font,
                 fg,
                 HorizontalAlignment::Left,
             );

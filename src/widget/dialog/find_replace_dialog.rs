@@ -5,7 +5,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -262,6 +262,10 @@ impl Widget for FindReplaceDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(350, 200)
     }
 }
 

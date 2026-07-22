@@ -105,6 +105,10 @@ impl Widget for BottomNavigationBar {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 48)
+    }
 }
 
 impl Draw for BottomNavigationBar {

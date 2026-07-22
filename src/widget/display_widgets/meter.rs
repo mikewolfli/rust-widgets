@@ -51,6 +51,7 @@ impl Meter {
         }
         self.value = clamped;
         self.base.changed.emit();
+        self.base.request_redraw();
     }
 
     /// Sets both minimum and maximum values in one call.
@@ -64,11 +65,13 @@ impl Meter {
             self.value = clamped;
             self.base.changed.emit();
         }
+        self.base.request_redraw();
     }
 
     /// Sets the number of tick marks drawn along the arc.
     pub fn set_tick_count(&mut self, count: u32) {
         self.tick_count = count.max(2);
+        self.base.request_redraw();
     }
 
     /// Normalizes the current value to a fraction in [0.0, 1.0].

@@ -56,22 +56,26 @@ impl Spinner {
     /// Sets the active state. When inactive the arc stays at its current angle.
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
+        self.base.request_redraw();
     }
 
     /// Sets the line/arc thickness in pixels (minimum 1).
     pub fn set_thickness(&mut self, thickness: u32) {
         self.thickness = thickness.max(1);
+        self.base.request_redraw();
     }
 
     /// Sets the speed multiplier (clamped to >= 0.0).
     pub fn set_speed(&mut self, speed: f32) {
         self.speed = speed.max(0.0);
+        self.base.request_redraw();
     }
 
     /// Sets the size ratio (0.0–1.0) that controls the spinner diameter
     /// relative to the widget's shortest side.
     pub fn set_size_ratio(&mut self, ratio: f32) {
         self.size_ratio = ratio.clamp(0.0, 1.0);
+        self.base.request_redraw();
     }
 
     /// Returns the current rotation angle in degrees.

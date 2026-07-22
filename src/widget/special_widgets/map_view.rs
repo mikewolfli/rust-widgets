@@ -170,6 +170,10 @@ impl Widget for MapView {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 300)
+    }
 }
 
 impl EventHandler for MapView {

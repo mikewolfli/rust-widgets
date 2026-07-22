@@ -6,7 +6,7 @@
 //! the top of the sheet, and emits a `dismissed` signal when the user taps outside
 //! or directly on the sheet area.
 
-use crate::core::{Color, Rect};
+use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -77,6 +77,10 @@ impl Widget for BottomSheet {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 

@@ -531,6 +531,10 @@ impl Widget for RiveWidget {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 300)
+    }
 }
 
 impl Draw for RiveWidget {

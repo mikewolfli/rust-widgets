@@ -1,5 +1,5 @@
 //! Font dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -32,6 +32,7 @@ impl FontDialog {
     pub fn set_current_font(&mut self, font: Font) {
         self.current_font = font.clone();
         self.font_selected.emit(font);
+        self.base.request_redraw();
     }
     pub fn accept(&mut self) {
         self.font_selected.emit(self.current_font.clone());
@@ -50,6 +51,7 @@ impl FontDialog {
     }
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+        self.base.request_redraw();
     }
 }
 impl Widget for FontDialog {
@@ -59,6 +61,10 @@ impl Widget for FontDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(400, 300)
     }
 }
 impl EventHandler for FontDialog {

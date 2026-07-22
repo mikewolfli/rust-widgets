@@ -46,6 +46,7 @@ impl TileView {
         if self.current_page >= self.page_count {
             self.current_page = self.page_count.saturating_sub(1);
         }
+        self.base.request_redraw();
     }
 
     /// Returns the currently visible page index.
@@ -64,6 +65,7 @@ impl TileView {
         self.current_page = clamped;
         self.page_changed.emit(self.current_page);
         self.base.changed.emit();
+        self.base.request_redraw();
     }
 
     /// Navigate to the next page.

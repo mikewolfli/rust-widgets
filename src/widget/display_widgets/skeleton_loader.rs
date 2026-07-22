@@ -96,6 +96,10 @@ impl Widget for SkeletonLoader {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 20)
+    }
 }
 
 impl Draw for SkeletonLoader {

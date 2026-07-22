@@ -4,7 +4,7 @@
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
 //! Emits `finished`, `cancelled`, and `step_changed` signals.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -172,6 +172,10 @@ impl Widget for WizardDialog {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(500, 400)
     }
 }
 

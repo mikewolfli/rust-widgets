@@ -65,10 +65,12 @@ impl Dial {
     pub fn set_minimum(&mut self, min: i32) {
         self.minimum = min;
         self.set_value(self.value);
+        self.base.request_redraw();
     }
     pub fn set_maximum(&mut self, max: i32) {
         self.maximum = max;
         self.set_value(self.value);
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
@@ -76,6 +78,7 @@ impl Dial {
         self.minimum = min;
         self.maximum = max.max(min);
         self.set_value(self.value);
+        self.base.request_redraw();
     }
     pub fn set_value(&mut self, value: i32) {
         let clamped = if self.wrapping {
@@ -91,22 +94,28 @@ impl Dial {
         if self.value != clamped {
             self.value = clamped;
             self.value_changed.emit(clamped);
+            self.base.request_redraw();
         }
     }
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
+        self.base.request_redraw();
     }
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
+        self.base.request_redraw();
     }
     pub fn set_notches_visible(&mut self, visible: bool) {
         self.notches_visible = visible;
+        self.base.request_redraw();
     }
     pub fn set_notch_target(&mut self, target: f64) {
         self.notch_target = target;
+        self.base.request_redraw();
     }
     pub fn set_wrapping(&mut self, wrapping: bool) {
         self.wrapping = wrapping;
+        self.base.request_redraw();
     }
     /// Returns value as angle in radians (from -135° to +135°, or full circle if wrapping).
     fn value_angle(&self) -> f64 {

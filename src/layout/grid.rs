@@ -168,9 +168,8 @@ impl Layout for GridLayout {
         let mut current_x: i32 = 0;
         for col in 0..self.cols {
             let cell_width = if total_col_stretch > 0 {
-                let cw = (available_width as u64 * self.column_stretches[col as usize] as u64
-                    / total_col_stretch as u64) as u32;
-                cw
+                (available_width as u64 * self.column_stretches[col as usize] as u64
+                    / total_col_stretch as u64) as u32
             } else {
                 available_width / self.cols
             };
@@ -185,9 +184,8 @@ impl Layout for GridLayout {
         let mut current_y: i32 = 0;
         for row in 0..self.rows {
             let cell_height = if total_row_stretch > 0 {
-                let ch = (available_height as u64 * self.row_stretches[row as usize] as u64
-                    / total_row_stretch as u64) as u32;
-                ch
+                (available_height as u64 * self.row_stretches[row as usize] as u64
+                    / total_row_stretch as u64) as u32
             } else {
                 available_height / self.rows
             };
@@ -205,7 +203,7 @@ impl Layout for GridLayout {
             indices.sort_by(|&a, &b| self.column_stretches[b].cmp(&self.column_stretches[a]));
             let mut remaining = remainder_w;
             for &idx in &indices {
-                let add = remaining / (self.cols as u32 - idx as u32).max(1);
+                let add = remaining / (self.cols - idx as u32).max(1);
                 if add > 0 {
                     col_widths[idx] += add;
                     remaining -= add;
@@ -223,7 +221,7 @@ impl Layout for GridLayout {
             indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
             let mut remaining = remainder_h;
             for &idx in &indices {
-                let add = remaining / (self.rows as u32 - idx as u32).max(1);
+                let add = remaining / (self.rows - idx as u32).max(1);
                 if add > 0 {
                     row_heights[idx] += add;
                     remaining -= add;

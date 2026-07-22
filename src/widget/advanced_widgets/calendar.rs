@@ -50,6 +50,7 @@ impl Calendar {
         if self.selected_date != date && date >= self.minimum_date && date <= self.maximum_date {
             self.selected_date = date;
             self.selection_changed.emit(date);
+            self.base.request_redraw();
         }
     }
     /// Returns minimum date.
@@ -62,6 +63,7 @@ impl Calendar {
         if self.selected_date < date {
             self.set_selected_date(date);
         }
+        self.base.request_redraw();
     }
     /// Returns maximum date.
     pub fn maximum_date(&self) -> chrono::NaiveDate {
@@ -73,6 +75,7 @@ impl Calendar {
         if self.selected_date > date {
             self.set_selected_date(date);
         }
+        self.base.request_redraw();
     }
     /// Returns first day of week.
     pub fn first_day_of_week(&self) -> chrono::Weekday {
@@ -81,6 +84,7 @@ impl Calendar {
     /// Sets first day of week.
     pub fn set_first_day_of_week(&mut self, weekday: chrono::Weekday) {
         self.first_day_of_week = weekday;
+        self.base.request_redraw();
     }
     /// Returns whether grid is visible.
     pub fn is_grid_visible(&self) -> bool {
@@ -89,6 +93,7 @@ impl Calendar {
     /// Sets grid visibility.
     pub fn set_grid_visible(&mut self, visible: bool) {
         self.grid_visible = visible;
+        self.base.request_redraw();
     }
     /// Returns whether navigation bar is visible.
     pub fn is_navigation_bar_visible(&self) -> bool {
@@ -97,6 +102,7 @@ impl Calendar {
     /// Sets navigation bar visibility.
     pub fn set_navigation_bar_visible(&mut self, visible: bool) {
         self.navigation_bar_visible = visible;
+        self.base.request_redraw();
     }
     /// Returns whether horizontal header is visible.
     pub fn is_horizontal_header_visible(&self) -> bool {
@@ -105,6 +111,7 @@ impl Calendar {
     /// Sets horizontal header visibility.
     pub fn set_horizontal_header_visible(&mut self, visible: bool) {
         self.horizontal_header_visible = visible;
+        self.base.request_redraw();
     }
     /// Returns whether vertical header is visible.
     pub fn is_vertical_header_visible(&self) -> bool {
@@ -113,6 +120,7 @@ impl Calendar {
     /// Sets vertical header visibility.
     pub fn set_vertical_header_visible(&mut self, visible: bool) {
         self.vertical_header_visible = visible;
+        self.base.request_redraw();
     }
     /// Shows today's date.
     pub fn show_today(&mut self) {
@@ -163,6 +171,7 @@ impl Calendar {
     /// Sets the date format string (uses chrono format specifiers).
     pub fn set_date_format(&mut self, format: String) {
         self.date_format = format;
+        self.base.request_redraw();
     }
 
     /// Returns date at position.
@@ -192,6 +201,10 @@ impl Widget for Calendar {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(260, 240)
     }
 }
 impl EventHandler for Calendar {

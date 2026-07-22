@@ -290,6 +290,10 @@ impl Widget for ListBox {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(120, 100)
+    }
 }
 impl EventHandler for ListBox {
     fn handle_event(&mut self, event: &Event) {

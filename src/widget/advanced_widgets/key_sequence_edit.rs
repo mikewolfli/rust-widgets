@@ -1,5 +1,5 @@
 //! Key sequence editor widget for capturing keyboard shortcuts.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -91,6 +91,7 @@ impl KeySequenceEdit {
     pub fn set_key_sequence(&mut self, seq: KeySequence) {
         self.key_sequence = seq.clone();
         self.key_sequence_changed.emit(seq);
+        self.base.request_redraw();
     }
     pub fn clear(&mut self) {
         self.set_key_sequence(KeySequence::empty());
@@ -112,6 +113,10 @@ impl Widget for KeySequenceEdit {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(150, 28)
     }
 }
 impl EventHandler for KeySequenceEdit {

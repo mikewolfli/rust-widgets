@@ -1,5 +1,5 @@
 //! Stacked widget.
-use crate::core::{Color, ObjectId, Rect};
+use crate::core::{Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -111,6 +111,10 @@ impl Widget for StackedWidget {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 impl EventHandler for StackedWidget {

@@ -1,5 +1,5 @@
 //! Popup window widget.
-use crate::core::{ObjectId, Rect};
+use crate::core::{ObjectId, Rect, Size};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -57,6 +57,10 @@ impl Widget for PopupWindow {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 impl Draw for PopupWindow {

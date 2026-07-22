@@ -87,6 +87,7 @@ impl CheckBox {
         if !enabled && self.state == CheckState::PartiallyChecked {
             self.set_state(CheckState::Unchecked);
         }
+        self.base.request_redraw();
     }
     /// Toggles between checked states.
     pub fn toggle(&mut self) {

@@ -4,7 +4,7 @@
 //! drag handle, title, and optional content. Supports show/hide, drag-to-dismiss,
 //! and overlay-click-to-dismiss. Emits a `dismissed` signal when closed.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -151,6 +151,10 @@ impl Widget for ModalBottomSheet {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 

@@ -133,6 +133,7 @@ impl ToolBox {
         if index < self.items.len() && self.current_index != index {
             self.current_index = index;
             self.current_changed.emit(index);
+            self.base.request_redraw();
         }
     }
     /// Returns current item widget.
@@ -154,6 +155,7 @@ impl ToolBox {
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
+        self.base.request_redraw();
     }
     /// Returns item rectangle at index.
     fn item_rect(&self, index: usize) -> Option<Rect> {
@@ -223,11 +225,16 @@ impl Widget for ToolBox {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(200, 250)
+    }
 }
 impl ToolBox {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {

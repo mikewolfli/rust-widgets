@@ -1,5 +1,5 @@
 //! Tool button widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -79,29 +79,36 @@ impl ToolButton {
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
+        self.base.request_redraw();
     }
     pub fn set_icon(&mut self, icon: Option<PathBuf>) {
         self.icon = icon;
+        self.base.request_redraw();
     }
     pub fn set_checkable(&mut self, v: bool) {
         self.checkable = v;
         if !v {
             self.checked = false;
         }
+        self.base.request_redraw();
     }
     pub fn set_popup_mode(&mut self, mode: ToolButtonPopupMode) {
         self.popup_mode = mode;
+        self.base.request_redraw();
     }
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
         self.button_style = style;
+        self.base.request_redraw();
     }
     pub fn set_auto_raise(&mut self, v: bool) {
         self.auto_raise = v;
+        self.base.request_redraw();
     }
     pub fn set_checked(&mut self, checked: bool) {
         if self.checkable && self.checked != checked {
             self.checked = checked;
             self.toggled.emit(checked);
+            self.base.request_redraw();
         }
     }
     pub fn click(&mut self) {
@@ -118,6 +125,10 @@ impl Widget for ToolButton {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(28, 28)
     }
 }
 impl EventHandler for ToolButton {
@@ -169,11 +180,8 @@ impl Draw for ToolButton {
                 Color::rgb(0, 120, 215),
             );
         }
-        let fg = if !self.base.is_enabled() {
-            Color::rgb(150, 150, 150)
-        } else {
-            Color::rgb(0, 0, 0)
-        };
+        let fg =
+            if !self.base.is_enabled() { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
         let label = match self.button_style {
             ToolButtonStyle::TextOnly
             | ToolButtonStyle::TextBesideIcon

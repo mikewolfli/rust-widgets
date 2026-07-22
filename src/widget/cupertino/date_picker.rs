@@ -5,7 +5,7 @@
 //! optional min/max date constraints. A `date_changed` signal is emitted
 //! whenever the selected date changes.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -13,6 +13,13 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 const MONTH_NAMES: &[&str] =
     &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// Pre-formatted day strings ("01" through "31") reused across draw calls.
+const DAY_STRINGS: &[&str] = &[
+    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
+    "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+    "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
+];
 
 /// Returns the number of days in the given month, accounting for leap years.
 fn days_in_month(year: i32, month: u32) -> u32 {
@@ -155,12 +162,6 @@ impl CupertinoDatePicker {
         let max_y = self.max_date.map(|d| d.0).unwrap_or(2100);
         DateConstraint { min_year: min_y, max_year: max_y }
     }
-
-    /// Returns the day values available for the current month/year.
-    fn day_options(&self) -> Vec<u32> {
-        let max_days = days_in_month(self.selected_year, self.selected_month);
-        (1..=max_days).collect()
-    }
 }
 
 impl Widget for CupertinoDatePicker {
@@ -170,6 +171,10 @@ impl Widget for CupertinoDatePicker {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 
@@ -193,20 +198,25 @@ impl Draw for CupertinoDatePicker {
         let font = Font::new("sans-serif", font_size, false, false);
         let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(12.0), true, false);
 
-        // Build visible column items
+        // Build visible column items (reuse static arrays — no per-draw Vec<String>)
         let constraint = self.date_constraint();
-        let year_items: Vec<String> = self.year_range().map(|y| y.to_string()).collect();
         let year_sel_idx = self.selected_year - constraint.min_year;
 
-        let month_items: Vec<String> = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
+        // Months: reference the static array directly (no allocation)
+        let month_items: &[&str] = MONTH_NAMES;
         let month_sel_idx = (self.selected_month as usize - 1) as i32;
 
-        let days = self.day_options();
-        let day_items: Vec<String> = days.iter().map(|d| format!("{:02}", d)).collect();
+        // Days: reference the static DAY_STRINGS array directly (no allocation)
+        let max_days = days_in_month(self.selected_year, self.selected_month);
+        let day_items: &[&str] = &DAY_STRINGS[..max_days as usize];
         let day_sel_idx = (self.selected_day as usize - 1) as i32;
 
-        let columns: [(i32, Vec<String>, &str); 3] = [
-            (year_sel_idx, year_items, "Year"),
+        // Columns as (&[&str], ...) — borrow from static data
+        // Year values are dynamic (min_y..=max_y), so still need per-draw strings
+        let year_items: Vec<String> = self.year_range().map(|y| y.to_string()).collect();
+        let year_refs: Vec<&str> = year_items.iter().map(|s| s.as_str()).collect();
+        let columns: [(i32, &[&str], &str); 3] = [
+            (year_sel_idx, &year_refs, "Year"),
             (month_sel_idx, month_items, "Month"),
             (day_sel_idx, day_items, "Day"),
         ];

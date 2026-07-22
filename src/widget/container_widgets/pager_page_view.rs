@@ -4,7 +4,7 @@
 //! navigate between pages using left/right arrow keys. An optional row of
 //! dot indicators is shown at the bottom.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -116,6 +116,10 @@ impl Widget for PagerPageView {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 
     fn kind(&self) -> WidgetKind {

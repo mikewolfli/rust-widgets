@@ -198,6 +198,10 @@ impl Widget for ColorPicker {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 200)
+    }
 }
 
 impl EventHandler for ColorPicker {

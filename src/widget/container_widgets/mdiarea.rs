@@ -175,6 +175,7 @@ impl MdiArea {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
@@ -227,6 +228,7 @@ impl MdiArea {
             if self.active_subwindow != Some(index) {
                 self.active_subwindow = Some(index);
                 self.subwindow_activated.emit(widget);
+                self.base.request_redraw();
             }
         }
     }
@@ -245,6 +247,7 @@ impl MdiArea {
     /// Sets view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         self.view_mode = mode;
+        self.base.request_redraw();
     }
     /// Returns background.
     pub fn background(&self) -> Background {
@@ -253,6 +256,7 @@ impl MdiArea {
     /// Sets background.
     pub fn set_background(&mut self, background: Background) {
         self.background = background;
+        self.base.request_redraw();
     }
     /// Returns activation order.
     pub fn activation_order(&self) -> ActivationOrder {
@@ -261,6 +265,7 @@ impl MdiArea {
     /// Sets activation order.
     pub fn set_activation_order(&mut self, order: ActivationOrder) {
         self.activation_order = order;
+        self.base.request_redraw();
     }
     /// Cascade sub-windows.
     pub fn cascade_sub_windows(&mut self) {
@@ -365,6 +370,10 @@ impl Widget for MdiArea {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 300)
     }
 }
 impl EventHandler for MdiArea {

@@ -66,6 +66,10 @@ impl Widget for ColorWell {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(40, 24)
+    }
 }
 
 impl Draw for ColorWell {

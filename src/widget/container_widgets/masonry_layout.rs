@@ -3,7 +3,7 @@
 //! Items are arranged in a vertical waterfall across a configurable number of
 //! columns. Each item is drawn as a filled rounded rectangle with a label.
 
-use crate::core::{HorizontalAlignment, Color, Font, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -104,6 +104,10 @@ impl Widget for MasonryLayout {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 300)
     }
 }
 

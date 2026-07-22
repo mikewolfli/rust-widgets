@@ -27,6 +27,6 @@ pub use timer::TimerManager;
 pub use types::{Event, EventHandler, EventPriority, GestureClass, TouchId};
 // Re-export queue utilities
 pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
-// Backward-compatible event aliases used by legacy widget implementations.
-pub type MouseEvent = (crate::core::Point, u32);
-pub type KeyEvent = (u32, u32);
+pub mod legacy_types;
+
+pub use legacy_types::{KeyEvent, MouseEvent};

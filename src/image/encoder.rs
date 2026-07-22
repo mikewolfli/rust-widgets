@@ -885,6 +885,9 @@ fn base64_encode(data: &[u8]) -> String {
             let pad = 3 - chunk.len();
             for k in 0..pad {
                 let pos = out.len() - 1 - k;
+                // SAFETY: The position is within the valid range (we just pushed the
+                // characters above).  Writing '=' (ASCII 0x3D) at a known position
+                // preserves UTF-8 validity because '=' is a single-byte ASCII char.
                 unsafe {
                     out.as_bytes_mut()[pos] = b'=';
                 }

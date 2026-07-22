@@ -127,6 +127,10 @@ impl Widget for LCDNumber {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(80, 30)
+    }
 }
 impl EventHandler for LCDNumber {
     fn handle_event(&mut self, event: &Event) {

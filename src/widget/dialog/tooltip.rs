@@ -165,6 +165,10 @@ impl Widget for Tooltip {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(100, 30)
+    }
 }
 
 impl EventHandler for Tooltip {

@@ -1,5 +1,5 @@
 //! Window widget and platform integration.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -83,6 +83,10 @@ impl Widget for Window {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(640, 480)
     }
 }
 impl EventHandler for Window {

@@ -1,5 +1,5 @@
 //! Tool bar widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -148,15 +148,19 @@ impl ToolBar {
         if changed {
             self.orientation_changed.emit(o == ToolBarOrientation::Horizontal);
         }
+        self.base.request_redraw();
     }
     pub fn set_icon_size(&mut self, size: f32) {
         self.icon_size = size.max(8.0);
+        self.base.request_redraw();
     }
     pub fn set_movable(&mut self, v: bool) {
         self.movable = v;
+        self.base.request_redraw();
     }
     pub fn set_floatable(&mut self, v: bool) {
         self.floatable = v;
+        self.base.request_redraw();
     }
     pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> usize {
         let idx = self.items.len();
@@ -173,6 +177,7 @@ impl ToolBar {
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(enabled);
         }
+        self.base.request_redraw();
     }
     /// Returns enabled state for item at index.
     pub fn item_enabled(&self, index: usize) -> Option<bool> {
@@ -184,6 +189,7 @@ impl ToolBar {
                 item.set_checked(checked);
             }
         }
+        self.base.request_redraw();
     }
     /// Returns checked state for item at index.
     pub fn item_checked(&self, index: usize) -> Option<bool> {
@@ -239,6 +245,10 @@ impl Widget for ToolBar {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 32)
     }
 }
 impl EventHandler for ToolBar {
@@ -323,11 +333,8 @@ impl Draw for ToolBar {
                     Color::rgb(0, 120, 215),
                 );
             }
-            let fg = if !item.is_enabled() {
-                Color::rgb(150, 150, 150)
-            } else {
-                Color::rgb(0, 0, 0)
-            };
+            let fg =
+                if !item.is_enabled() { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
             context.draw_text(
                 Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),
                 item.text(),

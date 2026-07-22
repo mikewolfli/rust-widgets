@@ -243,6 +243,10 @@ impl Widget for ScrollArea {
         &mut self.base
     }
 
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 200)
+    }
+
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.viewport.width = geometry.width;

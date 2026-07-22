@@ -55,6 +55,7 @@ impl RichEdit {
         self.selection = None;
         self.text_changed.emit(self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
+        self.base.request_redraw();
     }
     /// Returns current selection range.
     pub fn selection(&self) -> Option<(usize, usize)> {
@@ -72,6 +73,7 @@ impl RichEdit {
         }
         self.selection = Some((start, end));
         self.selection_changed.emit(self.selection);
+        self.base.request_redraw();
     }
     /// Clears selection.
     pub fn clear_selection(&mut self) {
@@ -92,6 +94,7 @@ impl RichEdit {
         }
         self.read_only = read_only;
         self.read_only_changed.emit(read_only);
+        self.base.request_redraw();
     }
     /// Returns cursor position.
     pub fn cursor_position(&self) -> usize {
@@ -151,6 +154,7 @@ impl RichEdit {
         let position = position.min(self.text.len());
         self.selection = Some((position, position));
         self.cursor_position_changed.emit(position);
+        self.base.request_redraw();
     }
 }
 impl Widget for RichEdit {

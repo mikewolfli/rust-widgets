@@ -56,6 +56,7 @@ impl TextEdit {
         }
         self.text = text;
         self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
     /// Returns placeholder text.
     pub fn placeholder_text(&self) -> &str {
@@ -64,6 +65,7 @@ impl TextEdit {
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
         self.placeholder_text = text;
+        self.base.request_redraw();
     }
     /// Returns maximum text length.
     pub fn max_length(&self) -> Option<usize> {
@@ -88,14 +90,16 @@ impl TextEdit {
     /// Sets read-only state.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
+        self.base.request_redraw();
     }
-    /// Returns whether line wrap is enabled.
+    /// Returns whether line wrap mode is enabled.
     pub fn line_wrap(&self) -> bool {
         self.line_wrap
     }
-    /// Sets line wrap state.
-    pub fn set_line_wrap(&mut self, line_wrap: bool) {
-        self.line_wrap = line_wrap;
+    /// Sets line wrap mode.
+    pub fn set_line_wrap(&mut self, wrap: bool) {
+        self.line_wrap = wrap;
+        self.base.request_redraw();
     }
     /// Returns number of lines in the text.
     pub fn line_count(&self) -> usize {

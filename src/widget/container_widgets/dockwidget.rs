@@ -167,6 +167,7 @@ impl DockWidget {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
@@ -179,6 +180,7 @@ impl DockWidget {
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
+        self.base.request_redraw();
     }
     /// Sets widget.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
@@ -186,6 +188,7 @@ impl DockWidget {
         if let Some(widget_id) = widget {
             self.base.add_child(widget_id);
         }
+        self.base.request_redraw();
     }
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {
@@ -205,6 +208,7 @@ impl DockWidget {
         {
             self.features = features;
             self.features_changed.emit(features);
+            self.base.request_redraw();
         }
     }
     /// Returns allowed areas.
@@ -214,6 +218,7 @@ impl DockWidget {
     /// Sets allowed areas.
     pub fn set_allowed_areas(&mut self, areas: DockWidgetAreas) {
         self.allowed_areas = areas;
+        self.base.request_redraw();
     }
     /// Returns whether dock widget is floating.
     pub fn is_floating(&self) -> bool {
@@ -224,6 +229,7 @@ impl DockWidget {
         if self.floating != floating {
             self.floating = floating;
             self.top_level_changed.emit(floating);
+            self.base.request_redraw();
         }
     }
     /// Returns whether dock widget is docked.
@@ -233,6 +239,7 @@ impl DockWidget {
     /// Sets docked state.
     pub fn set_docked(&mut self, docked: bool) {
         self.docked = docked;
+        self.base.request_redraw();
     }
     /// Toggles floating state.
     pub fn toggle_floating(&mut self) {
@@ -314,6 +321,10 @@ impl Widget for DockWidget {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(250, 200)
     }
 }
 impl EventHandler for DockWidget {

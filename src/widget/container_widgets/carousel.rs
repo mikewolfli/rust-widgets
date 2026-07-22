@@ -6,7 +6,7 @@
 //! half (previous) or right half (next) of the widget. Dot indicators at the
 //! bottom show the current position within the page sequence.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -99,6 +99,10 @@ impl Widget for Carousel {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 

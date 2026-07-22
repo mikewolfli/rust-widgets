@@ -1,5 +1,5 @@
 //! Menu bar widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -76,6 +76,7 @@ impl MenuBar {
         if let Some(e) = self.entries.get_mut(index) {
             e.set_enabled(enabled);
         }
+        self.base.request_redraw();
     }
     pub fn menu_enabled(&self, index: usize) -> Option<bool> {
         self.entries.get(index).map(|entry| entry.is_enabled())
@@ -123,6 +124,10 @@ impl Widget for MenuBar {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(400, 28)
     }
 }
 impl EventHandler for MenuBar {

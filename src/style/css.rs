@@ -547,11 +547,14 @@ static DECLARATIONS: LazyLock<Mutex<HashMap<String, Vec<CssDeclaration>>>> =
 
 pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
     let key = format!("{}:{}", DECL_COUNTER.fetch_add(1, Ordering::Relaxed), rule_name);
-    DECLARATIONS.lock().unwrap().insert(key, decls);
+    // SAFETY: If the lock is poisoned (a previous panic while held), we recover
+    // by ignoring the poison — the stored data is still valid for CSS parsing.
+    DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(key, decls);
 }
 
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
-    let map = DECLARATIONS.lock().unwrap();
+    // SAFETY: Same poison recovery strategy — stale data is safe to read.
+    let map = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
     let mut result = Vec::new();
     let suffix = format!(":{}", rule_name);
     for (key, decls) in map.iter() {

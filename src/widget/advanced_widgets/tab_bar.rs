@@ -1,5 +1,5 @@
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TextMetrics};
 use crate::signal::Signal1;
@@ -496,6 +496,10 @@ impl Widget for TabBar {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(400, 30)
     }
 }
 

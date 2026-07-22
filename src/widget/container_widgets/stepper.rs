@@ -5,7 +5,7 @@
 //! It supports configurable minimum, maximum, step size, and emits a
 //! `value_changed` signal whenever the value changes.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -88,6 +88,10 @@ impl Widget for Stepper {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(120, 30)
     }
 }
 

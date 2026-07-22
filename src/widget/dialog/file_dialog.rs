@@ -1,5 +1,5 @@
 //! File dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -76,6 +76,7 @@ impl FileDialog {
     }
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+        self.base.request_redraw();
     }
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
@@ -117,16 +118,20 @@ impl FileDialog {
             FileDialogMode::SaveFile => "dialog.file_dialog.save_file",
             FileDialogMode::SelectDirectory => "dialog.file_dialog.select_directory",
         });
+        self.base.request_redraw();
     }
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
+        self.base.request_redraw();
     }
     pub fn set_directory(&mut self, dir: impl Into<String>) {
         self.directory = dir.into();
+        self.base.request_redraw();
     }
     pub fn set_name_filters(&mut self, filters: Vec<FileFilter>) {
         self.name_filters = filters;
         self.current_filter = 0;
+        self.base.request_redraw();
     }
     pub fn select_file(&mut self, path: impl Into<String>) {
         let path = path.into();
@@ -153,6 +158,10 @@ impl Widget for FileDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(500, 400)
     }
 }
 impl EventHandler for FileDialog {

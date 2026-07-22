@@ -1,5 +1,5 @@
 //! Input dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -127,31 +127,39 @@ impl InputDialog {
     }
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
+        self.base.request_redraw();
     }
     pub fn set_label_text(&mut self, t: impl Into<String>) {
         self.label_text = t.into();
+        self.base.request_redraw();
     }
     pub fn set_mode(&mut self, mode: InputMode) {
         self.mode = mode;
+        self.base.request_redraw();
     }
     pub fn set_text_value(&mut self, v: impl Into<String>) {
         self.text_value = v.into();
+        self.base.request_redraw();
     }
     pub fn set_items(&mut self, items: Vec<String>) {
         self.items = items;
         self.current_item = 0;
+        self.base.request_redraw();
     }
     pub fn set_int_value(&mut self, v: i64) {
         self.int_value = v.clamp(self.int_min, self.int_max);
+        self.base.request_redraw();
     }
     pub fn set_double_value(&mut self, v: f64) {
         self.double_value = v.clamp(self.double_min, self.double_max);
+        self.base.request_redraw();
     }
     pub fn is_modal(&self) -> bool {
         self.modal
     }
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+        self.base.request_redraw();
     }
     pub fn accept(&mut self) {
         self.accepted.emit();
@@ -169,6 +177,10 @@ impl Widget for InputDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(350, 150)
     }
 }
 impl EventHandler for InputDialog {

@@ -1,5 +1,5 @@
 //! Combo box widget.
-use crate::core::{HorizontalAlignment, Color, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -112,6 +112,7 @@ impl ComboBox {
             self.current_text_changed.emit(String::new());
             self.current_index_changed.emit(None);
         }
+        self.base.request_redraw();
     }
     /// Returns current text.
     pub fn current_text(&self) -> String {
@@ -137,6 +138,7 @@ impl ComboBox {
     /// Sets editable state.
     pub fn set_editable(&mut self, editable: bool) {
         self.editable = editable;
+        self.base.request_redraw();
     }
     /// Returns maximum number of visible items in dropdown.
     pub fn max_visible_items(&self) -> usize {
@@ -277,13 +279,26 @@ impl Draw for ComboBox {
         );
         // Draw current text
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let font = style.font.clone().unwrap_or_default();
+        let default_font = crate::core::Font::default();
+        let font = style.font.as_ref().unwrap_or(&default_font);
         let current_text = self.current_text();
         if !current_text.is_empty() {
-            context.draw_text(Point::new(text_x, text_y as i32), &current_text, &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y as i32),
+                &current_text,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         } else if self.items.is_empty() {
             // Draw placeholder
-            context.draw_text(Point::new(text_x, text_y as i32), "(Empty)", &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y as i32),
+                "(Empty)",
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

@@ -134,6 +134,15 @@ def generate_header(constants: list[tuple[str, str, int]]) -> str:
             lines.append(f'#define {macro_name:<45} {value}{doc_comment}')
         lines.append('')
 
+    # Add EW_ERROR alias macros to preserve compatibility with EW-prefixed bindings.
+    lines.append('/* --- EW aliases --- */')
+    for group_name, items in groups:
+        for name, _, _ in items:
+            rw_macro = f"RW_ERROR_{name}"
+            ew_macro = f"EW_ERROR_{name}"
+            lines.append(f'#define {ew_macro:<45} {rw_macro}')
+        lines.append('')
+
     defines = '\n'.join(lines)
     return HEADER_TEMPLATE.format(defines=defines)
 

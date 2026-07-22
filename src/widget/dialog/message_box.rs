@@ -1,5 +1,5 @@
 //! Message box dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -157,18 +157,23 @@ impl MessageBox {
     }
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
+        self.base.request_redraw();
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
+        self.base.request_redraw();
     }
     pub fn set_icon(&mut self, icon: MessageBoxIcon) {
         self.icon = icon;
+        self.base.request_redraw();
     }
     pub fn set_buttons(&mut self, buttons: Vec<StandardButton>) {
         self.buttons = buttons;
+        self.base.request_redraw();
     }
     pub fn set_default_button(&mut self, btn: StandardButton) {
         self.default_button = Some(btn);
+        self.base.request_redraw();
     }
     pub fn is_modal(&self) -> bool {
         self.modal
@@ -176,6 +181,7 @@ impl MessageBox {
 
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+        self.base.request_redraw();
     }
 
     pub fn click_button(&mut self, btn: StandardButton) {
@@ -218,6 +224,10 @@ impl Widget for MessageBox {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(350, 150)
     }
 }
 impl EventHandler for MessageBox {

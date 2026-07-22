@@ -33,7 +33,7 @@ impl AudioOutput {
 
         let samples = buffer.samples.clone();
 
-        let err_fn = |err| eprintln!("Audio stream error: {}", err);
+        let err_fn = |err| log::error!("Audio stream error: {}", err);
         let stream = device
             .build_output_stream(
                 config,

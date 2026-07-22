@@ -48,6 +48,7 @@ impl ScrollBar {
             self.maximum = self.minimum;
         }
         self.set_value(self.value); // Re-clamp
+        self.base.request_redraw();
     }
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
@@ -60,6 +61,7 @@ impl ScrollBar {
             self.minimum = self.maximum;
         }
         self.set_value(self.value); // Re-clamp
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
@@ -67,6 +69,7 @@ impl ScrollBar {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
         self.set_value(self.value); // Re-clamp
+        self.base.request_redraw();
     }
     /// Returns current value.
     pub fn value(&self) -> i32 {
@@ -88,6 +91,7 @@ impl ScrollBar {
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
+        self.base.request_redraw();
     }
     /// Returns page step value.
     pub fn page_step(&self) -> i32 {
@@ -96,6 +100,7 @@ impl ScrollBar {
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
+        self.base.request_redraw();
     }
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
@@ -227,6 +232,13 @@ impl Widget for ScrollBar {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        match self.orientation {
+            crate::layout::Orientation::Horizontal => crate::core::Size::new(100, 16),
+            crate::layout::Orientation::Vertical => crate::core::Size::new(16, 100),
+        }
     }
 }
 impl EventHandler for ScrollBar {

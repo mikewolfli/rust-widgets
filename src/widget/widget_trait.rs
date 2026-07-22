@@ -173,9 +173,7 @@ pub trait Widget: EventHandler + Any {
     }
     /// Sets optional background color shorthand.
     fn set_background_color(&mut self, color: Option<Color>) {
-        let mut style = self.style().clone();
-        style.background_color = color;
-        self.set_style(style);
+        self.base_mut().style_mut().background_color = color;
     }
     /// Returns optional foreground (text) color shorthand.
     fn foreground_color(&self) -> Option<Color> {
@@ -183,9 +181,7 @@ pub trait Widget: EventHandler + Any {
     }
     /// Sets optional foreground (text) color shorthand.
     fn set_foreground_color(&mut self, color: Option<Color>) {
-        let mut style = self.style().clone();
-        style.text_color = color;
-        self.set_style(style);
+        self.base_mut().style_mut().text_color = color;
     }
     /// Returns optional font shorthand.
     fn font(&self) -> Option<&Font> {
@@ -193,9 +189,7 @@ pub trait Widget: EventHandler + Any {
     }
     /// Sets optional font shorthand.
     fn set_font(&mut self, font: Option<Font>) {
-        let mut style = self.style().clone();
-        style.font = font;
-        self.set_style(style);
+        self.base_mut().style_mut().font = font;
     }
     /// Returns optional border color shorthand.
     fn border_color(&self) -> Option<Color> {
@@ -211,21 +205,15 @@ pub trait Widget: EventHandler + Any {
     }
     /// Sets optional border color shorthand.
     fn set_border_color(&mut self, color: Option<Color>) {
-        let mut style = self.style().clone();
-        style.border_color = color;
-        self.set_style(style);
+        self.base_mut().style_mut().border_color = color;
     }
     /// Sets border width shorthand.
     fn set_border_width(&mut self, width: u32) {
-        let mut style = self.style().clone();
-        style.border_width = Some(width);
-        self.set_style(style);
+        self.base_mut().style_mut().border_width = Some(width);
     }
     /// Sets border radius shorthand.
     fn set_border_radius(&mut self, radius: u32) {
-        let mut style = self.style().clone();
-        style.border_radius = Some(radius);
-        self.set_style(style);
+        self.base_mut().style_mut().border_radius = Some(radius);
     }
     /// Sets border shorthand in one call.
     fn set_border(&mut self, color: Option<Color>, width: u32, radius: u32) {
@@ -245,15 +233,11 @@ pub trait Widget: EventHandler + Any {
     }
     /// Updates widget content padding while preserving other style properties.
     fn set_padding(&mut self, padding: Padding) {
-        let mut style = self.style().clone();
-        style.padding = padding;
-        self.set_style(style);
+        self.base_mut().style_mut().padding = padding;
     }
     /// Updates widget margin while preserving other style properties.
     fn set_margin(&mut self, margin: Margin) {
-        let mut style = self.style().clone();
-        style.margin = margin;
-        self.set_style(style);
+        self.base_mut().style_mut().margin = margin;
     }
     /// Returns connection scope used to auto-disconnect slots when widget drops.
     fn connection_scope(&self) -> &ConnectionScope {

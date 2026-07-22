@@ -1,5 +1,5 @@
 //! SafeArea widget — insets content to avoid notches, status bars, home indicators (BLUE11 R10.14).
-use crate::core::{Color, Rect};
+use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -62,6 +62,10 @@ impl Widget for SafeArea {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(300, 200)
     }
 }
 

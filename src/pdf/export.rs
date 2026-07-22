@@ -125,7 +125,7 @@ impl PdfExportSettings {
 
 /// A single page in a PDF export, storing its SVG content and dimensions.
 #[derive(Debug, Clone)]
-pub struct PdfPage {
+pub struct ExportPage {
     /// Page index (0-based).
     pub index: u32,
     /// SVG string representing the page content.
@@ -140,7 +140,7 @@ pub struct PdfPage {
     pub height_px: u32,
 }
 
-impl PdfPage {
+impl ExportPage {
     /// Create a new PDF page with the given SVG content and dimensions.
     pub fn new(
         index: u32,
@@ -195,9 +195,9 @@ impl PdfExporter {
         Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
     }
 
-    /// Render each widget into a [`PdfPage`] using the SVG pipeline.
+    /// Render each widget into a [`ExportPage`] using the SVG pipeline.
     #[cfg(not(feature = "mini"))]
-    pub fn render_pages(&self, widgets: &mut [&mut dyn Draw]) -> Result<Vec<PdfPage>, String> {
+    pub fn render_pages(&self, widgets: &mut [&mut dyn Draw]) -> Result<Vec<ExportPage>, String> {
         let pixel_size = self.settings.pixel_size();
         let (page_w_pt, page_h_pt) = self.settings.effective_dimensions();
         let mut pages = Vec::with_capacity(widgets.len());
@@ -206,7 +206,7 @@ impl PdfExporter {
             // Render the widget to SVG at the target pixel size
             let svg =
                 render_widget_to_svg(*widget, Rect::new(0, 0, pixel_size.width, pixel_size.height));
-            pages.push(PdfPage::new(
+            pages.push(ExportPage::new(
                 idx as u32,
                 svg,
                 page_w_pt,
@@ -221,7 +221,7 @@ impl PdfExporter {
 
     /// Render pages requires the SVG pipeline (not available in mini mode).
     #[cfg(feature = "mini")]
-    pub fn render_pages(&self, _widgets: &mut [&mut dyn Draw]) -> Result<Vec<PdfPage>, String> {
+    pub fn render_pages(&self, _widgets: &mut [&mut dyn Draw]) -> Result<Vec<ExportPage>, String> {
         Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
     }
 }
@@ -237,7 +237,7 @@ impl Default for PdfExporter {
 /// This creates a valid PDF-1.4 file where each page's content stream contains
 /// the SVG markup wrapped in a `q`/`Q` pair. The SVG is embedded directly,
 /// making the output suitable for further processing or viewer consumption.
-fn build_svg_pdf(pages: &[PdfPage], settings: &PdfExportSettings) -> Result<Vec<u8>, String> {
+fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
         return Err("at least one page is required".to_string());
     }
@@ -322,7 +322,7 @@ fn build_svg_pdf(pages: &[PdfPage], settings: &PdfExportSettings) -> Result<Vec<
 
 /// Build the content stream for a single PDF page, converting SVG content
 /// into real PDF content operators so viewers render the content visually.
-fn build_content_stream(page: &PdfPage, _settings: &PdfExportSettings) -> String {
+fn build_content_stream(page: &ExportPage, _settings: &PdfExportSettings) -> String {
     let mut stream = String::new();
 
     // Save graphics state and apply a scaling transform so the SVG (rendered
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn build_svg_pdf_produces_valid_pdf_header() {
-        let pages = vec![PdfPage::new(
+        let pages = vec![ExportPage::new(
             0,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\"><rect width=\"100\" height=\"50\" fill=\"red\"/></svg>".to_string(),
             595.28,

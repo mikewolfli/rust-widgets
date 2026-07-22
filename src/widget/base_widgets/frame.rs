@@ -1,5 +1,5 @@
 //! Frame widget.
-use crate::core::{Color, ObjectId, Point, Rect};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
@@ -63,6 +63,7 @@ impl Frame {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
@@ -108,12 +109,14 @@ impl Frame {
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
         // Remove old child from widget tree before replacing
         if let Some(old) = self.widget {
+            self.base.request_redraw();
             self.base.remove_child(old);
         }
         self.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child(widget_id);
         }
+        self.base.request_redraw();
     }
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {
@@ -372,6 +375,10 @@ impl Widget for Frame {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(200, 200)
     }
 }
 impl EventHandler for Frame {

@@ -1,6 +1,5 @@
 //! Toggle button widget.
-use crate::core::HorizontalAlignment;
-use crate::core::Rect;
+use crate::core::{HorizontalAlignment, Rect, Size};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -71,12 +70,14 @@ impl ToggleButton {
     }
     pub fn set_auto_exclusive(&mut self, exclusive: bool) {
         self.auto_exclusive = exclusive;
+        self.base.request_redraw();
     }
     pub fn group_id(&self) -> Option<&str> {
         self.group_id.as_deref()
     }
     pub fn set_group_id(&mut self, group_id: Option<String>) {
         self.group_id = group_id;
+        self.base.request_redraw();
     }
     pub fn is_pressed(&self) -> bool {
         self.pressed
@@ -108,6 +109,11 @@ impl Widget for ToggleButton {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        let text_w = self.text().len() as u32 * 8 + 20;
+        Size::new(text_w.max(75), 28)
     }
 }
 impl Draw for ToggleButton {
@@ -146,14 +152,15 @@ impl Draw for ToggleButton {
                     Color::rgb(0, 0, 0)
                 }
             });
-            let font = style.font.clone().unwrap_or_default();
+            let default_font = crate::core::Font::default();
+            let font = style.font.as_ref().unwrap_or(&default_font);
             context.draw_text(
                 crate::core::Point::new(
                     rect.x + rect.width as i32 / 2,
                     rect.y + rect.height as i32 / 2,
                 ),
                 &self.text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Center,
             );

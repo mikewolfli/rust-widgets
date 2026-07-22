@@ -111,6 +111,10 @@ impl Widget for Chip {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(80, 24)
+    }
 }
 
 impl Draw for Chip {

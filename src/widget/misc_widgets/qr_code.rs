@@ -106,6 +106,10 @@ impl Widget for QRCode {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(150, 150)
+    }
 }
 
 impl Draw for QRCode {

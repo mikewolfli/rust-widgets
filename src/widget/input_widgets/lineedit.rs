@@ -63,6 +63,7 @@ impl LineEdit {
         self.cursor_position = self.text.len();
         self.selection_start = None;
         self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
     /// Returns placeholder text.
     pub fn placeholder_text(&self) -> &str {
@@ -71,6 +72,7 @@ impl LineEdit {
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
         self.placeholder_text = text;
+        self.base.request_redraw();
     }
     /// Returns maximum text length.
     pub fn max_length(&self) -> Option<usize> {
@@ -90,6 +92,7 @@ impl LineEdit {
                 self.text_changed.emit(self.text.clone());
             }
         }
+        self.base.request_redraw();
     }
     /// Returns echo mode.
     pub fn echo_mode(&self) -> EchoMode {
@@ -98,6 +101,7 @@ impl LineEdit {
     /// Sets echo mode.
     pub fn set_echo_mode(&mut self, mode: EchoMode) {
         self.echo_mode = mode;
+        self.base.request_redraw();
     }
     /// Returns cursor position.
     pub fn cursor_position(&self) -> usize {
@@ -107,6 +111,7 @@ impl LineEdit {
     pub fn set_cursor_position(&mut self, position: usize) {
         self.cursor_position = position.min(self.text.len());
         self.selection_start = None;
+        self.base.request_redraw();
     }
     /// Returns selection start position.
     pub fn selection_start(&self) -> Option<usize> {
@@ -388,11 +393,12 @@ impl Draw for LineEdit {
         };
         if !display_text.is_empty() {
             let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-            let font = style.font.clone().unwrap_or_default();
+            let default_font = crate::core::Font::default();
+            let font = style.font.as_ref().unwrap_or(&default_font);
             context.draw_text(
                 Point::new(text_x, text_y as i32),
                 display_text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );

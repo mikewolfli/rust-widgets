@@ -1,5 +1,5 @@
 //! Button widget implementation.
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -245,11 +245,12 @@ impl Draw for Button {
                     Color::rgb(0, 0, 0)
                 }
             });
-            let font = style.font.clone().unwrap_or_default();
+            let default_font = Font::default();
+            let font = style.font.as_ref().unwrap_or(&default_font);
             context.draw_text(
                 Point { x: rect.x + 6, y: rect.y + rect.height as i32 / 2 },
                 &self.text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );

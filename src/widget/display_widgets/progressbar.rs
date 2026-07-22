@@ -72,6 +72,7 @@ impl ProgressBar {
         }
         self.value = clamped;
         self.value_changed.emit(self.value);
+        self.base.request_redraw();
     }
     /// Resets progress bar to minimum value.
     pub fn reset(&mut self) {
@@ -84,6 +85,7 @@ impl ProgressBar {
     /// Sets text visibility.
     pub fn set_text_visible(&mut self, visible: bool) {
         self.text_visible = visible;
+        self.base.request_redraw();
     }
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
@@ -92,6 +94,7 @@ impl ProgressBar {
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
+        self.base.request_redraw();
     }
     /// Returns whether appearance is inverted.
     pub fn is_inverted_appearance(&self) -> bool {
@@ -100,6 +103,7 @@ impl ProgressBar {
     /// Sets inverted appearance.
     pub fn set_inverted_appearance(&mut self, inverted: bool) {
         self.inverted_appearance = inverted;
+        self.base.request_redraw();
     }
     /// Returns progress as percentage (0 to 1).
     pub fn progress(&self) -> f32 {

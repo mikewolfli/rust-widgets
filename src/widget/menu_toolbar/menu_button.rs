@@ -240,6 +240,10 @@ impl Widget for MenuButton {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(120, 28)
+    }
 }
 
 impl Draw for MenuButton {

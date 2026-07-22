@@ -1144,6 +1144,10 @@ impl Widget for Icon {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(24, 24)
+    }
 }
 
 impl Draw for Icon {

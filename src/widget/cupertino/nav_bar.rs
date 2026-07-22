@@ -4,7 +4,7 @@
 //! iOS 13+ large title nav bar), back button with arrow, and translucent
 //! background effect.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -91,6 +91,10 @@ impl Widget for CupertinoNavigationBar {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(400, 44)
     }
 
     fn kind(&self) -> WidgetKind {

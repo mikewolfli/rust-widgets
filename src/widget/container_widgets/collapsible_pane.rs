@@ -1,5 +1,5 @@
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -46,6 +46,7 @@ impl CollapsiblePane {
     /// Sets the title text.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
+        self.base.request_redraw();
     }
 
     /// Returns whether the pane is currently collapsed.
@@ -76,6 +77,7 @@ impl CollapsiblePane {
         }
         self.content_child = Some(child);
         self.base.add_child(child);
+        self.base.request_redraw();
     }
 
     /// Returns the content child widget ID, if any.
@@ -91,11 +93,13 @@ impl CollapsiblePane {
     /// Sets the height of the header bar in pixels.
     pub fn set_header_height(&mut self, height: u32) {
         self.header_height = height;
+        self.base.request_redraw();
     }
 
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.base.request_redraw();
     }
 
     /// Returns the geometry of the header area.
@@ -121,6 +125,10 @@ impl Widget for CollapsiblePane {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        crate::core::Size::new(200, 100)
     }
 
     fn remove_child(&mut self, child: ObjectId) {
@@ -180,11 +188,8 @@ impl Draw for CollapsiblePane {
         // --- Draw expand/collapse arrow (▶ collapsed, ▼ expanded) ---
         let arrow_x = hdr.x + 6;
         let arrow_y = hdr.y + (hdr.height as i32 / 2) - 4;
-        let arrow_color = if self.base.is_enabled() {
-            Color::rgb(80, 80, 80)
-        } else {
-            Color::rgb(180, 180, 180)
-        };
+        let arrow_color =
+            if self.base.is_enabled() { Color::rgb(80, 80, 80) } else { Color::rgb(180, 180, 180) };
         let arrow_char = if self.collapsed { "▶" } else { "▼" };
         context.draw_text(
             Point::from_f32(arrow_x as f32, arrow_y as f32),

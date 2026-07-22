@@ -785,8 +785,8 @@ const ZIGZAG: [usize; 64] = [
 
 /// JPEG component descriptor.
 #[derive(Clone)]
-#[allow(dead_code)]
 struct JpegComponent {
+    #[allow(dead_code)]
     id: u8,
     h_sampling: u8,
     v_sampling: u8,

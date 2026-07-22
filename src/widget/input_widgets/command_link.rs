@@ -59,6 +59,11 @@ impl Widget for CommandLink {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 40)
+    }
+
     fn is_enabled(&self) -> bool {
         self.base.is_enabled()
     }

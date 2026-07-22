@@ -273,6 +273,10 @@ impl Widget for SplitButton {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(100, 28)
+    }
 }
 
 impl EventHandler for SplitButton {

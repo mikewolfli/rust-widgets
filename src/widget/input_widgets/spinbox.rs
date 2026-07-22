@@ -1,5 +1,5 @@
 //! Spin box widget for numeric input.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -48,6 +48,7 @@ impl SpinBox {
         }
         self.value = clamped;
         self.value_changed.emit(self.value);
+        self.base.request_redraw();
     }
     /// Returns minimum value.
     pub fn minimum(&self) -> i32 {
@@ -87,6 +88,7 @@ impl SpinBox {
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
+        self.base.request_redraw();
     }
     /// Returns prefix text.
     pub fn prefix(&self) -> &str {
@@ -95,6 +97,7 @@ impl SpinBox {
     /// Sets prefix text.
     pub fn set_prefix(&mut self, prefix: String) {
         self.prefix = prefix;
+        self.base.request_redraw();
     }
     /// Returns suffix text.
     pub fn suffix(&self) -> &str {
@@ -103,6 +106,7 @@ impl SpinBox {
     /// Sets suffix text.
     pub fn set_suffix(&mut self, suffix: String) {
         self.suffix = suffix;
+        self.base.request_redraw();
     }
     /// Returns special value text.
     pub fn special_value_text(&self) -> Option<&str> {
@@ -111,6 +115,7 @@ impl SpinBox {
     /// Sets special value text.
     pub fn set_special_value_text(&mut self, text: Option<String>) {
         self.special_value_text = text;
+        self.base.request_redraw();
     }
     /// Returns whether wrapping is enabled.
     pub fn wrapping(&self) -> bool {
@@ -119,6 +124,7 @@ impl SpinBox {
     /// Sets wrapping state.
     pub fn set_wrapping(&mut self, wrapping: bool) {
         self.wrapping = wrapping;
+        self.base.request_redraw();
     }
     /// Increments value by single step.
     pub fn step_up(&mut self) {
@@ -317,7 +323,13 @@ impl Draw for SpinBox {
         // Draw text
         let display_text = self.display_text();
         if !display_text.is_empty() {
-            context.draw_text(Point::new(text_x, text_y as i32), &display_text, font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y as i32),
+                &display_text,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

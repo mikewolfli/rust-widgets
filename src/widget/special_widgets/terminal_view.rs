@@ -101,6 +101,10 @@ impl Widget for TerminalView {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(600, 300)
+    }
 }
 
 impl EventHandler for TerminalView {

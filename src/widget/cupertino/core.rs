@@ -57,6 +57,10 @@ impl Widget for CupertinoSwitch {
         self.0.base_mut()
     }
 
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(50, 30)
+    }
+
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSwitch
     }
@@ -159,6 +163,10 @@ impl Widget for MaterialSnackbar {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(300, 48)
     }
 }
 
@@ -339,6 +347,10 @@ impl Widget for CupertinoAlertDialog {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(270, 150)
     }
 
     fn kind(&self) -> WidgetKind {
@@ -587,6 +599,10 @@ impl Widget for CupertinoSlider {
         &mut self.base
     }
 
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(200, 28)
+    }
+
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSlider
     }
@@ -745,6 +761,10 @@ impl Widget for MaterialNavigationRail {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(72, 400)
     }
 
     fn kind(&self) -> WidgetKind {

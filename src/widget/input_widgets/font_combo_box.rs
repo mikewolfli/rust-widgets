@@ -137,6 +137,10 @@ impl Widget for FontComboBox {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(200, 28)
+    }
 }
 use crate::render::RenderContext;
 use crate::widget::Draw;
