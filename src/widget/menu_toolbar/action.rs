@@ -41,7 +41,7 @@ impl Action {
         let mut action = Self {
             base: BaseWidget::new(WidgetKind::Action, geometry, "Action"),
             cmd: CmdAction::new("", &text),
-            text: text.clone(),
+            text,
             icon_text: String::new(),
             shortcut: String::new(),
             separator: false,

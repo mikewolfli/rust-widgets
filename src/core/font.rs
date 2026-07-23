@@ -1,13 +1,14 @@
 /// Font descriptor used by text rendering and themes.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(from = "FontSerde")]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "FontSerde"))]
 pub struct Font {
     /// Font family name.
     family: String,
     /// Font point size.
     size: f32,
     /// Font weight in CSS-like scale (100..=900).
-    #[serde(default = "Font::default_weight")]
+    #[cfg_attr(feature = "serde", serde(default = "Font::default_weight"))]
     weight: u16,
     /// Whether bold style is requested.
     bold: bool,
@@ -226,6 +227,7 @@ impl Default for Font {
         Self::default_ui()
     }
 }
+#[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
 struct FontSerde {
     family: String,
@@ -237,6 +239,7 @@ struct FontSerde {
     #[serde(default)]
     italic: bool,
 }
+#[cfg(feature = "serde")]
 impl From<FontSerde> for Font {
     fn from(value: FontSerde) -> Self {
         let normalized_weight = if value.weight == Font::default_weight() && value.bold {

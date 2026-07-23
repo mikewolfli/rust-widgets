@@ -11,6 +11,8 @@
 //! validated — so the match arms here can assume the property exists and is
 //! accessible.
 
+#[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "mini"))]
 use chrono::Weekday;
 
 use crate::core::{Alignment, Orientation};
@@ -442,6 +444,7 @@ pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "mon",

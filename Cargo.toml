@@ -46,7 +46,7 @@ desktop = [
     "controls-native", "controls-custom",
     "image", "video", "audio",
     "pdf-encryption", "js-engine",
-    "dep:chrono", "dep:serde", "dep:serde_json",
+    "dep:chrono", "serde", "dep:serde_json",
 ]
 
 ## Tablet: touch-first, GPU, native controls, no desktop extras.
@@ -123,6 +123,9 @@ js-engine = ["boa_engine"]
 webkit-engine = ["dep:webkit2gtk"]
 video-codecs = ["dep:ffmpeg-next"]
 web-http = ["dep:ureq"]
+
+# Explicit feature flag so `cfg(feature = "serde")` works with `dep:serde`.
+serde = ["dep:serde"]
 
 unstable-pipeline-routing = []
 unstable-special-widgets = []
