@@ -1,3 +1,9 @@
+//! Platform runtime initialization, backend selection, and lifecycle management.
+//!
+//! Provides `init()`, `run()`, `quit()`, `get_platform()`, and DPI scale factor
+//! querying.  Platform backends are selected at compile time based on `target_os`
+//! and feature flags, then cached in a global singleton.
+
 use crate::compat::OnceLock;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;

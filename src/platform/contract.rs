@@ -1,3 +1,9 @@
+//! Platform capability contract negotiation.
+//!
+//! Determines which capabilities are available at runtime based on the
+//! active platform backend and the selected `RuntimeProfile` (Full, Embedded, etc.).
+//! Falls back to sensible defaults when a backend does not publish a contract.
+
 use crate::core::RuntimeProfile;
 #[cfg(not(feature = "mini"))]
 use crate::platform::runtime::get_platform;

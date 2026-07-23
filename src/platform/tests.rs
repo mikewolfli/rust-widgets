@@ -1,3 +1,9 @@
+//! Platform integration tests — capability negotiation, widget creation round-trips,
+//! event injection, clipboard, IME, and drag-drop flows.
+//!
+//! All tests use `StubPlatform` (in-memory state backend) so they run on any host
+//! without native platform dependencies.
+
 use crate::core::PlatformFamily;
 use crate::platform::{Platform, StubPlatform, WidgetTriggerEvent, WidgetTriggerKind};
 #[test]
