@@ -305,6 +305,6 @@ where
 
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        log::info!("[rust_widgets.app] stage={}", stage);
+        log::info!("[rust_widgets.app] stage={stage}");
     }
 }

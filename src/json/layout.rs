@@ -107,7 +107,7 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             Ok(DeclarativeLayoutKind::Splitter { orientation, margin })
         }
         "form" | "Form" => Ok(DeclarativeLayoutKind::Form { spacing, margin }),
-        _ => Err(format!("unknown layout type: '{}'", type_str)),
+        _ => Err(format!("unknown layout type: '{type_str}'")),
     }
 }
 

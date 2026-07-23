@@ -5,7 +5,7 @@
 
 use crate::compat::HashMap;
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use serde::{Deserialize, Serialize};
 
 use crate::core::ObjectId;
@@ -14,7 +14,7 @@ pub use crate::widget::WidgetKind;
 
 /// Metadata stored for each registered widget.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
 pub struct WidgetEntry {
     /// The widget's unique identifier.
     pub id: ObjectId,
@@ -31,7 +31,7 @@ pub struct WidgetEntry {
 /// This is the runtime "index" for all widgets created through the
 /// `app` module or the raw `create_*` functions.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
 pub struct WidgetRegistry {
     entries: HashMap<ObjectId, WidgetEntry>,
     by_kind: HashMap<WidgetKind, Vec<ObjectId>>,
@@ -90,8 +90,8 @@ impl WidgetRegistry {
     #[cfg(not(feature = "mini"))]
     pub fn save(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("serialization error: {}", e))?;
-        std::fs::write(path, &json).map_err(|e| format!("write error: {}", e))
+            .map_err(|e| format!("serialization error: {e}"))?;
+        std::fs::write(path, &json).map_err(|e| format!("write error: {e}"))
     }
 
     /// Deserialize widget registry data from a JSON file at `path`.
@@ -101,9 +101,9 @@ impl WidgetRegistry {
     /// or parsing fails.
     #[cfg(not(feature = "mini"))]
     pub fn load(&mut self, path: &str) -> Result<(), String> {
-        let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {}", e))?;
+        let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
         let loaded: WidgetRegistry =
-            serde_json::from_str(&json).map_err(|e| format!("parse error: {}", e))?;
+            serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
         *self = loaded;
         Ok(())
     }

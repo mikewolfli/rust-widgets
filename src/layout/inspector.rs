@@ -184,7 +184,7 @@ impl fmt::Display for DiagnosticReport {
                 let sev = severity_label_localised(issue.severity, "en");
                 writeln!(f, "  {}. [{}] {} — {}", i + 1, sev, issue.category, issue.description)?;
                 if let Some(wid) = issue.widget_id {
-                    writeln!(f, "     widget: {}", wid)?;
+                    writeln!(f, "     widget: {wid}")?;
                 }
             }
         }
@@ -426,7 +426,7 @@ impl LayoutInspector {
             .filter(|(_, rect)| rect.width == 0 || rect.height == 0)
             .map(|(widget_id, rect)| {
                 let desc = if rect.width == 0 && rect.height == 0 {
-                    format!("widget {} has zero size (0x0) — completely invisible", widget_id)
+                    format!("widget {widget_id} has zero size (0x0) — completely invisible")
                 } else if rect.width == 0 {
                     format!(
                         "widget {} has zero width (height={}) — horizontally collapsed",
@@ -496,12 +496,11 @@ impl LayoutInspector {
                         let parent_desc = parent
                             .and_then(|p| registry.get(p))
                             .map(|e| format!("'{}'", e.label))
-                            .unwrap_or_else(|| format!("{:?}", parent));
+                            .unwrap_or_else(|| format!("{parent:?}"));
                         issues.push(Issue {
                             severity: Severity::Warning,
                             description: format!(
-                                "widgets {} and {} overlap under parent {}: {:?} vs {:?}",
-                                a_id, b_id, parent_desc, a_rect, b_rect
+                                "widgets {a_id} and {b_id} overlap under parent {parent_desc}: {a_rect:?} vs {b_rect:?}"
                             ),
                             widget_id: Some(a_id),
                             category: IssueCategory::Geometric,

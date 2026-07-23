@@ -208,7 +208,7 @@ impl Keyboard {
             // Row 0: 1 2 3 4 5 6 7 8 9 0
             (0..=9)
                 .map(|d| KeyDefinition {
-                    label: format!("{}", d),
+                    label: format!("{d}"),
                     key_code: if d == 0 { 48 } else { 48 + d as u32 },
                     width_ratio: 1.0,
                 })

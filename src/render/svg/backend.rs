@@ -290,20 +290,17 @@ impl PaintBackend for SvgPaintBackend {
                     let bmp = rgba_to_bmp(*width, *height, data);
                     let b64 = base64_encode(&bmp);
                     self.push_element(format!(
-                        r##"<image x="{}" y="{}" width="{}" height="{}" href="data:image/bmp;base64,{}" />"##,
-                        x, y, width, height, b64
+                        r##"<image x="{x}" y="{y}" width="{width}" height="{height}" href="data:image/bmp;base64,{b64}" />"##
                     ));
                 } else {
                     // No pixel data: render an error placeholder rectangle.
                     self.push_element(format!(
-                        r##"<rect x="{}" y="{}" width="{}" height="{}" fill="#fee" stroke="#c00" stroke-width="2" />"##,
-                        x, y, width, height
+                        r##"<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="#fee" stroke="#c00" stroke-width="2" />"##
                     ));
                     let cx = x + (*width as i32) / 2;
                     let cy = y + (*height as i32) / 2;
                     self.push_element(format!(
-                        r##"<text x="{}" y="{}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#c00">Image (no data)</text>"##,
-                        cx, cy
+                        r##"<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#c00">Image (no data)</text>"##
                     ));
                 }
             }
@@ -314,11 +311,10 @@ impl PaintBackend for SvgPaintBackend {
                 // Build a minimal <defs> clipPath — SVG renderers need the
                 // definition available before the referencing <g> element.
                 let clip_def = format!(
-                    r#"<clipPath id="{}"><rect x="{}" y="{}" width="{}" height="{}" /></clipPath>"#,
-                    clip_id, x, y, width, height
+                    r#"<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{width}" height="{height}" /></clipPath>"#
                 );
                 self.push_element(clip_def);
-                self.push_element(format!(r#"<g clip-path="url(#{})">"#, clip_id));
+                self.push_element(format!(r#"<g clip-path="url(#{clip_id})">"#));
                 self.clip_depth += 1;
             }
 
@@ -380,7 +376,7 @@ impl PaintBackend for SvgPaintBackend {
                         def.push_str("</radialGradient>");
                     }
                 }
-                self.push_element(format!("<defs>{}</defs>", def));
+                self.push_element(format!("<defs>{def}</defs>"));
                 self.push_element(format!(
                     r##"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#{})" />"##,
                     rect.x, rect.y, rect.width, rect.height, gid
@@ -409,8 +405,7 @@ impl PaintBackend for SvgPaintBackend {
                     ));
                 } else {
                     self.push_element(format!(
-                        r##"<path d="M {} {} A {} {} 0 {} 1 {} {}" fill="{}" stroke="{}" />"##,
-                        start_x, start_y, radius, radius, large_arc, end_x, end_y, fill, stroke
+                        r##"<path d="M {start_x} {start_y} A {radius} {radius} 0 {large_arc} 1 {end_x} {end_y}" fill="{fill}" stroke="{stroke}" />"##
                     ));
                 }
             }
@@ -430,8 +425,7 @@ impl PaintBackend for SvgPaintBackend {
                 let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
                 let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
                 self.push_element(format!(
-                    r##"<path d="{}" fill="{}" stroke="{}" stroke-width="{}" />"##,
-                    d, fill, stroke, width
+                    r##"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"##
                 ));
             }
             RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
@@ -440,12 +434,11 @@ impl PaintBackend for SvgPaintBackend {
                 let x = rect.x + offset_x - *spread;
                 let y = rect.y + offset_y - *spread;
                 let filter_attr = if *blur_radius > 0 {
-                    let filter_id = format!("shadow_blur_{}", blur_radius);
+                    let filter_id = format!("shadow_blur_{blur_radius}");
                     self.push_element(format!(
-                        r##"<filter id=\"{}\"><feGaussianBlur stdDeviation=\"{}\" /></filter>"##,
-                        filter_id, blur_radius
+                        r##"<filter id=\"{filter_id}\"><feGaussianBlur stdDeviation=\"{blur_radius}\" /></filter>"##
                     ));
-                    format!(r##" filter=\"url(#{})\""##, filter_id)
+                    format!(r##" filter=\"url(#{filter_id})\""##)
                 } else {
                     String::new()
                 };
@@ -456,8 +449,7 @@ impl PaintBackend for SvgPaintBackend {
             }
             RenderCommand::Blur { radius } => {
                 self.push_element(format!(
-                    r##"<filter id="blur_{}"><feGaussianBlur stdDeviation="{}" /></filter>"##,
-                    radius, radius
+                    r##"<filter id="blur_{radius}"><feGaussianBlur stdDeviation="{radius}" /></filter>"##
                 ));
             }
             RenderCommand::ClipPath { points } => {
@@ -470,10 +462,9 @@ impl PaintBackend for SvgPaintBackend {
                     }
                     d.push_str(" Z");
                     self.push_element(format!(
-                        r##"<clipPath id=\"{}\"><path d=\"{}\" /></clipPath>"##,
-                        clip_id, d
+                        r##"<clipPath id=\"{clip_id}\"><path d=\"{d}\" /></clipPath>"##
                     ));
-                    self.push_element(format!(r##"<g clip-path=\"url(#{})\">"##, clip_id));
+                    self.push_element(format!(r##"<g clip-path=\"url(#{clip_id})\">"##));
                     self.clip_depth += 1;
                 }
             }

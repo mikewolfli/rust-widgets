@@ -204,7 +204,7 @@ impl ChartContext for MemoryChartContext {
     fn draw_polygon(&mut self, points: &[Point], _color: Color) {
         let pts: String =
             points.iter().map(|p| format!("{},{}", p.x, p.y)).collect::<Vec<_>>().join(" ");
-        self.commands.push(format!("polygon:[{}]", pts));
+        self.commands.push(format!("polygon:[{pts}]"));
     }
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, _color: Color) {
         self.commands
@@ -226,7 +226,7 @@ impl ChartContext for MemoryChartContext {
     fn draw_path(&mut self, points: &[Point], width: f32, _color: Color) {
         let pts: String =
             points.iter().map(|p| format!("{},{}", p.x, p.y)).collect::<Vec<_>>().join(" ");
-        self.commands.push(format!("path:[{}]:{width}", pts));
+        self.commands.push(format!("path:[{pts}]:{width}"));
     }
     fn draw_ellipse(&mut self, center: Point, radius_x: f32, radius_y: f32, _color: Color) {
         self.commands.push(format!("ellipse:{},{}:{}x{}", center.x, center.y, radius_x, radius_y));

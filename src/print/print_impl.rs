@@ -365,7 +365,7 @@ impl PrintPreviewDialog {
                 true
             }
             Err(e) => {
-                log::error!("PrintPreviewDialog::show() — preview failed: {}", e);
+                log::error!("PrintPreviewDialog::show() — preview failed: {e}");
                 // Store the document back even on failure.
                 self.document = Some(document);
                 false
@@ -396,7 +396,7 @@ impl Printer {
     /// Prints a document and logs backend errors.
     pub fn print(&self, document: &dyn PrintDocument) {
         if let Err(e) = self.print_with_result(document) {
-            log::error!("[print] print failed: {}", e);
+            log::error!("[print] print failed: {e}");
         }
     }
     /// Print and return backend execution result.
@@ -410,7 +410,7 @@ impl Printer {
         pagination: &PrintPagination,
     ) {
         if let Err(e) = self.print_with_pagination_result(document, pagination) {
-            log::error!("[print] print_with_pagination failed: {}", e);
+            log::error!("[print] print_with_pagination failed: {e}");
         }
     }
     /// Print with explicit pagination controls and return backend result.
@@ -487,7 +487,7 @@ impl PrintBackend {
                     .duration_since(UNIX_EPOCH)
                     .map_err(|err| format!("clock error: {err}"))?
                     .as_millis();
-                let label = format!("memory-job-{}", ts);
+                let label = format!("memory-job-{ts}");
                 if let Ok(mut jobs) = MEMORY_PRINT_JOBS.lock() {
                     jobs.push((label, content));
                     log::info!(

@@ -142,13 +142,11 @@ impl EventLoop {
                             }
                         }));
                         if let Err(e) = result {
-                            log::error!("[event-loop] Dispatch panicked: {:?}", e);
+                            log::error!("[event-loop] Dispatch panicked: {e:?}");
                         }
                     } else {
                         log::warn!(
-                            "[event-loop] No dispatch_fn set — dropping event {:?} for target {:?}",
-                            event,
-                            target
+                            "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
                         );
                     }
                 }
@@ -175,13 +173,11 @@ impl EventLoop {
                             }
                         }));
                         if let Err(e) = result {
-                            log::error!("[event-loop] Dispatch panicked: {:?}", e);
+                            log::error!("[event-loop] Dispatch panicked: {e:?}");
                         }
                     } else {
                         log::warn!(
-                            "[event-loop] No dispatch_fn set — dropping event {:?} for target {:?}",
-                            event,
-                            target
+                            "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
                         );
                     }
                 }
@@ -220,12 +216,11 @@ impl EventLoop {
                                     }
                                 }));
                             if let Err(e) = result {
-                                log::error!("[event-loop] Dispatch panicked: {:?}", e);
+                                log::error!("[event-loop] Dispatch panicked: {e:?}");
                             }
                         } else {
                             log::warn!(
-                                "[event-loop] No dispatch_fn set — dropping idle event {:?} for target {:?}",
-                                event, target
+                                "[event-loop] No dispatch_fn set — dropping idle event {event:?} for target {target:?}"
                             );
                         }
                     }
@@ -258,7 +253,7 @@ impl EventLoop {
             self.sender.post(0, Event::Custom { name: "__stop_wake".to_string(), payload: vec![] });
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
-                log::error!("[event-loop] Thread join failed: {:?}", e);
+                log::error!("[event-loop] Thread join failed: {e:?}");
             }
         }
     }

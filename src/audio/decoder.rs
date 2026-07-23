@@ -109,7 +109,7 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         16 => SampleFormat::I16,
         24 => SampleFormat::I24,
         32 => SampleFormat::I32,
-        _ => return Err(format!("Unsupported bits per sample: {}", bits_per_sample)),
+        _ => return Err(format!("Unsupported bits per sample: {bits_per_sample}")),
     };
     let samples = fmt.to_f32(raw_samples);
     let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels.max(1));
@@ -153,7 +153,7 @@ fn decode_mp3(data: &[u8]) -> Result<AudioBuffer, String> {
                 }
             }
             Err(minimp3_fixed::Error::Eof) => break,
-            Err(e) => return Err(format!("MP3 decode error: {:?}", e)),
+            Err(e) => return Err(format!("MP3 decode error: {e:?}")),
         }
     }
 

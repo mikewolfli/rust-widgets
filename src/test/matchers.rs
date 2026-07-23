@@ -69,30 +69,19 @@ impl FloatMatcher for f32 {
 pub fn assert_close(a: f32, b: f32, tolerance: f32, message: &str) {
     assert!(
         a.is_close_to(b, tolerance),
-        "{}: expected {} to be close to {} (tolerance {})",
-        message,
-        a,
-        b,
-        tolerance
+        "{message}: expected {a} to be close to {b} (tolerance {tolerance})"
     );
 }
 pub fn assert_color_eq(a: Color, b: Color, tolerance: u8, message: &str) {
     assert!(
         a.is_close_to(b, tolerance),
-        "{}: expected {:?} to be close to {:?} (tolerance {})",
-        message,
-        a,
-        b,
-        tolerance
+        "{message}: expected {a:?} to be close to {b:?} (tolerance {tolerance})"
     );
 }
 pub fn assert_rect_contains(container: Rect, contained: Rect, message: &str) {
     assert!(
         container.contains_rect(&contained),
-        "{}: {:?} should contain {:?}",
-        message,
-        container,
-        contained
+        "{message}: {container:?} should contain {contained:?}"
     );
 }
 pub fn assert_no_overlap(rects: &[Rect], message: &str) {

@@ -353,7 +353,7 @@ impl Draw for PieChart {
                 // Draw percentage on the arc (inside, not overlapping label)
                 if self.show_percentages && total > 0.0 {
                     let pct = (slice.value / total * 100.0).round() as i32;
-                    let pct_text = format!("{}%", pct);
+                    let pct_text = format!("{pct}%");
                     // Position percentage inside the sector, halfway between center and edge
                     let pct_radius = if self.donut {
                         (outer_radius + inner_radius) * 0.5

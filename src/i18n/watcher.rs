@@ -30,7 +30,7 @@ impl I18nFileWatcher {
                                     language: lang.to_string(),
                                     timestamp: SystemTime::now(),
                                 }) {
-                                    log::error!("[i18n] Watcher send failed: {:?}", e);
+                                    log::error!("[i18n] Watcher send failed: {e:?}");
                                 }
                             }
                         }
@@ -38,13 +38,13 @@ impl I18nFileWatcher {
                 }
             }
             Err(e) => {
-                log::error!("[i18n] Watcher error: {:?}", e);
+                log::error!("[i18n] Watcher error: {e:?}");
             }
         })
-        .map_err(|e| format!("Failed to create watcher: {}", e))?;
+        .map_err(|e| format!("Failed to create watcher: {e}"))?;
         watcher
             .watch(dir, RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch directory: {}", e))?;
+            .map_err(|e| format!("Failed to watch directory: {e}"))?;
         self.watcher = Some(watcher);
         Ok(())
     }
@@ -91,11 +91,11 @@ pub fn init_with_hot_reload(
     let mut file_watcher = I18nFileWatcher::new();
     if let Some(dir) = watch_dir {
         if let Err(e) = file_watcher.watch_directory(dir) {
-            report.errors.push(format!("Failed to setup file watcher: {}", e));
+            report.errors.push(format!("Failed to setup file watcher: {e}"));
         } else {
             file_watcher.enable_hot_reload();
             if diagnostics {
-                log::info!("[i18n] Hot reload enabled for directory: {:?}", dir);
+                log::info!("[i18n] Hot reload enabled for directory: {dir:?}");
             }
         }
     }

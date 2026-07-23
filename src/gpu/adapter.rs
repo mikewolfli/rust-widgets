@@ -446,7 +446,7 @@ impl fmt::Display for AdapterSelectionError {
             Self::NoAdapterFound => write!(f, "No GPU adapter found"),
             Self::DiscreteGpuNotFound => write!(f, "Discrete GPU not found"),
             Self::IntegratedGpuNotFound => write!(f, "Integrated GPU not found"),
-            Self::RequestFailed(msg) => write!(f, "Adapter request failed: {}", msg),
+            Self::RequestFailed(msg) => write!(f, "Adapter request failed: {msg}"),
         }
     }
 }

@@ -60,7 +60,7 @@ impl ConfigPersistence {
         content.push_str("# This file contains user overrides for menu settings\n");
         content.push_str("# Delete this file to reset to hardware defaults\n\n");
         for (key, value) in &data {
-            content.push_str(&format!("{}={}\n", key, value));
+            content.push_str(&format!("{key}={value}\n"));
         }
         let path = self.config_file_path();
         let mut file = fs::File::create(path)?;

@@ -154,7 +154,7 @@ impl Draw for MobileDatePicker {
         let month_offset = (self.month as usize - 1) as i32;
 
         let max_day = days_in_month(self.year, self.month);
-        let day_items: Vec<String> = (1..=max_day).map(|d| format!("{:02}", d)).collect();
+        let day_items: Vec<String> = (1..=max_day).map(|d| format!("{d:02}")).collect();
         let day_offset = (self.day as usize - 1) as i32;
 
         let columns: [(i32, Vec<String>, &str); 3] = [

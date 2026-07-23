@@ -291,7 +291,7 @@ fn wrap_text(context: &RenderContext, text: &str, font: &Font, max_width: usize)
         let candidate = if current_line.is_empty() {
             word.to_string()
         } else {
-            format!("{} {}", current_line, word)
+            format!("{current_line} {word}")
         };
         let metrics = context.measure_text(&candidate, font);
         if metrics.width as usize <= max_width || current_line.is_empty() {

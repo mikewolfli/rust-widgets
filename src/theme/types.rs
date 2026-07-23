@@ -59,7 +59,7 @@ impl Color {
     /// # Errors
     /// Returns an error if the hex string is malformed or missing the `#` prefix.
     pub fn from_hex(hex: &str) -> Result<Self, String> {
-        Self::parse_hex(hex).ok_or_else(|| format!("Invalid hex color string: '{}'", hex))
+        Self::parse_hex(hex).ok_or_else(|| format!("Invalid hex color string: '{hex}'"))
     }
 
     /// Serializes the color to `"#RRGGBBAA"` hex format.

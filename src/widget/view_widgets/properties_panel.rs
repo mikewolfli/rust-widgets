@@ -228,7 +228,7 @@ impl PropertiesPanel {
                 if *n == n.floor() && n.is_finite() {
                     format!("{}", *n as i64)
                 } else {
-                    format!("{:.2}", n)
+                    format!("{n:.2}")
                 }
             }
             PropertyValue::Bool(b) => {

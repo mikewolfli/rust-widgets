@@ -402,7 +402,7 @@ impl CssParser {
                 "maroon" => Ok(Color::rgba(128, 0, 0, 255)),
                 "olive" => Ok(Color::rgba(128, 128, 0, 255)),
                 "transparent" => Ok(Color::rgba(0, 0, 0, 0)),
-                _ => Err(format!("Unknown color: {}", v)),
+                _ => Err(format!("Unknown color: {v}")),
             }
         }
     }
@@ -412,37 +412,37 @@ impl CssParser {
         let (r, g, b, a) = match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?
+                    .map_err(|_| format!("Invalid hex: {hex}"))?
                     * 17;
                 let g = u8::from_str_radix(&hex[1..2], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?
+                    .map_err(|_| format!("Invalid hex: {hex}"))?
                     * 17;
                 let b = u8::from_str_radix(&hex[2..3], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?
+                    .map_err(|_| format!("Invalid hex: {hex}"))?
                     * 17;
                 (r, g, b, 255)
             }
             6 => {
                 let r = u8::from_str_radix(&hex[0..2], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 let g = u8::from_str_radix(&hex[2..4], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 let b = u8::from_str_radix(&hex[4..6], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 (r, g, b, 255)
             }
             8 => {
                 let r = u8::from_str_radix(&hex[0..2], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 let g = u8::from_str_radix(&hex[2..4], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 let b = u8::from_str_radix(&hex[4..6], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 let a = u8::from_str_radix(&hex[6..8], 16)
-                    .map_err(|_| format!("Invalid hex: {}", hex))?;
+                    .map_err(|_| format!("Invalid hex: {hex}"))?;
                 (r, g, b, a)
             }
-            _ => return Err(format!("Invalid hex color length: #{}", hex)),
+            _ => return Err(format!("Invalid hex color length: #{hex}")),
         };
         Ok(Color::rgba(r, g, b, a))
     }
@@ -453,19 +453,19 @@ impl CssParser {
         let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
         match parts.len() {
             3 => {
-                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgb: {}", v))?;
-                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgb: {}", v))?;
-                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgb: {}", v))?;
+                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
+                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
+                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
                 Ok(Color::rgba(r, g, b, 255))
             }
             4 => {
-                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgba: {}", v))?;
-                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgba: {}", v))?;
-                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgba: {}", v))?;
-                let a: f32 = parts[3].parse().map_err(|_| format!("Invalid rgba: {}", v))?;
+                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
+                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
+                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
+                let a: f32 = parts[3].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
                 Ok(Color::rgba(r, g, b, (a * 255.0).round() as u8))
             }
-            _ => Err(format!("Invalid rgb(a) format: {}", v)),
+            _ => Err(format!("Invalid rgb(a) format: {v}")),
         }
     }
 
@@ -473,13 +473,13 @@ impl CssParser {
     fn parse_length(value: &str) -> Result<u32, String> {
         let v = value.trim();
         let num_str = v.trim_end_matches("px").trim_end_matches("pt").trim_end_matches("em").trim();
-        let f: f32 = num_str.parse().map_err(|_| format!("Invalid length: {}", value))?;
+        let f: f32 = num_str.parse().map_err(|_| format!("Invalid length: {value}"))?;
         Ok(f.max(0.0) as u32)
     }
 
     fn parse_float(value: &str) -> Result<f32, String> {
         let v = value.trim().trim_end_matches("px").trim_end_matches("pt").trim();
-        v.parse::<f32>().map_err(|_| format!("Invalid number: {}", value))
+        v.parse::<f32>().map_err(|_| format!("Invalid number: {value}"))
     }
 
     /// Parse 1-4 space-separated CSS values into exactly N values (cloned if fewer).
@@ -556,7 +556,7 @@ pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
     // SAFETY: Same poison recovery strategy — stale data is safe to read.
     let map = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
     let mut result = Vec::new();
-    let suffix = format!(":{}", rule_name);
+    let suffix = format!(":{rule_name}");
     for (key, decls) in map.iter() {
         if key.ends_with(&suffix) {
             result.extend(decls.clone());

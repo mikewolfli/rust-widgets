@@ -203,7 +203,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(ms) = val.trim().parse::<f64>() {
                 return Some(Duration::from_secs_f64(ms / 1000.0));
             }
-            log::warn!("[performance] RUST_WIDGETS_GPU_TIME_MS value '{}' is not a valid f64", val);
+            log::warn!("[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is not a valid f64");
         }
         log::debug!(
             "[performance] measure_gpu_time: no GPU query backend available (strategy={:?})",
@@ -224,7 +224,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(v) = val.trim().parse::<f32>() {
                 return v.clamp(0.0, 1.0);
             }
-            log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{}' is not a valid f32", val);
+            log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{val}' is not a valid f32");
         }
         // 2. Linux: /proc/self/status
         #[cfg(target_os = "linux")]
@@ -281,7 +281,7 @@ impl AdaptivePerformanceMonitor {
             if let Ok(v) = val.trim().parse::<f32>() {
                 return v.clamp(0.0, 1.0);
             }
-            log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{}' is not a valid f32", val);
+            log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{val}' is not a valid f32");
         }
         // 2. Linux: /proc/self/status → Threads:
         #[cfg(target_os = "linux")]
@@ -297,8 +297,7 @@ impl AdaptivePerformanceMonitor {
                                 .unwrap_or(4.0);
                             let ratio = (threads / (cores * 2.0)).clamp(0.0, 1.0);
                             log::debug!(
-                                "[performance] CPU utilization from /proc/self/status: {} threads / {} cores = {ratio:.3}",
-                                threads, cores
+                                "[performance] CPU utilization from /proc/self/status: {threads} threads / {cores} cores = {ratio:.3}"
                             );
                             return ratio;
                         }
@@ -508,8 +507,7 @@ impl PerformanceTrap {
         match self {
             Self::LowFrameRate { current_fps, threshold } => {
                 format!(
-                    "Performance warning: Frame rate is {:.1} FPS (below {:.1} FPS). Consider lowering graphics quality or closing other applications.",
-                    current_fps, threshold
+                    "Performance warning: Frame rate is {current_fps:.1} FPS (below {threshold:.1} FPS). Consider lowering graphics quality or closing other applications."
                 )
             }
             Self::MemoryPressure { utilization } => {

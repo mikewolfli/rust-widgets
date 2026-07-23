@@ -72,7 +72,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
             let mut stream_prefix = String::new();
             if let Some(path) = &font.source_path {
                 let normalized = Path::new(path).to_string_lossy();
-                stream_prefix.push_str(&format!("% font-source:{}\\n", normalized));
+                stream_prefix.push_str(&format!("% font-source:{normalized}\\n"));
             }
             let mut stream_bytes = stream_prefix.into_bytes();
             stream_bytes.extend_from_slice(&font.embedded_data);
@@ -162,7 +162,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         } else {
             let refs =
                 all_annot_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
-            format!(" /Annots [{}]", refs)
+            format!(" /Annots [{refs}]")
         };
         let page_obj_id = (objects.len() + 1) as u32;
         let size = page.size();
@@ -197,11 +197,11 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
             .map(|field_id| format!("{field_id} 0 R"))
             .collect::<Vec<_>>()
             .join(" ");
-        objects.push(format!("<< /Fields [{}] /NeedAppearances true >>", refs));
+        objects.push(format!("<< /Fields [{refs}] /NeedAppearances true >>"));
         Some(id)
     };
     objects[0] = if let Some(acroform_id) = acroform_obj_id {
-        format!("<< /Type /Catalog /Pages 2 0 R /AcroForm {} 0 R >>", acroform_id)
+        format!("<< /Type /Catalog /Pages 2 0 R /AcroForm {acroform_id} 0 R >>")
     } else {
         "<< /Type /Catalog /Pages 2 0 R >>".to_string()
     };
@@ -212,13 +212,13 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     for (idx, body) in objects.iter().enumerate() {
         offsets.push(out.len());
         let obj_id = idx + 1;
-        out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", obj_id, body).as_bytes());
+        out.extend_from_slice(format!("{obj_id} 0 obj\n{body}\nendobj\n").as_bytes());
     }
     let xref_offset = out.len();
     out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
     out.extend_from_slice(b"0000000000 65535 f \n");
     for offset in offsets {
-        out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
     out.extend_from_slice(
         format!(
@@ -240,7 +240,7 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
 pub(crate) fn serialize_pdf_annotation(annotation: &Annotation) -> String {
     let subtype = annotation_type_name(annotation.annotation_type);
     let rect = pdf_rect(&annotation.rect);
-    let mut dict = format!("<< /Type /Annot /Subtype /{} /Rect [{}]", subtype, rect);
+    let mut dict = format!("<< /Type /Annot /Subtype /{subtype} /Rect [{rect}]");
     // Contents (optional)
     if !annotation.contents.is_empty() {
         dict.push_str(&format!(" /Contents ({})", pdf_escape_literal(&annotation.contents)));
@@ -263,7 +263,7 @@ pub(crate) fn serialize_pdf_annotation(annotation: &Annotation) -> String {
     // Flags (optional, default 0)
     let flags = encode_annotation_flags(annotation.flags);
     if flags != 0 {
-        dict.push_str(&format!(" /F {}", flags));
+        dict.push_str(&format!(" /F {flags}"));
     }
     // Color /C array (optional)
     if let Some(color) = &annotation.color {
@@ -358,7 +358,7 @@ fn encode_annotation_flags(flags: AnnotationFlags) -> u32 {
 /// Link annotation dictionary object.
 pub(crate) fn serialize_pdf_hyperlink(link: &PdfHyperlink) -> String {
     let rect = pdf_rect(&link.rect);
-    let mut dict = format!("<< /Type /Annot /Subtype /Link /Rect [{}]", rect);
+    let mut dict = format!("<< /Type /Annot /Subtype /Link /Rect [{rect}]");
     // Border (optional)
     dict.push_str(&format!(
         " /Border [{} {} {}",
@@ -367,8 +367,8 @@ pub(crate) fn serialize_pdf_hyperlink(link: &PdfHyperlink) -> String {
         link.border.border_width,
     ));
     if let Some(ref dash) = link.border.dash_pattern {
-        let dash_str = dash.iter().map(|v| format!("{:.1}", v)).collect::<Vec<_>>().join(" ");
-        dict.push_str(&format!(" /D [{}]", dash_str));
+        let dash_str = dash.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(" ");
+        dict.push_str(&format!(" /D [{dash_str}]"));
     }
     dict.push(']');
     // Highlight mode
@@ -397,7 +397,7 @@ fn highlight_mode_name(mode: crate::pdf::hyperlink::HighlightMode) -> &'static s
 fn serialize_link_action(action: &HyperlinkLinkAction) -> String {
     match action {
         HyperlinkLinkAction::GoToPage { page, x, y } => {
-            format!("<< /Type /Action /S /GoTo /D [{} 0 R /XYZ {} {} null] >>", page, x, y)
+            format!("<< /Type /Action /S /GoTo /D [{page} 0 R /XYZ {x} {y} null] >>")
         }
         HyperlinkLinkAction::GoToNamedDestination(name) => {
             format!("<< /Type /Action /S /GoTo /D ({}) >>", pdf_escape_literal(name))
@@ -420,7 +420,7 @@ fn serialize_link_action(action: &HyperlinkLinkAction) -> String {
                 crate::pdf::hyperlink::NamedAction::Print => "Print",
                 crate::pdf::hyperlink::NamedAction::SaveAs => "SaveAs",
             };
-            format!("<< /Type /Action /S /Named /N /{} >>", name_str)
+            format!("<< /Type /Action /S /Named /N /{name_str} >>")
         }
     }
 }
@@ -532,7 +532,7 @@ pub(crate) fn pdf_rect(rect: &Rect) -> String {
     let y1 = rect.y;
     let x2 = rect.x + rect.width as f32 as i32;
     let y2 = rect.y + rect.height as f32 as i32;
-    format!("{} {} {} {}", x1, y1, x2, y2)
+    format!("{x1} {y1} {x2} {y2}")
 }
 
 pub(crate) fn pdf_form_field_name(field: &PdfFormField) -> &str {

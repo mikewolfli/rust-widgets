@@ -286,7 +286,7 @@ impl Draw for MediaPlayer {
         );
         context.draw_text(
             Point::new(rect.x + 10, rect.y + 36),
-            &format!("{} | {} | {}", state, vol, fs),
+            &format!("{state} | {vol} | {fs}"),
             &Font::default(),
             Color::rgb(190, 202, 220),
             HorizontalAlignment::Left,

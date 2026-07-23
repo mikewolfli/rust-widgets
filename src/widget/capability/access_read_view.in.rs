@@ -125,7 +125,7 @@ pub fn read_view_props(
         "projection_state" => {
         if let Some(tt) = widget_as::<TreeTable>(widget) {
         let selected = match tt.selected_row() {
-        Some(r) => format!("Some({})", r),
+        Some(r) => format!("Some({r})"),
         None => "None".to_string(),
         };
         Ok(CapabilityValue::String(format!(

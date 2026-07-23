@@ -291,7 +291,7 @@ impl From<&str> for Color {
         match Self::parse_hex(s) {
             Some(c) => c,
             None => {
-                log::warn!("Color::from(\"{}\") failed to parse, falling back to BLACK", s);
+                log::warn!("Color::from(\"{s}\") failed to parse, falling back to BLACK");
                 Self::BLACK
             }
         }

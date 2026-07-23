@@ -263,7 +263,7 @@ impl GpuManager {
     fn handle_performance_trap(&self, trap: PerformanceTrap) {
         match &trap {
             PerformanceTrap::LowFrameRate { current_fps, .. } => {
-                log::warn!("[gpu] Low frame rate detected: {:.1} FPS", current_fps);
+                log::warn!("[gpu] Low frame rate detected: {current_fps:.1} FPS");
             }
             PerformanceTrap::MemoryPressure { utilization } => {
                 log::warn!("[gpu] Memory pressure: {:.0}%", utilization * 100.0);
@@ -392,7 +392,7 @@ impl GpuManager {
         }
         if let Some(pool_stats) = self.buffer_pool_stats() {
             let utilization = pool_stats.used_size as f32 / pool_stats.total_size as f32 * 100.0;
-            summary.push_str(&format!("Buffer Pool: {:.0}%\n", utilization));
+            summary.push_str(&format!("Buffer Pool: {utilization:.0}%\n"));
         }
         summary
     }
@@ -461,8 +461,8 @@ pub enum GpuManagerError {
 impl std::fmt::Display for GpuManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AdapterSelectionFailed(msg) => write!(f, "Adapter selection failed: {}", msg),
-            Self::DeviceCreationFailed(msg) => write!(f, "Device creation failed: {}", msg),
+            Self::AdapterSelectionFailed(msg) => write!(f, "Adapter selection failed: {msg}"),
+            Self::DeviceCreationFailed(msg) => write!(f, "Device creation failed: {msg}"),
             Self::NoSuitableGpu => write!(f, "No suitable GPU found"),
         }
     }

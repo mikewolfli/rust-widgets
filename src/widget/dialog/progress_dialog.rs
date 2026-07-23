@@ -201,7 +201,7 @@ impl Draw for ProgressDialog {
         let pct = (self.progress_fraction() * 100.0) as i32;
         context.draw_text(
             Point::new(rect.x + 10 + (bar_w as i32 / 2), bar_y + (bar_h as i32 / 2)),
-            &format!("{}%", pct),
+            &format!("{pct}%"),
             &Font::default(),
             Color::rgb(0, 0, 0),
             HorizontalAlignment::Left,

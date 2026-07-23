@@ -115,7 +115,7 @@ impl PluginManager {
             self.allowed_permissions.remove(&id);
             Ok(())
         } else {
-            Err(PluginError::new(format!("Plugin {} not found", id)))
+            Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
     pub fn enable(&mut self, id: PluginId) -> Result<(), PluginError> {
@@ -133,7 +133,7 @@ impl PluginManager {
                 )))
             }
         } else {
-            Err(PluginError::new(format!("Plugin {} not found", id)))
+            Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
     pub fn disable(&mut self, id: PluginId) -> Result<(), PluginError> {
@@ -149,7 +149,7 @@ impl PluginManager {
                 )))
             }
         } else {
-            Err(PluginError::new(format!("Plugin {} not found", id)))
+            Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
     pub fn grant_permission(&mut self, id: PluginId, permission: PluginPermission) -> bool {

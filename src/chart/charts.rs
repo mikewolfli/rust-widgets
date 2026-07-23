@@ -497,14 +497,12 @@ impl Chart for PieChart {
     }
     fn set_x_axis_label(&mut self, label: String) {
         log::debug!(
-            "[chart] PieChart.set_x_axis_label ignored: pie charts have no x-axis (label='{}')",
-            label
+            "[chart] PieChart.set_x_axis_label ignored: pie charts have no x-axis (label='{label}')"
         );
     }
     fn set_y_axis_label(&mut self, label: String) {
         log::debug!(
-            "[chart] PieChart.set_y_axis_label ignored: pie charts have no y-axis (label='{}')",
-            label
+            "[chart] PieChart.set_y_axis_label ignored: pie charts have no y-axis (label='{label}')"
         );
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {

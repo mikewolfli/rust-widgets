@@ -145,11 +145,11 @@ impl CookieJar {
         self.cookies.insert(key, cookie);
     }
     pub fn get(&self, domain: &str, name: &str) -> Option<&Cookie> {
-        let key = format!("{}:{}", domain, name);
+        let key = format!("{domain}:{name}");
         self.cookies.get(&key)
     }
     pub fn remove(&mut self, domain: &str, name: &str) -> Option<Cookie> {
-        let key = format!("{}:{}", domain, name);
+        let key = format!("{domain}:{name}");
         self.cookies.remove(&key)
     }
     pub fn clear(&mut self) {

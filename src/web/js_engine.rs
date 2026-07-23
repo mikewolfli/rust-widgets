@@ -50,7 +50,7 @@ impl JsValue {
                     o.iter().map(|(k, v)| format!("{}: {}", k, v.to_string())).collect();
                 format!("{{{}}}", items.join(", "))
             }
-            JsValue::Function(name) => format!("[Function: {}]", name),
+            JsValue::Function(name) => format!("[Function: {name}]"),
             JsValue::Ident(s) => s.clone(),
             JsValue::FunctionDef { name, params, .. } => {
                 format!("[Function: {}({})]", name, params.join(", "))
@@ -100,7 +100,7 @@ impl std::fmt::Display for JsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "JsError: {}", self.message)?;
         if let (Some(line), Some(column)) = (self.line, self.column) {
-            write!(f, " at line {}, column {}", line, column)?;
+            write!(f, " at line {line}, column {column}")?;
         }
         Ok(())
     }
@@ -565,7 +565,7 @@ impl JsEngine for SimpleJsEngine {
             }
             _ => {
                 // Try to find a user-defined function
-                Err(JsError::new(format!("Function '{}' is not defined", name)))
+                Err(JsError::new(format!("Function '{name}' is not defined")))
             }
         }
     }
@@ -635,7 +635,7 @@ impl BoaJsEngine {
         let result = self
             .context
             .eval(boa_engine::Source::from_bytes(source))
-            .map_err(|e| format!("JS error: {}", e))?;
+            .map_err(|e| format!("JS error: {e}"))?;
         Ok(js_value_to_ours(&result, &mut self.context))
     }
 
@@ -654,7 +654,7 @@ impl BoaJsEngine {
         let name = boa_engine::JsString::from(name);
         self.context
             .register_global_builtin_callable(name, 0, func)
-            .map_err(|e| format!("Failed to register function: {}", e))?;
+            .map_err(|e| format!("Failed to register function: {e}"))?;
         Ok(())
     }
 

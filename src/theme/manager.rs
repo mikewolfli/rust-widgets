@@ -38,8 +38,8 @@ impl ThemeManager {
     pub fn save_theme(&self, path: &str) -> Result<(), String> {
         let theme = self.current_theme().ok_or_else(|| "No active theme to save".to_string())?;
         let json = serde_json::to_string_pretty(theme)
-            .map_err(|e| format!("Failed to serialize theme: {}", e))?;
-        std::fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {}", e))?;
+            .map_err(|e| format!("Failed to serialize theme: {e}"))?;
+        std::fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {e}"))?;
         Ok(())
     }
 

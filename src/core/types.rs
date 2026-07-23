@@ -66,10 +66,10 @@ pub enum CoreError {
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
-            Self::NotSupported(msg) => write!(f, "Not supported: {}", msg),
-            Self::NotFound(msg) => write!(f, "Not found: {}", msg),
-            Self::Internal(msg) => write!(f, "Internal error: {}", msg),
+            Self::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
+            Self::NotSupported(msg) => write!(f, "Not supported: {msg}"),
+            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
+            Self::Internal(msg) => write!(f, "Internal error: {msg}"),
         }
     }
 }
@@ -132,11 +132,11 @@ impl Version {
     pub fn parse_str(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
-            return Err(format!("Invalid version format: '{}'. Expected 'major.minor.patch'", s));
+            return Err(format!("Invalid version format: '{s}'. Expected 'major.minor.patch'"));
         }
-        let major = parts[0].parse::<u16>().map_err(|e| format!("Invalid major version: {}", e))?;
-        let minor = parts[1].parse::<u16>().map_err(|e| format!("Invalid minor version: {}", e))?;
-        let patch = parts[2].parse::<u16>().map_err(|e| format!("Invalid patch version: {}", e))?;
+        let major = parts[0].parse::<u16>().map_err(|e| format!("Invalid major version: {e}"))?;
+        let minor = parts[1].parse::<u16>().map_err(|e| format!("Invalid minor version: {e}"))?;
+        let patch = parts[2].parse::<u16>().map_err(|e| format!("Invalid patch version: {e}"))?;
         Ok(Self { major, minor, patch })
     }
 }

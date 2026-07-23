@@ -284,7 +284,7 @@ fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<V
     objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>".to_vec();
 
     // Pages tree (object 2)
-    let kids = page_obj_ids.iter().map(|id| format!("{} 0 R", id)).collect::<Vec<_>>().join(" ");
+    let kids = page_obj_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
     objects[1] =
         format!("<< /Type /Pages /Count {} /Kids [{}] >>", page_obj_ids.len(), kids,).into_bytes();
 
@@ -296,7 +296,7 @@ fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<V
     for (idx, body) in objects.iter().enumerate() {
         offsets.push(out.len());
         let obj_id = idx + 1;
-        out.extend_from_slice(format!("{} 0 obj\n", obj_id).as_bytes());
+        out.extend_from_slice(format!("{obj_id} 0 obj\n").as_bytes());
         out.extend_from_slice(body);
         out.extend_from_slice(b"\nendobj\n");
     }
@@ -305,7 +305,7 @@ fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<V
     out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
     out.extend_from_slice(b"0000000000 65535 f \n");
     for offset in offsets {
-        out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
     out.extend_from_slice(
         format!(
@@ -397,12 +397,12 @@ fn svg_to_pdf_operators(svg: &str) -> String {
 
             if w > 0.0 && h > 0.0 {
                 if let Some((r, g, b)) = fill {
-                    pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", r, g, b));
+                    pdf.push_str(&format!("{r:.4} {g:.4} {b:.4} rg\n"));
                 }
                 if let Some((r, g, b)) = stroke {
-                    pdf.push_str(&format!("{:.4} {:.4} {:.4} RG\n", r, g, b));
+                    pdf.push_str(&format!("{r:.4} {g:.4} {b:.4} RG\n"));
                 }
-                pdf.push_str(&format!("{:.2} {:.2} {:.2} {:.2} re ", x, y, w, h));
+                pdf.push_str(&format!("{x:.2} {y:.2} {w:.2} {h:.2} re "));
                 if has_fill && has_stroke {
                     pdf.push_str("B\n");
                 } else if has_fill {
@@ -420,7 +420,7 @@ fn svg_to_pdf_operators(svg: &str) -> String {
             if r > 0.0 {
                 if let Some(val) = extract_attr(element, "fill") {
                     if let Some((rg, g, b)) = parse_svg_color(&val) {
-                        pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", rg, g, b));
+                        pdf.push_str(&format!("{rg:.4} {g:.4} {b:.4} rg\n"));
                     }
                 }
                 // Approximate circle with 4 cubic b\u00e9zier curves
@@ -462,7 +462,7 @@ fn svg_to_pdf_operators(svg: &str) -> String {
             if let Some(d) = extract_attr(element, "d") {
                 if let Some(val) = extract_attr(element, "fill") {
                     if let Some((rg, g, b)) = parse_svg_color(&val) {
-                        pdf.push_str(&format!("{:.4} {:.4} {:.4} rg\n", rg, g, b));
+                        pdf.push_str(&format!("{rg:.4} {g:.4} {b:.4} rg\n"));
                     }
                 }
                 pdf.push_str(&svg_path_to_pdf(&d));
@@ -475,7 +475,7 @@ fn svg_to_pdf_operators(svg: &str) -> String {
 
 /// Extract the value of an XML attribute by name using simple string search.
 fn extract_attr(s: &str, name: &str) -> Option<String> {
-    let pattern = format!("{}=\"", name);
+    let pattern = format!("{name}=\"");
     if let Some(start) = s.find(&pattern) {
         let val_start = start + pattern.len();
         if let Some(end) = s[val_start..].find('"') {

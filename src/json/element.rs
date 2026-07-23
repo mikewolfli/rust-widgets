@@ -77,7 +77,7 @@ impl BoundJsonLayout {
     /// ```
     pub fn widget_by_name<T: WidgetHandle>(&self, name: &str) -> Result<T, String> {
         let raw_id =
-            self.id(name).ok_or_else(|| format!("widget '{}' not found in layout", name))?;
+            self.id(name).ok_or_else(|| format!("widget '{name}' not found in layout"))?;
         Ok(T::from_raw(raw_id))
     }
 

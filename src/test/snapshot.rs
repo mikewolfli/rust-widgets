@@ -26,7 +26,7 @@ impl Snapshot {
         Ok(())
     }
     pub fn load(name: &str, dir: &str) -> Result<Self, String> {
-        let path = Path::new(dir).join(format!("{}.bin", name));
+        let path = Path::new(dir).join(format!("{name}.bin"));
         let data = fs::read(&path).map_err(|e| e.to_string())?;
         Ok(Self { name: name.to_string(), data, width: 0, height: 0 })
     }
@@ -56,7 +56,7 @@ impl Snapshot {
             SnapshotComparison::Similar { diff_percentage }
         } else {
             SnapshotComparison::Different {
-                reason: format!("Difference: {:.2}%", diff_percentage),
+                reason: format!("Difference: {diff_percentage:.2}%"),
                 diff_percentage,
             }
         }
@@ -99,11 +99,11 @@ impl SnapshotManager {
         self
     }
     pub fn compare_or_create(&self, name: &str, snapshot: &Snapshot) -> SnapshotComparison {
-        let existing_path = Path::new(&self.snapshot_dir).join(format!("{}.bin", name));
+        let existing_path = Path::new(&self.snapshot_dir).join(format!("{name}.bin"));
         if !existing_path.exists() || self.update_mode {
             if let Err(e) = snapshot.save(&self.snapshot_dir) {
                 return SnapshotComparison::Different {
-                    reason: format!("Failed to save: {}", e),
+                    reason: format!("Failed to save: {e}"),
                     diff_percentage: 100.0,
                 };
             }
@@ -112,7 +112,7 @@ impl SnapshotManager {
         match Snapshot::load(name, &self.snapshot_dir) {
             Ok(existing) => existing.compare(snapshot, self.tolerance),
             Err(e) => SnapshotComparison::Different {
-                reason: format!("Failed to load: {}", e),
+                reason: format!("Failed to load: {e}"),
                 diff_percentage: 100.0,
             },
         }
@@ -164,14 +164,14 @@ impl PerformanceSnapshot {
         let content = self
             .metrics
             .iter()
-            .map(|(name, value)| format!("{}={}", name, value))
+            .map(|(name, value)| format!("{name}={value}"))
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(&path, content).map_err(|e| e.to_string())?;
         Ok(())
     }
     pub fn load(name: &str, dir: &str) -> Result<Self, String> {
-        let path = Path::new(dir).join(format!("{}.perf", name));
+        let path = Path::new(dir).join(format!("{name}.perf"));
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let mut snapshot = Self::new(name);
         for line in content.lines() {

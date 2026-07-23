@@ -414,7 +414,7 @@ impl LottieWidget {
         // Attempt to parse the data as JSON and extract frame-related fields.
         // Lottie JSON has "op" (out point / last frame) and "ip" (in point / first frame).
         let parsed: serde_json::Value =
-            serde_json::from_str(data).map_err(|e| format!("Invalid Lottie JSON: {}", e))?;
+            serde_json::from_str(data).map_err(|e| format!("Invalid Lottie JSON: {e}"))?;
 
         let op = parsed
             .get("op")

@@ -11,30 +11,31 @@
 //! validated — so the match arms here can assume the property exists and is
 //! accessible.
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use chrono::Weekday;
 
 use crate::core::{Alignment, Orientation};
 #[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::calendar::Calendar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::date_edit::Date;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::date_edit::DateEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::date_time_edit::DateTimeEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::dial::Dial;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::tab_bar::TabBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::time_edit::Time;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::time_edit::TimeEdit;
 use crate::widget::base_widgets::button::Button;
 use crate::widget::base_widgets::checkbox::CheckBox;
@@ -117,19 +118,19 @@ use crate::widget::input_widgets::search_bar::SearchBar;
 use crate::widget::input_widgets::shortcut_editor::ShortcutEditor;
 use crate::widget::input_widgets::spinbox::SpinBox;
 use crate::widget::input_widgets::textarea::TextArea;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::animated_image::AnimatedImage;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::camera_preview::CameraPreview;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::hero_animation::HeroAnimation;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::lottie_widget::LottieWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::rive_widget::RiveWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::video_player::VideoPlayer;
 #[cfg(not(feature = "mini"))]
 use crate::widget::menu_toolbar::action::Action;
@@ -197,16 +198,19 @@ use crate::widget::window::Window;
 use crate::widget::{Widget, WidgetKind};
 
 include!("access_read_base.in.rs");
-include!("access_read_input.in.rs");
 include!("access_read_view.in.rs");
 include!("access_read_container.in.rs");
 include!("access_read_dialog.in.rs");
 include!("access_read_menu.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
+include!("access_read_input.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_read_advanced.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_read_media.in.rs");
 include!("access_read_other.in.rs");
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn read_widget_property_value(
     widget: &dyn Widget,
     property_name: &str,
@@ -252,12 +256,15 @@ pub fn read_widget_property_value(
 }
 
 include!("access_write_base.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_input.in.rs");
 include!("access_write_view.in.rs");
 include!("access_write_container.in.rs");
 include!("access_write_dialog.in.rs");
 include!("access_write_menu.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_advanced.in.rs");
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_media.in.rs");
 include!("access_write_other.in.rs");
 
@@ -307,7 +314,7 @@ pub fn write_widget_property_value(
     result
 }
 
-#[cfg(feature = "mini")]
+#[cfg(any(feature = "mini", feature = "embedded"))]
 pub fn read_widget_property_value(
     _widget: &dyn Widget,
     _property_name: &str,
@@ -444,7 +451,7 @@ pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "mon",
@@ -457,12 +464,12 @@ pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn date_to_string(date: Date) -> String {
     date.to_string()
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn time_to_string(time: Time) -> String {
     time.to_string()
 }
@@ -471,7 +478,7 @@ pub fn time_to_string(time: Time) -> String {
 // Default property value lookup
 // ---------------------------------------------------------------------------
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn default_widget_property_value(
     kind: WidgetKind,
     property_name: &str,
@@ -1405,7 +1412,7 @@ pub fn default_widget_property_value(
     Some(value)
 }
 
-#[cfg(feature = "mini")]
+#[cfg(any(feature = "mini", feature = "embedded"))]
 pub fn default_widget_property_value(
     _kind: WidgetKind,
     _property_name: &str,

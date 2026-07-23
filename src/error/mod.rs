@@ -233,7 +233,7 @@ pub fn to_error_id(result: RwResult<()>) -> i32 {
     match result {
         Ok(()) => ErrorId::SUCCESS.0,
         Err(e) => {
-            log::error!("[rust_widgets] {}", e);
+            log::error!("[rust_widgets] {e}");
             e.id.0
         }
     }

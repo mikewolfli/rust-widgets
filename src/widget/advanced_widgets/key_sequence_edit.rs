@@ -182,7 +182,7 @@ fn key_code_to_name(key: u32) -> String {
         123 => "F12".into(),
         k if (65..=90).contains(&k) => (k as u8 as char).to_string(),
         k if (48..=57).contains(&k) => (((k - 48) as u8 + b'0') as char).to_string(),
-        k => format!("Key{}", k),
+        k => format!("Key{k}"),
     }
 }
 impl Draw for KeySequenceEdit {

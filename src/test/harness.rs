@@ -142,8 +142,7 @@ impl LayoutTester {
         for (i, (actual, expected)) in positions.iter().zip(expected_positions.iter()).enumerate() {
             assert_eq!(
                 actual, expected,
-                "Position {} mismatch: got {:?}, expected {:?}",
-                i, actual, expected
+                "Position {i} mismatch: got {actual:?}, expected {expected:?}"
             );
         }
     }
@@ -151,9 +150,7 @@ impl LayoutTester {
         for (i, rect) in positions.iter().enumerate() {
             assert!(
                 self.container_rect.contains_rect(rect),
-                "Position {} ({:?}) does not fit in container",
-                i,
-                rect
+                "Position {i} ({rect:?}) does not fit in container"
             );
         }
     }

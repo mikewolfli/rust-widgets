@@ -69,8 +69,8 @@ fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {
             .unwrap_or_default();
         println!("cargo:warning=  ✓ {} found ({})", name, ver.trim());
     } else {
-        warn(&format!("Missing system library: {} ({})", name, dev_pkg));
-        warn(&format!("  Install: {}", install_cmd));
+        warn(&format!("Missing system library: {name} ({dev_pkg})"));
+        warn(&format!("  Install: {install_cmd}"));
     }
 }
 
@@ -101,7 +101,7 @@ fn check_ffmpeg() {
                 .unwrap_or_default();
             println!("cargo:warning=  ✓ {} found ({})", lib, ver.trim());
         } else {
-            println!("cargo:warning=  ❌ Missing: {}", lib);
+            println!("cargo:warning=  ❌ Missing: {lib}");
             all_ok = false;
         }
     }
@@ -114,5 +114,5 @@ fn check_ffmpeg() {
 }
 
 fn warn(msg: &str) {
-    println!("cargo:warning={}", msg);
+    println!("cargo:warning={msg}");
 }

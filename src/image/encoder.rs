@@ -525,7 +525,7 @@ pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, Stri
         ImageFormat::Gif => encode_gif(image),
         ImageFormat::Tiff => encode_tiff(image),
         ImageFormat::Svg | ImageFormat::Svgz => encode_svg(image),
-        _ => Err(format!("Encoding to {:?} is not yet supported", format)),
+        _ => Err(format!("Encoding to {format:?} is not yet supported")),
     }
 }
 
@@ -906,10 +906,9 @@ fn encode_svg(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let b64 = base64_encode(&png_bytes);
 
     let xml = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">
-  <image href="data:image/png;base64,{}" width="{}" height="{}"/>
-</svg>"#,
-        w, h, b64, w, h
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+  <image href="data:image/png;base64,{b64}" width="{w}" height="{h}"/>
+</svg>"#
     );
 
     Ok(xml.into_bytes())
@@ -1129,9 +1128,9 @@ fn encode_pnm(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let is_grayscale = matches!(image.data, ImageData::Grayscale8(_));
 
     let header = if is_grayscale {
-        format!("P5\n{} {}\n255\n", w, h)
+        format!("P5\n{w} {h}\n255\n")
     } else {
-        format!("P6\n{} {}\n255\n", w, h)
+        format!("P6\n{w} {h}\n255\n")
     };
 
     let mut out = Vec::new();

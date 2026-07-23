@@ -54,7 +54,7 @@ pub fn create_combo_box(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(ComboBox::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_dial(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(Dial::new(geometry))
 }
@@ -106,22 +106,22 @@ pub fn create_tool_box(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(ToolBox::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_tab_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(TabBar::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_calendar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(Calendar::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_date_edit(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(DateEdit::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_time_edit(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(TimeEdit::new(geometry))
 }

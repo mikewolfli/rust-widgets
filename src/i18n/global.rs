@@ -23,7 +23,7 @@ pub fn init() {
             );
         }
         Err(e) => {
-            log::error!("[i18n] Failed to parse embedded en.json: {}", e);
+            log::error!("[i18n] Failed to parse embedded en.json: {e}");
         }
     }
     *guard = Some(manager);
@@ -43,7 +43,7 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
                     let path_str = match path.to_str() {
                         Some(p) => p,
                         None => {
-                            report.errors.push(format!("Non-UTF-8 path: {:?}", path));
+                            report.errors.push(format!("Non-UTF-8 path: {path:?}"));
                             continue;
                         }
                     };
@@ -51,11 +51,11 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
                         Ok(()) => {
                             report.files_loaded += 1;
                             if diagnostics {
-                                log::info!("[i18n] Loaded translations from: {:?}", path);
+                                log::info!("[i18n] Loaded translations from: {path:?}");
                             }
                         }
                         Err(e) => {
-                            report.errors.push(format!("Failed to load {:?}: {}", path, e));
+                            report.errors.push(format!("Failed to load {path:?}: {e}"));
                         }
                     }
                 }

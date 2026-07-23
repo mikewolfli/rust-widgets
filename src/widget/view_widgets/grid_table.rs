@@ -559,7 +559,7 @@ impl Draw for GridTableWidget {
                     ""
                 };
 
-                let header_text = format!("Col {}{}", ci, label);
+                let header_text = format!("Col {ci}{label}");
                 context.draw_text(
                     Point::new(hx + 4, rect.y + header_h / 2),
                     &header_text,

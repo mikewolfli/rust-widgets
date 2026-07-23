@@ -181,8 +181,7 @@ impl WebViewCore {
             && !url.starts_with("file://")
         {
             log::error!(
-                "[web] Invalid URL scheme: '{}' — must start with http://, https://, or file://",
-                url
+                "[web] Invalid URL scheme: '{url}' — must start with http://, https://, or file://"
             );
             return;
         }
@@ -200,7 +199,7 @@ impl WebViewCore {
                     self.content = content;
                 }
                 Err(e) => {
-                    log::error!("[web] simulation engine error for '{}': {}", url, e);
+                    log::error!("[web] simulation engine error for '{url}': {e}");
                     return;
                 }
             }
@@ -309,7 +308,7 @@ impl WebViewCore {
     /// 0% → 50% → 100% progress callbacks.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
         self.url = base_url.to_string();
-        self.title = format!("Data: {}", mime_type);
+        self.title = format!("Data: {mime_type}");
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());

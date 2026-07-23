@@ -97,7 +97,7 @@ impl AssetWatcher {
                                     kind: event.kind,
                                     timestamp: std::time::SystemTime::now(),
                                 }) {
-                                    log::error!("[asset] Watcher send failed: {:?}", e);
+                                    log::error!("[asset] Watcher send failed: {e:?}");
                                 }
                             }
                         }
@@ -107,16 +107,16 @@ impl AssetWatcher {
                     if let Err(log_err) = sender
                         .send(AssetEvent::WatchError { path: PathBuf::new(), error: e.to_string() })
                     {
-                        log::error!("[asset] Watcher error send failed: {:?}", log_err);
+                        log::error!("[asset] Watcher error send failed: {log_err:?}");
                     }
                 }
             },
             Config::default(),
         )
-        .map_err(|e| format!("Failed to create asset watcher: {}", e))?;
+        .map_err(|e| format!("Failed to create asset watcher: {e}"))?;
 
         let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        watcher.watch(dir, mode).map_err(|e| format!("Failed to watch directory: {}", e))?;
+        watcher.watch(dir, mode).map_err(|e| format!("Failed to watch directory: {e}"))?;
 
         self.watcher = Some(watcher);
         Ok(())

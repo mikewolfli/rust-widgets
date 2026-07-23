@@ -184,7 +184,7 @@ impl MjpegDecoder {
     /// Decode a single JPEG frame to RGBA pixel data.
     fn decode_frame(jpeg_data: &[u8]) -> Result<Vec<u8>, String> {
         let mut decoder = JpegDecoder::new(std::io::Cursor::new(jpeg_data));
-        let pixels = decoder.decode().map_err(|e| format!("JPEG decode error: {}", e))?;
+        let pixels = decoder.decode().map_err(|e| format!("JPEG decode error: {e}"))?;
         let info = decoder.info().ok_or("No JPEG info available")?;
         let width = info.width as usize;
         let height = info.height as usize;

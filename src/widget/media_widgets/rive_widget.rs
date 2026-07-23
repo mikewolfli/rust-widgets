@@ -322,7 +322,7 @@ impl RiveWidget {
             return Err("Animation JSON data is empty".to_string());
         }
         let parsed: serde_json::Value = serde_json::from_str(json_data)
-            .map_err(|e| format!("Invalid Rive animation JSON: {}", e))?;
+            .map_err(|e| format!("Invalid Rive animation JSON: {e}"))?;
 
         self.animation_name = name.to_string();
         self.animation_progress = 0.0;

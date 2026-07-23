@@ -117,7 +117,7 @@ pub fn apply_text_clamp(
         let candidate = if current_line.is_empty() {
             word.to_string()
         } else {
-            format!("{}{}", current_line, word)
+            format!("{current_line}{word}")
         };
 
         let line_width = shaper.measure_width(&candidate, font_size);

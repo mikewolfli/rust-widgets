@@ -101,7 +101,7 @@ pub fn decode(data: &[u8]) -> Result<DecodedImage, String> {
         ImageFormat::Svg => decode_svg(data),
         ImageFormat::Svgz => decode_svgz(data),
         ImageFormat::Unknown | ImageFormat::Rgba8 | ImageFormat::Rgb8 => {
-            Err(format!("Unsupported image format: {:?}", format))
+            Err(format!("Unsupported image format: {format:?}"))
         }
     }
 }
@@ -166,7 +166,7 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
 
     let compressed = raw_data.ok_or("No IDAT chunks found")?;
     let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed)
-        .map_err(|e| format!("PNG decompress error: {:?}", e))?;
+        .map_err(|e| format!("PNG decompress error: {e:?}"))?;
 
     let row_len_raw = (width as usize
         * bit_depth as usize
@@ -303,7 +303,7 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
             }
             (ImageData::Rgba8(pixels), 4)
         }
-        _ => return Err(format!("Unsupported PNG color type: {}", color_type)),
+        _ => return Err(format!("Unsupported PNG color type: {color_type}")),
     };
 
     Ok(DecodedImage::new(ImageFormat::Png, out.0, width, output_height))
@@ -406,8 +406,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                     let precision = seg_data[0];
                     if precision != 8 {
                         return Err(format!(
-                            "JPEG precision {} not supported (only 8-bit)",
-                            precision
+                            "JPEG precision {precision} not supported (only 8-bit)"
                         ));
                     }
                     height = u16::from_be_bytes([seg_data[1], seg_data[2]]) as u32;
@@ -922,7 +921,7 @@ fn decode_webp(data: &[u8]) -> Result<DecodedImage, String> {
         let h = ((raw >> 14) & 0x3FFF) + 1;
         (w, h)
     } else {
-        return Err(format!("Unsupported WebP chunk type: {:?}", chunk_type));
+        return Err(format!("Unsupported WebP chunk type: {chunk_type:?}"));
     };
 
     let pixels = vec![128u8; width as usize * height as usize * 4];

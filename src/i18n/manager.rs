@@ -44,11 +44,11 @@ impl I18nManager {
     /// Reload a specific translation file
     pub fn reload_translation(&mut self, language: &str) -> Result<(), String> {
         if let Some(path) = self.translation_paths.get(language) {
-            let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+            let mut file = File::open(path).map_err(|e| format!("Failed to open file: {e}"))?;
             let mut content = String::new();
-            file.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {}", e))?;
+            file.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {e}"))?;
             let translation_file: TranslationFile = serde_json::from_str(&content)
-                .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+                .map_err(|e| format!("Failed to parse JSON: {e}"))?;
             self.translations.insert(language.to_string(), translation_file);
             if let Some(modified) = File::open(path)
                 .ok()
@@ -62,12 +62,12 @@ impl I18nManager {
                     language: language.to_string(),
                     timestamp: SystemTime::now(),
                 }) {
-                    log::error!("[i18n] Failed to send reload event: {:?}", e);
+                    log::error!("[i18n] Failed to send reload event: {e:?}");
                 }
             }
             Ok(())
         } else {
-            Err(format!("Translation file path not found for language: {}", language))
+            Err(format!("Translation file path not found for language: {language}"))
         }
     }
     /// Check and reload all modified translation files

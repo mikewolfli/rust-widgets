@@ -100,10 +100,10 @@ impl Image {
     pub fn from_file(path: &str) -> Result<Self, String> {
         use std::io::Read;
         let mut file = std::fs::File::open(path)
-            .map_err(|e| format!("Failed to open image file '{}': {}", path, e))?;
+            .map_err(|e| format!("Failed to open image file '{path}': {e}"))?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)
-            .map_err(|e| format!("Failed to read image file '{}': {}", path, e))?;
+            .map_err(|e| format!("Failed to read image file '{path}': {e}"))?;
         Self::from_bytes(&data)
     }
 }

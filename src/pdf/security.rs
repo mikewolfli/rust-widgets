@@ -186,8 +186,7 @@ impl PdfEncryption {
         let p = self.permissions as i32;
 
         format!(
-            "\n<< /Filter /Standard /Length {} /V {} /R {} /O <{}> /U <{}> /P {} /StmF /StmCrypt /StrF /StmCrypt >>",
-            length, v, r, o_hex, u_hex, p
+            "\n<< /Filter /Standard /Length {length} /V {v} /R {r} /O <{o_hex}> /U <{u_hex}> /P {p} /StmF /StmCrypt /StrF /StmCrypt >>"
         )
     }
 }
@@ -305,7 +304,7 @@ fn compute_hash(password: &str, salt1: &[u8], salt2: &[u8]) -> Vec<u8> {
 /// Hex-encode bytes to lowercase hex string.
 #[cfg(feature = "pdf-encryption")]
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Encrypt plaintext with AES-128-CBC using the given key and IV.

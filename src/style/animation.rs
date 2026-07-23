@@ -668,7 +668,7 @@ where
     let duration_ms = theme.get_transition(&from, &to)?;
     let duration = Duration::from_millis(duration_ms as u64);
     Some(driver.animate_linear(
-        format!("state_{:?}_to_{:?}", from, to),
+        format!("state_{from:?}_to_{to:?}"),
         0.0,
         1.0,
         duration,

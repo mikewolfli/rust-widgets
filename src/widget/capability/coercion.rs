@@ -9,9 +9,9 @@ use chrono::{NaiveDate, Weekday};
 use super::CapabilityAccessError;
 use super::CapabilityValue;
 use crate::core::{Alignment, Orientation};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::date_edit::Date;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::time_edit::Time;
 use crate::widget::base_widgets::checkbox::CheckState;
 #[cfg(not(feature = "mini"))]
@@ -112,7 +112,7 @@ pub fn expect_naive_date(value: CapabilityValue) -> Result<NaiveDate, Capability
     NaiveDate::parse_from_str(&text, "%Y-%m-%d").map_err(|_| CapabilityAccessError::TypeMismatch)
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split('-');
@@ -139,7 +139,7 @@ pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split(':');

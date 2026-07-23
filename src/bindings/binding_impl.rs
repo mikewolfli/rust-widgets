@@ -85,8 +85,7 @@ fn to_c_string_or_empty(s: impl Into<String>) -> *const c_char {
         Err(nul_err) => {
             let pos = nul_err.nul_position();
             log::warn!(
-                "[bindings] CString::new failed (interior NUL at position {}), truncating",
-                pos
+                "[bindings] CString::new failed (interior NUL at position {pos}), truncating"
             );
             // Truncate — return an empty C string.
             CString::new("").unwrap().into_raw()

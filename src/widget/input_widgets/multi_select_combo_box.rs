@@ -189,7 +189,7 @@ impl MultiSelectComboBox {
         } else if selected_count <= 2 {
             self.selected_texts().join(", ")
         } else {
-            format!("{} selected", selected_count)
+            format!("{selected_count} selected")
         }
     }
 

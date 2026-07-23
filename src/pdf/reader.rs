@@ -201,7 +201,7 @@ pub(crate) fn extract_stream(content_obj: &str) -> Option<&str> {
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push_str(&format!("{:02X}", byte));
+        out.push_str(&format!("{byte:02X}"));
     }
     out
 }

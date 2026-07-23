@@ -157,7 +157,7 @@ impl Drop for TimerManager {
         }
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
-                log::error!("[timer-manager] Thread join failed: {:?}", e);
+                log::error!("[timer-manager] Thread join failed: {e:?}");
             }
         }
     }

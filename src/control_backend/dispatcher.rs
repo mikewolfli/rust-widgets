@@ -65,10 +65,7 @@ pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn Control
     native_control_backend()
 }
 /// Returns control backend resolved by compile-time policy for one widget kind (no backend available).
-#[cfg(all(
-    not(feature = "controls-native"),
-    not(feature = "controls-custom")
-))]
+#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     panic!("no control backend enabled; enable controls-native or controls-custom")
 }
@@ -93,10 +90,7 @@ pub fn active_control_policy() -> &'static str {
     "native-strict"
 }
 /// Return compile-time control policy label used by diagnostics and docs (no backend, or mini without custom).
-#[cfg(all(
-    not(feature = "controls-native"),
-    not(feature = "controls-custom")
-))]
+#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn active_control_policy() -> &'static str {
     "none"
 }

@@ -558,7 +558,7 @@ impl Draw for Calendar {
                     };
                     context.draw_text(
                         Point::new(cx + 3, cy + 3),
-                        &format!("{}", day_num),
+                        &format!("{day_num}"),
                         &Font::new("Arial", 11.0, false, false),
                         day_color,
                         HorizontalAlignment::Left,

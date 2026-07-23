@@ -57,6 +57,7 @@ pub mod i18n;
 pub mod image;
 /// Declarative JSON window engine (QML-like).
 #[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "embedded"))]
 pub mod json;
 /// Layout managers.
 pub mod layout;

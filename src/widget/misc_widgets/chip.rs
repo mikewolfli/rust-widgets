@@ -170,7 +170,7 @@ impl Draw for Chip {
             let font = Font::default();
             let mut truncated = String::new();
             for c in self.text.chars() {
-                let candidate = format!("{}{}", truncated, c);
+                let candidate = format!("{truncated}{c}");
                 let w = context.measure_text(&candidate, &font).width as i32;
                 if w + context.measure_text("…", &font).width as i32 > max_text_width {
                     break;

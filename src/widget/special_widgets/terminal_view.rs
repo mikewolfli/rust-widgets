@@ -65,7 +65,7 @@ impl TerminalView {
         }
         self.history.push(cmd.clone());
         self.history_index = None;
-        self.lines.push(format!("> {}", cmd));
+        self.lines.push(format!("> {cmd}"));
         self.command_submitted.emit(cmd);
         self.input_line.clear();
         self.base.request_layout();

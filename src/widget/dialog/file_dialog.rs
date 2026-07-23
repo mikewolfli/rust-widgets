@@ -33,7 +33,7 @@ impl FileFilter {
 }
 impl std::fmt::Display for FileFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let exts: Vec<String> = self.extensions.iter().map(|e| format!("*.{}", e)).collect();
+        let exts: Vec<String> = self.extensions.iter().map(|e| format!("*.{e}")).collect();
         write!(f, "{} ({})", self.description, exts.join(" "))
     }
 }

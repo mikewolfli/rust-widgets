@@ -146,7 +146,7 @@ impl LinuxImeBridge {
     /// Set the cursor (insertion-point) rectangle — tells IBus where
     /// to place the candidate popup.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
-        log::debug!("[Linux IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
+        log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}",);
         // Native IBus:  ibus_engine_set_cursor_location(x, y, w, h)
     }
 
@@ -161,10 +161,7 @@ impl LinuxImeBridge {
         pressed: bool,
     ) -> Option<String> {
         log::debug!(
-            "[Linux IME] process_key_event: key={}, mods={:#x}, pressed={}",
-            key_code,
-            modifiers,
-            pressed,
+            "[Linux IME] process_key_event: key={key_code}, mods={modifiers:#x}, pressed={pressed}",
         );
 
         // When IBus is active, key events are forwarded via DBus to the
@@ -200,7 +197,7 @@ impl LinuxImeBridge {
     /// `sel_start` / `sel_end` are byte offsets within the composition.
     /// `-1` for both indicates cursor at end.
     pub fn set_marked_text(&self, text: &str, sel_start: i32, sel_end: i32) {
-        log::debug!("[Linux IME] set_marked_text: '{}'", text);
+        log::debug!("[Linux IME] set_marked_text: '{text}'");
 
         let len = text.len();
         let cursor = if sel_start >= 0 && sel_end >= 0 {
@@ -256,7 +253,7 @@ impl ImeBridge for LinuxImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
         *self.focused_widget.lock().unwrap() = Some(widget_id);
         *self.active.lock().unwrap() = true;
-        log::info!("[Linux IME] focus_in: widget={}", widget_id);
+        log::info!("[Linux IME] focus_in: widget={widget_id}");
 
         // Native IBus:  ibus_engine_focus_in()
     }
@@ -265,14 +262,14 @@ impl ImeBridge for LinuxImeBridge {
         *self.focused_widget.lock().unwrap() = None;
         *self.active.lock().unwrap() = false;
         self.clear_composition();
-        log::info!("[Linux IME] focus_out: widget={}", widget_id);
+        log::info!("[Linux IME] focus_out: widget={widget_id}");
 
         // Native IBus:  ibus_engine_focus_out()
         //              ibus_engine_hide_preedit()
     }
 
     fn commit_text(&self, text: &str) {
-        log::info!("[Linux IME] commit_text: '{}'", text);
+        log::info!("[Linux IME] commit_text: '{text}'");
         self.clear_composition();
 
         // Native IBus:  ibus_engine_commit_text(text)

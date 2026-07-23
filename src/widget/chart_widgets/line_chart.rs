@@ -332,7 +332,7 @@ impl Draw for LineChart {
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = y_min + (y_max - y_min) * (1.0 - t);
-                let label = format!("{:.1}", val);
+                let label = format!("{val:.1}");
                 let y_pos = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
                 let metrics = context.measure_text(&label, &label_font);
                 let text_x = (plot_area.x - metrics.width as i32 - 4).max(0);
@@ -349,7 +349,7 @@ impl Draw for LineChart {
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = x_min + (x_max - x_min) * t;
-                let label = format!("{:.1}", val);
+                let label = format!("{val:.1}");
                 let x_pos = plot_area.x + (plot_area.width as f64 * t) as i32;
                 let metrics = context.measure_text(&label, &label_font);
                 let text_x = x_pos - metrics.width as i32 / 2;

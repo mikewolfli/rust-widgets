@@ -8,6 +8,7 @@ pub mod kind;
 pub mod widget_trait;
 // Widget subfolders
 #[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "embedded"))]
 pub mod advanced_widgets;
 pub mod base_widgets;
 #[cfg(not(feature = "mini"))]
@@ -20,6 +21,7 @@ pub mod dialog;
 pub mod display_widgets;
 pub mod input_widgets;
 #[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "embedded"))]
 pub mod media_widgets;
 #[cfg(not(feature = "mini"))]
 pub mod menu_toolbar;
@@ -190,19 +192,19 @@ pub use chart_widgets::pie_chart::{PieChart, PieSlice};
 #[cfg(not(feature = "mini"))]
 pub use chart_widgets::sparkline::Sparkline;
 // Re-export media widgets
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::camera_preview::CameraPreview;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::hero_animation::HeroAnimation;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::lottie_widget::LottieWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::rive_widget::{RiveInput, RiveInputValue, RiveWidget};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use media_widgets::video_player::VideoPlayer;
 // Re-export overlay widgets
 #[cfg(not(feature = "mini"))]
@@ -248,7 +250,7 @@ pub use web_widgets::{
     WebEngineSettings, WebEngineView, WebEngineWebChannel,
 };
 // Re-export advanced widgets
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use advanced_widgets::{
     calendar::Calendar, date_edit::DateEdit, date_time_edit::DateTimeEdit, dial::Dial,
     key_sequence_edit::KeySequenceEdit, pie_menu::PieMenu, pie_menu::PieMenuItem,
@@ -336,11 +338,11 @@ pub type DataView = VirtualList;
 pub type ColumnView = TreeView;
 #[cfg(not(feature = "mini"))]
 pub type UndoView = ListView;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub type DatePicker = DateEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub type TimePicker = TimeEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub type DateTimePicker = DateTimeEdit;
 #[cfg(not(feature = "mini"))]
 pub type Grid = GridWidget;

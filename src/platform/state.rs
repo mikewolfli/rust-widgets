@@ -7,10 +7,10 @@ use alloc::collections::VecDeque;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU64, Ordering};
 /// Generic widget state record owned by backend state model.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug)]
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
     pub kind: K,
@@ -34,7 +34,7 @@ pub struct WidgetRecord<K> {
     pub height: u32,
 }
 /// Thread-safe state model split from native handle adapters.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
 pub struct BackendState<K> {
     next_id: AtomicU64,
     widgets: Mutex<HashMap<ObjectId, WidgetRecord<K>>>,

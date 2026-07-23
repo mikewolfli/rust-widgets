@@ -59,7 +59,7 @@ impl JsonLoader {
     /// encountered, or the widget tree exceeds `MAX_DEPTH`.
     pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
         let value: Value =
-            serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;
+            serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {e}"))?;
         let mut registry = crate::index::WidgetRegistry::new();
         let mut binding = BoundJsonLayout::new();
 
@@ -98,12 +98,12 @@ impl JsonLoader {
         depth: u32,
     ) -> Result<ObjectId, String> {
         if depth > MAX_DEPTH {
-            return Err(format!("Maximum widget depth ({}) exceeded", MAX_DEPTH));
+            return Err(format!("Maximum widget depth ({MAX_DEPTH}) exceeded"));
         }
 
         let obj = value
             .as_object()
-            .ok_or_else(|| format!("'{}' value must be a JSON object", widget_type))?;
+            .ok_or_else(|| format!("'{widget_type}' value must be a JSON object"))?;
 
         // Get the widget ID (optional — auto-generated if missing).
         let id_str = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -122,7 +122,7 @@ impl JsonLoader {
             let kind = parse_layout_kind(value)?;
             let layout = create_layout_from_kind(&kind);
             let layout_parent = parent_id
-                .ok_or_else(|| format!("'{}' layout must be a child of a widget", widget_type))?;
+                .ok_or_else(|| format!("'{widget_type}' layout must be a child of a widget"))?;
 
             // Process children
             if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
@@ -182,7 +182,7 @@ impl JsonLoader {
         let kind = infer_kind(widget_type);
 
         let label = if id_str.is_empty() {
-            format!("{}_{}", widget_type, widget_id)
+            format!("{widget_type}_{widget_id}")
         } else {
             id_str.to_string()
         };
@@ -940,7 +940,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(fd))
             }
-            _ => Err(format!("unknown widget type: '{}'", widget_type)),
+            _ => Err(format!("unknown widget type: '{widget_type}'")),
         }
     }
 }
