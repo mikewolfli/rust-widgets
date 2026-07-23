@@ -15,8 +15,15 @@ macro_rules! tr {
 
 #[cfg(test)]
 mod tests {
+    /// Reset the global i18n state so tests run with no loaded translations.
+    fn reset_global() {
+        *crate::i18n::global::GLOBAL_I18N.lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
     #[test]
     fn tr_macro_basic_key() {
+        reset_global();
         // With global not initialized, should return the key itself
         assert_eq!(crate::tr!("test_key"), "test_key");
     }
@@ -28,11 +35,13 @@ mod tests {
 
     #[test]
     fn tr_macro_with_context_and_count() {
+        reset_global();
         assert_eq!(crate::tr!("test_key", "context", 1), "test_key");
     }
 
     #[test]
     fn tr_macro_empty_key() {
+        reset_global();
         assert_eq!(crate::tr!(""), "");
     }
 
@@ -46,6 +55,7 @@ mod tests {
 
     #[test]
     fn tr_macro_with_unicode_key() {
+        reset_global();
         assert_eq!(crate::tr!("你好"), "你好");
         assert_eq!(crate::tr!("こんにちは"), "こんにちは");
     }
@@ -58,17 +68,20 @@ mod tests {
 
     #[test]
     fn tr_macro_with_zero_count() {
+        reset_global();
         // Zero is a valid count for plural forms
         assert_eq!(crate::tr!("key", 0), "key");
     }
 
     #[test]
     fn tr_macro_with_large_count() {
+        reset_global();
         assert_eq!(crate::tr!("key", 999999), "key");
     }
 
     #[test]
     fn tr_macro_context_empty_string() {
+        reset_global();
         assert_eq!(crate::tr!("key", "", 1), "key");
     }
 
@@ -81,6 +94,7 @@ mod tests {
 
     #[test]
     fn tr_macro_numeric_count() {
+        reset_global();
         // Count as various numeric types that coerce to u32
         assert_eq!(crate::tr!("items", 1u32), "items");
         assert_eq!(crate::tr!("items", 2), "items");

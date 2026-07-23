@@ -577,14 +577,13 @@ mod tests {
 
     /// A simple test widget that records draw calls.
     struct TestWidget {
-        #[allow(dead_code)]
-        geometry: Rect,
+        _geometry: Rect,
         draw_count: Arc<Mutex<u32>>,
     }
 
     impl TestWidget {
         fn new(width: u32, height: u32) -> Self {
-            Self { geometry: Rect::new(0, 0, width, height), draw_count: Arc::new(Mutex::new(0)) }
+            Self { _geometry: Rect::new(0, 0, width, height), draw_count: Arc::new(Mutex::new(0)) }
         }
     }
 

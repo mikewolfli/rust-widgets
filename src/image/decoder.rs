@@ -419,7 +419,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                             break;
                         }
                         components.push(JpegComponent {
-                            id: seg_data[off],
+                            _id: seg_data[off],
                             h_sampling: (seg_data[off + 1] >> 4) & 0x0F,
                             v_sampling: seg_data[off + 1] & 0x0F,
                             quant_table: seg_data[off + 2],
@@ -786,8 +786,7 @@ const ZIGZAG: [usize; 64] = [
 /// JPEG component descriptor.
 #[derive(Clone)]
 struct JpegComponent {
-    #[allow(dead_code)]
-    id: u8,
+    _id: u8,
     h_sampling: u8,
     v_sampling: u8,
     quant_table: u8,

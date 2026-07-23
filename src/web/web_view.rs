@@ -190,7 +190,7 @@ impl Draw for WebViewEnhanced {
         // ── Loading indicator ──
         if self.core.loading {
             let bar_y = addr_rect.y + addr_rect.height as i32;
-            let bar_w = (rect.width as u32 * self.core.load_progress as u32 / 100).max(4);
+            let bar_w = (rect.width * self.core.load_progress as u32 / 100).max(1);
             context.fill_rect(Rect::new(rect.x + 1, bar_y, bar_w, 3), Color::rgb(51, 153, 255));
         }
 

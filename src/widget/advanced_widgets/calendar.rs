@@ -8,14 +8,14 @@ use chrono::Datelike;
 
 /// Advance a date by `delta` months, clamping to the last valid day.
 fn advance_month(date: chrono::NaiveDate, delta: i32) -> Option<chrono::NaiveDate> {
-    let total_months = date.year() as i32 * 12 + date.month() as i32 + delta;
+    let total_months = date.year() * 12 + date.month() as i32 + delta;
     let new_year = (total_months - 1) / 12;
     let new_month = ((total_months - 1) % 12) + 1;
-    if new_year < 0 || new_year > 9999 {
+    if !(0..=9999).contains(&new_year) {
         return None;
     }
-    let day = date.day().min(max_days_in_month(new_year as i32, new_month as u32));
-    chrono::NaiveDate::from_ymd_opt(new_year as i32, new_month as u32, day)
+    let day = date.day().min(max_days_in_month(new_year, new_month as u32));
+    chrono::NaiveDate::from_ymd_opt(new_year, new_month as u32, day)
 }
 
 /// Return the number of days in a given month/year.
@@ -497,10 +497,10 @@ impl Draw for Calendar {
 
             for row in 0..6 {
                 for col in 0..7 {
-                    let cx = grid.x + col as i32 * cell_w as i32;
-                    let cy = grid.y + row as i32 * cell_h as i32;
+                    let cx = grid.x + col * cell_w as i32;
+                    let cy = grid.y + row * cell_h as i32;
                     let cell_rect = Rect::new(cx, cy, cell_w, cell_h);
-                    let day_num = (row * 7 + col) as i32 - blanks as i32 + 1;
+                    let day_num = (row * 7 + col) - blanks as i32 + 1;
 
                     if day_num < 1 || day_num > days_in_month as i32 {
                         // Out-of-month cell — leave blank

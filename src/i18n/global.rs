@@ -6,7 +6,7 @@ use crate::i18n::types::TranslationFile;
 /// Embedded English translations as a compile-time fallback.
 const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 /// Global i18n manager instance using Mutex for thread-safe access
-static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
+pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 /// Initialize the i18n system, loading the embedded English translations.
 pub fn init() {
     let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
