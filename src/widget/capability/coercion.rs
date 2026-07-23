@@ -3,6 +3,7 @@
 //! These functions convert [`CapabilityValue`] variants into concrete Rust types,
 //! performing string parsing and numeric coercion as needed.
 
+#[cfg(not(feature = "mini"))]
 use chrono::{NaiveDate, Weekday};
 
 use super::CapabilityAccessError;
@@ -105,6 +106,7 @@ pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> 
 // Date / time extractors
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_naive_date(value: CapabilityValue) -> Result<NaiveDate, CapabilityAccessError> {
     let text = expect_string(value)?;
     NaiveDate::parse_from_str(&text, "%Y-%m-%d").map_err(|_| CapabilityAccessError::TypeMismatch)
@@ -173,6 +175,7 @@ pub fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError
     }
 }
 
+#[cfg(not(feature = "mini"))]
 pub fn expect_weekday(value: CapabilityValue) -> Result<Weekday, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -409,6 +412,7 @@ pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, Capa
 // Other helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(not(feature = "mini"))]
 pub fn naive_date_to_string(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }

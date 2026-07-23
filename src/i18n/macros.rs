@@ -17,8 +17,7 @@ macro_rules! tr {
 mod tests {
     /// Reset the global i18n state so tests run with no loaded translations.
     fn reset_global() {
-        *crate::i18n::global::GLOBAL_I18N.lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
+        *crate::i18n::global::GLOBAL_I18N.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     #[test]

@@ -13,6 +13,10 @@ pub struct PinchTouch {
     pub id: TouchId,
 }
 
+/// Recognizes a two-finger pinch gesture and emits `Event::Pinch { scale }`.
+///
+/// Tracks two touch points and computes a scale factor relative to the
+/// initial distance between them. Only emits when the scale change exceeds 5%.
 #[derive(Debug, Clone)]
 pub struct PinchGesture {
     touches: Vec<PinchTouch>,

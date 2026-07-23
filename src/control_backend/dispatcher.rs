@@ -27,7 +27,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
     native_control_backend()
 }
 /// Return active control backend selected by compile-time features.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom"))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", not(feature = "mini")))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     custom_control_backend()
 }
@@ -36,22 +36,15 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     native_control_backend()
 }
-/// No native backend available (mini mode or no backend enabled).
-#[cfg(any(
-    all(feature = "mini", feature = "controls-custom"),
-    all(not(feature = "controls-native"), not(feature = "controls-custom"))
-))]
+/// No backend enabled at all (no native, no custom).
+#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     custom_control_backend()
 }
-/// No backend enabled at all.
-#[cfg(all(
-    not(feature = "controls-native"),
-    not(feature = "controls-custom"),
-    not(feature = "mini")
-))]
+/// Mini mode uses custom backend.
+#[cfg(all(feature = "mini", feature = "controls-custom"))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
-    panic!("no control backend enabled; enable controls-native or controls-custom")
+    custom_control_backend()
 }
 /// Returns control backend resolved by compile-time policy for one widget kind.
 #[cfg(all(feature = "controls-native", not(feature = "mini"), feature = "controls-custom"))]
@@ -62,7 +55,7 @@ pub fn get_control_backend_for_widget(kind: WidgetKind) -> &'static dyn ControlB
     }
 }
 /// Returns control backend resolved by compile-time policy for one widget kind.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom"))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", not(feature = "mini")))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     custom_control_backend()
 }
@@ -71,19 +64,18 @@ pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn Control
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     native_control_backend()
 }
-/// Returns control backend resolved by compile-time policy for one widget kind (mini mode uses custom).
-#[cfg(all(feature = "mini", feature = "controls-custom"))]
-pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    custom_control_backend()
-}
-/// Returns control backend resolved by compile-time policy for one widget kind.
+/// Returns control backend resolved by compile-time policy for one widget kind (no backend available).
 #[cfg(all(
     not(feature = "controls-native"),
-    not(feature = "controls-custom"),
-    not(feature = "mini")
+    not(feature = "controls-custom")
 ))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     panic!("no control backend enabled; enable controls-native or controls-custom")
+}
+/// Returns control backend resolved by compile-time policy for one widget kind (mini mode).
+#[cfg(all(feature = "mini", feature = "controls-custom"))]
+pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
+    custom_control_backend()
 }
 /// Return compile-time control policy label used by diagnostics and docs.
 #[cfg(all(feature = "controls-native", not(feature = "mini"), feature = "controls-custom"))]
@@ -91,7 +83,7 @@ pub fn active_control_policy() -> &'static str {
     "hybrid-native-first"
 }
 /// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom"))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", not(feature = "mini")))]
 pub fn active_control_policy() -> &'static str {
     "custom-full"
 }
@@ -100,17 +92,16 @@ pub fn active_control_policy() -> &'static str {
 pub fn active_control_policy() -> &'static str {
     "native-strict"
 }
-/// Return compile-time control policy label used by diagnostics and docs.
+/// Return compile-time control policy label used by diagnostics and docs (no backend, or mini without custom).
 #[cfg(all(
     not(feature = "controls-native"),
-    not(feature = "controls-custom"),
-    not(feature = "mini")
+    not(feature = "controls-custom")
 ))]
 pub fn active_control_policy() -> &'static str {
     "none"
 }
 /// Return compile-time control policy label used by diagnostics and docs (mini mode).
-#[cfg(feature = "mini")]
+#[cfg(all(feature = "mini", feature = "controls-custom"))]
 pub fn active_control_policy() -> &'static str {
     "mini-custom"
 }

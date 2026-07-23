@@ -17,12 +17,14 @@ impl FlowChild {
         self.widget.as_ref().map(|w| w.size_hint()).unwrap_or(self.default_size)
     }
 }
+/// Direction of child arrangement in a flow layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
     #[default]
     Horizontal,
     Vertical,
 }
+/// Alignment strategy for items within each flow line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowAlignment {
     #[default]
@@ -32,6 +34,7 @@ pub enum FlowAlignment {
     SpaceBetween,
     SpaceAround,
 }
+/// Configuration for a flow layout: direction, alignment, spacing, padding, and wrapping.
 #[derive(Debug, Clone, Copy)]
 pub struct FlowLayoutConfig {
     pub direction: FlowDirection,
@@ -51,6 +54,10 @@ impl Default for FlowLayoutConfig {
         }
     }
 }
+/// A flow layout that arranges children sequentially in a given direction.
+///
+/// Supports wrapping when `wrap` is enabled in the config — children
+/// overflow to the next line (for horizontal) or column (for vertical).
 pub struct FlowLayout {
     config: FlowLayoutConfig,
     children: Vec<FlowChild>,

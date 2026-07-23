@@ -3,13 +3,20 @@ use crate::compat::Instant;
 use crate::compat::Mutex;
 use alloc::collections::VecDeque;
 use core::time::Duration;
+/// Default capacity for fixed-size and bounded queues.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
+
+/// Errors returned by queue operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
     Full,
     Empty,
     Closed,
 }
+/// A fixed-capacity ring buffer queue with O(1) push/pop.
+///
+/// Useful when allocation is undesirable or when a hard upper bound
+/// on queued items is known at compile time.
 #[derive(Debug)]
 pub struct FixedSizeQueue<T, const N: usize = DEFAULT_QUEUE_CAPACITY> {
     buffer: [Option<T>; N],
@@ -75,6 +82,9 @@ impl<T, const N: usize> Default for FixedSizeQueue<T, N> {
         Self::new()
     }
 }
+/// A multi-level priority queue backed by 8 internal VecDeques (levels 0-7).
+///
+/// Items are dequeued from the highest non-empty level first.
 #[derive(Debug)]
 pub struct PriorityQueue<T> {
     queues: [VecDeque<T>; 8],

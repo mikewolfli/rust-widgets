@@ -1,6 +1,10 @@
 use super::Layout;
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
+/// A positioned child in an absolute layout, with optional size and anchor.
+///
+/// The anchor determines which corner/edge of the child is placed at (x, y).
+/// Supports 9 anchor points (TopLeft, TopCenter, …, BottomRight).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbsolutePosition {
     pub x: i32,
@@ -78,6 +82,10 @@ impl Default for AbsolutePosition {
         Self::new(0, 0)
     }
 }
+/// Anchor point for absolute positioning.
+///
+/// Determines which corner or edge of a child widget is pinned to the
+/// specified (x, y) coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Anchor {
     #[default]
@@ -93,6 +101,7 @@ pub enum Anchor {
 }
 /// Alias for Anchor to match test expectations
 pub use Anchor as AbsoluteAnchor;
+/// A size constraint with optional min/max bounds for each axis.
 #[derive(Debug, Clone, Copy)]
 pub struct Constraint {
     pub min_width: Option<u32>,
@@ -162,6 +171,11 @@ impl Default for Constraint {
         Self::new()
     }
 }
+/// An absolute-position layout manager.
+///
+/// Children are placed at explicit (x, y) coordinates with optional
+/// constraints (min/max size, aspect ratio).  No automatic arrangement
+/// or reflow is performed.
 pub struct AbsoluteLayout {
     children: Vec<(Option<Box<dyn Widget>>, AbsolutePosition, Option<Constraint>)>,
     widget_ids: Vec<ObjectId>,
