@@ -179,7 +179,7 @@ chrono = { version = "0.4", optional = true }
 notify = { version = "7.0", optional = true }
 dirs = { version = "6.0", optional = true }
 log = "0.4"
-minimp3 = "0.5"
+minimp3_fixed = "0.5"
 miniz_oxide = { version = "0.8", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
 ureq = { version = "3.0", optional = true, features = [] }

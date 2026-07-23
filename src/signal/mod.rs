@@ -1,4 +1,36 @@
 //! Signal and slot implementation.
+//!
+//! This module provides a flexible, thread-safe signal/slot system inspired by
+//! Qt's signals & slots, but designed for Rust's ownership model.
+//!
+//! # Core Types
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | [`Signal<T>`] | Typed signal with an `Arc<T>` payload. Supports `connect`, `connect_once`, `disconnect`, `block`/`unblock`, and priority-based ordering. |
+//! | [`GenericSignal`] | Zero-argument signal (no payload). Equivalent to `Signal<()>` but optimized for the common case of "something happened". |
+//! | [`Signal1<T>`] | One-argument signal via `GenericSignal` + `Arc<T>` wrapping. |
+//! | [`ConnectionHandle`] | Opaque handle returned by `connect()`; used to `disconnect()` or `block()`/`unblock()` a specific slot. |
+//! | [`ConnectionScope`] | RAII scope that auto-disconnects all tracked slots on drop. Prevents dangling slots when the listener lifetime is bounded. |
+//! | [`Priority`] | Execution order: `High` → `Normal` (default) → `Low`. |
+//! | [`CustomSignalHub`] | Central hub for registering and firing named custom signals. |
+//!
+//! # Performance
+//!
+//! - **Slot storage** uses a `RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>` for
+//!   concurrent read access during emit and exclusive write for connect/disconnect.
+//! - **Payloads** are wrapped in `Arc<T>` to avoid cloning on multi-slot emit.
+//!   Only the `Arc` pointer is cloned, not the underlying data.
+//! - **Priority sorting** happens on each emit — slots are sorted by priority rank
+//!   before invocation. For signals with many slots, this adds a small O(n log n) cost.
+//! - **`ConnectionScope`** uses a `Mutex<Vec<Box<dyn FnOnce()>>>` for thread-safe
+//!   connection tracking. Disconnect is deferred to scope drop or explicit `clear()`.
+//!
+//! # Thread Safety
+//!
+//! All signal types are `Send + Sync`. Slots must be `FnMut + Send + Sync + 'static`.
+//! Emitting from multiple threads concurrently is safe; slot execution order across
+//! threads is not guaranteed beyond priority ordering within a single emit call.
 mod core_signal;
 mod generic_signal;
 mod hub;

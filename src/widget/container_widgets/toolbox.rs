@@ -157,6 +157,17 @@ impl ToolBox {
         self.orientation = orientation;
         self.base.request_redraw();
     }
+
+    /// Removes all items from the toolbox.
+    pub fn clear(&mut self) {
+        for item in self.items.drain(..) {
+            if let Some(widget_id) = item.widget {
+                self.base.remove_child(widget_id);
+            }
+        }
+        self.current_index = 0;
+        self.base.request_redraw();
+    }
     /// Returns item rectangle at index.
     fn item_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.items.len() {
@@ -247,14 +258,43 @@ impl EventHandler for ToolBox {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::MousePress { pos, button } = event {
-            if *button == 1 {
+        match event {
+            Event::MousePress { pos, button } if *button == 1 => {
                 if let Some(index) = self.item_at_position(*pos) {
                     if self.items[index].enabled {
                         self.set_current_index(index);
                     }
                 }
             }
+            Event::KeyPress { key, .. } => {
+                let next = match (self.orientation, key) {
+                    // Vertical: Up/Down; Horizontal: Left/Right
+                    (Orientation::Vertical, 38)
+                    | (Orientation::Horizontal, 37) => {
+                        // Up/Left
+                        if self.current_index > 0 {
+                            Some(self.current_index - 1)
+                        } else {
+                            None
+                        }
+                    }
+                    (Orientation::Vertical, 40)
+                    | (Orientation::Horizontal, 39) => {
+                        // Down/Right
+                        let next = self.current_index + 1;
+                        if next < self.items.len() {
+                            Some(next)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(idx) = next {
+                    self.set_current_index(idx);
+                }
+            }
+            _ => {}
         }
         // Forward events to current widget via registry
         if let Some(widget_id) = self.current_widget() {
@@ -786,5 +826,83 @@ mod tests {
         tb.set_enabled(true);
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
         assert_eq!(tb.current_index(), 1, "after re-enable, mouse clicks should work");
+    }
+
+    // ── 16. Keyboard navigation (vertical) ────────────────────────────────
+
+    #[test]
+    fn toolbox_key_down_selects_next_item_vertical() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), None);
+        tb.add_item("C".to_string(), None);
+        assert_eq!(tb.current_index(), 0);
+
+        tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(tb.current_index(), 1);
+
+        tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(tb.current_index(), 2);
+    }
+
+    #[test]
+    fn toolbox_key_up_selects_prev_item_vertical() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), None);
+        tb.set_current_index(1);
+
+        tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(tb.current_index(), 0);
+    }
+
+    #[test]
+    fn toolbox_key_navigation_stops_at_boundaries() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
+        tb.add_item("A".to_string(), None);
+
+        // Already at first item, Up should stay
+        tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(tb.current_index(), 0);
+
+        // Already at last item, Down should stay
+        tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(tb.current_index(), 0);
+    }
+
+    #[test]
+    fn toolbox_key_navigation_horizontal() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 400, 100));
+        tb.set_orientation(Orientation::Horizontal);
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), None);
+        tb.add_item("C".to_string(), None);
+
+        assert_eq!(tb.current_index(), 0);
+
+        // Right arrow advances
+        tb.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(tb.current_index(), 1);
+
+        // Left arrow goes back
+        tb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        assert_eq!(tb.current_index(), 0);
+    }
+
+    // ── 17. Clear method ──────────────────────────────────────────────────
+
+    #[test]
+    fn toolbox_clear_removes_all_items() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), Some(widget_id_1()));
+        tb.add_item("C".to_string(), None);
+        tb.set_current_index(2);
+
+        tb.clear();
+
+        assert_eq!(tb.count(), 0);
+        assert_eq!(tb.current_index(), 0);
+        assert!(tb.children().is_empty(), "child widgets should be removed");
     }
 }

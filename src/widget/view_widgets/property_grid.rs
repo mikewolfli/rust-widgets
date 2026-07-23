@@ -5,7 +5,7 @@
 //! - Value column (right): editable text with alternating row colors
 //!   Supports row selection via click and emits a `selected` signal.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -287,6 +287,75 @@ impl EventHandler for PropertyGrid {
                 }
                 self.base.request_redraw();
             }
+            Event::KeyPress { key, .. } => {
+                let row_height = 24u32;
+                let max_scroll = (self.properties.len() as u32).saturating_sub(
+                    (self.geometry().height.saturating_sub(row_height + 1)) / row_height,
+                );
+                match *key {
+                    38 => {
+                        // Up arrow — move selection up
+                        let current = self.selected_index.unwrap_or(0);
+                        if current > 0 {
+                            let new_idx = current - 1;
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
+                            // Scroll if selection moved above viewport
+                            if new_idx < self.scroll_offset as usize {
+                                self.scroll_offset = new_idx as u32;
+                            }
+                            self.base.request_redraw();
+                        }
+                    }
+                    40 => {
+                        // Down arrow — move selection down
+                        let new_idx = match self.selected_index {
+                            None => {
+                                if self.properties.is_empty() {
+                                    return;
+                                }
+                                0 // select first if nothing selected
+                            }
+                            Some(current) if current + 1 < self.properties.len() => current + 1,
+                            _ => return, // already at last row
+                        };
+                        self.selected_index = Some(new_idx);
+                        self.selected.emit(new_idx);
+                        let visible =
+                            (self.geometry().height.saturating_sub(row_height + 1)) / row_height;
+                        // Scroll if selection moved below viewport
+                        if new_idx >= self.scroll_offset as usize + visible as usize {
+                            self.scroll_offset = (new_idx as u32 + 1).saturating_sub(visible);
+                        }
+                        self.base.request_redraw();
+                    }
+                    36 => {
+                        // Home — jump to first row
+                        if !self.properties.is_empty() {
+                            self.selected_index = Some(0);
+                            self.selected.emit(0);
+                            self.scroll_offset = 0;
+                            self.base.request_redraw();
+                        }
+                    }
+                    35 => {
+                        // End — jump to last row
+                        if !self.properties.is_empty() {
+                            let last = self.properties.len() - 1;
+                            self.selected_index = Some(last);
+                            self.selected.emit(last);
+                            let visible = (self.geometry().height.saturating_sub(row_height + 1))
+                                / row_height;
+                            self.scroll_offset =
+                                (last as u32 + 1).saturating_sub(visible).min(max_scroll);
+                            self.base.request_redraw();
+                        }
+                    }
+                    _ => {
+                        self.base.handle_event(event);
+                    }
+                }
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -400,5 +469,109 @@ mod tests {
         pg.add_property("Age", "30", false);
         let svg = crate::widget::svg::render_to_svg(&mut pg);
         assert!(svg.starts_with("<svg"));
+    }
+
+    // ── Keyboard navigation tests ──
+
+    #[test]
+    fn property_grid_key_down_selects_next_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.add_property("C", "3", true);
+        pg.set_selected_index(Some(0));
+
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(1));
+
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(2));
+    }
+
+    #[test]
+    fn property_grid_key_up_selects_prev_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.set_selected_index(Some(1));
+
+        pg.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn property_grid_key_up_stops_at_first_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.set_selected_index(Some(0));
+
+        pg.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(0), "should stay at first row");
+    }
+
+    #[test]
+    fn property_grid_key_down_stops_at_last_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.set_selected_index(Some(1));
+
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(1), "should stay at last row");
+    }
+
+    #[test]
+    fn property_grid_key_home_jumps_to_first_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.add_property("C", "3", true);
+        pg.set_selected_index(Some(2));
+
+        pg.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn property_grid_key_end_jumps_to_last_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.add_property("C", "3", true);
+        pg.set_selected_index(Some(0));
+
+        pg.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(2));
+    }
+
+    #[test]
+    fn property_grid_key_down_from_unselected_selects_first() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+
+        // No selection yet; down arrow should select index 0
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn property_grid_key_navigation_emits_selected_signal() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+        pg.add_property("C", "3", true);
+        pg.set_selected_index(Some(0));
+
+        let captured = Arc::new(Mutex::new(None));
+        pg.selected.connect({
+            let captured = Arc::clone(&captured);
+            move |val: Arc<usize>| {
+                *captured.lock().unwrap() = Some(*val);
+            }
+        });
+
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(*captured.lock().unwrap(), Some(1));
     }
 }

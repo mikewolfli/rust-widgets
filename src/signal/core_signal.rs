@@ -1,3 +1,24 @@
+//! Core signal implementation with thread-safe slot storage.
+//!
+//! Provides [`Signal<T>`] — a typed signal that delivers `Arc<T>` payloads to
+//! registered slots.  Slots are stored in a `RwLock`-protected `HashMap` for
+//! concurrent read (emit) and exclusive write (connect/disconnect/block).
+//!
+//! # Architecture
+//!
+//! ```text
+//! Signal<T>
+//!   └── Arc<SignalInner<T>>
+//!         └── RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>
+//!               ├── callback: Box<dyn FnMut(Arc<T>) + Send + Sync>
+//!               ├── once: bool          — auto-disconnect after first emit
+//!               ├── blocked: bool       — skip this slot on emit
+//!               └── priority: Priority  — High > Normal > Low
+//! ```
+//!
+//! On emit, slots are sorted by priority into three buckets and invoked
+//! High → Normal → Low.  Inside each bucket, slots fire in insertion order.
+
 use crate::compat::HashMap;
 use crate::compat::{Mutex, RwLock};
 use alloc::sync::Arc;

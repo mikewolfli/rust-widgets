@@ -117,9 +117,9 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
     Ok(buf)
 }
 
-/// Decode MP3 audio using the minimp3 crate.
+/// Decode MP3 audio using minimp3_fixed (security-patched fork of minimp3).
 fn decode_mp3(data: &[u8]) -> Result<AudioBuffer, String> {
-    use minimp3::Decoder as Mp3Decoder;
+    use minimp3_fixed::Decoder as Mp3Decoder;
 
     // Skip ID3v2 tag if present to avoid minimp3 confusion
     let mp3_data = if data.len() > 10 && &data[0..3] == b"ID3" {
@@ -152,7 +152,7 @@ fn decode_mp3(data: &[u8]) -> Result<AudioBuffer, String> {
                     all_samples.push(sample as f32 / 32768.0);
                 }
             }
-            Err(minimp3::Error::Eof) => break,
+            Err(minimp3_fixed::Error::Eof) => break,
             Err(e) => return Err(format!("MP3 decode error: {:?}", e)),
         }
     }

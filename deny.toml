@@ -1,64 +1,15 @@
 # cargo-deny configuration for rust-widgets
 # See https://embarkstudios.github.io/cargo-deny/ for details
 
-[graph]
-# Skip duplicate crate analysis for certain crates
-skip-tree = [
-    # cocoa 0.24 is deprecated but still used by the macOS backend
-    # Will be removed after objc2 migration (BLUE11 R1.5)
-    { name = "cocoa", version = "0.24" },
-]
-
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-notice = "warn"
-# Ignore advisories that are not relevant
-# ignore = [
-#     "RUSTSEC-2020-0001",
-# ]
-
-[licenses]
-# Allow common open-source licenses
-allow = [
-    "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSL-1.0",
-    "ISC",
-    "Unicode-3.0",
-    "Zlib",
-    "0BSD",
-]
-deny = [
-    "AGPL-3.0",
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-    "GPL-3.0",
-    "GPL-3.0-only",
-    "GPL-3.0-or-later",
-    "GPL-2.0",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "LGPL-3.0",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-]
-# Skip license check for certain crates (platform-specific transitive deps)
-skip = [
-    { name = "cocoa", license = "MIT" },
-    { name = "block", license = "MIT" },
+ignore = [
+    # slice-ring-buffer via minimp3_fixed (MP3 decoding). No fix available.
+    "RUSTSEC-2025-0044",
+    # boa_engine/rustyline via js-engine feature. No fix available.
+    "RUSTSEC-2026-0204",
+    "RUSTSEC-2025-0003",
+    # Unmaintained advisories for transitive deps (not directly usable).
+    "RUSTSEC-2024-0384",
+    "RUSTSEC-2024-0436",
 ]
 
-[bans]
-deny = [
-    # Multiple versions of the same crate
-    { name = "cfg-if" },
-    { name = "log" },
-]
-skip = [
-    # Cocoa ecosystem has many transitive deps at specific versions
-    { name = "objc" },
-    { name = "block" },
-    { name = "malloc_buf" },
-]

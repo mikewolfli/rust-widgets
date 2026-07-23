@@ -11,11 +11,12 @@
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
-use crate::core::{ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
-use crate::widget::{Widget, WidgetKind};
+use crate::widget::{Draw, Widget, WidgetKind};
 
 /// Enhanced web view widget.
 pub struct WebViewEnhanced {
@@ -147,6 +148,104 @@ impl EventHandler for WebViewEnhanced {
         }
         if let Event::KeyPress { key, modifiers } = event {
             self.core.handle_key_event(*key, *modifiers);
+        }
+    }
+}
+
+impl Draw for WebViewEnhanced {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        let enabled = self.base().is_enabled();
+        let border_color = Color::rgb(180, 180, 180);
+        let bg_color = Color::rgb(255, 255, 255);
+
+        // ── Outer background & border ──
+        context.fill_rect(rect, bg_color);
+        context.draw_rect(rect, border_color);
+
+        // ── Address bar area (30px at top) ──
+        let addr_h = 30u32;
+        let addr_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, addr_h);
+        context.fill_rect(addr_rect, Color::rgb(245, 245, 245));
+        // Bottom border of address bar
+        context.draw_line(
+            Point::new(addr_rect.x, addr_rect.y + addr_rect.height as i32 - 1),
+            Point::new(
+                addr_rect.x + addr_rect.width as i32,
+                addr_rect.y + addr_rect.height as i32 - 1,
+            ),
+            border_color,
+        );
+
+        // URL text centered in address bar
+        let url_color = if enabled { Color::rgb(60, 60, 60) } else { Color::rgb(180, 180, 180) };
+        context.draw_text(
+            Point::new(addr_rect.x + 6, addr_rect.y + 8),
+            &self.core.url,
+            &Font::new("Arial", 12.0, false, false),
+            url_color,
+            HorizontalAlignment::Left,
+        );
+
+        // ── Loading indicator ──
+        if self.core.loading {
+            let bar_y = addr_rect.y + addr_rect.height as i32;
+            let bar_w = (rect.width as u32 * self.core.load_progress as u32 / 100).max(4);
+            context.fill_rect(Rect::new(rect.x + 1, bar_y, bar_w, 3), Color::rgb(51, 153, 255));
+        }
+
+        // ── Content area ──
+        let content_y =
+            addr_rect.y + addr_rect.height as i32 + if self.core.loading { 3 } else { 0 };
+        let content_h = (rect.y + rect.height as i32) - content_y - 1;
+        if content_h > 0 {
+            let content_rect = Rect::new(rect.x + 1, content_y, rect.width - 2, content_h as u32);
+            // Content background
+            context.fill_rect(content_rect, bg_color);
+
+            // Title display
+            if !self.core.title.is_empty() {
+                let title_color =
+                    if enabled { Color::rgb(20, 20, 20) } else { Color::rgb(170, 170, 170) };
+                context.draw_text(
+                    Point::new(content_rect.x + 4, content_rect.y + 4),
+                    &self.core.title,
+                    &Font::bold("Arial", 14.0),
+                    title_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+
+            // Content snippet preview (first line of HTML content)
+            if !self.core.content.is_empty() {
+                let snippet = if self.core.content.len() > 200 {
+                    format!("{}...", &self.core.content[..200])
+                } else {
+                    self.core.content.clone()
+                };
+                let text_color =
+                    if enabled { Color::rgb(80, 80, 80) } else { Color::rgb(190, 190, 190) };
+                let text_y = content_rect.y + (if self.core.title.is_empty() { 4 } else { 24 });
+                context.draw_text(
+                    Point::new(content_rect.x + 4, text_y),
+                    &snippet,
+                    &Font::new("monospace", 10.0, false, false),
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+
+            // Empty state: show "about:blank" placeholder
+            if self.core.url == "about:blank" && self.core.content.is_empty() {
+                let placeholder_color = Color::rgb(200, 200, 200);
+                context.draw_text(
+                    Point::new(content_rect.x + 4, content_rect.y + 4),
+                    "about:blank",
+                    &Font::new("Arial", 13.0, false, false),
+                    placeholder_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
 }

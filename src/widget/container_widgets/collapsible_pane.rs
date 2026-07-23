@@ -145,21 +145,24 @@ impl EventHandler for CollapsiblePane {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::MousePress { pos, button } = event {
-            if *button == 1 {
+        match event {
+            Event::MousePress { pos, button } if *button == 1 => {
                 // Check if click is within the header area.
                 let hdr = self.header_rect();
                 if hdr.contains(*pos) {
                     self.toggle();
                 }
             }
+            Event::KeyPress { key, .. } if *key == 32 || *key == 13 => {
+                // Space (32) or Enter (13) to toggle
+                self.toggle();
+            }
+            _ => {}
         }
         // Forward events to content child
-        if self.base.is_enabled() {
-            if let Some(content) = self.content_child {
-                if let Some(ref reg) = self.registry {
-                    let _ = reg.borrow_mut().forward_event(content, event);
-                }
+        if let Some(content) = self.content_child {
+            if let Some(ref reg) = self.registry {
+                let _ = reg.borrow_mut().forward_event(content, event);
             }
         }
     }
@@ -521,5 +524,25 @@ mod tests {
         // State is currently collapsed (true).
         cp.handle_event(&right_click);
         assert!(cp.is_collapsed(), "right-click on header must not toggle");
+    }
+
+    // ── 14. Keyboard toggle (Space/Enter) ───────────────────────────────
+
+    #[test]
+    fn collapsible_pane_keyboard_toggle() {
+        let mut cp = make_pane();
+        assert!(!cp.is_collapsed());
+
+        // Space key toggles
+        cp.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(cp.is_collapsed(), "Space should collapse the pane");
+
+        // Enter key toggles
+        cp.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(!cp.is_collapsed(), "Enter should expand the pane");
+
+        // Other keys should not toggle
+        cp.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
+        assert!(!cp.is_collapsed(), "'A' key must not toggle");
     }
 }
