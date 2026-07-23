@@ -44,17 +44,12 @@ impl WidgetFactory {
             self.register(toggle_button_capability(), create_toggle_button);
             self.register(menu_capability(), create_menu);
             self.register(freeform_shape_capability(), create_freeform_shape);
-            self.register(dial_capability(), create_dial);
             self.register(splitter_capability(), create_splitter);
             self.register(lcd_number_capability(), create_lcd_number);
             self.register(command_link_capability(), create_command_link);
             self.register(font_combo_box_capability(), create_font_combo_box);
             self.register(action_capability(), create_action);
             self.register(tool_box_capability(), create_tool_box);
-            self.register(tab_bar_capability(), create_tab_bar);
-            self.register(calendar_capability(), create_calendar);
-            self.register(date_edit_capability(), create_date_edit);
-            self.register(time_edit_capability(), create_time_edit);
             self.register(list_view_capability(), create_list_view);
             self.register(tree_view_capability(), create_tree_view);
             self.register(table_widget_capability(), create_table_widget);
@@ -64,6 +59,22 @@ impl WidgetFactory {
             self.register(virtual_list_capability(), create_virtual_list);
             self.register(menu_bar_capability(), create_menu_bar);
             self.register(tool_bar_capability(), create_tool_bar);
+
+            // ── Dialog widgets ────────────────────────────────────────
+            self.register(message_box_capability(), create_message_box);
+            self.register(file_dialog_capability(), create_file_dialog);
+            self.register(font_dialog_capability(), create_font_dialog);
+            self.register(input_dialog_capability(), create_input_dialog);
+        }
+
+        // ── Advanced widgets (not available in embedded or mini) ────
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
+        {
+            self.register(dial_capability(), create_dial);
+            self.register(tab_bar_capability(), create_tab_bar);
+            self.register(calendar_capability(), create_calendar);
+            self.register(date_edit_capability(), create_date_edit);
+            self.register(time_edit_capability(), create_time_edit);
             self.register(ribbon_bar_capability(), create_ribbon_bar);
             self.register(color_picker_capability(), create_color_picker);
             self.register(code_editor_capability(), create_code_editor);
@@ -77,12 +88,6 @@ impl WidgetFactory {
             self.register(segmented_control_capability(), create_segmented_control);
             self.register(chip_capability(), create_chip);
             self.register(grid_capability(), create_grid);
-
-            // ── Dialog widgets ────────────────────────────────────────
-            self.register(message_box_capability(), create_message_box);
-            self.register(file_dialog_capability(), create_file_dialog);
-            self.register(font_dialog_capability(), create_font_dialog);
-            self.register(input_dialog_capability(), create_input_dialog);
             self.register(progress_dialog_capability(), create_progress_dialog);
             self.register(popup_window_capability(), create_popup_window);
 

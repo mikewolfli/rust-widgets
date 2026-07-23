@@ -29,6 +29,7 @@ mod tests {
 
     #[test]
     fn tr_macro_with_count() {
+        reset_global();
         assert_eq!(crate::tr!("test_key", 5), "test_key");
     }
 
@@ -46,6 +47,7 @@ mod tests {
 
     #[test]
     fn tr_macro_with_special_chars() {
+        reset_global();
         // Keys with dots, underscores, slashes
         assert_eq!(crate::tr!("common.button.ok"), "common.button.ok");
         assert_eq!(crate::tr!("dialog.file_dialog.open_file"), "dialog.file_dialog.open_file");
@@ -61,6 +63,7 @@ mod tests {
 
     #[test]
     fn tr_macro_long_key() {
+        reset_global();
         let long_key = "a".repeat(255);
         assert_eq!(crate::tr!(&long_key), long_key);
     }
@@ -86,6 +89,7 @@ mod tests {
 
     #[test]
     fn tr_macro_multiple_contexts() {
+        reset_global();
         // Verify different context values pass through correctly
         assert_eq!(crate::tr!("greeting", "formal", 1), "greeting");
         assert_eq!(crate::tr!("greeting", "casual", 1), "greeting");

@@ -184,17 +184,17 @@ pub fn create_tool_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(ToolBar::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_ribbon_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(RibbonBar::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_color_picker(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(ColorPicker::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_code_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let mut editor = CodeEditor::new(geometry);
     if !text.is_empty() {
@@ -203,12 +203,12 @@ pub fn create_code_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(editor)
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_gantt_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(GanttWidget::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_terminal_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let mut terminal = TerminalView::new(geometry);
     if !text.is_empty() {
@@ -217,7 +217,7 @@ pub fn create_terminal_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(terminal)
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_snackbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let mut snackbar = Snackbar::new(geometry);
     if !text.is_empty() {
@@ -226,37 +226,37 @@ pub fn create_snackbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(snackbar)
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_map_view(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MapView::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_media_player(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MediaPlayer::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_breadcrumb(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(Breadcrumb::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_split_button(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(SplitButton::new(text.to_string(), geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_segmented_control(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(SegmentedControl::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_chip(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(Chip::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_grid(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(GridWidget::new(geometry))
 }
@@ -416,7 +416,7 @@ pub fn create_web_view(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 
 // ── Advanced widget constructors ──────────────────────────────
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_pie_menu(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(PieMenu::new(
         Point::new(
@@ -427,7 +427,7 @@ pub fn create_pie_menu(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     ))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_date_time_edit(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(DateTimeEdit::new(geometry))
 }
@@ -549,7 +549,7 @@ pub fn create_masonry_layout(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MasonryLayout::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_material_snackbar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MaterialSnackbar::new(geometry))
 }
@@ -559,7 +559,7 @@ pub fn create_adaptive_scaffold(geometry: Rect, _text: &str) -> Box<dyn Widget> 
     Box::new(AdaptiveScaffold::new("", geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_wizard_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(WizardDialog::new(geometry))
 }
@@ -569,7 +569,7 @@ pub fn create_safe_area(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(SafeArea::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_cupertino_alert_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(CupertinoAlertDialog::new(geometry))
 }
@@ -654,7 +654,7 @@ pub fn create_cupertino_navigation_bar(geometry: Rect, _text: &str) -> Box<dyn W
     Box::new(CupertinoNavigationBar::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_cupertino_segmented_control(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(CupertinoSegmentedControl::new(geometry))
 }
@@ -669,7 +669,7 @@ pub fn create_modal_bottom_sheet(geometry: Rect, _text: &str) -> Box<dyn Widget>
     Box::new(ModalBottomSheet::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_find_replace_dialog(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(FindReplaceDialog::new(geometry))
 }
@@ -756,12 +756,12 @@ pub fn create_pie_chart(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(PieChart::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_animated_image(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(AnimatedImage::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_hero_animation(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(HeroAnimation::new(geometry))
 }
@@ -771,17 +771,17 @@ pub fn create_bezier_curve_editor(geometry: Rect, _text: &str) -> Box<dyn Widget
     Box::new(BezierCurveEditor::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_lottie_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(LottieWidget::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_rive_widget(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(RiveWidget::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_video_player(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(VideoPlayer::new(geometry))
 }
@@ -791,12 +791,12 @@ pub fn create_image_gallery(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(ImageGallery::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_audio_visualizer(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(AudioVisualizer::new(geometry))
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn create_camera_preview(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(CameraPreview::new(geometry))
 }
