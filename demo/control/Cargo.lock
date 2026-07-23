@@ -1225,23 +1225,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimp3"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a3ed9d34ed1a9190336a2b165bf09ac447693dfd9a61684597aaae2ee12df53"
-dependencies = [
- "minimp3-sys",
- "slice-ring-buffer",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "minimp3-sys"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e21c73734c69dc95696c9ed8926a2b393171d98b3f5f5935686a26a487ab9b90"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "minimp3_fixed"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42b0f14e7e75da97ae396c2656b10262a3d4afa2ec98f35795630eff0c8b951b"
+dependencies = [
+ "minimp3-sys",
+ "slice-ring-buffer",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1777,7 +1777,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rust_widgets"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "aes",
  "boa_engine",
@@ -1789,7 +1789,7 @@ dependencies = [
  "font8x8",
  "jpeg-decoder",
  "log",
- "minimp3",
+ "minimp3_fixed",
  "miniz_oxide",
  "notify",
  "objc",
