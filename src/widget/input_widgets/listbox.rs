@@ -240,13 +240,23 @@ impl ListBox {
     }
     /// Sets current row.
     pub fn set_current_row(&mut self, row: Option<usize>) {
-        if let Some(r) = row {
-            if r < self.items.len() {
-                self.current_row = Some(r);
-            }
-        } else {
-            self.current_row = None;
+        let old = self.current_row;
+        let new = match row {
+            Some(r) if r < self.items.len() => Some(r),
+            Some(_) => old,
+            None => None,
+        };
+
+        if old == new {
+            return;
         }
+
+        self.current_row = new;
+        self.base.request_redraw();
+        if let Some(index) = new {
+            self.item_selected.emit(index);
+        }
+        self.selection_changed.emit();
     }
     /// Returns item height.
     pub fn item_height(&self) -> f32 {
@@ -501,6 +511,30 @@ mod tests {
         assert_eq!(lb.current_row(), Some(1));
         lb.set_current_row(None);
         assert_eq!(lb.current_row(), None);
+    }
+
+    #[test]
+    fn listbox_set_current_row_requests_redraw_and_signal() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        lb.add_items(vec!["A".to_string(), "B".to_string()]);
+
+        let redraw = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        lb.base.redraw_requested.connect({
+            let flag = std::sync::Arc::clone(&redraw);
+            move || flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+
+        let selected = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        lb.item_selected.connect({
+            let flag = std::sync::Arc::clone(&selected);
+            move |val| flag.store(*val, std::sync::atomic::Ordering::SeqCst)
+        });
+
+        lb.set_current_row(Some(1));
+
+        assert_eq!(lb.current_row(), Some(1));
+        assert!(redraw.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(selected.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

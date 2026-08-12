@@ -238,3 +238,34 @@ Prefer using `Result`/`Option`, and validate all input types and ranges.
 - Run `cargo check` locally before committing code.
 - Prioritize edge cases and error handling during review.
 - Fully leverage Rust's type system and error handling mechanisms.
+
+---
+
+## Demo / Example Project Convention
+
+**`main()` 只作为入口桩（stub），所有业务逻辑放在 `app` 模块中。**
+
+```rust
+// ✅ 正确：main.rs
+mod app;
+
+fn main() {
+    app::run();
+}
+
+// ✅ 正确：app.rs — 所有逻辑集中在此
+pub fn run() {
+    // App 创建、窗口管理、控件构建、事件循环全部在此
+}
+```
+
+### 理由
+- **职责单一**：`main` 只负责模块初始化和启动调用
+- **可测试性**：`app::run()` 可被单元测试直接调用
+- **一致性**：所有 demo 项目统一使用此模式
+- **AI 友好**：AI 生成新 demo 时按此结构生成，`main.rs` 永远不超过 10 行
+
+### 适用范围
+- `demo/` 目录下的所有示例项目
+- 新增二进制目标（`[[bin]]`）推荐遵循此模式
+- 库代码（`src/` 下）不受此约束

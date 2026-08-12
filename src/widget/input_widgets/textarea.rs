@@ -86,6 +86,7 @@ impl TextArea {
         };
         self.cursor_pos = self.text.len();
         self.changed.emit();
+        self.base.request_redraw();
     }
 
     /// Inserts a single character at the current cursor position.
@@ -134,7 +135,11 @@ impl TextArea {
 
     /// Sets the cursor position, clamping it to the text length.
     pub fn set_cursor_pos(&mut self, pos: usize) {
-        self.cursor_pos = pos.min(self.text.len());
+        let clamped = pos.min(self.text.len());
+        if self.cursor_pos != clamped {
+            self.cursor_pos = clamped;
+            self.base.request_redraw();
+        }
     }
 
     /// Sets the maximum text length.
@@ -142,11 +147,15 @@ impl TextArea {
     /// A value of `0` means unlimited. If the current text exceeds the new limit
     /// it is truncated and the cursor is adjusted accordingly.
     pub fn set_max_length(&mut self, max: usize) {
+        let previous = self.max_length;
         self.max_length = max;
         if max > 0 && self.text.len() > max {
             self.text.truncate(max);
             self.cursor_pos = self.cursor_pos.min(max);
             self.changed.emit();
+            self.base.request_redraw();
+        } else if previous != max {
+            self.base.request_redraw();
         }
     }
 
@@ -157,7 +166,10 @@ impl TextArea {
 
     /// Sets the read-only state.
     pub fn set_read_only(&mut self, ro: bool) {
-        self.read_only = ro;
+        if self.read_only != ro {
+            self.read_only = ro;
+            self.base.request_redraw();
+        }
     }
 
     /// Returns the placeholder text shown when the text is empty.
@@ -167,7 +179,10 @@ impl TextArea {
 
     /// Sets the placeholder text.
     pub fn set_placeholder(&mut self, text: String) {
-        self.placeholder = text;
+        if self.placeholder != text {
+            self.placeholder = text;
+            self.base.request_redraw();
+        }
     }
 }
 
@@ -516,5 +531,23 @@ mod tests {
         ta.handle_event(&Event::KeyPress { key: 13, modifiers: 0 }); // Enter
         ta.handle_event(&Event::KeyPress { key: 66, modifiers: 0 }); // 'B'
         assert_eq!(ta.text(), "A\nB");
+    }
+
+    #[test]
+    fn textarea_setters_request_redraw() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        ta.base.redraw_requested.connect({
+            let flag = std::sync::Arc::clone(&fired);
+            move || flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+
+        ta.set_text("hello");
+        ta.set_cursor_pos(2);
+        ta.set_max_length(3);
+        ta.set_read_only(true);
+        ta.set_placeholder("hint".to_string());
+
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

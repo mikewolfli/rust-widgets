@@ -5,7 +5,7 @@
 
 use crate::compat::HashMap;
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
 
 use crate::core::ObjectId;
@@ -14,7 +14,7 @@ pub use crate::widget::WidgetKind;
 
 /// Metadata stored for each registered widget.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
 pub struct WidgetEntry {
     /// The widget's unique identifier.
     pub id: ObjectId,
@@ -31,7 +31,7 @@ pub struct WidgetEntry {
 /// This is the runtime "index" for all widgets created through the
 /// `app` module or the raw `create_*` functions.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(any(feature = "mini", feature = "embedded")), derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
 pub struct WidgetRegistry {
     entries: HashMap<ObjectId, WidgetEntry>,
     by_kind: HashMap<WidgetKind, Vec<ObjectId>>,
@@ -87,7 +87,7 @@ impl WidgetRegistry {
     ///
     /// Returns `Ok(())` on success, or an error message if serialization
     /// or file writing fails.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
     pub fn save(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("serialization error: {e}"))?;
@@ -99,7 +99,7 @@ impl WidgetRegistry {
     /// Replaces all current entries with the data from the file.
     /// Returns `Ok(())` on success, or an error message if reading
     /// or parsing fails.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
     pub fn load(&mut self, path: &str) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
         let loaded: WidgetRegistry =

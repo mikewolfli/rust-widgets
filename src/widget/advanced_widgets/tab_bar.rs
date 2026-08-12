@@ -1,5 +1,5 @@
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TextMetrics};
 use crate::signal::Signal1;
@@ -231,6 +231,7 @@ impl TabBar {
             self.current_index = Some(index);
             if changed {
                 self.current_changed.emit(index);
+                self.base.request_redraw();
             }
         }
     }
@@ -454,21 +455,23 @@ impl TabBar {
         }
 
         // Text color.
-        let text_color =
-            if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
+        let text_color = if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
 
         // Draw tab title.
         let text_x = tab_rect.x + 6;
         let text_y = tab_rect.y + tab_rect.height as i32 / 2;
-        context.draw_text(Point::new(text_x, text_y), &tab.title, &Font::default(), text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            &tab.title,
+            &Font::default(),
+            text_color,
+            HorizontalAlignment::Left,
+        );
 
         // Draw close button if closable.
         if let Some(close_rect) = self.close_rect(index) {
-            let close_color = if !is_enabled {
-                Color::rgb(180, 180, 180)
-            } else {
-                Color::rgb(100, 100, 100)
-            };
+            let close_color =
+                if !is_enabled { Color::rgb(180, 180, 180) } else { Color::rgb(100, 100, 100) };
             context.draw_line(
                 Point::new(close_rect.x, close_rect.y),
                 Point::new(
@@ -657,6 +660,23 @@ mod tests {
         assert_eq!(tb.current_index(), Some(1));
         tb.set_current_index(0);
         assert_eq!(tb.current_index(), Some(0));
+    }
+
+    #[test]
+    fn tabbar_set_current_index_requests_redraw() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("B".to_string());
+
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tb.base.redraw_requested.connect({
+            let flag = std::sync::Arc::clone(&fired);
+            move || flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+
+        tb.set_current_index(1);
+
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

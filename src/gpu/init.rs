@@ -43,12 +43,14 @@ pub fn subsystem_summary() -> String {
         if is_gpu_available() { "available" } else { "not available" }
     ));
     summary.push_str("Capabilities:\n");
+    summary.push_str("  - Adapter selection: ");
     if cfg!(feature = "wgpu") {
+        summary.push_str("automatic\n");
         summary.push_str("  - WGPU backend: enabled\n");
-        summary.push_str("  - Adapter selection: automatic\n");
         summary.push_str("  - Buffer pools: hardware-adaptive\n");
         summary.push_str("  - Performance monitoring: enabled\n");
     } else {
+        summary.push_str("software fallback\n");
         summary.push_str("  - Software rendering fallback\n");
     }
     summary

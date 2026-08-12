@@ -53,6 +53,29 @@ All notable changes to this project are documented in this file.
 - containers.rs confirmed at 849 lines (no split needed)
 - missing_docs and unsafe_code lint warnings added
 
+## 0.9.10 (2026-07-23) — Code Quality Release
+
+### Infrastructure
+- **mod.rs refactoring (20/20 complete)**: All module declaration files now contain only `pub mod` declarations and `pub use` re-exports; implementation code moved to dedicated files (custom_paint, init, legacy_types, a11y_wiring, arc_helpers, gpu_types, backend, test_types)
+- **Three profiles at 0 errors**: `default`, `mini`, and `embedded` all pass `cargo check` with zero errors
+- **0 clippy warnings**: All unnecessary casts and manual range checks eliminated
+- **0 `#[deprecated]` items**: All 28 deprecated annotations removed
+- **0 `todo!()` / `unimplemented!()`** across the entire codebase
+
+### Bug Fixes
+- PdfPage naming conflict: struct renamed to `ExportPage`, trait retained as `PdfPage`
+- Control backend dispatcher: fixed overlapping `#[cfg]` conditions causing duplicate function definitions in mini profile
+- Embedded profile: 70 errors fixed (chrono/serde dependency gating, advanced widget module gating)
+
+### Dependency Management
+- `serde::Serialize`/`Deserialize` derives made conditional: `#[cfg_attr(feature = "serde", derive(...))]` across core types (Color, Font, WidgetRecord, etc.)
+- `chrono` imports gated behind `not(mini)` / `not(embedded)` in capability layer
+- `serde_json::Value` usage gated behind `not(embedded)` for json module
+- Asset, advanced_widgets, media_widgets modules gated behind `cfg` for embedded profile
+
+### Test
+- Total: 3771 tests passing (3676 lib, 70 integration, 25 doctests)
+
 ## [Unreleased]
 
 ### Added

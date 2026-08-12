@@ -268,7 +268,7 @@ include!("access_write_advanced.in.rs");
 include!("access_write_media.in.rs");
 include!("access_write_other.in.rs");
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub fn write_widget_property_value(
     widget: &mut dyn Widget,
     property_name: &str,
@@ -322,7 +322,7 @@ pub fn read_widget_property_value(
     Err(CapabilityAccessError::UnsupportedOnWidget)
 }
 
-#[cfg(feature = "mini")]
+#[cfg(any(feature = "mini", feature = "embedded"))]
 pub fn write_widget_property_value(
     _widget: &mut dyn Widget,
     _property_name: &str,

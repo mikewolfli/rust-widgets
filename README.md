@@ -7,7 +7,7 @@
 Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and **no_std mini** targets.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-3700%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 <p align="center">

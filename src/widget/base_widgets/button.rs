@@ -95,6 +95,7 @@ impl Button {
         let current = self.state();
         if previous != current {
             self.state_changed.emit(current);
+            self.base.request_redraw();
         }
     }
     /// Sets button text.
@@ -389,6 +390,22 @@ mod tests {
 
         assert!(released_fired.load(Ordering::SeqCst));
         assert!(changed_fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn set_enabled_state_requests_redraw() {
+        let mut b = make_button();
+        let fired = Arc::new(AtomicBool::new(false));
+        b.base.redraw_requested.connect({
+            let flag = Arc::clone(&fired);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        b.set_enabled_state(false);
+
+        assert!(fired.load(Ordering::SeqCst));
     }
 
     #[test]

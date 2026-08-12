@@ -56,6 +56,7 @@ pub mod i18n;
 #[cfg(feature = "image")]
 pub mod image;
 /// Declarative JSON window engine (QML-like).
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 #[cfg(not(feature = "mini"))]
 #[cfg(not(feature = "embedded"))]
 pub mod json;
@@ -122,6 +123,7 @@ macro_rules! tr {
     }};
 }
 /// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 #[cfg(not(feature = "mini"))]
 pub mod app;
 #[cfg(feature = "chart")]

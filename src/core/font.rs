@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(normalized_to_bold.weight(), 700);
         assert!(normalized_to_bold.is_bold());
     }
-    #[cfg(not(feature = "embedded"))]
+    #[cfg(all(test, feature = "serde", not(feature = "embedded")))]
     #[test]
     fn font_deserialize_normalizes_weight_and_bold_contract() {
         let parsed: Font = serde_json::from_str(

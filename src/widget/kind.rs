@@ -1,11 +1,11 @@
 //! Widget kind enum — discrete categories supported by the widget model layer.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
 
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
 pub enum WidgetKind {
     /// Top-level window.
     Window,
