@@ -1,5 +1,7 @@
 use crate::signal::Signal;
-use crate::video::decoder::{FrameBufferDecoder, MjpegDecoder, VideoDecoder};
+#[cfg(not(feature = "video-codecs"))]
+use crate::video::decoder::FrameBufferDecoder;
+use crate::video::decoder::{MjpegDecoder, VideoDecoder};
 use crate::video::format::{self, ContainerFormat};
 use crate::video::frame::VideoFrame;
 use crate::video::metadata::VideoMetadata;

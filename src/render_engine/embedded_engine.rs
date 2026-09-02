@@ -76,7 +76,7 @@ pub fn default_render_engine() -> Box<dyn RenderEngine> {
     Box::new(EmbeddedRenderEngine::new())
 }
 
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(feature = "mini"), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::render_engine::embedded::{set_embedded_target_fps, submit_embedded_task};

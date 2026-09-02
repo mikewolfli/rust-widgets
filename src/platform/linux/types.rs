@@ -71,7 +71,8 @@ pub struct LinuxPlatform {
     pub(crate) runtime: LinuxRuntimeState,
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     pub(crate) native: Mutex<LinuxNativeState>,
-    /// Platform IME bridge for text input method integration.
+    /// Platform IME bridge for text input method integration (Linux only).
+    #[cfg(target_os = "linux")]
     pub(crate) ime_bridge: crate::platform::ime_linux::LinuxImeBridge,
     /// Shared list storage for ComboBox and ListBox widgets.
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
@@ -108,6 +109,7 @@ impl LinuxPlatform {
             runtime: LinuxRuntimeState::new(),
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
+            #[cfg(target_os = "linux")]
             ime_bridge: crate::platform::ime_linux::LinuxImeBridge::new(),
             list_data: Mutex::new(HashMap::new()),
         }

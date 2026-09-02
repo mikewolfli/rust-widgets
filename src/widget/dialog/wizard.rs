@@ -4,7 +4,7 @@
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
 //! Emits `finished`, `cancelled`, and `step_changed` signals.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -227,7 +227,13 @@ impl Draw for WizardDialog {
                 let label_font = Font::bold("Arial", 11.0);
                 let label_x = cx - 4;
                 let label_y = cy - 6;
-                context.draw_text(Point::new(label_x, label_y), &label, &label_font, text_color, HorizontalAlignment::Left);
+                context.draw_text(
+                    Point::new(label_x, label_y),
+                    &label,
+                    &label_font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
 
                 // Step title below circle
                 let title_font = if is_active {

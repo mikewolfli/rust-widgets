@@ -246,8 +246,18 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
                         .write_interleaved(&mut octx)
                         .map_err(|e| format!("Write packet error: {e}"))?;
                 }
+                // Eof ends the stream; EAGAIN means the encoder has no packet
+                // ready yet and is waiting for more input frames. Both are
+                // normal here, so keep sending frames. Anything else is a
+                // genuine encode failure and is propagated.
                 Err(ffmpeg_next::Error::Eof) => break,
-                Err(_) => break,
+                Err(ffmpeg_next::Error::Other { errno })
+                    if std::io::Error::from_raw_os_error(errno).kind()
+                        == std::io::ErrorKind::WouldBlock =>
+                {
+                    break;
+                }
+                Err(e) => return Err(format!("Receive packet error (pts={pts}): {e}")),
             }
             packet = Packet::empty();
         }
@@ -258,22 +268,46 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     }
 
     // ── Flush encoder & write trailer ────────────────────────────────
-    // The muxer's write_trailer handles flushing remaining encoder data.
-    // We still call send_eof to enter draining mode.
-    let _ = encoder.send_eof();
+    // Send EOF to switch the encoder into draining mode, then pull every
+    // remaining packet until the encoder reports `Eof`.
+    encoder.send_eof().map_err(|e| format!("Failed to flush encoder: {e}"))?;
 
+    let is_flac = format == AudioFormat::Flac;
+    let mut dropped_packets: usize = 0;
     let mut packet = Packet::empty();
     loop {
         match encoder.receive_packet(&mut packet) {
             Ok(()) => {
                 packet.set_stream(stream_index);
-                // Ignore muxer errors on flush packets (workaround for FLAC
-                // producing packets that the muxer rejects).
-                let _ = packet.write_interleaved(&mut octx);
+                if let Err(e) = packet.write_interleaved(&mut octx) {
+                    if is_flac {
+                        // Workaround for FFmpeg's FLAC encoder producing
+                        // trailing packets that the FLAC muxer rejects: drop
+                        // them, but make the loss visible instead of
+                        // swallowing it silently.
+                        dropped_packets += 1;
+                        log::warn!("FLAC flush: muxer rejected a trailing packet ({e}); dropped");
+                    } else {
+                        return Err(format!("Write packet error during flush: {e}"));
+                    }
+                }
             }
             Err(ffmpeg_next::Error::Eof) => break,
-            Err(_) => break,
+            // EAGAIN can surface while draining (the encoder has no more
+            // packets right now); end the drain loop so the trailer can be
+            // written. Genuine errors are propagated.
+            Err(ffmpeg_next::Error::Other { errno })
+                if std::io::Error::from_raw_os_error(errno).kind()
+                    == std::io::ErrorKind::WouldBlock =>
+            {
+                break;
+            }
+            Err(e) => return Err(format!("Receive packet error during flush: {e}")),
         }
+        packet = Packet::empty();
+    }
+    if dropped_packets > 0 {
+        log::warn!("FLAC flush: dropped {dropped_packets} packet(s) rejected by the muxer");
     }
 
     octx.write_trailer().map_err(|e| format!("Write trailer error: {e}"))?;

@@ -11,8 +11,13 @@
 #![cfg(feature = "jni")]
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jlong, jstring, juint};
+use jni::sys::{jboolean, jint, jlong, jstring};
 use jni::JNIEnv;
+
+/// Width/height argument type for the C ABI layer. The `jni` crate exposes
+/// only signed JNI types; the C ABI uses `c_uint`, which is `u32` here.
+#[allow(non_camel_case_types)]
+type juint = u32;
 
 // ---------------------------------------------------------------------------
 // Helper: convert Java string → owned Rust String

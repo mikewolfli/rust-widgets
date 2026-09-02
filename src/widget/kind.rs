@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
 pub enum WidgetKind {
     /// Top-level window.
     Window,

@@ -50,6 +50,8 @@ mod tests {
         tracker.add(Rect::new(0, 0, 100, 100));
         tracker.add(Rect::new(50, 50, 100, 100));
         tracker.merge();
-        assert!(tracker.is_empty() || tracker.len() >= 1);
+        // The two overlapping rects merge into a single dirty region.
+        assert_eq!(tracker.len(), 1);
+        assert!(!tracker.is_empty());
     }
 }

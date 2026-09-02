@@ -1,6 +1,21 @@
-//! Image format enumeration with all mainstream formats.
+//! Image format enumeration and pixel-data containers.
+//!
+//! # Format support matrix (truthful)
+//!
+//! The [`ImageFormat`] enum is a format identifier list; it does **not** imply
+//! that this crate ships a codec for every variant. Actual codec status:
+//!
+//! - **Decoded & encoded**: PNG, JPEG, BMP, QOI, Farbfeld, PNM (P5/P6).
+//! - **Encoded only** (decoding returns `Err`): GIF, TIFF, SVG/SVGZ.
+//! - **Neither** (detected by magic bytes; `decode` returns
+//!   `Err("... not implemented ...")`): WebP, AVIF, ICO.
+//!
+//! Decoders never return fabricated placeholder pixels.
 
-/// All supported image formats for decoding and encoding.
+/// Image format identifier.
+///
+/// See the module docs for which formats are actually decodable/encodable
+/// in this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageFormat {
     /// Unknown/unrecognized format.

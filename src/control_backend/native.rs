@@ -489,6 +489,7 @@ impl ControlBackend for NativeControlBackend {
         get_platform().create_spin_box(parent, x, y, width, height)
     }
     fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        log::warn!("[native] create_dial: no native Dial — falling back to Slider");
         get_platform().create_slider(parent, x, y, width, height)
     }
     fn create_wizard(
@@ -606,6 +607,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("[native] create_web_view: no native web view — falling back to Panel");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_activity_indicator(
@@ -626,6 +628,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("[native] create_calendar: no native Calendar — falling back to Panel (use the custom backend for a real Calendar)");
         get_platform().create_panel(parent, x, y, width, height)
     }
     fn create_column_view(
@@ -659,6 +662,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!("[native] create_command_link: no native CommandLink — falling back to Button");
         get_platform().create_button(parent, text, x, y, width, height)
     }
     fn create_lcd_number(
@@ -669,6 +673,9 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!(
+            "[native] create_lcd_number: no native LCDNumber — falling back to a Label showing '0'"
+        );
         get_platform().create_label(parent, "0", x, y, width, height)
     }
     fn create_font_combo_box(
@@ -679,6 +686,9 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        log::warn!(
+            "[native] create_font_combo_box: no native font enumeration — falling back to ComboBox"
+        );
         get_platform().create_combo_box(parent, x, y, width, height)
     }
     fn create_web_engine_view(

@@ -1,4 +1,4 @@
-#![cfg(not(feature = "mini"))]
+#![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
 
 //! Snapshot/visual regression tests (BLUE11 R3.10).
 //!
@@ -7,6 +7,9 @@
 //!   UPDATE_SNAPSHOTS=1 cargo test --test snapshot_tests
 //!
 //! Snapshot files are stored in snapshots/ directory.
+//!
+//! Visual regression is host-oriented (byte-identical SVG + snapshot file
+//! I/O); wasm targets run the logical suite instead.
 
 use rust_widgets::core::Rect;
 use rust_widgets::widget::{Button, Label, Switch};

@@ -39,6 +39,7 @@ mod tests {
         assert_ne!(_native_pref, _custom_req);
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn route_preference_for_widget_kind_re_exported() {
         use crate::widget::WidgetKind;

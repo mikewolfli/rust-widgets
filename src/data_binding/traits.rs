@@ -71,7 +71,10 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    // Spawning a thread is meaningless on wasm32 (single-threaded); the
+    // Send requirement is verified on the host where threads exist.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_boxed_listener_send() {
         let listener: BoxedListener = Box::new(FnListener::new(|_, _| {}));
         // Verify it implements Send by moving to a thread

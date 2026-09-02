@@ -3,7 +3,7 @@
 //! Displays text normally, and when activated (double-click), switches to an
 //! edit mode with a blinking cursor. Enter/Tab accepts changes, Escape cancels.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -180,7 +180,13 @@ impl Draw for InplaceEditor {
             // Draw text
             let text_x = rect.x + self.padding;
             let text_y = rect.y + self.padding + self.font_size as i32;
-            context.draw_text(Point::new(text_x, text_y), &self.text, &font, Color::BLACK, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &self.text,
+                &font,
+                Color::BLACK,
+                HorizontalAlignment::Left,
+            );
 
             // Draw cursor (blinking vertical line)
             let cursor_x = text_x + self.cursor_position as i32 * 8;

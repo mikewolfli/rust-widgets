@@ -1,9 +1,12 @@
-//! BarcodeScanner widget — barcode and QR code scanner viewfinder.
+//! BarcodeScanner widget — simulated barcode/QR scanner viewfinder.
 //!
-//! Renders a viewfinder area with scanning animation, corner brackets,
-//! and detected barcode result overlay.
+//! Self-drawn simulation: renders a viewfinder with corner brackets, a sweeping
+//! scan line and a result overlay. It does not connect to a camera and does not
+//! decode barcode images. Scan results are injected externally via
+//! [`BarcodeScanner::detect_barcode`]; without such an injection the widget
+//! never reports a detection.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -57,17 +60,20 @@ pub struct BarcodeResult {
     pub timestamp: u64,
 }
 
-/// Barcode/QR code scanner widget.
+/// Barcode/QR code scanner widget (simulated).
 ///
-/// Renders a viewfinder with corner brackets and a scanning animation line.
-/// Stores detected barcode results and emits a signal on detection.
+/// Draws a viewfinder with corner brackets and an animated scan line while
+/// scanning. No image decoding or device capture is performed: `last_result`
+/// is populated only by `detect_barcode`, so the widget acts as a display and
+/// control surface for an external decoding integration.
 pub struct BarcodeScanner {
     base: BaseWidget,
     /// Whether the scanner is actively scanning.
     is_scanning: bool,
-    /// Last successfully decoded barcode result.
+    /// Last barcode result injected via `detect_barcode`.
     last_result: Option<BarcodeResult>,
-    /// Interval between scan attempts in milliseconds.
+    /// Interval in milliseconds between simulated scan-line sweeps; drives the
+    /// viewfinder animation speed only (no real scanning is performed).
     scan_interval: u64,
     /// Whether to show the viewfinder corner brackets.
     show_viewfinder: bool,
@@ -88,13 +94,15 @@ impl BarcodeScanner {
         }
     }
 
-    /// Starts the scanning process.
+    /// Starts the simulated scanning animation (local state and redraw only).
+    ///
+    /// No camera is opened and no decoding begins.
     pub fn start_scanning(&mut self) {
         self.is_scanning = true;
         self.base.request_redraw();
     }
 
-    /// Stops the scanning process.
+    /// Stops the simulated scanning animation (local state and redraw only).
     pub fn stop_scanning(&mut self) {
         self.is_scanning = false;
         self.base.request_redraw();
@@ -114,17 +122,20 @@ impl BarcodeScanner {
         }
     }
 
-    /// Sets the scan interval in milliseconds.
+    /// Sets the scan-sweep interval in milliseconds for the animation.
     pub fn set_scan_interval(&mut self, ms: u64) {
         self.scan_interval = ms.max(10);
     }
 
-    /// Returns the current scan interval in milliseconds.
+    /// Returns the current scan-sweep interval in milliseconds.
     pub fn scan_interval(&self) -> u64 {
         self.scan_interval
     }
 
-    /// Returns a reference to the last detected barcode result, if any.
+    /// Returns the last injected barcode result, if any.
+    ///
+    /// This widget performs no real decoding, so this is only ever populated by
+    /// [`Self::detect_barcode`].
     pub fn last_result(&self) -> Option<&BarcodeResult> {
         self.last_result.as_ref()
     }
@@ -135,8 +146,12 @@ impl BarcodeScanner {
         self.base.request_redraw();
     }
 
-    /// Simulates a barcode detection with the given data and format.
-    /// This is the primary way to inject scan results into the widget.
+    /// Injects a simulated barcode detection with the given data and format.
+    ///
+    /// This widget cannot decode images on its own; `detect_barcode` is the
+    /// only way a result enters the widget (an external decoder/integration is
+    /// expected to call it). The result is stored, emitted on
+    /// `barcode_detected`, and shown in the overlay.
     pub fn detect_barcode(&mut self, data: String, format: BarcodeFormat) {
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp =

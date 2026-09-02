@@ -6,7 +6,9 @@ use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 /// Internal list data storage for ComboBox and ListBox widgets.
@@ -19,22 +21,11 @@ struct WasmListData {
 }
 
 /// Menu/tracking runtime state for the WASM backend.
+#[derive(Default)]
 struct WasmMenuState {
     attached_menu_bar: HashMap<u64, u64>,
-    widget_parent: HashMap<u64, u64>,
     pending_menu_events: Vec<u64>,
     pending_widget_events: Vec<WidgetTriggerEvent>,
-}
-
-impl Default for WasmMenuState {
-    fn default() -> Self {
-        Self {
-            attached_menu_bar: HashMap::new(),
-            widget_parent: HashMap::new(),
-            pending_menu_events: Vec::new(),
-            pending_widget_events: Vec::new(),
-        }
-    }
 }
 
 impl Platform for WasmPlatform {
@@ -52,9 +43,8 @@ impl Platform for WasmPlatform {
 
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
-            use wasm_bindgen::prelude::*;
             let window = web_sys::window().expect("no global window in WASM environment");
             let document = window.document().expect("no document in WASM environment");
             // Ensure the canvas element exists in the DOM.
@@ -82,7 +72,7 @@ impl Platform for WasmPlatform {
         }
         self.runtime.running.store(true, Ordering::SeqCst);
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
             use std::cell::RefCell;
             use std::rc::Rc;
@@ -99,13 +89,17 @@ impl Platform for WasmPlatform {
             // for the entire program duration.
             let f = Rc::new(RefCell::new(None::<Closure<dyn FnMut()>>));
             let g = Rc::clone(&f);
+            // Extra clone leaked below so the closure chain survives forever.
+            let leak_handle = Rc::clone(&f);
             let win = window.clone();
             *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
                 if !running.load(Ordering::SeqCst) {
                     return;
                 }
                 // Re-schedule the next animation frame.
-                let cb = f.borrow().as_ref().unwrap().as_ref().unchecked_ref();
+                // Bind the RefCell guard so the callback pointer stays valid.
+                let guard = f.borrow();
+                let cb = guard.as_ref().unwrap().as_ref().unchecked_ref();
                 let _ = win.request_animation_frame(cb);
             }) as Box<dyn FnMut()>));
 
@@ -113,10 +107,10 @@ impl Platform for WasmPlatform {
             let _ = window
                 .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref());
 
-            // Leak the entire Rc chain so it lives for the program duration.
+            // Leak the Rc chain so it lives for the program duration.
             // The RAF callback will keep firing (and returning early once
             // `running` is false), but the closures will never be dropped.
-            Rc::into_raw(f);
+            std::mem::forget(leak_handle);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -137,13 +131,13 @@ impl Platform for WasmPlatform {
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(WasmHandleKind::Window, title, x, y, width, height);
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
             use wasm_bindgen::JsCast;
             let window = web_sys::window().expect("no global window");
             let document = window.document().expect("no document");
             if let Some(canvas) = document.get_element_by_id(&self.canvas_id) {
-                let html_canvas: web_sys::HtmlCanvasElement =
+                let html_canvas: Option<web_sys::HtmlCanvasElement> =
                     canvas.dyn_into::<web_sys::HtmlCanvasElement>().ok();
                 if let Some(c) = html_canvas {
                     c.set_width(width);
@@ -621,15 +615,17 @@ impl Platform for WasmPlatform {
     // ─── Clipboard ─────────────────────────────────────────────────────────────
 
     fn set_clipboard_text(&self, text: &str) -> bool {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
-            if let Some(navigator) = web_sys::window().and_then(|w| w.navigator()) {
-                if let Some(clipboard) = navigator.clipboard() {
-                    let promise = clipboard.write_text(text);
-                    // Fire-and-forget: the promise runs asynchronously.
-                    let _ = promise;
-                    return true;
-                }
+            // `window()` returns `Option<Window>`; `navigator()` returns
+            // `Navigator` directly, so use `map` (not `and_then`).
+            if let Some(navigator) = web_sys::window().map(|w| w.navigator()) {
+                // `clipboard()` returns `Clipboard` directly in this web-sys version.
+                let clipboard = navigator.clipboard();
+                let promise = clipboard.write_text(text);
+                // Fire-and-forget: the promise runs asynchronously.
+                let _ = promise;
+                return true;
             }
         }
         // Fallback to in-memory clipboard when native API is unavailable.
@@ -637,7 +633,7 @@ impl Platform for WasmPlatform {
     }
 
     fn get_clipboard_text(&self) -> String {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
             // web-sys clipboard.read_text() returns a Promise<String>.
             // For synchronous access we fall back to the in-memory store,

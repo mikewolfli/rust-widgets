@@ -4,7 +4,7 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-纯 Rust 编写的跨平台原生 GUI 库。支持桌面、平板、手机、嵌入式以及 **no_std mini** 目标。
+纯 Rust 编写的跨平台原生 GUI 库。支持桌面、平板、手机、嵌入式以及精简特性（**mini**）目标。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
@@ -24,7 +24,7 @@
 # 桌面（默认）
 cargo check
 
-# Mini（no_std，30+ 控件）
+# Mini（精简 std 特性，最小控件集）
 cargo check --no-default-features --features mini
 
 # 嵌入式
@@ -38,11 +38,11 @@ cargo test --lib
 
 | 配置 | 命令 | 渲染后端 | 控件数 | i18n | GPU |
 |------|------|----------|--------|------|-----|
-| 桌面 | `cargo check` | 原生 OS | 80+ | ✅ | ✅ wgpu |
-| 平板 | `--features tablet` | 原生 OS | 80+ | ✅ | ✅ wgpu |
-| 手机 | `--features mobile` | 手机 API | 80+ | ✅ | ✅ wgpu |
+| 桌面 | `cargo check` | 原生 OS | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
+| 平板 | `--features tablet` | 原生 OS | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
+| 手机 | `--features mobile` | 手机 API | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
 | 嵌入式 | `--features embedded` | 软件 | 30+ | — | — |
-| **Mini** | `--features mini` | **no_std** + alloc | **30+** | — | — |
+| **Mini** | `--features mini` | **精简 std** + alloc | **30+** | — | — |
 
 ### 操作系统支持
 
@@ -63,7 +63,7 @@ cargo test --lib
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  API 层 — lib.rs + compat.rs (no_std 桥接)                │
+│  API 层 — lib.rs + compat.rs（core/alloc 桥接）          │
 ├────────────────────────────────────────────────────────────┤
 │  控件库  │  事件系统    │  布局引擎                         │
 │  (30-80) │  (EventLoop,│  (Box, Grid, Flow,               │
@@ -82,7 +82,7 @@ cargo test --lib
 ## 特性
 
 ### Rust 原生设计
-- 条件 `no_std`：`#![cfg_attr(feature = "mini", no_std)]` — 同一代码库同时支持 std 和嵌入式
+- no_std 就绪架构：所有文件经 `compat.rs`（`core`/`alloc`）导入共享类型，启用 `#![cfg_attr(feature = "mini", no_std)]` 是已跟踪的后续步骤——当前 `mini` profile 在 std 上编译。
 - `compat.rs` 桥接：`HashMap→BTreeMap`，`Mutex→RefCell`，`MiniVec<T,64>`，`MiniString<256>`，`MiniArena`
 - `enum WidgetKind` + `trait Widget/Draw/EventHandler` — 零成本抽象
 - Builder 模式：`Style::new().bg_color(RED).pad_all(8).build()`
@@ -140,7 +140,7 @@ cargo test --lib
 
 **菜单**：PieMenu、RibbonBar、MenuButton、DropdownMenu、Popover、SegmentedButton
 
-### Mini（30+ 控件，no_std）
+### Mini（精简 std profile，约 30 个核心控件）
 
 Window、Dialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、GroupBox、Menu、MenuItem、ToggleButton、Switch、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、TabView、AnimatedImage
 
@@ -170,7 +170,7 @@ python examples/python/demo_basic.py
 | `core` | Point、Rect、Size、Color、Font、ObjectId | 全部 |
 | `widget` | 控件实现 | 全部 |
 | `event` | 事件类型、EventLoop、GestureEngine | 全部 |
-| `compat` | std↔no_std 桥接、MiniVec、MiniString、MiniArena | 全部 |
+| `compat` | core/alloc 桥接、MiniVec、MiniString、MiniArena | 全部 |
 | `render` | SoftwarePaintBackend、SvgPaintBackend、GPU | 全部 |
 | `layout` | Box、Grid、Flow、Stack、Absolute、Masonry | 全部 |
 | `signal` | GenericSignal、Signal1、ConnectionScope | 全部 |
@@ -193,7 +193,7 @@ python examples/python/demo_basic.py
 | 配置 | Rust 版本 | 依赖 |
 |------|:---------:|------|
 | 桌面 | 1.87+ | wgpu、GTK/Wayland (Linux)、objc2 (macOS) |
-| Mini | 1.87+ | heapless、hashbrown、bumpalo (no_std) |
+| Mini | 1.87+ | heapless、hashbrown、bumpalo（no_std 就绪；profile 在 std 上编译） |
 | 嵌入式 | 1.87+ | 无 |
 
 ---

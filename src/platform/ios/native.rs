@@ -430,11 +430,7 @@ pub(crate) fn create_ui_scroll(
 /// Create a native UIAlertController (message box equivalent on iOS).
 ///
 /// Returns a prepared alert with a single "OK" action.
-pub(crate) fn create_ui_alert(
-    _mtm: MainThreadMarker,
-    title: &str,
-    text: &str,
-) -> Retained<Object> {
+pub(crate) fn create_ui_alert(_mtm: MainThreadMarker, title: &str, text: &str) -> Retained<Object> {
     // SAFETY: UIAlertController and UIAlertAction are created via msg_send!.
     // `alertControllerWithTitle:message:preferredStyle:` returns a retained
     // UIAlertController. `UIAlertControllerStyleAlert` = 1.

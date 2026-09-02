@@ -1,4 +1,7 @@
+// criterion (benchmark harness) cannot compile for wasm32.
+#![cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+
 use rust_widgets::json::load_layout_from_str;
 use std::hint::black_box;
 

@@ -96,7 +96,10 @@ impl MenuConfig {
             if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
                 for line in content.lines() {
                     if let Some(rest) = line.strip_prefix("MemTotal:") {
-                        let val_str: String = rest.chars().take_while(|c| c.is_ascii_digit() || c.is_whitespace()).collect();
+                        let val_str: String = rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit() || c.is_whitespace())
+                            .collect();
                         if let Ok(kb) = val_str.trim().parse::<u64>() {
                             return kb / 1024;
                         }

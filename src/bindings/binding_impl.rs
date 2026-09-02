@@ -972,6 +972,15 @@ pub extern "C" fn rw_mobile_attach_native_view(native_handle: u64) -> CBool {
 pub extern "C" fn rw_bindings_api_version() -> c_uint {
     c_try!({ 7 })
 }
+/// Return Node.js binding status bitmask.
+///
+/// Bit layout:
+/// - bit0: C ABI entry points available
+/// - bit1: Node.js adapter/example available
+#[no_mangle]
+pub extern "C" fn rw_nodejs_binding_status() -> c_uint {
+    c_try!({ (1 << 0) | (1 << 1) })
+}
 /// Return Python binding status bitmask.
 ///
 /// Bit layout:
@@ -1005,6 +1014,46 @@ pub extern "C" fn rw_java_binding_status() -> c_uint {
 #[no_mangle]
 pub extern "C" fn rw_java_jni_skeleton_version() -> c_uint {
     c_try!({ 1 })
+}
+/// Reserved C++ binding marker — returns the current C++ wrapper ABI version.
+///
+/// Kept as a stable, never-changing symbol so that language bindings can
+/// probe for wrapper support without linking against a moving target.
+#[no_mangle]
+pub extern "C" fn rw_cpp_reserved() -> c_uint {
+    c_try!({ 1 })
+}
+/// Reserved Java binding marker — returns the current JNI wrapper ABI version.
+#[no_mangle]
+pub extern "C" fn rw_java_reserved() -> c_uint {
+    c_try!({ 1 })
+}
+/// Reserved Python binding marker — returns the current Python wrapper ABI version.
+#[no_mangle]
+pub extern "C" fn rw_python_reserved() -> c_uint {
+    c_try!({ 1 })
+}
+/// Return the error code of the most recent failed C ABI call.
+///
+/// Returns `0` (`RW_ERROR_SUCCESS`) when no error has been recorded.
+/// The `handle` argument is reserved for future per-widget error state
+/// and is currently ignored (the last-error slot is process-wide).
+#[no_mangle]
+pub extern "C" fn rw_error_code(_handle: u64) -> c_int {
+    c_try!({ crate::error::ffi::last_ffi_error().map(|e| e.id.0 as c_int).unwrap_or(0) })
+}
+/// Return the error message of the most recent failed C ABI call.
+///
+/// Returns an empty string when no error has been recorded. The returned
+/// string must be freed with `rw_free_string`.
+/// The `handle` argument is reserved for future per-widget error state
+/// and is currently ignored (the last-error slot is process-wide).
+#[no_mangle]
+pub extern "C" fn rw_error_message(_handle: u64) -> *mut c_char {
+    c_try!({
+        let message = crate::error::ffi::last_ffi_error().map(|e| e.message).unwrap_or_default();
+        CString::new(message).unwrap_or_default().into_raw()
+    })
 }
 #[no_mangle]
 /// # Safety

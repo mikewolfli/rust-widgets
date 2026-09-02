@@ -45,6 +45,10 @@ impl UndoStack {
         self.redo_stack.clear();
 
         // Enforce capacity: remove oldest commands if at limit.
+        if self.max_capacity == 0 {
+            // Zero-capacity stacks retain nothing; drop the command silently.
+            return;
+        }
         if self.undo_stack.len() >= self.max_capacity {
             self.undo_stack.remove(0);
             // Adjust clean_index if it was shifted.
@@ -503,5 +507,27 @@ mod tests {
         assert_eq!(stack.undo_count(), 0);
         assert_eq!(stack.redo_count(), 0);
         assert!(stack.is_clean());
+    }
+
+    #[test]
+    fn test_zero_capacity_push_does_not_panic() {
+        let mut stack = UndoStack::with_capacity(0);
+        // Regression: pushing onto a zero-capacity stack used to call
+        // `Vec::remove(0)` on an empty vector and panic.
+        stack.push(Box::new(TextCommand::new("x", "")));
+        assert_eq!(stack.undo_count(), 0);
+        assert!(stack.undo().is_err());
+    }
+
+    #[test]
+    fn test_set_max_capacity_zero_clears_and_accepts_pushes() {
+        let mut stack = UndoStack::with_capacity(10);
+        stack.push(Box::new(TextCommand::new("a", "")));
+        stack.push(Box::new(TextCommand::new("b", "")));
+        stack.set_max_capacity(0);
+        assert_eq!(stack.undo_count(), 0);
+        // New pushes are dropped without panicking.
+        stack.push(Box::new(TextCommand::new("c", "")));
+        assert_eq!(stack.undo_count(), 0);
     }
 }

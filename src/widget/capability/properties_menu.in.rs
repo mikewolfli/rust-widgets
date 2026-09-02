@@ -3,6 +3,7 @@
 
 macro_rules! impl_properties_menu {
     () => {
+        #[cfg(not(feature = "mini"))]
         pub(crate) const ACTION_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -48,6 +49,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MENU_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -69,6 +71,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MENU_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "entry_count",
@@ -90,6 +93,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TOOL_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "orientation",

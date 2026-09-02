@@ -4,12 +4,13 @@
 //! querying.  Platform backends are selected at compile time based on `target_os`
 //! and feature flags, then cached in a global singleton.
 
+#[cfg(not(feature = "mini"))]
 use crate::compat::OnceLock;
 #[cfg(all(not(feature = "mini"), feature = "embedded"))]
 use crate::core::PlatformFamily;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;
-#[cfg(all(target_os = "linux", not(feature = "embedded")))]
+#[cfg(all(target_os = "linux", not(feature = "mini"), not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
 #[cfg(all(
     target_os = "macos",
@@ -19,6 +20,7 @@ use crate::platform::linux::LinuxPlatform;
 use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 #[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
 use crate::platform::mobile;
+#[cfg(not(feature = "mini"))]
 pub use crate::platform::types::*;
 #[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
 use crate::platform::wayland::WaylandPlatform;
@@ -116,9 +118,23 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(IosMobilePlatform::new())
 }
 
+/// WASM backend — used on `wasm32` targets when the `wasm` feature is enabled.
+/// On wasm32 the event loop is driven by `request_animation_frame`; elsewhere
+/// the same backend uses a polling fallback (used for development/testing).
 #[cfg(all(
     not(feature = "mini"),
     not(feature = "embedded"),
+    feature = "wasm",
+    target_arch = "wasm32"
+))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(crate::platform::wasm::WasmPlatform::default())
+}
+
+#[cfg(all(
+    not(feature = "mini"),
+    not(feature = "embedded"),
+    not(all(feature = "wasm", target_arch = "wasm32")),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -172,6 +188,7 @@ pub enum RuntimeGuiMode {
 }
 
 /// Resolve GUI mode for a specific platform backend.
+#[cfg(not(feature = "mini"))]
 pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
     match platform.backend_name() {
         "cocoa" | "WindowsPlatform" => RuntimeGuiMode::NativeInteractive,

@@ -4,7 +4,7 @@
 //! Unlike the existing SearchBox, this widget is designed for mobile-style
 //! search UX with active state management and a cancel button.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};

@@ -49,6 +49,7 @@ pub struct Colors {
 }
 
 /// Default info color used for backward-compatible deserialization.
+#[cfg(not(feature = "mini"))]
 const fn default_info_color() -> Color {
     Color::INFO
 }
@@ -128,26 +129,31 @@ pub struct Fonts {
 }
 
 /// Default caption font: Arial 11px, regular.
+#[cfg(not(feature = "mini"))]
 fn default_caption_font() -> Font {
     Font::simple("Arial", 11.0)
 }
 
 /// Default body font: Arial 14px, regular.
+#[cfg(not(feature = "mini"))]
 fn default_body_font() -> Font {
     Font::simple("Arial", 14.0)
 }
 
 /// Default title font: Arial 16px, bold.
+#[cfg(not(feature = "mini"))]
 fn default_title_font() -> Font {
     Font::bold("Arial", 16.0)
 }
 
 /// Default headline font: Arial 20px, bold.
+#[cfg(not(feature = "mini"))]
 fn default_headline_font() -> Font {
     Font::bold("Arial", 20.0)
 }
 
 /// Default display font: Arial 28px, bold.
+#[cfg(not(feature = "mini"))]
 fn default_display_font() -> Font {
     Font::bold("Arial", 28.0)
 }

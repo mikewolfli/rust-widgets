@@ -12,7 +12,7 @@
 //!
 //! Example: mask `(000) 000-0000` formats phone numbers like `(555) 123-4567`.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -303,12 +303,15 @@ impl Draw for MaskedEdit {
         let text_y = geom.y + geom.height as i32 / 2;
 
         if self.mask.is_empty() {
-            let text_color = if !is_enabled {
-                Color::rgba(150, 150, 150, 200)
-            } else {
-                Color::rgb(33, 33, 33)
-            };
-            context.draw_text(Point::new(text_x, text_y), &self.raw_text, &font, text_color, HorizontalAlignment::Left);
+            let text_color =
+                if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::rgb(33, 33, 33) };
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &self.raw_text,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
             return;
         }
 

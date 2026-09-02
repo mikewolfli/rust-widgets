@@ -378,11 +378,8 @@ impl Draw for DockWidget {
         let title_bar = self.title_bar_rect();
         let content = self.content_rect();
         // Draw title bar
-        let title_bar_color = if self.floating {
-            Color::rgb(220, 220, 255)
-        } else {
-            Color::rgb(200, 200, 200)
-        };
+        let title_bar_color =
+            if self.floating { Color::rgb(220, 220, 255) } else { Color::rgb(200, 200, 200) };
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
         context.draw_rect(title_bar, Color::rgb(150, 150, 150));

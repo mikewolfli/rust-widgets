@@ -52,7 +52,10 @@ pub mod gpu;
 #[cfg(feature = "i18n")]
 pub mod i18n;
 /// Image module — format detection, decoding, encoding, transform, and color conversion.
-/// Supports all mainstream formats: PNG, JPEG, BMP, GIF, WebP, TIFF, AVIF, ICO, PNM, QOI, Farbfeld, SVG, SVGZ.
+///
+/// **Decoding** is real for: PNG (all bit depths, scanline filters, palette), JPEG,
+/// BMP, QOI, Farbfeld, PNM (P5/P6). GIF/WebP/TIFF/AVIF/ICO/SVG decode returns an
+/// explicit `Err` rather than fabricated pixels until a codec lands.
 #[cfg(feature = "image")]
 pub mod image;
 /// Declarative JSON window engine (QML-like).
@@ -186,13 +189,14 @@ fn trace_runtime_route(stage: &str) {
 // ── Runtime profile names ──
 
 /// Desktop: full native platform runtime.
-#[cfg(feature = "desktop")]
+#[cfg(all(not(feature = "mini"), feature = "desktop"))]
 fn runtime_profile_name() -> &'static str {
     "desktop"
 }
 
 /// Tablet: touch-first, native platform.
 #[cfg(all(
+    not(feature = "mini"),
     feature = "tablet",
     not(any(feature = "desktop", feature = "mobile", feature = "embedded"))
 ))]
@@ -202,6 +206,7 @@ fn runtime_profile_name() -> &'static str {
 
 /// Mobile: touch-first, mobile API.
 #[cfg(all(
+    not(feature = "mini"),
     feature = "mobile",
     not(any(feature = "desktop", feature = "tablet", feature = "embedded"))
 ))]
@@ -211,6 +216,7 @@ fn runtime_profile_name() -> &'static str {
 
 /// Embedded-mini: LVGL-style ultra-lightweight bare-metal runtime.
 #[cfg(all(
+    not(feature = "mini"),
     feature = "profile-embedded-mini",
     not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
 ))]
@@ -220,6 +226,7 @@ fn runtime_profile_name() -> &'static str {
 
 /// Embedded: stripped-down render-engine-only runtime.
 #[cfg(all(
+    not(feature = "mini"),
     feature = "embedded",
     not(any(
         feature = "desktop",
@@ -233,21 +240,24 @@ fn runtime_profile_name() -> &'static str {
 }
 
 /// Fallback (no device feature selected).
-#[cfg(not(any(
-    feature = "desktop",
-    feature = "tablet",
-    feature = "mobile",
-    feature = "embedded",
-    feature = "profile-embedded-mini"
-)))]
+#[cfg(all(
+    not(feature = "mini"),
+    not(any(
+        feature = "desktop",
+        feature = "tablet",
+        feature = "mobile",
+        feature = "embedded",
+        feature = "profile-embedded-mini"
+    ))
+))]
 fn runtime_profile_name() -> &'static str {
     "unknown"
 }
-#[cfg(not(any(feature = "embedded", feature = "profile-embedded-mini")))]
+#[cfg(not(any(feature = "mini", feature = "embedded", feature = "profile-embedded-mini")))]
 fn runtime_route_name() -> &'static str {
     "native-platform"
 }
-#[cfg(any(feature = "embedded", feature = "profile-embedded-mini"))]
+#[cfg(all(not(feature = "mini"), any(feature = "embedded", feature = "profile-embedded-mini")))]
 fn runtime_route_name() -> &'static str {
     "embedded-render-engine"
 }
@@ -258,7 +268,7 @@ fn runtime_route_name() -> &'static str {
 fn init_runtime_backend() {
     platform::init();
 }
-#[cfg(any(feature = "embedded", feature = "profile-embedded-mini"))]
+#[cfg(all(not(feature = "mini"), any(feature = "embedded", feature = "profile-embedded-mini")))]
 fn init_runtime_backend() {
     render_engine::default_render_engine().init();
 }
@@ -266,7 +276,7 @@ fn init_runtime_backend() {
 fn run_runtime_backend() {
     platform::run();
 }
-#[cfg(feature = "embedded")]
+#[cfg(all(feature = "embedded", not(feature = "mini")))]
 fn run_runtime_backend() {
     render_engine::default_render_engine().run();
 }
@@ -274,30 +284,34 @@ fn run_runtime_backend() {
 fn quit_runtime_backend() {
     platform::quit();
 }
-#[cfg(feature = "embedded")]
+#[cfg(all(feature = "embedded", not(feature = "mini")))]
 fn quit_runtime_backend() {
     render_engine::default_render_engine().quit();
 }
 /// Initialize i18n system when i18n feature is enabled.
-#[cfg(feature = "i18n")]
+#[cfg(all(feature = "i18n", not(feature = "mini")))]
 fn init_i18n_runtime() {
     i18n::init();
 }
 
 /// Tablet/mobile without i18n: log debug message.
-#[cfg(all(not(feature = "i18n"), any(feature = "tablet", feature = "mobile")))]
+#[cfg(all(
+    not(feature = "i18n"),
+    any(feature = "tablet", feature = "mobile"),
+    not(feature = "mini")
+))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — i18n module not loaded on this device profile");
 }
 
 /// Embedded: stripped-down, no i18n.
-#[cfg(all(feature = "embedded", not(feature = "i18n")))]
+#[cfg(all(feature = "embedded", not(feature = "i18n"), not(feature = "mini")))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped in embedded mode — no i18n module loaded");
 }
 
 /// Fallback: no i18n feature selected.
-#[cfg(not(any(feature = "i18n", feature = "embedded")))]
+#[cfg(all(not(feature = "mini"), not(any(feature = "i18n", feature = "embedded"))))]
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }

@@ -584,18 +584,11 @@ pub mod linux {
 
 /// WASM/WebAssembly clipboard backend (in-memory mock).
 ///
-/// Uses a simple in-memory store since the `web-sys` `Clipboard` API
-/// (`navigator.clipboard`) is async and cannot be used synchronously
-/// from the `RichClipboardBackend` trait methods.
+/// The browser `navigator.clipboard` API is entirely Promise-based, making it
+/// unsuitable for synchronous trait methods, so this backend uses a simple
+/// in-memory store that is fully functional within a single WASM session.
 #[cfg(feature = "wasm")]
 pub mod wasm {
-    //! WASM clipboard backend (in-memory mock).
-    //!
-    //! The browser `navigator.clipboard` API is entirely Promise-based,
-    //! making it unsuitable for synchronous trait methods. This in-memory
-    //! backend is fully functional within a single WASM session and matches
-    //! the behavior of `MockClipboard` from `super::clipboard`.
-
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     use crate::compat::Mutex;
 

@@ -2,19 +2,19 @@
 //!
 //! Usage: cargo run --example widget_gallery [output_dir]
 
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use rust_widgets::core::Rect;
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use rust_widgets::widget::svg::render_to_svg;
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use rust_widgets::widget::*;
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use std::fs;
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use std::path::PathBuf;
 
 /// Gallery entry for a widget
-#[cfg(not(feature = "mini"))]
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 struct GalleryEntry {
     name: &'static str,
     kind: WidgetKind,
@@ -23,7 +23,7 @@ struct GalleryEntry {
 }
 
 fn main() {
-    #[cfg(not(feature = "mini"))]
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
     {
         let out_dir = std::env::args().nth(1).unwrap_or_else(|| "widget_gallery".to_string());
         let out_path = PathBuf::from(&out_dir);

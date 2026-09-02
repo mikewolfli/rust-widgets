@@ -4,7 +4,7 @@
 //! initials text, commonly used for user profile pictures, contact avatars, and
 //! identity placeholders in modern UI design.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};

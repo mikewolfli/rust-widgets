@@ -2,7 +2,7 @@
 
 use crate::platform::state::BackendState;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 /// Handle kinds for WASM widgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

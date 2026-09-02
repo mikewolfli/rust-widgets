@@ -11,6 +11,18 @@ install-deps = "run -p rust_widgets -- build.rs --help 2>/dev/null; echo 'See sc
 [target.'cfg(miri)']
 runner = "cargo miri run"
 
+# Run wasm32-wasip1 test binaries with wasmtime (full std: FS, clock, etc.).
+# `--dir=...` maps the repo so file-based tests (capability matrix, etc.) work.
+# Install wasmtime with:  curl ... https://github.com/bytecodealliance/wasmtime/releases
+# Note: wasm32-unknown-unknown (browser wasm) has no runner-based libtest
+# support — use wasip1 for actually executing the test suite.
+[target.wasm32-wasip1]
+runner = "wasmtime --dir=/home/mikeli/workspace/rust-widgets"
+
+# The -threads variant enables the wasi threads proposal (spawn, atomics).
+[target.wasm32-wasip1-threads]
+runner = "wasmtime --wasm threads=y --dir=/home/mikeli/workspace/rust-widgets"
+
 [env]
 # Enable runtime tracing for MIRI validation
 RUST_WIDGETS_TRACE_RUNTIME = { value = "1", target = "miri" }

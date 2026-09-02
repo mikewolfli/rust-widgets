@@ -20,7 +20,7 @@
 //! │ Group1   │ Group2   │ Group3   │ Group4           │  ← group title row
 //! └──────────────────────────────────────────────────┘
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -693,11 +693,7 @@ impl RibbonBar {
         } else {
             Color::rgb(230, 230, 235)
         };
-        let border = if is_current {
-            Color::rgb(180, 180, 200)
-        } else {
-            Color::rgb(200, 200, 200)
-        };
+        let border = if is_current { Color::rgb(180, 180, 200) } else { Color::rgb(200, 200, 200) };
 
         context.fill_rect(tab_rect, bg);
         // Bottom edge of current tab blends into panel
@@ -712,11 +708,8 @@ impl RibbonBar {
 
         // Draw tab title (centered)
         let text = &self.tabs[index];
-        let text_color = if self.base.is_enabled() {
-            Color::rgb(0, 0, 0)
-        } else {
-            Color::rgb(150, 150, 150)
-        };
+        let text_color =
+            if self.base.is_enabled() { Color::rgb(0, 0, 0) } else { Color::rgb(150, 150, 150) };
         context.draw_text(
             Point::new(
                 tab_rect.x + tab_rect.width as i32 / 2,

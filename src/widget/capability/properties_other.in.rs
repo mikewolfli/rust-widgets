@@ -30,6 +30,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const LCD_NUMBER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -75,6 +76,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const CODE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -108,6 +110,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const GANTT_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "task_count",
@@ -135,6 +138,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TERMINAL_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "output_line_count",
@@ -150,6 +154,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const SNACKBAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "message",
@@ -171,6 +176,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MAP_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "center_x",
@@ -204,6 +210,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MEDIA_PLAYER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "source",
@@ -249,6 +256,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const BREADCRUMB_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "segment_count",
@@ -264,6 +272,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const SPLIT_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -291,6 +300,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -312,6 +322,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const CHIP_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -339,6 +350,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "rows",
@@ -378,6 +390,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const FREEFORM_SHAPE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "path_kind",
@@ -405,6 +418,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "url",

@@ -279,6 +279,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const DIAL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "minimum",
@@ -330,6 +331,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const COMMAND_LINK_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -351,6 +353,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const FONT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "current_font_family",
@@ -417,6 +420,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TEXT_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",

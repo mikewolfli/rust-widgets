@@ -1,6 +1,8 @@
 //! Audio player engine for playback control.
 
-use crate::audio::{AudioBuffer, decode};
+#[cfg(feature = "audio-output")]
+use crate::audio::AudioOutput;
+use crate::audio::{decode, AudioBuffer};
 use crate::signal::Signal;
 
 /// Audio player engine for playback control.

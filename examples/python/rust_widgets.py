@@ -32,167 +32,167 @@ class RustWidgets:
         self._bind_signatures()
 
     def _bind_signatures(self) -> None:
-        self._lib.rust_widgets_init.argtypes = []
-        self._lib.rust_widgets_init.restype = None
+        self._lib.rw_init.argtypes = []
+        self._lib.rw_init.restype = None
 
-        self._lib.rust_widgets_run.argtypes = []
-        self._lib.rust_widgets_run.restype = None
+        self._lib.rw_run.argtypes = []
+        self._lib.rw_run.restype = None
 
-        self._lib.rust_widgets_quit.argtypes = []
-        self._lib.rust_widgets_quit.restype = None
+        self._lib.rw_quit.argtypes = []
+        self._lib.rw_quit.restype = None
 
-        self._lib.rust_widgets_create_window.argtypes = [c_char_p, c_int, c_int, c_uint, c_uint]
-        self._lib.rust_widgets_create_window.restype = c_uint64
+        self._lib.rw_create_window.argtypes = [c_char_p, c_int, c_int, c_uint, c_uint]
+        self._lib.rw_create_window.restype = c_uint64
 
-        self._lib.rust_widgets_create_button.argtypes = [c_uint64, c_char_p, c_int, c_int, c_uint, c_uint]
-        self._lib.rust_widgets_create_button.restype = c_uint64
+        self._lib.rw_create_button.argtypes = [c_uint64, c_char_p, c_int, c_int, c_uint, c_uint]
+        self._lib.rw_create_button.restype = c_uint64
 
-        self._lib.rust_widgets_set_widget_text.argtypes = [c_uint64, c_char_p]
-        self._lib.rust_widgets_set_widget_text.restype = None
+        self._lib.rw_set_widget_text.argtypes = [c_uint64, c_char_p]
+        self._lib.rw_set_widget_text.restype = None
 
-        self._lib.rust_widgets_get_widget_text.argtypes = [c_uint64]
-        self._lib.rust_widgets_get_widget_text.restype = c_void_p
+        self._lib.rw_get_widget_text.argtypes = [c_uint64]
+        self._lib.rw_get_widget_text.restype = c_void_p
 
-        self._lib.rust_widgets_free_string.argtypes = [c_char_p]
-        self._lib.rust_widgets_free_string.restype = None
+        self._lib.rw_free_string.argtypes = [c_char_p]
+        self._lib.rw_free_string.restype = None
 
-        self._lib.rust_widgets_platform_capabilities.argtypes = []
-        self._lib.rust_widgets_platform_capabilities.restype = c_uint
+        self._lib.rw_platform_capabilities.argtypes = []
+        self._lib.rw_platform_capabilities.restype = c_uint
 
-        self._lib.rust_widgets_platform_dpi_scale_factor.argtypes = []
-        self._lib.rust_widgets_platform_dpi_scale_factor.restype = c_float
+        self._lib.rw_platform_dpi_scale_factor.argtypes = []
+        self._lib.rw_platform_dpi_scale_factor.restype = c_float
 
-        self._lib.rust_widgets_set_render_aa_samples_per_axis.argtypes = [c_uint]
-        self._lib.rust_widgets_set_render_aa_samples_per_axis.restype = c_uint
+        self._lib.rw_set_render_aa_samples_per_axis.argtypes = [c_uint]
+        self._lib.rw_set_render_aa_samples_per_axis.restype = c_uint
 
-        self._lib.rust_widgets_get_render_aa_samples_per_axis.argtypes = []
-        self._lib.rust_widgets_get_render_aa_samples_per_axis.restype = c_uint
+        self._lib.rw_get_render_aa_samples_per_axis.argtypes = []
+        self._lib.rw_get_render_aa_samples_per_axis.restype = c_uint
 
-        self._lib.rust_widgets_set_embedded_target_fps.argtypes = [c_uint]
-        self._lib.rust_widgets_set_embedded_target_fps.restype = c_uint
+        self._lib.rw_set_embedded_target_fps.argtypes = [c_uint]
+        self._lib.rw_set_embedded_target_fps.restype = c_uint
 
-        self._lib.rust_widgets_get_embedded_target_fps.argtypes = []
-        self._lib.rust_widgets_get_embedded_target_fps.restype = c_uint
+        self._lib.rw_get_embedded_target_fps.argtypes = []
+        self._lib.rw_get_embedded_target_fps.restype = c_uint
 
-        self._lib.rust_widgets_submit_embedded_noop_task.argtypes = [c_char_p]
-        self._lib.rust_widgets_submit_embedded_noop_task.restype = c_uint64
+        self._lib.rw_submit_embedded_noop_task.argtypes = [c_char_p]
+        self._lib.rw_submit_embedded_noop_task.restype = c_uint64
 
-        self._lib.rust_widgets_embedded_engine_is_initialized.argtypes = []
-        self._lib.rust_widgets_embedded_engine_is_initialized.restype = c_uint
+        self._lib.rw_embedded_engine_is_initialized.argtypes = []
+        self._lib.rw_embedded_engine_is_initialized.restype = c_uint
 
-        self._lib.rust_widgets_embedded_engine_is_running.argtypes = []
-        self._lib.rust_widgets_embedded_engine_is_running.restype = c_uint
+        self._lib.rw_embedded_engine_is_running.argtypes = []
+        self._lib.rw_embedded_engine_is_running.restype = c_uint
 
-        self._lib.rust_widgets_embedded_engine_frame_count.argtypes = []
-        self._lib.rust_widgets_embedded_engine_frame_count.restype = c_uint64
+        self._lib.rw_embedded_engine_frame_count.argtypes = []
+        self._lib.rw_embedded_engine_frame_count.restype = c_uint64
 
-        self._lib.rust_widgets_embedded_engine_pending_task_count.argtypes = []
-        self._lib.rust_widgets_embedded_engine_pending_task_count.restype = c_uint64
+        self._lib.rw_embedded_engine_pending_task_count.argtypes = []
+        self._lib.rw_embedded_engine_pending_task_count.restype = c_uint64
 
-        self._lib.rust_widgets_embedded_engine_window_count.argtypes = []
-        self._lib.rust_widgets_embedded_engine_window_count.restype = c_uint64
+        self._lib.rw_embedded_engine_window_count.argtypes = []
+        self._lib.rw_embedded_engine_window_count.restype = c_uint64
 
-        self._lib.rust_widgets_embedded_engine_button_count.argtypes = []
-        self._lib.rust_widgets_embedded_engine_button_count.restype = c_uint64
+        self._lib.rw_embedded_engine_button_count.argtypes = []
+        self._lib.rw_embedded_engine_button_count.restype = c_uint64
 
-        self._lib.rust_widgets_platform_capability_contract.argtypes = [c_uint]
-        self._lib.rust_widgets_platform_capability_contract.restype = c_uint
+        self._lib.rw_platform_capability_contract.argtypes = [c_uint]
+        self._lib.rw_platform_capability_contract.restype = c_uint
 
-        self._lib.rust_widgets_bindings_api_version.argtypes = []
-        self._lib.rust_widgets_bindings_api_version.restype = c_uint
+        self._lib.rw_bindings_api_version.argtypes = []
+        self._lib.rw_bindings_api_version.restype = c_uint
 
-        self._lib.rust_widgets_python_binding_status.argtypes = []
-        self._lib.rust_widgets_python_binding_status.restype = c_uint
+        self._lib.rw_python_binding_status.argtypes = []
+        self._lib.rw_python_binding_status.restype = c_uint
 
-        self._lib.rust_widgets_cpp_binding_status.argtypes = []
-        self._lib.rust_widgets_cpp_binding_status.restype = c_uint
+        self._lib.rw_cpp_binding_status.argtypes = []
+        self._lib.rw_cpp_binding_status.restype = c_uint
 
-        self._lib.rust_widgets_java_binding_status.argtypes = []
-        self._lib.rust_widgets_java_binding_status.restype = c_uint
+        self._lib.rw_java_binding_status.argtypes = []
+        self._lib.rw_java_binding_status.restype = c_uint
 
-        self._lib.rust_widgets_java_jni_skeleton_version.argtypes = []
-        self._lib.rust_widgets_java_jni_skeleton_version.restype = c_uint
+        self._lib.rw_java_jni_skeleton_version.argtypes = []
+        self._lib.rw_java_jni_skeleton_version.restype = c_uint
 
     def init(self) -> None:
-        self._lib.rust_widgets_init()
+        self._lib.rw_init()
 
     def run(self) -> None:
-        self._lib.rust_widgets_run()
+        self._lib.rw_run()
 
     def quit(self) -> None:
-        self._lib.rust_widgets_quit()
+        self._lib.rw_quit()
 
     def create_window(self, title: str, x: int, y: int, width: int, height: int) -> int:
-        return int(self._lib.rust_widgets_create_window(title.encode("utf-8"), x, y, width, height))
+        return int(self._lib.rw_create_window(title.encode("utf-8"), x, y, width, height))
 
     def create_button(self, parent: int, text: str, x: int, y: int, width: int, height: int) -> int:
-        return int(self._lib.rust_widgets_create_button(parent, text.encode("utf-8"), x, y, width, height))
+        return int(self._lib.rw_create_button(parent, text.encode("utf-8"), x, y, width, height))
 
     def set_widget_text(self, widget_id: int, text: str) -> None:
-        self._lib.rust_widgets_set_widget_text(widget_id, text.encode("utf-8"))
+        self._lib.rw_set_widget_text(widget_id, text.encode("utf-8"))
 
     def get_widget_text(self, widget_id: int) -> str:
-        ptr = self._lib.rust_widgets_get_widget_text(widget_id)
+        ptr = self._lib.rw_get_widget_text(widget_id)
         if not ptr:
             return ""
         value = ctypes.string_at(ptr).decode("utf-8")
-        self._lib.rust_widgets_free_string(ctypes.cast(ptr, c_char_p))
+        self._lib.rw_free_string(ctypes.cast(ptr, c_char_p))
         return value
 
     def platform_capabilities(self) -> int:
-        return int(self._lib.rust_widgets_platform_capabilities())
+        return int(self._lib.rw_platform_capabilities())
 
     def dpi_scale_factor(self) -> float:
-        return float(self._lib.rust_widgets_platform_dpi_scale_factor())
+        return float(self._lib.rw_platform_dpi_scale_factor())
 
     def set_render_aa_samples_per_axis(self, samples: int) -> int:
-        return int(self._lib.rust_widgets_set_render_aa_samples_per_axis(samples))
+        return int(self._lib.rw_set_render_aa_samples_per_axis(samples))
 
     def render_aa_samples_per_axis(self) -> int:
-        return int(self._lib.rust_widgets_get_render_aa_samples_per_axis())
+        return int(self._lib.rw_get_render_aa_samples_per_axis())
 
     def set_embedded_target_fps(self, fps: int) -> int:
-        return int(self._lib.rust_widgets_set_embedded_target_fps(fps))
+        return int(self._lib.rw_set_embedded_target_fps(fps))
 
     def embedded_target_fps(self) -> int:
-        return int(self._lib.rust_widgets_get_embedded_target_fps())
+        return int(self._lib.rw_get_embedded_target_fps())
 
     def submit_embedded_noop_task(self, label: str = "python-noop") -> int:
-        return int(self._lib.rust_widgets_submit_embedded_noop_task(label.encode("utf-8")))
+        return int(self._lib.rw_submit_embedded_noop_task(label.encode("utf-8")))
 
     def embedded_engine_is_initialized(self) -> bool:
-        return bool(self._lib.rust_widgets_embedded_engine_is_initialized())
+        return bool(self._lib.rw_embedded_engine_is_initialized())
 
     def embedded_engine_is_running(self) -> bool:
-        return bool(self._lib.rust_widgets_embedded_engine_is_running())
+        return bool(self._lib.rw_embedded_engine_is_running())
 
     def embedded_engine_frame_count(self) -> int:
-        return int(self._lib.rust_widgets_embedded_engine_frame_count())
+        return int(self._lib.rw_embedded_engine_frame_count())
 
     def embedded_engine_pending_task_count(self) -> int:
-        return int(self._lib.rust_widgets_embedded_engine_pending_task_count())
+        return int(self._lib.rw_embedded_engine_pending_task_count())
 
     def embedded_engine_window_count(self) -> int:
-        return int(self._lib.rust_widgets_embedded_engine_window_count())
+        return int(self._lib.rw_embedded_engine_window_count())
 
     def embedded_engine_button_count(self) -> int:
-        return int(self._lib.rust_widgets_embedded_engine_button_count())
+        return int(self._lib.rw_embedded_engine_button_count())
 
     def capability_contract(self, embedded: bool = False) -> int:
         profile_code = 1 if embedded else 0
-        return int(self._lib.rust_widgets_platform_capability_contract(profile_code))
+        return int(self._lib.rw_platform_capability_contract(profile_code))
 
     def bindings_api_version(self) -> int:
-        return int(self._lib.rust_widgets_bindings_api_version())
+        return int(self._lib.rw_bindings_api_version())
 
     def python_binding_status(self) -> int:
-        return int(self._lib.rust_widgets_python_binding_status())
+        return int(self._lib.rw_python_binding_status())
 
     def cpp_binding_status(self) -> int:
-        return int(self._lib.rust_widgets_cpp_binding_status())
+        return int(self._lib.rw_cpp_binding_status())
 
     def java_binding_status(self) -> int:
-        return int(self._lib.rust_widgets_java_binding_status())
+        return int(self._lib.rw_java_binding_status())
 
     def java_jni_skeleton_version(self) -> int:
-        return int(self._lib.rust_widgets_java_jni_skeleton_version())
+        return int(self._lib.rw_java_jni_skeleton_version())

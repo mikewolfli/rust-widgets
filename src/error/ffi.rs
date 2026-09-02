@@ -8,6 +8,8 @@
 ///
 /// Evaluates the expression and returns `T` on success or the
 /// appropriate fallback value (0, false, null, etc.) on panic.
+/// On failure the error is logged AND recorded as the last FFI error,
+/// retrievable by C callers via `rw_error_code` / `rw_error_message`.
 ///
 /// # Usage
 ///
@@ -25,6 +27,7 @@ macro_rules! c_try {
             Ok(val) => val,
             Err(e) => {
                 log::error!("[rust_widgets] C ABI error: {e}");
+                $crate::error::ffi::record_last_ffi_error(e.clone());
                 $crate::error::c_try_fallback(e)
             }
         }
@@ -40,6 +43,34 @@ where
     T: CAbiSafe,
 {
     T::c_abi_fallback()
+}
+
+/// Last FFI error recorded by `c_try!`, readable by C callers.
+///
+/// A `Mutex`-protected slot (not thread-local) so that any thread's failed
+/// C ABI call is observable by the caller thread that queries the error.
+static LAST_FFI_ERROR: std::sync::Mutex<Option<super::RwError>> = std::sync::Mutex::new(None);
+
+/// Record the most recent FFI error for `rw_error_code` / `rw_error_message`.
+pub fn record_last_ffi_error(error: super::RwError) {
+    if let Ok(mut slot) = LAST_FFI_ERROR.lock() {
+        *slot = Some(error);
+    }
+}
+
+/// Returns the last FFI error, if any.
+///
+/// Only the desktop FFI bindings (`rw_error_code` / `rw_error_message`) read it.
+#[cfg(all(feature = "desktop", not(feature = "mini")))]
+pub(crate) fn last_ffi_error() -> Option<super::RwError> {
+    LAST_FFI_ERROR.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// Clear the recorded last FFI error.
+pub fn clear_last_ffi_error() {
+    if let Ok(mut slot) = LAST_FFI_ERROR.lock() {
+        *slot = None;
+    }
 }
 
 /// Trait for C‑ABI‑safe types that provide a safe fallback value.
@@ -159,6 +190,27 @@ macro_rules! c_try_void {
         let __result: $crate::error::RwResult<_> = $crate::error::catch_panic(|| $body);
         if let Err(e) = __result {
             log::error!("[rust_widgets] C ABI error: {e}");
+            $crate::error::ffi::record_last_ffi_error(e.clone());
         }
     }};
+}
+
+#[cfg(all(test, feature = "desktop", not(feature = "mini")))]
+mod tests {
+    use super::*;
+    use crate::error::{ErrorId, RwError};
+
+    #[test]
+    fn last_ffi_error_roundtrip() {
+        clear_last_ffi_error();
+        assert!(last_ffi_error().is_none());
+
+        record_last_ffi_error(RwError::new(ErrorId::INVALID_ARGUMENT, "bad widget"));
+        let recorded = last_ffi_error().expect("error should be recorded");
+        assert_eq!(recorded.id, ErrorId::INVALID_ARGUMENT);
+        assert!(recorded.message.contains("bad widget"));
+
+        clear_last_ffi_error();
+        assert!(last_ffi_error().is_none());
+    }
 }

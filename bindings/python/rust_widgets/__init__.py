@@ -371,6 +371,15 @@ class RustWidgets:
         ]
         L.rw_set_widget_geometry.restype = None
 
+        L.rw_get_widget_geometry.argtypes = [
+            c_uint64,
+            POINTER(c_int),  # x_out
+            POINTER(c_int),  # y_out
+            POINTER(c_uint),  # width_out
+            POINTER(c_uint),  # height_out
+        ]
+        L.rw_get_widget_geometry.restype = c_bool
+
         L.rw_set_widget_ime_enabled.argtypes = [c_uint64, c_bool]
         L.rw_set_widget_ime_enabled.restype = c_bool
 
@@ -562,6 +571,9 @@ class RustWidgets:
         L.rw_java_reserved.argtypes = []
         L.rw_java_reserved.restype = c_uint
 
+        L.rw_nodejs_binding_status.argtypes = []
+        L.rw_nodejs_binding_status.restype = c_uint
+
         # ------------------------------------------------------------------ #
         # Memory                                                             #
         # ------------------------------------------------------------------ #
@@ -582,6 +594,54 @@ class RustWidgets:
             POINTER(c_uint),  # payload_len_out
         ]
         L.rw_poll_drop_event.restype = c_bool
+
+        # ------------------------------------------------------------------ #
+        # Error state                                                         #
+        # ------------------------------------------------------------------ #
+        L.rw_error_code.argtypes = [c_uint64]
+        L.rw_error_code.restype = c_int
+
+        L.rw_error_message.argtypes = [c_uint64]
+        L.rw_error_message.restype = c_char_p
+
+        # ------------------------------------------------------------------ #
+        # Harmony node bridge (HarmonyOS native bridge)                       #
+        # ------------------------------------------------------------------ #
+        L.rw_harmony_bind_node.argtypes = [c_uint64, c_uint64]
+        L.rw_harmony_bind_node.restype = c_bool
+
+        L.rw_harmony_unbind_node.argtypes = [c_uint64]
+        L.rw_harmony_unbind_node.restype = c_bool
+
+        L.rw_harmony_lookup_widget_id.argtypes = [c_uint64]
+        L.rw_harmony_lookup_widget_id.restype = c_uint64
+
+        L.rw_harmony_clear_node_bindings.argtypes = []
+        L.rw_harmony_clear_node_bindings.restype = None
+
+        L.rw_harmony_on_click.argtypes = [c_uint64]
+        L.rw_harmony_on_click.restype = c_bool
+
+        L.rw_harmony_on_menu_item.argtypes = [c_uint64]
+        L.rw_harmony_on_menu_item.restype = c_bool
+
+        L.rw_harmony_on_value_changed.argtypes = [c_uint64]
+        L.rw_harmony_on_value_changed.restype = c_bool
+
+        L.rw_harmony_on_widget_event.argtypes = [c_uint64, c_uint]
+        L.rw_harmony_on_widget_event.restype = c_bool
+
+        L.rw_harmony_on_node_click.argtypes = [c_uint64]
+        L.rw_harmony_on_node_click.restype = c_bool
+
+        L.rw_harmony_on_node_menu_item.argtypes = [c_uint64]
+        L.rw_harmony_on_node_menu_item.restype = c_bool
+
+        L.rw_harmony_on_node_value_changed.argtypes = [c_uint64]
+        L.rw_harmony_on_node_value_changed.restype = c_bool
+
+        L.rw_harmony_on_node_widget_event.argtypes = [c_uint64, c_uint]
+        L.rw_harmony_on_node_widget_event.restype = c_bool
 
     # ------------------------------------------------------------------ #
     # String helpers                                                     #
@@ -846,6 +906,27 @@ class RustWidgets:
     ) -> None:
         """Set the position and size of a widget."""
         self.lib.rw_set_widget_geometry(widget_id, x, y, width, height)
+
+    def get_widget_geometry(self, widget_id: int) -> Optional[Tuple[int, int, int, int]]:
+        """Get the position and size of a widget.
+
+        Returns ``(x, y, width, height)``, or ``None`` if the geometry could
+        not be retrieved.
+        """
+        x_out = ctypes.c_int(0)
+        y_out = ctypes.c_int(0)
+        width_out = ctypes.c_uint(0)
+        height_out = ctypes.c_uint(0)
+        ok = self.lib.rw_get_widget_geometry(
+            widget_id,
+            ctypes.byref(x_out),
+            ctypes.byref(y_out),
+            ctypes.byref(width_out),
+            ctypes.byref(height_out),
+        )
+        if not ok:
+            return None
+        return (x_out.value, y_out.value, width_out.value, height_out.value)
 
     def set_widget_ime_enabled(self, widget_id: int, enabled: bool) -> bool:
         """Enable/disable IME (input method editor) on a widget.
@@ -1287,6 +1368,92 @@ class RustWidgets:
     def java_reserved(self) -> int:
         """Reserved Java binding query."""
         return self.lib.rw_java_reserved()
+
+    def nodejs_binding_status(self) -> int:
+        """Return a bitmask indicating Node.js binding status."""
+        return self.lib.rw_nodejs_binding_status()
+
+    # ------------------------------------------------------------------ #
+    # Public API — Error state                                           #
+    # ------------------------------------------------------------------ #
+
+    def error_code(self, handle: int = 0) -> int:
+        """Return the last FFI error code (``0`` = success).
+
+        Parameters
+        ----------
+        handle
+            Reserved for future per-widget error reporting; pass ``0``.
+        """
+        return self.lib.rw_error_code(handle)
+
+    def error_message(self, handle: int = 0) -> str:
+        """Return the last FFI error message (empty string if none).
+
+        The Rust-allocated C string is freed automatically.
+        """
+        ptr = self.lib.rw_error_message(handle)
+        return self._decode_and_free(self.lib, ptr)
+
+    # ------------------------------------------------------------------ #
+    # Public API — Harmony node bridge                                   #
+    # ------------------------------------------------------------------ #
+
+    def harmony_bind_node(self, node_handle: int, widget_id: int) -> bool:
+        """Associate a HarmonyOS native node with a widget.
+
+        Returns ``True`` on success.
+        """
+        return bool(self.lib.rw_harmony_bind_node(node_handle, widget_id))
+
+    def harmony_unbind_node(self, node_handle: int) -> bool:
+        """Remove the widget association for a HarmonyOS native node.
+
+        Returns ``True`` if a binding existed and was removed.
+        """
+        return bool(self.lib.rw_harmony_unbind_node(node_handle))
+
+    def harmony_lookup_widget_id(self, node_handle: int) -> int:
+        """Return the widget ID bound to a HarmonyOS native node (``0`` if none)."""
+        return self.lib.rw_harmony_lookup_widget_id(node_handle)
+
+    def harmony_clear_node_bindings(self) -> None:
+        """Clear all HarmonyOS node -> widget bindings."""
+        self.lib.rw_harmony_clear_node_bindings()
+
+    def harmony_on_click(self, widget_id: int) -> bool:
+        """Forward a HarmonyOS click event to a bound widget."""
+        return bool(self.lib.rw_harmony_on_click(widget_id))
+
+    def harmony_on_menu_item(self, menu_item_id: int) -> bool:
+        """Forward a HarmonyOS menu-item trigger to the backend."""
+        return bool(self.lib.rw_harmony_on_menu_item(menu_item_id))
+
+    def harmony_on_value_changed(self, widget_id: int) -> bool:
+        """Forward a HarmonyOS value-changed event to a bound widget."""
+        return bool(self.lib.rw_harmony_on_value_changed(widget_id))
+
+    def harmony_on_widget_event(self, widget_id: int, kind_code: int) -> bool:
+        """Forward a typed HarmonyOS widget event to a bound widget."""
+        return bool(self.lib.rw_harmony_on_widget_event(widget_id, kind_code))
+
+    def harmony_on_node_click(self, node_handle: int) -> bool:
+        """Forward a HarmonyOS node click event (node -> widget lookup)."""
+        return bool(self.lib.rw_harmony_on_node_click(node_handle))
+
+    def harmony_on_node_menu_item(self, node_handle: int) -> bool:
+        """Forward a HarmonyOS node menu-item trigger."""
+        return bool(self.lib.rw_harmony_on_node_menu_item(node_handle))
+
+    def harmony_on_node_value_changed(self, node_handle: int) -> bool:
+        """Forward a HarmonyOS node value-changed event."""
+        return bool(self.lib.rw_harmony_on_node_value_changed(node_handle))
+
+    def harmony_on_node_widget_event(self, node_handle: int, kind_code: int) -> bool:
+        """Forward a typed HarmonyOS node widget event."""
+        return bool(
+            self.lib.rw_harmony_on_node_widget_event(node_handle, kind_code)
+        )
 
     # ------------------------------------------------------------------ #
     # Public API — Memory management helpers                             #

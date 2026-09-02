@@ -1,5 +1,5 @@
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
-use crate::core::{HorizontalAlignment, deg_to_rad, Color, Font, Point, Rect, Size};
+use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -259,7 +259,13 @@ impl Draw for Arc {
             let text_y = center.y - (text_height as i32 / 2);
 
             let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
-            context.draw_text(Point::new(text_x, text_y), &text, &font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &text,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

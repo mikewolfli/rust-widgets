@@ -472,8 +472,32 @@ impl From<WidgetKind> for AccessibleRole {
 
 #[cfg(feature = "mini")]
 impl From<WidgetKind> for AccessibleRole {
-    fn from(_kind: WidgetKind) -> Self {
-        AccessibleRole::Unknown
+    fn from(kind: WidgetKind) -> Self {
+        // Mini exposes a core widget subset — map it properly instead of
+        // returning Unknown for everything.
+        match kind {
+            WidgetKind::Button | WidgetKind::Switch => AccessibleRole::Button,
+            WidgetKind::CheckBox => AccessibleRole::CheckBox,
+            WidgetKind::Label => AccessibleRole::StaticText,
+            WidgetKind::LineEdit | WidgetKind::TextArea | WidgetKind::Dropdown => {
+                AccessibleRole::TextField
+            }
+            WidgetKind::ListBox => AccessibleRole::List,
+            WidgetKind::ProgressBar => AccessibleRole::ProgressBar,
+            WidgetKind::RadioButton => AccessibleRole::RadioButton,
+            WidgetKind::ScrollBar => AccessibleRole::ScrollBar,
+            WidgetKind::Slider | WidgetKind::Meter | WidgetKind::Arc => AccessibleRole::Slider,
+            WidgetKind::SpinBox => AccessibleRole::SpinButton,
+            WidgetKind::ComboBox => AccessibleRole::ComboBox,
+            WidgetKind::Panel
+            | WidgetKind::Frame
+            | WidgetKind::GroupBox
+            | WidgetKind::ScrollArea
+            | WidgetKind::TileView
+            | WidgetKind::Keyboard => AccessibleRole::Group,
+            WidgetKind::Window => AccessibleRole::Window,
+            _ => AccessibleRole::Unknown,
+        }
     }
 }
 
@@ -578,8 +602,31 @@ impl From<WidgetKind> for A11yRole {
 
 #[cfg(feature = "mini")]
 impl From<WidgetKind> for A11yRole {
-    fn from(_kind: WidgetKind) -> Self {
-        A11yRole::Unknown
+    fn from(kind: WidgetKind) -> Self {
+        // Mini exposes a core widget subset — map it properly instead of
+        // returning Unknown for everything.
+        match kind {
+            WidgetKind::Button | WidgetKind::Switch => A11yRole::Button,
+            WidgetKind::CheckBox => A11yRole::CheckBox,
+            WidgetKind::Label => A11yRole::Label,
+            WidgetKind::LineEdit | WidgetKind::TextArea | WidgetKind::Dropdown => {
+                A11yRole::TextField
+            }
+            WidgetKind::ListBox => A11yRole::List,
+            WidgetKind::ProgressBar => A11yRole::ProgressBar,
+            WidgetKind::RadioButton => A11yRole::RadioButton,
+            WidgetKind::Slider | WidgetKind::Meter | WidgetKind::Arc => A11yRole::Slider,
+            WidgetKind::SpinBox => A11yRole::SpinButton,
+            WidgetKind::ComboBox => A11yRole::ComboBox,
+            WidgetKind::Panel
+            | WidgetKind::Frame
+            | WidgetKind::GroupBox
+            | WidgetKind::ScrollArea
+            | WidgetKind::TileView
+            | WidgetKind::Keyboard => A11yRole::Group,
+            WidgetKind::Window => A11yRole::Window,
+            _ => A11yRole::Unknown,
+        }
     }
 }
 

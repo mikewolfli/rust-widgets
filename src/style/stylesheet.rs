@@ -148,11 +148,7 @@ mod tests {
             Some(Color::rgb(255, 0, 0)),
             "background_color should be red"
         );
-        assert_eq!(
-            style.text_color,
-            Some(Color::rgb(255, 255, 255)),
-            "text_color should be white"
-        );
+        assert_eq!(style.text_color, Some(Color::rgb(255, 255, 255)), "text_color should be white");
     }
 
     #[test]

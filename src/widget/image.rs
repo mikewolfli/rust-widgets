@@ -71,10 +71,11 @@ impl Image {
         &self.data
     }
 
-    /// Decode image from raw bytes.
+    /// Decode image from raw bytes into RGBA8 pixels.
     ///
-    /// Supports PNG, JPEG, BMP, and other common formats via the embedded
-    /// image decoder (miniz_oxide for PNG decompression).
+    /// Supported inputs (real codecs): PNG, JPEG, BMP, PNM (P5/P6), QOI and
+    /// Farbfeld. GIF, WebP, TIFF, AVIF, ICO and SVG are detected but have no
+    /// codec, so decoding them returns an `Err` (never placeholder pixels).
     ///
     /// Returns an `Image` with RGBA8 pixel data ready for rendering.
     #[cfg(feature = "image")]
@@ -94,8 +95,9 @@ impl Image {
 
     /// Load an image from a file path.
     ///
-    /// Supports PNG, JPEG, BMP, and other common formats.
-    /// The image is decoded into RGBA8 pixel data for rendering.
+    /// Supported inputs (real codecs): PNG, JPEG, BMP, PNM (P5/P6), QOI and
+    /// Farbfeld; other detected formats return `Err` since no codec is
+    /// implemented. The image is decoded into RGBA8 pixel data for rendering.
     #[cfg(feature = "image")]
     pub fn from_file(path: &str) -> Result<Self, String> {
         use std::io::Read;

@@ -18,6 +18,8 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
         typed_widget_trigger: true,
     }
 }
+/// Fallback contract for embedded profiles without a published backend contract.
+#[cfg(not(feature = "mini"))]
 fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
     EmbeddedCapabilityContract {
         fixed_dpi: true,

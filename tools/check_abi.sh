@@ -21,7 +21,7 @@ fi
 echo "[3/4] Check ABI version constant alignment"
 RUST_ABI_VERSION="$({
   awk '
-    /rust_widgets_bindings_api_version\(\)/ { in_fn=1; next }
+    /rw_bindings_api_version\(\)/ { in_fn=1; next }
     in_fn {
       if ($0 ~ /[0-9]+/) {
         value = $0;
@@ -38,25 +38,25 @@ RUST_ABI_VERSION="$({
   ' src/bindings/binding_impl.rs
 } || true)"
 if [[ -z "$RUST_ABI_VERSION" ]]; then
-  echo "Unable to read ABI version from rust_widgets_bindings_api_version()." >&2
+  echo "Unable to read ABI version from rw_bindings_api_version()." >&2
   exit 1
 fi
-if ! grep -q '^unsigned int rust_widgets_bindings_api_version(void);$' examples/rust_widgets.generated.h; then
-  echo "Missing rust_widgets_bindings_api_version declaration in generated header." >&2
+if ! grep -q '^unsigned int rw_bindings_api_version(void);$' examples/rust_widgets.generated.h; then
+  echo "Missing rw_bindings_api_version declaration in generated header." >&2
   exit 1
 fi
 echo "Detected ABI version: ${RUST_ABI_VERSION}"
 
 echo "[4/4] Check required exported ABI symbols in header"
 for symbol in \
-  rust_widgets_bindings_api_version \
-  rust_widgets_create_label \
-  rust_widgets_create_radio_button \
-  rust_widgets_create_slider \
-  rust_widgets_platform_capabilities \
-  rust_widgets_platform_dpi_scale_factor \
-  rust_widgets_harmony_bind_node \
-  rust_widgets_harmony_on_widget_event
+  rw_bindings_api_version \
+  rw_create_label \
+  rw_create_radio_button \
+  rw_create_slider \
+  rw_platform_capabilities \
+  rw_platform_dpi_scale_factor \
+  rw_harmony_bind_node \
+  rw_harmony_on_widget_event
   do
   if ! grep -q "${symbol}" examples/rust_widgets.generated.h; then
     echo "Missing ABI symbol declaration in header: ${symbol}" >&2

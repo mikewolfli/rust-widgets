@@ -42,7 +42,7 @@ impl Font {
         self.family = family.into();
         self
     }
-    /// Creates a [`FontBuilder`] for ergonomic construction.
+    /// Creates a `FontBuilder` for ergonomic construction.
     pub fn builder() -> FontBuilder {
         FontBuilder::new()
     }
@@ -104,7 +104,7 @@ impl Font {
         Self::new(family, size, true, true)
     }
     /// Creates a font descriptor from tuple (family, size).
-    /// Use [`simple`] instead.
+    /// Use `simple` instead.
     #[deprecated(since = "0.7.0", note = "use `simple` instead")]
     pub fn from_tuple(family: impl Into<String>, size: f32) -> Self {
         Self::simple(family, size)
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(normalized_to_bold.weight(), 700);
         assert!(normalized_to_bold.is_bold());
     }
-    #[cfg(all(test, feature = "serde", not(feature = "embedded")))]
+    #[cfg(all(test, feature = "serde", feature = "serde_json", not(feature = "embedded")))]
     #[test]
     fn font_deserialize_normalizes_weight_and_bold_contract() {
         let parsed: Font = serde_json::from_str(

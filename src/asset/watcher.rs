@@ -148,7 +148,8 @@ impl Default for AssetWatcher {
     }
 }
 
-#[cfg(test)]
+// File-watcher tests need `tempfile`, which is unavailable on wasm32 (no FS).
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -241,7 +242,8 @@ mod tests {
 
     #[test]
     fn asset_watcher_watch_delivers_file_changed_event() {
-        let dir = std::env::temp_dir().join(format!("asset_watcher_filter_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("asset_watcher_delivers_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

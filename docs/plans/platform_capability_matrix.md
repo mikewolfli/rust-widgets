@@ -1,155 +1,229 @@
 # Platform Capability Matrix — R6
 
-> **Document ID:** R6-PCM-001
-> **Last updated:** 2026-05-29
-> **Scope:** Every widget in [`WidgetKind`](../../src/widget/kind.rs) × all target platforms.
-> **Legend:** ✅ Native · 🔶 StateBacked · ⬜ Placeholder · ➖ NotApplicable
+> **Auto-generated** by `tools/generate_platform_capability_matrix.py`
+> **Legend:** ✅ Usable · 🔶 Backend-limited · ⬜ Placeholder · ➖ NotApplicable
 
----
+## Symbol semantics（符号语义）
+
+| Symbol | Meaning（符号语义） |
+| --- | --- |
+| ✅ | Usable control path on this platform — either a real native primitive or a state/self-drawn backend implementation that behaves normally. 该平台提供可用的控件路径（原生原语或 state/自绘后端均可正常工作）。 |
+| 🔶 | Limited by backend capability — mapped/degraded/partial implementation. 受限于后端能力（映射/降级/部分实现）。 |
+| ⬜ | Placeholder — declared but not implemented yet. |
+| ➖ | Not applicable on this platform. |
+
+> Note: ✅ only means *a working creation path exists*. For the rows listed under
+> "Degradation notes（降级说明）" below, the native/FFI path returns a fallback
+> primitive (Panel/Slider/Label/…), so their ✅ cells do **not** imply a dedicated
+> native control implementation. 注：✅ 仅表示存在可用创建路径；文末“降级说明”
+> 所列控件在 native/FFI 路径上实际创建为回退原语。
 
 ## Matrix
 
 | Widget | Windows | Linux/X11 | macOS | Wayland | Mobile | Harmony | Embedded/Stub |
-|---|---|---|---|---|---|---|---|
-| **Window** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **Dialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **MessageBox** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **FileDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **ColorDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **FontDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **InputDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **ProgressDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **PopupWindow** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| --- |--- |--- |--- |--- |--- |--- |--- |
+| **Action** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **ActivityIndicator** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **AdaptiveScaffold** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **AnimatedImage** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **AppBar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Arc** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **AudioVisualizer** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **AutoCompleteEdit** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Avatar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Badge** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **BarChart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **BarcodeScanner** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **BezierCurveEditor** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **BottomNavigationBar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **BottomSheet** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Button** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Calendar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **CameraPreview** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Canvas** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Carousel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Chart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **CheckBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **RadioButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **Label** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **LineEdit** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **TextEdit** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **RichEdit** | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CheckListBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Chip** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CollapsiblePane** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ColorDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **ColorHistory** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ColorWell** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ColumnView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **ComboBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **SpinBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **CommandLink** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **ContextMenu** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **CupertinoAlertDialog** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CupertinoDatePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CupertinoNavigationBar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CupertinoSegmentedControl** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CupertinoSlider** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **CupertinoSwitch** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DataView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DatePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DateRangePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DateTimePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Dial** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Dialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **DirectoryDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **Divider** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DockPanel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DockWidget** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **DoubleSpinBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Dropdown** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **DropdownMenu** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **EditableComboBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **EmptyState** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **FAB** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **FileDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **FindReplaceDialog** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **FloatingLabel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **FontComboBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **FontDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **FontPreview** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Frame** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **FreeformShape** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Grid** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **GridTable** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **GroupBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **HeroAnimation** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Icon** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ImageGallery** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ImageView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ImePreedit** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **InplaceEditor** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **InputDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **Keyboard** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **LCDNumber** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Label** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Line** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **LineChart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **LineEdit** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
 | **ListBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
 | **ListView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **TreeView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **ProgressBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **Slider** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **ScrollBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **ScrollArea** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Panel** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **DockPanel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **GroupBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **TabWidget** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **Splitter** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **LottieWidget** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MaskedEdit** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MasonryLayout** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MaterialNavigationRail** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MaterialSnackbar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **MdiArea** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **MenuBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
 | **Menu** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **MenuBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **MenuButton** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **MenuItem** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **ContextMenu** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **ToolBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **StatusBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **Canvas** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Table** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Grid** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Chart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **ToggleButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **CheckListBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **DoubleSpinBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **Dial** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **Wizard** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **DatePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **TimePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **DateTimePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **DirectoryDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **DataView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MessageBox** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **Meter** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MiniCanvas** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MiniChart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MobileDatePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ModalBottomSheet** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **MultiSelectComboBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **NavigationDrawer** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **NavigationStack** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **PagerPageView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Panel** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **PieChart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **PieMenu** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Popover** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **PopupWindow** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **ProgressBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **ProgressCircle** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ProgressDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **PropertiesPanel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **PropertyGrid** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Toolbox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **QRCode** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **RadioButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **RangeSlider** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Rating** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **RefreshControl** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **RibbonBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **RichEdit** | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
+| **RiveWidget** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Roller** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SafeArea** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ScrollArea** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ScrollBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **SearchBar** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SearchBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SegmentedButton** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ShortcutEditor** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SkeletonLoader** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Slider** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Sparkline** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SpinBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Spinner** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Splitter** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
 | **StackedWidget** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **CollapsiblePane** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **DockWidget** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **WebView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **ActivityIndicator** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Calendar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **ColumnView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **StatusBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **Stepper** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **SwipeToDismiss** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Switch** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TabBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **TabView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TabWidget** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Table** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TagInput** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TextArea** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TextEdit** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TileView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TimePicker** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **ToggleButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **ToolBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **ToolButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Toolbox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **Tooltip** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **TreeView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **UndoView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **CommandLink** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **LCDNumber** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **FontComboBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **WebEngineView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **WebEnginePage** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **WebEngineSettings** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **WebEngineDownloadItem** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **VideoPlayer** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WebEngineContextMenuRequest** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **WebEngineCookieStore** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **WebEngineWebChannel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WebEngineDownloadItem** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **WebEngineFindTextResult** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **WebEngineNotification** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WebEnginePage** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **WebEngineScriptDialog** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **WebEngineContextMenuRequest** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **Action** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **ToolButton** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **ToolBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **FreeformShape** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **TabBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **PieMenu** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **RibbonBar** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **WebEngineSettings** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WebEngineView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WebEngineWebChannel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **Window** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **Wizard** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
+| **WizardDialog** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 
 ---
 
-## Platform Descriptions
-
-| Platform | Family | Backend | Notes |
-|---|---|---|---|
-| **Windows** | Desktop | `WindowsPlatform` (Win32) | Full native window/control creation via platform trait. |
-| **Linux/X11** | Desktop | `LinuxPlatform` (GTK) | GTK-based backend on X11 sessions. |
-| **macOS** | Desktop | `MacOSPlatform` (Cocoa) or `MacOSObjc2Platform` (preview) | Cocoa/AppKit native widgets. |
-| **Wayland** | Desktop | `WaylandPlatform` | Native Wayland session, gated by `wayland-native` feature. |
-| **Mobile** | Mobile | Android / iOS / HarmonyMobile | Gated by `mobile-api` feature; limited native create paths. |
-| **Harmony** | Desktop / Mobile | HarmonyDesktop / HarmonyMobile | Cross-platform Harmony OS backends; preview quality. |
-| **Embedded/Stub** | Embedded | `StubPlatform` | Constrained runtime; most controls are state-backed simulation. |
+Total widgets: 167 (matches 167 WidgetKind variants)
 
 ---
 
-## Classification Rules
+## Degradation notes（降级说明）
 
-1. **✅ Native** — Platform provides a `create_*` method on the `Platform` trait with a direct native widget implementation (e.g. `create_button` → Win32 `CreateWindow`, GTK `gtk_button_new`). Required for core desktop controls on Windows, Linux/X11, macOS, and Wayland.
+On the **native/FFI path** (`src/control_backend/native.rs`), the following widget
+families are not created as dedicated native controls. Each `create_*` listed
+below delegates to a fallback primitive, silently in most cases (`log::warn!` is
+emitted only for `data_view`, `property_grid`, `collapsible_pane`, `column_view`,
+`undo_view`):
 
-2. **🔶 StateBacked** — Widget implements `impl Widget for` via the state-backed widget model (`BaseWidget` + property system). All widgets that implement the `Widget` trait with a `base()` delegating to `BaseWidget` are at minimum StateBacked on all platforms.
+| Fallback created | Widgets (WidgetKind / matrix row names) |
+| --- | --- |
+| `create_panel` | ScrollArea, DockPanel, GroupBox, TabWidget, Splitter, StackedWidget, MdiArea, Canvas, Table, Grid, Chart, Wizard, DatePicker, TimePicker, DateTimePicker, DataView, PropertyGrid, Toolbox, CollapsiblePane, DockWidget, Calendar, WebView/WebEngine family (WebEngineView, WebEnginePage, WebEngineSettings, WebEngineDownloadItem, WebEngineCookieStore, WebEngineWebChannel, WebEngineFindTextResult, WebEngineNotification, WebEngineScriptDialog, WebEngineContextMenuRequest) |
+| `create_slider` | ScrollBar, Dial |
+| `create_label` | LCDNumber (rendered as a label showing `"0"`) |
+| `create_line_edit` | TextEdit, RichEdit |
+| `create_button` | CommandLink, Action, ToolButton |
+| `create_combo_box` | FontComboBox |
+| `create_list_box` | TreeView |
+| `create_list_view` | ColumnView, UndoView |
+| `create_checkbox` | ToggleButton |
+| `create_spin_box` | DoubleSpinBox |
+| `create_message_box` | Dialog |
+| `create_file_dialog` | DirectoryDialog |
+| `create_menu` | ContextMenu |
+| `create_progress_bar` | ActivityIndicator |
+| `create_window` | PopupWindow |
 
-3. **⬜ Placeholder** — Widget exists in `WidgetKind` but has no `impl Widget for` in the codebase. These are future stubs (not applicable to this project).
-
-4. **➖ NotApplicable** — Widget is semantically unsupported on the target (e.g., native menu on mobile). Currently no cases in the matrix.
-
-### Desktop native controls (✅ Native)
-Window, Dialog*, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow,
-Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar,
-Panel, GroupBox, TabWidget, Splitter, MdiArea,
-MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar,
-RichEdit (desktop only),
-ToggleButton, DoubleSpinBox, Dial,
-DirectoryDialog, Toolbox, DockWidget,
-CommandLink, LCDNumber, FontComboBox,
-Action, ToolButton, ToolBox, TabBar, Calendar, RibbonBar
-
-### Desktop dialogs (✅ Native on desktop, 🔶 on mobile/Harmony)
-All dialog types (Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, DirectoryDialog)
-
-### State-backed controls (🔶 on all platforms)
-TextEdit, ListView, TreeView, ScrollArea, DockPanel,
-Canvas, Table, Grid, Chart, CheckListBox, Wizard,
-DatePicker, TimePicker, DateTimePicker,
-DataView, PropertyGrid, StackedWidget, CollapsiblePane,
-WebView, ActivityIndicator, ColumnView, UndoView,
-WebEngineView, WebEnginePage, WebEngineSettings,
-WebEngineDownloadItem, WebEngineCookieStore,
-WebEngineWebChannel, WebEngineFindTextResult,
-WebEngineNotification, WebEngineScriptDialog,
-WebEngineContextMenuRequest,
-FreeformShape, PieMenu
-
----
-
-## Version History
-
-| Date | Author | Changes |
-|---|---|---|
-| 2026-05-29 | AI Assistant | Initial R6 capability matrix; 81 WidgetKind variants × 7 platforms.
+Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
+- `ToolBox` is not a `WidgetKind` variant (only `Toolbox` is); the duplicate row was removed.
+- `WebView` is not a `WidgetKind` variant either — the `WebView`/`WebViewEnhanced`
+  aliases live at the handle/render layer and map onto `WidgetKind::WebEngineView`.
+  The matrix therefore lists only the WebEngine rows.

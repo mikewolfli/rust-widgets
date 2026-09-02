@@ -21,7 +21,16 @@ impl Platform for LinuxPlatform {
         self
     }
     fn backend_name(&self) -> &'static str {
-        "gtk"
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            "gtk"
+        }
+        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        {
+            // Honest name: without the `gtk-native` feature this backend keeps
+            // widget state in-process and never opens native GTK windows.
+            "linux-state-backend"
+        }
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
@@ -321,6 +330,7 @@ impl Platform for LinuxPlatform {
         self.create_font_dialog_impl(_parent, _x, _y, width, height)
     }
 
+    #[cfg(target_os = "linux")]
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
     }

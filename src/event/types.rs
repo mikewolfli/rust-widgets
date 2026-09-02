@@ -33,37 +33,37 @@ pub enum Event {
     /// Legacy pointer/button press payload.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use [`MousePress`] instead.
+    /// Use `MousePress` instead.
     MouseDown((Point, u32)),
     /// Legacy pointer/button release payload.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use [`MouseRelease`] instead.
+    /// Use `MouseRelease` instead.
     MouseUp((Point, u32)),
     /// Legacy pointer move payload.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use [`MouseMove`] instead.
+    /// Use `MouseMove` instead.
     MouseMoveLegacy((Point, u32)),
     /// Legacy keyboard press payload.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use [`KeyPress`] instead.
+    /// Use `KeyPress` instead.
     KeyDown((u32, u32)),
     /// Legacy keyboard release payload.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use [`KeyRelease`] instead.
+    /// Use `KeyRelease` instead.
     KeyUp((u32, u32)),
     /// Legacy focus gained event.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use the `focus_gained` signal on [`BaseWidget`] instead.
+    /// Use the `focus_gained` signal on `BaseWidget` instead.
     FocusGained,
     /// Legacy focus lost event.
     ///
     /// This is a legacy variant kept for backward compatibility.
-    /// Use the `focus_lost` signal on [`BaseWidget`] instead.
+    /// Use the `focus_lost` signal on `BaseWidget` instead.
     FocusLost,
     /// Pointer moved inside active surface.
     MouseMove { pos: Point },

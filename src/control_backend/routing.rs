@@ -47,19 +47,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::ActivityIndicator
             | WidgetKind::Calendar
             | WidgetKind::LCDNumber
-            | WidgetKind::FontComboBox
-            | WidgetKind::Arc
-            | WidgetKind::Spinner
-            | WidgetKind::Roller
-            | WidgetKind::Dropdown
-            | WidgetKind::TextArea
-            | WidgetKind::Keyboard
-            | WidgetKind::TileView
-            | WidgetKind::Line
-            | WidgetKind::Meter
-            | WidgetKind::MiniChart
-            | WidgetKind::ImageView
-            | WidgetKind::MiniCanvas => ControlRoutePreference::NativePreferred,
+            | WidgetKind::FontComboBox => ControlRoutePreference::NativePreferred,
             WidgetKind::TextEdit
             | WidgetKind::RichEdit
             | WidgetKind::ListView
@@ -171,7 +159,19 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::AudioVisualizer
             | WidgetKind::CameraPreview
             | WidgetKind::BarcodeScanner
-            | WidgetKind::GridTable => ControlRoutePreference::CustomRequired,
+            | WidgetKind::GridTable
+            | WidgetKind::Arc
+            | WidgetKind::Spinner
+            | WidgetKind::Roller
+            | WidgetKind::Dropdown
+            | WidgetKind::TextArea
+            | WidgetKind::Keyboard
+            | WidgetKind::TileView
+            | WidgetKind::Line
+            | WidgetKind::Meter
+            | WidgetKind::MiniChart
+            | WidgetKind::ImageView
+            | WidgetKind::MiniCanvas => ControlRoutePreference::CustomRequired,
         }
     }
     #[cfg(feature = "mini")]
@@ -181,7 +181,7 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mini")))]
 mod tests {
     use super::*;
     use crate::widget::WidgetKind;
@@ -233,18 +233,6 @@ mod tests {
             WidgetKind::Calendar,
             WidgetKind::LCDNumber,
             WidgetKind::FontComboBox,
-            WidgetKind::Arc,
-            WidgetKind::Spinner,
-            WidgetKind::Roller,
-            WidgetKind::Dropdown,
-            WidgetKind::TextArea,
-            WidgetKind::Keyboard,
-            WidgetKind::TileView,
-            WidgetKind::Line,
-            WidgetKind::Meter,
-            WidgetKind::MiniChart,
-            WidgetKind::ImageView,
-            WidgetKind::MiniCanvas,
         ];
         for kind in &native_preferred {
             assert_eq!(
@@ -375,6 +363,19 @@ mod tests {
             WidgetKind::BarcodeScanner,
             // Data table widgets
             WidgetKind::GridTable,
+            // Self-drawn BLUE13 widgets (custom paint backend owns these)
+            WidgetKind::Arc,
+            WidgetKind::Spinner,
+            WidgetKind::Roller,
+            WidgetKind::Dropdown,
+            WidgetKind::TextArea,
+            WidgetKind::Keyboard,
+            WidgetKind::TileView,
+            WidgetKind::Line,
+            WidgetKind::Meter,
+            WidgetKind::MiniChart,
+            WidgetKind::ImageView,
+            WidgetKind::MiniCanvas,
         ];
         for kind in &custom_required {
             assert_eq!(

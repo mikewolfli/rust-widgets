@@ -1,7 +1,8 @@
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 use rust_widgets::core::Rect;
 
 fn main() {
-    #[cfg(not(feature = "mini"))]
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
     {
         use rust_widgets::widget::view_widgets::list_view::ListView;
         let mut list = ListView::new(Rect::new(0, 0, 320, 220));

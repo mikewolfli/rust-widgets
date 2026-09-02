@@ -13,6 +13,7 @@ include!("create_widgets_dialog.in.rs");
 include!("create_widgets_menu.in.rs");
 include!("create_widgets_advanced.in.rs");
 include!("create_widgets_other.in.rs");
+include!("create_widgets_modern.in.rs");
 include!("create_widgets_helpers.in.rs");
 
 /// Full ControlBackend implementation for CustomPaintControlBackend.
@@ -28,5 +29,13 @@ impl ControlBackend for super::CustomPaintControlBackend {
     impl_menu_widgets!();
     impl_advanced_widgets!();
     impl_other_widgets!();
+    impl_modern_widgets!();
+    // The route-matrix generator derives `create_qrcode` from `WidgetKind::QRCode`
+    // (camel-to-snake of "QRCode" yields "qrcode"), whereas the canonical API name
+    // is `create_qr_code`. Provide both; the alias delegates to the canonical one.
+    #[cfg(not(feature = "mini"))]
+    fn create_qrcode(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        self.create_qr_code(parent, x, y, width, height)
+    }
     impl_helpers!();
 }

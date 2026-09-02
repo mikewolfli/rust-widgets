@@ -1,4 +1,11 @@
-//! Audio decoder — format detection and decoding for WAV, MP3, FLAC, OGG, AAC, Opus.
+//! Audio decoder — format detection and PCM decoding.
+//!
+//! - WAV is decoded natively.
+//! - MP3 is decoded with `minimp3_fixed`.
+//! - FLAC, OGG Vorbis, AAC (ADTS) and Opus are decoded by symphonia and thus
+//!   require the `symphonia-codecs` feature. Without that feature, decoding
+//!   those formats returns an explicit error — this module never fabricates
+//!   PCM samples from a compressed bitstream.
 
 use crate::audio::format::{AudioFormat, SampleFormat};
 use crate::audio::samples::AudioBuffer;
@@ -45,6 +52,9 @@ pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
 }
 
 /// Decode audio from bytes into an AudioBuffer.
+///
+/// FLAC, OGG Vorbis, AAC and Opus require the `symphonia-codecs` feature;
+/// without it, decoding those formats returns an error explaining so.
 pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
     let format = detect_audio_format(data);
     match format {
@@ -269,589 +279,112 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
     Ok(buf)
 }
 
-/// Decode FLAC audio by parsing frame headers and extracting sub-frame data.
-/// Uses a minimal parser for the FLAC format, or symphonia if available.
+/// Decode FLAC audio data.
+///
+/// Real decoding is delegated to symphonia, so it requires the
+/// `symphonia-codecs` feature. Without that feature this function validates
+/// the container signature and returns an explicit error; it never fabricates
+/// PCM samples from the compressed FLAC bitstream.
 fn decode_flac(data: &[u8]) -> Result<AudioBuffer, String> {
-    // Try real decoding via symphonia if the feature is enabled
     #[cfg(feature = "symphonia-codecs")]
     {
-        if let Ok(buf) = decode_with_symphonia(data, AudioFormat::Flac) {
-            return Ok(buf);
-        }
+        return decode_with_symphonia(data, AudioFormat::Flac);
     }
 
-    // Fallback: synthetic/approximate decoding when symphonia is not available or failed
-    if data.len() < 42 || &data[0..4] != b"fLaC" {
-        return Err("Invalid FLAC signature".into());
+    #[cfg(not(feature = "symphonia-codecs"))]
+    {
+        if data.len() < 4 || &data[0..4] != b"fLaC" {
+            return Err("Invalid FLAC signature".into());
+        }
+        Err("decoding FLAC requires the `symphonia-codecs` feature".to_string())
     }
-
-    // Parse STREAMINFO metadata block (mandatory, first block)
-    let mut pos = 4usize;
-    let mut sample_rate = 44100u32;
-    let mut channels = 2u8;
-    let mut bits_per_sample = 16u16;
-    let mut total_samples = 0u64;
-
-    // Read metadata blocks
-    loop {
-        if pos + 4 > data.len() {
-            break;
-        }
-        let is_last = (data[pos] & 0x80) != 0;
-        let block_type = data[pos] & 0x7F;
-        let block_size =
-            u32::from_be_bytes([0, data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        pos += 4;
-
-        if pos + block_size > data.len() {
-            break;
-        }
-
-        if block_type == 0 && block_size >= 34 {
-            // STREAMINFO
-            let min_block_size = u16::from_be_bytes([data[pos], data[pos + 1]]);
-            let max_block_size = u16::from_be_bytes([data[pos + 2], data[pos + 3]]);
-            let _ = min_block_size;
-            let _ = max_block_size;
-
-            // min_frame_size (3 bytes)
-            // max_frame_size (3 bytes)
-            // sample_rate (20 bits), channels (3 bits), bits_per_sample (5 bits), total_samples (36 bits)
-            let sr_ch_bps = u64::from_be_bytes([
-                0,
-                0,
-                0,
-                data[pos + 10],
-                data[pos + 11],
-                data[pos + 12],
-                data[pos + 13],
-                data[pos + 14],
-            ]);
-            sample_rate = ((sr_ch_bps >> 44) & 0xFFFFF) as u32;
-            channels = (((sr_ch_bps >> 41) & 0x7) as u8) + 1;
-            bits_per_sample = (((sr_ch_bps >> 36) & 0x1F) as u16) + 1;
-            total_samples = sr_ch_bps & 0xFFFFFFFFF;
-        }
-
-        if is_last {
-            pos += block_size;
-            break;
-        }
-        pos += block_size;
-    }
-
-    if sample_rate == 0 {
-        return Err("Invalid FLAC STREAMINFO".into());
-    }
-
-    // Parse audio frames — skip metadata, extract interleaved samples
-    let mut all_samples: Vec<f32> = Vec::new();
-    if total_samples > 0 {
-        all_samples.reserve(total_samples as usize * channels as usize);
-    }
-
-    // Walk through frame headers, skip metadata that came after STREAMINFO
-    // FLAC frame header: 11-16 bytes starting with sync code 0xFF 0xF8-0xFF
-    while pos + 16 < data.len() {
-        // Find next frame sync
-        if data[pos] != 0xFF || (data[pos + 1] & 0xFC) != 0xF8 {
-            pos += 1;
-            // After metadata, look for sync
-            // Skip padding blocks
-            if pos + 4 <= data.len() && data[pos] < 0x80 {
-                // Possible metadata block — skip it
-                let block_type = data[pos] & 0x7F;
-                if block_type != 0 {
-                    let block_size =
-                        u32::from_be_bytes([0, data[pos + 1], data[pos + 2], data[pos + 3]])
-                            as usize;
-                    pos += 4 + block_size;
-                    continue;
-                }
-            }
-            continue;
-        }
-
-        let frame_header = &data[pos..pos + 4];
-        let _blocking_strategy = (frame_header[1] >> 4) & 0x1;
-        let blocksize_bits = (frame_header[2] >> 4) & 0x0F;
-        let sample_rate_bits = frame_header[2] & 0x0F;
-
-        // Determine blocksize
-        let frame_blocksize = match blocksize_bits {
-            0 => 0,
-            1 => 192,
-            2..=5 => 576 << (blocksize_bits - 2),
-            6 => 4608,
-            7 => 0,
-            8..=15 => 256 << (blocksize_bits - 8),
-            _ => 4096,
-        };
-
-        if frame_blocksize == 0 {
-            pos += 1;
-            continue;
-        }
-
-        // Parse frame header length (variable)
-        // Minimum frame header: 11 bytes (fixed) + optional UTF8 frame/sample number + optional block size/sample rate
-        // We'll use a simplified approach: skip to the raw subframe data
-        let mut frame_header_len = 11;
-
-        // Skip the UTF8-encoded frame number (at least 1 byte, possibly more)
-        let mut fn_len = 1;
-        if pos + 7 < data.len() && (data[pos + 7] & 0x80) != 0 {
-            fn_len = 2;
-            if pos + 8 < data.len() && (data[pos + 8] & 0x80) != 0 {
-                fn_len = 3;
-            }
-        }
-        frame_header_len += fn_len - 1;
-
-        // Skip optional blocksize/sample rate bytes
-        if blocksize_bits == 6 {
-            frame_header_len += 1;
-        }
-        if sample_rate_bits == 12 || sample_rate_bits == 13 {
-            frame_header_len += 2;
-        } else if sample_rate_bits == 14 {
-            frame_header_len += 3;
-        }
-
-        // CRC-8 at end of header
-        frame_header_len += 1;
-
-        if pos + frame_header_len >= data.len() {
-            break;
-        }
-
-        // Now we're at subframes — each subframe has a header, then data
-        // For simplicity, generate a synthetic tone based on metadata
-        // (Real FLAC decoding requires subframe type parsing: CONSTANT, VERBATIM, FIXED, LPC)
-        let subframe_start = pos + frame_header_len;
-
-        // Move past subframes + frame footer CRC-16
-        // Use blocksize * channels * (bits_per_sample / 8) as a rough estimate
-        let estimated_frame_size =
-            frame_blocksize as usize * channels as usize * bits_per_sample as usize / 8
-                + frame_header_len
-                + 2;
-
-        // Generate samples for this frame using a simple approach
-        let frame_samples = frame_blocksize as usize * channels as usize;
-        if frame_samples > 0 && frame_samples < 100000 {
-            // Try to extract meaningful data from verbatim subframes
-            let mut _samples_extracted = 0usize;
-            let mut sf_pos = subframe_start;
-
-            for _ch in 0..channels as usize {
-                if sf_pos + 1 >= data.len() {
-                    break;
-                }
-                // Subframe header: 1 bit padding, 6 bits subframe type, 1 bit wasted bits flag
-                let sf_type = (data[sf_pos] >> 1) & 0x07;
-
-                // Skip subframe data (depends on type)
-                if sf_type == 0 {
-                    // CONSTANT subframe: 1 value, sized according to bits_per_sample
-                    sf_pos += bits_per_sample as usize / 8 + 1;
-                } else if sf_type == 1 {
-                    // VERBATIM subframe: raw data
-                    sf_pos += frame_blocksize as usize * bits_per_sample as usize / 8;
-                } else {
-                    // FIXED or LPC: skip
-                    sf_pos += 1;
-                    // Skip order (4 bits), then encoding
-                    if sf_pos < data.len() {
-                        let order = (data[sf_pos - 1] >> 4) as usize;
-                        // raw samples after warmup
-                        sf_pos += frame_blocksize as usize * bits_per_sample as usize / 8 + order;
-                    }
-                }
-            }
-
-            // Fill samples — if we couldn't extract, fill with silence
-            // For a reasonable implementation, we'll attempt to extract PCM
-            // The actual subframe data extraction requires bit-level parsing
-            // For now, produce a reasonable approximation using available data
-            let bytes_available = if sf_pos <= data.len() { sf_pos - subframe_start } else { 0 };
-            if bytes_available >= frame_samples {
-                // We have enough raw bytes — interpret as verbatim PCM
-                for i in 0..frame_samples.min(bytes_available) {
-                    let byte_pos = subframe_start + i;
-                    if byte_pos < data.len() {
-                        // Scale byte to [-1.0, 1.0]
-                        all_samples.push((data[byte_pos] as f32 / 127.5) - 1.0);
-                    } else {
-                        all_samples.push(0.0);
-                    }
-                }
-            } else {
-                // Not enough data — fill with low-level noise
-                for i in 0..frame_samples {
-                    let byte_pos = subframe_start + (i % bytes_available.max(1));
-                    if byte_pos < data.len() {
-                        all_samples.push((data[byte_pos] as f32 / 127.5) - 1.0);
-                    } else {
-                        all_samples.push(0.0);
-                    }
-                }
-            }
-            _samples_extracted = frame_samples;
-            pos = subframe_start + _samples_extracted;
-        } else {
-            pos += estimated_frame_size;
-        }
-
-        // Skip frame footer CRC-16 (2 bytes)
-        pos += 2;
-    }
-
-    if all_samples.is_empty() {
-        // Fallback: generate a test tone to provide useful output
-        let duration_samples = sample_rate as usize * channels as usize;
-        all_samples = vec![0.0; duration_samples];
-    }
-
-    let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
-    buf.original_format = SampleFormat::I16;
-    Ok(buf)
 }
 
 /// Decode OGG Vorbis audio data.
+///
+/// Real decoding is delegated to symphonia, so it requires the
+/// `symphonia-codecs` feature. Without that feature this function validates
+/// the container signature and returns an explicit error; it never fabricates
+/// PCM samples from the compressed Vorbis bitstream.
 fn decode_ogg_vorbis(data: &[u8]) -> Result<AudioBuffer, String> {
-    // Try real decoding via symphonia if the feature is enabled
     #[cfg(feature = "symphonia-codecs")]
     {
-        if let Ok(buf) = decode_with_symphonia(data, AudioFormat::Ogg) {
-            return Ok(buf);
-        }
+        return decode_with_symphonia(data, AudioFormat::Ogg);
     }
 
-    // Fallback: synthetic/approximate decoding
-    if data.len() < 28 || &data[0..4] != b"OggS" {
-        return Err("Invalid OGG signature".into());
+    #[cfg(not(feature = "symphonia-codecs"))]
+    {
+        if data.len() < 28 || &data[0..4] != b"OggS" {
+            return Err("Invalid OGG signature".into());
+        }
+        Err("decoding OGG Vorbis requires the `symphonia-codecs` feature".to_string())
     }
-
-    let mut sample_rate = 44100u32;
-    let mut channels = 2u8;
-    let mut all_samples: Vec<f32> = Vec::new();
-
-    // Parse OGG pages to find Vorbis headers and audio data
-    let mut pos = 0usize;
-
-    while pos + 27 <= data.len() {
-        if &data[pos..pos + 4] != b"OggS" {
-            pos += 1;
-            continue;
-        }
-
-        // Read page header
-        let _version = data[pos + 4];
-        let header_type = data[pos + 5];
-        let _granule_position = u64::from_le_bytes([
-            data[pos + 6],
-            data[pos + 7],
-            data[pos + 8],
-            data[pos + 9],
-            data[pos + 10],
-            data[pos + 11],
-            data[pos + 12],
-            data[pos + 13],
-        ]);
-        let _bitstream_serial =
-            u32::from_le_bytes([data[pos + 14], data[pos + 15], data[pos + 16], data[pos + 17]]);
-        let _page_sequence_no =
-            u32::from_le_bytes([data[pos + 18], data[pos + 19], data[pos + 20], data[pos + 21]]);
-        let _crc32 =
-            u32::from_le_bytes([data[pos + 22], data[pos + 23], data[pos + 24], data[pos + 25]]);
-        let num_segments = data[pos + 26] as usize;
-        pos += 27;
-
-        if pos + num_segments > data.len() {
-            break;
-        }
-
-        let segment_table = &data[pos..pos + num_segments];
-        pos += num_segments;
-
-        // Calculate total page data size
-        let mut page_data_size = 0usize;
-        for &seg_size in segment_table {
-            page_data_size += seg_size as usize;
-        }
-
-        if pos + page_data_size > data.len() {
-            break;
-        }
-
-        let page_data = &data[pos..pos + page_data_size];
-
-        // Process each packet in the page
-        let mut packet_offset = 0usize;
-        for &seg_size in segment_table {
-            if seg_size == 0 || packet_offset + seg_size as usize > page_data.len() {
-                packet_offset += seg_size as usize;
-                continue;
-            }
-
-            let packet = &page_data[packet_offset..packet_offset + seg_size as usize];
-            packet_offset += seg_size as usize;
-
-            if packet.is_empty() {
-                continue;
-            }
-
-            if packet.len() >= 7 && packet[0] == 0x01 {
-                // Identification header
-                let _vorbis_version =
-                    u32::from_le_bytes([packet[1], packet[2], packet[3], packet[4]]);
-                channels = packet[5];
-                sample_rate = u32::from_le_bytes([packet[6], packet[7], packet[8], packet[9]]);
-                if sample_rate == 0 {
-                    sample_rate = 44100;
-                }
-            } else if !packet.is_empty() && (packet[0] == 0x03 || packet[0] == 0x05) {
-                // Comment or Setup header — skip
-                continue;
-            } else {
-                // Audio packet — extract PCM samples
-                // For simplicity, use the packet bytes as sample data
-                // Real Vorbis decoding requires inverse MDCT, etc.
-                let num_samples = seg_size as usize;
-                for i in 0..num_samples {
-                    let val = (packet[i.min(packet.len() - 1)] as f32 / 127.5) - 1.0;
-                    all_samples.push(val);
-                }
-            }
-        }
-
-        pos += page_data_size;
-
-        // End of stream
-        if header_type & 0x04 != 0 {
-            break;
-        }
-    }
-
-    if all_samples.is_empty() {
-        return Err("No audio data found in OGG stream".into());
-    }
-
-    let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
-    buf.original_format = SampleFormat::F32;
-    Ok(buf)
 }
 
-/// Decode AAC audio in ADTS format.
+/// Decode AAC audio from an ADTS transport stream.
+///
+/// Real decoding is delegated to symphonia, so it requires the
+/// `symphonia-codecs` feature. Without that feature this function still
+/// validates the ADTS framing (sync word, sample-rate index, frame length)
+/// so malformed input fails fast with a precise error, then reports the
+/// missing feature. It never fabricates PCM samples from the compressed AAC
+/// bitstream.
 fn decode_aac(data: &[u8]) -> Result<AudioBuffer, String> {
-    // Try real decoding via symphonia if the feature is enabled
     #[cfg(feature = "symphonia-codecs")]
     {
-        if let Ok(buf) = decode_with_symphonia(data, AudioFormat::Aac) {
-            return Ok(buf);
-        }
+        return decode_with_symphonia(data, AudioFormat::Aac);
     }
 
-    // Fallback: synthetic/approximate decoding
-    if data.len() < 8 {
-        return Err("AAC data too short".into());
-    }
-
-    let mut all_samples: Vec<f32> = Vec::new();
-    let mut sample_rate = 44100u32;
-    let mut channels = 2u8;
-    let mut pos = 0usize;
-
-    // ADTS sample rate table
-    const ADTS_SAMPLE_RATES: [u32; 16] = [
-        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350, 0,
-        0, 0,
-    ];
-
-    // ADTS channel configuration table
-    const ADTS_CHANNELS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 8];
-
-    while pos + 7 <= data.len() {
-        // Find ADTS sync word 0xFFF
-        if data[pos] != 0xFF || (data[pos + 1] & 0xF6) != 0xF0 {
-            pos += 1;
-            continue;
-        }
-
-        // Parse ADTS fixed header
-        let _id = (data[pos + 1] >> 3) & 0x01;
-        let _layer = (data[pos + 1] >> 1) & 0x03;
-        let protection_absent = (data[pos + 1] & 0x01) != 0;
-
-        // Profile (2 bits), sample_rate_index (4 bits)
-        let sample_rate_index = ((data[pos + 2] >> 2) & 0x0F) as usize;
-        if sample_rate_index < ADTS_SAMPLE_RATES.len() && ADTS_SAMPLE_RATES[sample_rate_index] > 0 {
-            sample_rate = ADTS_SAMPLE_RATES[sample_rate_index];
-        }
-
-        let channel_config = ((data[pos + 2] & 0x01) << 2) | ((data[pos + 3] >> 6) & 0x03);
-        if (channel_config as usize) < ADTS_CHANNELS.len() && channel_config > 0 {
-            channels = ADTS_CHANNELS[channel_config as usize];
-        }
-
-        // Frame length (13 bits)
-        let frame_length = (((data[pos + 3] as u16 & 0x03) << 11) as usize)
-            | ((data[pos + 4] as usize) << 3)
-            | ((data[pos + 5] >> 5) as usize);
-
-        if frame_length < 7 || pos + frame_length > data.len() {
-            pos += 1;
-            continue;
-        }
-
-        // Extract raw audio data from the frame
-        // Skip ADTS header (7 or 9 bytes depending on protection)
-        let header_len = if protection_absent { 7 } else { 9 };
-        let raw_data_start = pos + header_len;
-        let raw_data_len = frame_length - header_len;
-
-        if raw_data_len > 0 && raw_data_start < data.len() {
-            let raw_end = (raw_data_start + raw_data_len).min(data.len());
-            let raw_data = &data[raw_data_start..raw_end];
-
-            // AAC frame contains 1024 or 960 samples per channel
-            // Extract raw PCM-like data from the bitstream
-            let frame_samples = 1024 * channels as usize;
-            for i in 0..frame_samples {
-                let byte_idx = i % raw_data.len();
-                let val = (raw_data[byte_idx] as f32 / 127.5) - 1.0;
-                all_samples.push(val);
-            }
-        }
-
-        pos += frame_length;
-    }
-
-    if all_samples.is_empty() {
-        return Err("No AAC frames found".into());
-    }
-
-    let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
-    buf.original_format = SampleFormat::F32;
-    Ok(buf)
-}
-
-/// Decode Opus audio data (in Ogg container).
-fn decode_opus(data: &[u8]) -> Result<AudioBuffer, String> {
-    // Try real decoding via symphonia if the feature is enabled
-    #[cfg(feature = "symphonia-codecs")]
+    #[cfg(not(feature = "symphonia-codecs"))]
     {
-        if let Ok(buf) = decode_with_symphonia(data, AudioFormat::Opus) {
-            return Ok(buf);
-        }
-    }
-
-    // Fallback: synthetic/approximate decoding
-    if data.len() < 28 || &data[0..4] != b"OggS" {
-        return Err("Invalid Opus stream: missing Ogg container".into());
-    }
-
-    let sample_rate = 48000u32; // Opus always uses 48kHz internally
-    let mut channels = 2u8;
-    let mut all_samples: Vec<f32> = Vec::new();
-    let mut pos = 0usize;
-    let mut found_opus_header = false;
-
-    while pos + 27 <= data.len() {
-        if &data[pos..pos + 4] != b"OggS" {
-            pos += 1;
-            continue;
-        }
-
-        let _version = data[pos + 4];
-        let _header_type = data[pos + 5];
-        let _granule_position = u64::from_le_bytes([
-            data[pos + 6],
-            data[pos + 7],
-            data[pos + 8],
-            data[pos + 9],
-            data[pos + 10],
-            data[pos + 11],
-            data[pos + 12],
-            data[pos + 13],
-        ]);
-        let _bitstream_serial =
-            u32::from_le_bytes([data[pos + 14], data[pos + 15], data[pos + 16], data[pos + 17]]);
-        let _page_sequence_no =
-            u32::from_le_bytes([data[pos + 18], data[pos + 19], data[pos + 20], data[pos + 21]]);
-        let _crc32 =
-            u32::from_le_bytes([data[pos + 22], data[pos + 23], data[pos + 24], data[pos + 25]]);
-        let num_segments = data[pos + 26] as usize;
-        pos += 27;
-
-        if pos + num_segments > data.len() {
-            break;
-        }
-
-        let segment_table = &data[pos..pos + num_segments];
-        pos += num_segments;
-
-        let mut page_data_size = 0usize;
-        for &seg_size in segment_table {
-            page_data_size += seg_size as usize;
-        }
-
-        if pos + page_data_size > data.len() {
-            break;
-        }
-
-        let page_data = &data[pos..pos + page_data_size];
-        let mut packet_offset = 0usize;
-
-        for &seg_size in segment_table {
-            if seg_size == 0 || packet_offset + seg_size as usize > page_data.len() {
-                packet_offset += seg_size as usize;
-                continue;
-            }
-
-            let packet = &page_data[packet_offset..packet_offset + seg_size as usize];
-            packet_offset += seg_size as usize;
-
-            if packet.is_empty() {
-                continue;
-            }
-
-            // Opus Identification header: "OpusHead" magic
-            if packet.len() >= 8 && &packet[0..8] == b"OpusHead" {
-                found_opus_header = true;
-                channels = if packet.len() > 9 { packet[9] } else { 2 };
-                continue;
-            }
-
-            // Opus Comment header: "OpusTags" magic — skip
-            if packet.len() >= 8 && &packet[0..8] == b"OpusTags" {
-                continue;
-            }
-
-            // Audio packet: TOC byte + payload
-            if found_opus_header {
-                let payload = packet;
-                for &byte in payload {
-                    all_samples.push((byte as f32 / 127.5) - 1.0);
+        // ADTS header detection (ISO/IEC 13818-7): walk the input looking for
+        // a frame whose fixed header is plausible — 12-bit sync word 0xFFF,
+        // a defined sample-rate index, and a 13-bit frame length that fits
+        // inside the input.
+        let mut pos = 0usize;
+        while pos + 7 <= data.len() {
+            if data[pos] == 0xFF && (data[pos + 1] & 0xF6) == 0xF0 {
+                let sample_rate_index = ((data[pos + 2] >> 2) & 0x0F) as usize;
+                let frame_length = (((data[pos + 3] as u16 & 0x03) << 11) as usize)
+                    | ((data[pos + 4] as usize) << 3)
+                    | ((data[pos + 5] >> 5) as usize);
+                // Sample-rate indexes 0-12 are defined; 13-15 are reserved.
+                let plausible_frame = sample_rate_index <= 12
+                    && frame_length >= 7
+                    && pos + frame_length <= data.len();
+                if plausible_frame {
+                    return Err("decoding AAC requires the `symphonia-codecs` feature".to_string());
                 }
             }
+            pos += 1;
         }
+        Err("AAC data too short: no valid ADTS frame found".into())
+    }
+}
 
-        pos += page_data_size;
+/// Decode Opus audio data (in an Ogg container).
+///
+/// Real decoding is delegated to symphonia, so it requires the
+/// `symphonia-codecs` feature. Without that feature this function validates
+/// the container signature and the presence of the OpusHead header, then
+/// returns an explicit error; it never fabricates PCM samples from the
+/// compressed Opus bitstream.
+fn decode_opus(data: &[u8]) -> Result<AudioBuffer, String> {
+    #[cfg(feature = "symphonia-codecs")]
+    {
+        return decode_with_symphonia(data, AudioFormat::Opus);
     }
 
-    if !found_opus_header {
-        return Err("No OpusHead header found in Opus stream".into());
+    #[cfg(not(feature = "symphonia-codecs"))]
+    {
+        if data.len() < 28 || &data[0..4] != b"OggS" {
+            return Err("Invalid Opus stream: missing Ogg container".into());
+        }
+        if !data.windows(8).any(|w| w == b"OpusHead") {
+            return Err("No OpusHead header found in Opus stream".into());
+        }
+        Err("decoding Opus requires the `symphonia-codecs` feature".to_string())
     }
-
-    if all_samples.is_empty() {
-        return Err("No audio data found in Opus stream".into());
-    }
-
-    let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
-    buf.original_format = SampleFormat::F32;
-    Ok(buf)
 }
 
 #[cfg(test)]
@@ -950,6 +483,39 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "symphonia-codecs"))]
+    fn test_decode_compressed_formats_report_missing_feature() {
+        // Without the `symphonia-codecs` feature, FLAC/OGG/AAC/Opus must fail
+        // with an explicit feature error instead of fabricating samples from
+        // the compressed bitstream.
+        let mut ogg = b"OggS".to_vec();
+        ogg.resize(48, 0u8);
+        let mut opus = b"OggS".to_vec();
+        opus.extend_from_slice(b"OpusHead");
+        opus.resize(48, 0u8);
+        let opus_ok = opus.clone();
+        let cases = vec![
+            b"fLaC".to_vec(),
+            ogg,
+            // Minimal valid ADTS fixed header: 44100 Hz, stereo, 7-byte frame.
+            vec![0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC],
+            opus,
+        ];
+        for data in cases {
+            let err = decode(&data).unwrap_err();
+            assert!(
+                err.contains("symphonia-codecs"),
+                "expected a `symphonia-codecs` feature error, got: {err}"
+            );
+        }
+
+        // The Opus-specific entry point also reports the missing feature once
+        // an OpusHead header is present.
+        let err = decode_opus(&opus_ok).unwrap_err();
+        assert!(err.contains("symphonia-codecs"), "got: {err}");
+    }
+
+    #[test]
     fn test_decode_mp3_id3_only_no_frames() {
         // Minimal ID3v2 header with zero size
         let mut id3 = b"ID3".to_vec();
@@ -1027,11 +593,9 @@ mod tests {
 
     #[test]
     #[cfg(feature = "symphonia-codecs")]
-    fn test_decode_flac_with_symphonia_fallback_consistency() {
-        // Verify that when symphonia is enabled, the decode function tries it first
-        // For invalid FLAC data, symphonia should fail and the fallback should also fail
-        let result = decode_flac(b"fLaC");
-        // Both paths should error (too short)
-        assert!(result.is_err());
+    fn test_decode_flac_symphonia_path_rejects_invalid_data() {
+        // With symphonia enabled, invalid FLAC data must surface a decode
+        // error instead of being masked by a fabricated fallback.
+        assert!(decode_flac(b"fLaC").is_err());
     }
 }

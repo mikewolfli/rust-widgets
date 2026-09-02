@@ -1,4 +1,15 @@
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
+//! Simulated web-engine view widget (self-drawn chrome).
+//!
+//! `WebEngineView` draws a browser-style chrome (URL bar, content hint) and
+//! models navigation state (loading/back/forward). It does **not** contain a
+//! DOM layout or network stack, so page content itself is never rendered.
+//!
+//! JavaScript evaluation is real: with the `js-engine` feature the widget
+//! evaluates scripts in a genuine embedded engine (boa_engine via
+//! `crate::web::SimpleJsEngine`) and returns the actual result or error.
+//! Without that feature, evaluation reports `Err` instead of faking success.
+
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
@@ -36,6 +47,11 @@ pub struct WebEngineView {
     pub page_created: Signal1<ObjectId>,
     /// Emitted when the page is destroyed.
     pub page_destroyed: Signal1<ObjectId>,
+    /// Most recently loaded HTML source (kept for inspection; no DOM layout).
+    html_content: String,
+    /// Embedded real JavaScript engine (boa_engine) for script evaluation.
+    #[cfg(feature = "js-engine")]
+    js_engine: Option<crate::web::BoaJsEngine>,
 }
 // Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
 pub struct WebEnginePage(pub WebEngineView);
@@ -230,6 +246,9 @@ impl WebEngineView {
             download_requested: Signal1::new(),
             page_created: Signal1::new(),
             page_destroyed: Signal1::new(),
+            html_content: String::new(),
+            #[cfg(feature = "js-engine")]
+            js_engine: None,
         }
     }
     pub fn url(&self) -> &str {
@@ -293,9 +312,10 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-    pub fn load_html(&mut self, _html: &str) {
-        // In a real implementation, this would load the HTML
-        // For now, we'll just simulate it
+    pub fn load_html(&mut self, html: &str) {
+        // Navigation and loading state are simulated (no DOM layout), but the
+        // HTML source is retained so script evaluation and introspection work.
+        self.html_content = html.to_string();
         self.url = "data:text/html".to_string();
         self.title = "HTML Content".to_string();
         self.begin_loading();
@@ -305,9 +325,14 @@ impl WebEngineView {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-    pub fn load_data(&mut self, _data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
-        // In a real implementation, this would load the data
-        // For now, we'll just simulate it
+    /// Return the most recently loaded HTML source.
+    pub fn html_source(&self) -> &str {
+        &self.html_content
+    }
+    pub fn load_data(&mut self, data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
+        // Data payloads are retained for introspection; no binary media decode
+        // or layout happens in this simulated view.
+        self.html_content = String::from_utf8_lossy(data).into_owned();
         self.url = base_url.to_string();
         self.title = "Data Content".to_string();
         self.begin_loading();
@@ -319,8 +344,8 @@ impl WebEngineView {
     }
     pub fn go_back(&mut self) {
         if self.can_go_back {
-            // In a real implementation, this would navigate back
-            // For now, we'll just simulate it
+            // Navigation state is modeled, not a real page history: toggling
+            // back/forward flips the availability flags.
             self.can_go_back = false;
             self.can_go_forward = true;
             self.update_navigation_state();
@@ -329,8 +354,7 @@ impl WebEngineView {
     }
     pub fn go_forward(&mut self) {
         if self.can_go_forward {
-            // In a real implementation, this would navigate forward
-            // For now, we'll just simulate it
+            // See `go_back` — modeled navigation state only.
             self.can_go_forward = false;
             self.can_go_back = true;
             self.update_navigation_state();
@@ -339,17 +363,24 @@ impl WebEngineView {
     }
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
-            // In a real implementation, this would reload the page
+            // Re-emits the load lifecycle without re-fetching (no network).
             self.begin_loading();
         }
     }
     pub fn stop(&mut self) {
         self.finish_loading();
     }
-    pub fn evaluate_javascript(&mut self, _script: &str) -> Result<String, String> {
-        // In a real implementation, this would evaluate the JavaScript
-        // For now, we'll just return a placeholder
-        Ok("Result".to_string())
+    pub fn evaluate_javascript(&mut self, script: &str) -> Result<String, String> {
+        #[cfg(feature = "js-engine")]
+        {
+            let engine = self.js_engine.get_or_insert_with(crate::web::BoaJsEngine::new);
+            engine.evaluate_to_string(script)
+        }
+        #[cfg(not(feature = "js-engine"))]
+        {
+            let _ = script;
+            Err("JavaScript evaluation requires the `js-engine` feature".to_string())
+        }
     }
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.javascript_enabled = enabled;
@@ -550,4 +581,30 @@ mod tests {
         wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));
         assert!(!wrapper.inner().is_loading());
     }
+}
+
+#[test]
+fn web_engine_evaluate_javascript_is_real_when_feature_enabled() {
+    let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    #[cfg(feature = "js-engine")]
+    {
+        // Real boa_engine evaluation: arithmetic and string results.
+        assert_eq!(wv.evaluate_javascript("1 + 2 * 3").as_deref(), Ok("7"));
+        assert_eq!(wv.evaluate_javascript("'a' + 'b'").as_deref(), Ok("ab"));
+        // Syntax/runtime errors surface instead of a fake success value.
+        assert!(wv.evaluate_javascript("this is not valid js {{").is_err());
+    }
+    #[cfg(not(feature = "js-engine"))]
+    {
+        // Honest failure instead of a placeholder "Result".
+        assert!(wv.evaluate_javascript("1").is_err());
+    }
+}
+
+#[test]
+fn web_engine_load_html_retains_source() {
+    let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    wv.load_html("<html><body>Hello</body></html>");
+    assert_eq!(wv.html_source(), "<html><body>Hello</body></html>");
+    assert_eq!(wv.url(), "data:text/html");
 }

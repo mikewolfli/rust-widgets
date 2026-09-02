@@ -4,7 +4,7 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and **no_std mini** targets.
+Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and minimal-profile **mini** targets.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![tests](https://img.shields.io/badge/tests-3700%2B-brightgreen)]()
@@ -24,7 +24,7 @@ Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, wid
 # Desktop (default)
 cargo check
 
-# Mini (no_std, 30+ widgets)
+# Mini (reduced std profile, minimal widget set)
 cargo check --no-default-features --features mini
 
 # Embedded
@@ -38,11 +38,11 @@ cargo test --lib
 
 | Profile | Command | Backend | Widgets | i18n | GPU |
 |---------|---------|---------|---------|------|-----|
-| Desktop | `cargo check` | Native OS | 80+ | ✅ | ✅ wgpu |
-| Tablet | `--features tablet` | Native OS | 80+ | ✅ | ✅ wgpu |
-| Mobile | `--features mobile` | Mobile API | 80+ | ✅ | ✅ wgpu |
+| Desktop | `cargo check` | Native OS | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
+| Tablet | `--features tablet` | Native OS | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
+| Mobile | `--features mobile` | Mobile API | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
 | Embedded | `--features embedded` | Software | 30+ | — | — |
-| **Mini** | `--features mini` | **no_std** + alloc | **30+** | — | — |
+| **Mini** | `--features mini` | **reduced std** + alloc | **30+** | — | — |
 
 ### OS Backends
 
@@ -63,7 +63,7 @@ cargo test --lib
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  API Layer — lib.rs + compat.rs (no_std bridge)           │
+│  API Layer — lib.rs + compat.rs (core/alloc bridge)     │
 ├────────────────────────────────────────────────────────────┤
 │  Widgets  │  Event System  │  Layout Engine                │
 │  (30-80)  │  (EventLoop,   │  (Box, Grid, Flow,           │
@@ -82,7 +82,7 @@ cargo test --lib
 ## Features
 
 ### Rust-Native Design
-- Conditional `no_std` via `#![cfg_attr(feature = "mini", no_std)]` — single codebase for both std and embedded
+- no_std-ready architecture: all files import shared types via `compat.rs` (`core`/`alloc`) so enabling `#![cfg_attr(feature = "mini", no_std)]` is a tracked step — the `mini` profile currently compiles on std.
 - `compat.rs` bridge: `HashMap→BTreeMap`, `Mutex→RefCell`, `MiniVec<T,64>`, `MiniString<256>`, `MiniArena` (bumpalo)
 - `enum WidgetKind` + `trait Widget` + `trait Draw` + `trait EventHandler` — zero-cost abstractions
 - Builder pattern: `Style::new().bg_color(RED).pad_all(8).build()` — compile-time checking
@@ -142,7 +142,7 @@ cargo test --lib
 
 **Special**: FreeformShape, QRCode, ColorHistory, ColorWell, MasonryLayout, Stepper, Divider, SwipeToDismiss, Toolbox, PropertiesPanel, PropertyGrid, WizardDialog, Wizard, AnimatedImage, HeroAnimation, BezierCurveEditor, LottieWidget, RiveWidget, VideoPlayer, ImageGallery, AudioVisualizer, CameraPreview, BarcodeScanner, Breakcrumb, CodeEditor, ColorPicker, CommandEntry, CommandPalette, DiffViewer, MapView, MediaPlayer, NotificationCenter, Snackbar, SplitButton, TerminalView, ToastStack
 
-### Mini (30+ widgets, no_std)
+### Mini (reduced std profile, ~30 core widgets)
 
 Window, Dialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, GroupBox, Menu, MenuItem, ToggleButton, Switch, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, TabView, AnimatedImage
 
@@ -172,7 +172,7 @@ python examples/python/demo_basic.py
 | `core` | Point, Rect, Size, Color, Font, ObjectId | All profiles |
 | `widget` | Widget implementations | All profiles |
 | `event` | Event types, EventLoop, GestureEngine | All profiles |
-| `compat` | std↔no_std bridge, MiniVec, MiniString, MiniArena | All profiles |
+| `compat` | core/alloc bridge, MiniVec, MiniString, MiniArena | All profiles |
 | `render` | SoftwarePaintBackend, SvgPaintBackend, GPU (wgpu) | All profiles |
 | `layout` | Box, Grid, Flow, Stack, Absolute, Anchor, Masonry | All profiles |
 | `signal` | GenericSignal, Signal1, ConnectionScope | All profiles |
@@ -197,7 +197,7 @@ python examples/python/demo_basic.py
 | Profile | Rust Version | Dependencies |
 |---------|:------------:|--------------|
 | Desktop | 1.87+ | wgpu, GTK/Wayland (Linux), objc2 (macOS) |
-| Mini | 1.87+ | heapless, hashbrown, bumpalo (no_std) |
+| Mini | 1.87+ | heapless, hashbrown, bumpalo (no_std-ready; profile compiles on std) |
 | Embedded | 1.87+ | None (software-only) |
 
 ---

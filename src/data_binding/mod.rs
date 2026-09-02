@@ -7,16 +7,16 @@
 //!
 //! The system follows a "source of truth + observers" pattern:
 //!
-//! - **[`Binding<T>`]**: A single reactive value. When the value changes via
-//!   [`set`](Binding::set), all registered listeners are notified. Supports
-//!   two-way binding via [`bind_to`](Binding::bind_to).
-//! - **[`ObservableList<T>`]**: An observable collection that fires
+//! - **`Binding<T>`**: A single reactive value. When the value changes via
+//!   `set`, all registered listeners are notified. Supports
+//!   two-way binding via `bind_to`.
+//! - **`ObservableList<T>`**: An observable collection that fires
 //!   notifications on structural mutations (push, pop, insert, remove, clear).
-//! - **[`Computed<T>`]**: A derived value computed from a closure. Marked dirty
-//!   via [`invalidate`](Computed::invalidate) and lazily recomputed on
-//!   [`get`](Computed::get).
-//! - **Traits**: [`BindingListener`] and [`BoxedListener`] define the listener
-//!   contract. [`FnListener`] wraps a closure as a listener.
+//! - **`Computed<T>`**: A derived value computed from a closure. Marked dirty
+//!   via `invalidate` and lazily recomputed on
+//!   `get`.
+//! - **Traits**: `BindingListener` and `BoxedListener` define the listener
+//!   contract. `FnListener` wraps a closure as a listener.
 //! - **Macros**: [`binding!`](crate::binding!) and [`computed!`](crate::computed!)
 //!   provide convenient construction syntax.
 //!

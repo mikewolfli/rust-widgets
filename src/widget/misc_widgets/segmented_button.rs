@@ -5,7 +5,7 @@
 //! displays a text label and an optional icon. The active/highlighted segment uses
 //! a filled background to indicate selection.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -194,11 +194,8 @@ impl Draw for SegmentedButton {
         let font = Font::simple("sans-serif", 13.0);
 
         // Draw outer container border
-        let border_color = if is_enabled {
-            Color::rgb(180, 180, 180)
-        } else {
-            Color::rgba(180, 180, 180, 100)
-        };
+        let border_color =
+            if is_enabled { Color::rgb(180, 180, 180) } else { Color::rgba(180, 180, 180, 100) };
         context.draw_rounded_rect_stroke(rect, corner_radius, border_color, 1);
 
         for (i, segment) in self.segments.iter().enumerate() {

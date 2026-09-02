@@ -30,9 +30,15 @@ impl ClipboardManager {
     pub fn text() -> String {
         String::new()
     }
+    /// Set plain text into the system/process clipboard via an explicit platform.
+    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
     pub(crate) fn set_text_with(platform: &dyn Platform, text: &str) -> bool {
         platform.set_clipboard_text(text)
     }
+    /// Read plain text from the clipboard via an explicit platform.
+    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
     pub(crate) fn text_with(platform: &dyn Platform) -> String {
         platform.get_clipboard_text()
     }

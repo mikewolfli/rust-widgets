@@ -985,4 +985,990 @@ pub trait ControlBackend: Send + Sync {
     fn inject_drop_event(&self, _event: crate::platform::DropEvent) -> bool {
         false
     }
+
+    // ── Modern widget set (BLUE13 R2.1–R2.14 + mobile/Cupertino/media families) ──
+    //
+    // These defaults return `0` as the explicit unsupported marker; backends that
+    // support a widget kind override the corresponding method.
+
+    /// Create adaptive scaffold control.
+    fn create_adaptive_scaffold(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create animated image control.
+    fn create_animated_image(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create app bar control.
+    fn create_app_bar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create arc control.
+    fn create_arc(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create audio visualizer control.
+    fn create_audio_visualizer(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create auto-complete edit control.
+    fn create_auto_complete_edit(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create avatar control.
+    fn create_avatar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create badge control.
+    fn create_badge(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create bar chart control.
+    fn create_bar_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create barcode scanner control.
+    fn create_barcode_scanner(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create bezier curve editor control.
+    fn create_bezier_curve_editor(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create bottom navigation bar control.
+    fn create_bottom_navigation_bar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create bottom sheet control.
+    fn create_bottom_sheet(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create camera preview control.
+    fn create_camera_preview(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create carousel control.
+    fn create_carousel(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create chip control.
+    fn create_chip(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create color history control.
+    fn create_color_history(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create color well control.
+    fn create_color_well(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino alert dialog control.
+    fn create_cupertino_alert_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino date picker control.
+    fn create_cupertino_date_picker(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino navigation bar control.
+    fn create_cupertino_navigation_bar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino segmented control.
+    fn create_cupertino_segmented_control(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino slider control.
+    fn create_cupertino_slider(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cupertino switch control.
+    fn create_cupertino_switch(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create date range picker control.
+    fn create_date_range_picker(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create divider control.
+    fn create_divider(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create dropdown control.
+    fn create_dropdown(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create dropdown menu control.
+    fn create_dropdown_menu(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create editable combo box control.
+    fn create_editable_combo_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create empty state control.
+    fn create_empty_state(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create floating action button (FAB) control.
+    fn create_fab(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create find/replace dialog control.
+    fn create_find_replace_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create floating label control.
+    fn create_floating_label(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create font preview control.
+    fn create_font_preview(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create frame control.
+    fn create_frame(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create grid table control.
+    fn create_grid_table(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create hero animation control.
+    fn create_hero_animation(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create icon control.
+    fn create_icon(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create image gallery control.
+    fn create_image_gallery(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create image view control.
+    fn create_image_view(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create IME preedit control.
+    fn create_ime_preedit(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create in-place editor control.
+    fn create_inplace_editor(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create keyboard control.
+    fn create_keyboard(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create line control.
+    fn create_line(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create line chart control.
+    fn create_line_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create lottie widget control.
+    fn create_lottie_widget(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create masked edit control.
+    fn create_masked_edit(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create masonry layout control.
+    fn create_masonry_layout(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create material navigation rail control.
+    fn create_material_navigation_rail(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create material snackbar control.
+    fn create_material_snackbar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create menu button control.
+    fn create_menu_button(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create meter control.
+    fn create_meter(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create mini canvas control.
+    fn create_mini_canvas(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create mini chart control.
+    fn create_mini_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create mobile date picker control.
+    fn create_mobile_date_picker(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create modal bottom sheet control.
+    fn create_modal_bottom_sheet(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create multi-select combo box control.
+    fn create_multi_select_combo_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create navigation drawer control.
+    fn create_navigation_drawer(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create navigation stack control.
+    fn create_navigation_stack(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create pager page view control.
+    fn create_pager_page_view(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create pie chart control.
+    fn create_pie_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create popover control.
+    fn create_popover(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create progress circle control.
+    fn create_progress_circle(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create properties panel control.
+    fn create_properties_panel(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create QR code control.
+    fn create_qr_code(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create QRCode control (alias for `create_qr_code` used by the route-matrix
+    /// generator, which derives `create_qrcode` from `WidgetKind::QRCode`).
+    fn create_qrcode(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create range slider control.
+    fn create_range_slider(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create rating control.
+    fn create_rating(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create refresh control.
+    fn create_refresh_control(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create rive widget control.
+    fn create_rive_widget(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create roller control.
+    fn create_roller(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create safe area control.
+    fn create_safe_area(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create search bar control.
+    fn create_search_bar(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create search box control.
+    fn create_search_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create segmented button control.
+    fn create_segmented_button(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create shortcut editor control.
+    fn create_shortcut_editor(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create skeleton loader control.
+    fn create_skeleton_loader(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create sparkline control.
+    fn create_sparkline(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create spinner control.
+    fn create_spinner(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create stepper control.
+    fn create_stepper(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create swipe-to-dismiss control.
+    fn create_swipe_to_dismiss(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create switch control.
+    fn create_switch(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tab view control.
+    fn create_tab_view(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tag input control.
+    fn create_tag_input(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create text area control.
+    fn create_text_area(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tile view control.
+    fn create_tile_view(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tooltip control.
+    fn create_tooltip(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create video player control.
+    fn create_video_player(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create wizard dialog control.
+    fn create_wizard_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
 }

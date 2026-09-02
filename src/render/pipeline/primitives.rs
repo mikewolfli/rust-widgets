@@ -615,7 +615,7 @@ impl SoftwareSurface {
                     canvas: &mut *frame,
                     canvas_width: size.width,
                     canvas_height: size.height,
-                    ch: ch as u8,
+                    ch,
                     x: pen_x.round() as i32,
                     y: origin.y,
                     w: glyph_width as u32,

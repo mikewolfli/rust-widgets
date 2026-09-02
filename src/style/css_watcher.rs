@@ -1,7 +1,7 @@
 //! CSS file watcher for hot-reloading stylesheets (BLUE13 R1.7).
 //!
 //! A simple polling-based watcher that monitors a CSS file for changes
-//! and reloads it into the global [`StyleSheetManager`] when modified.
+//! and reloads it into the global `StyleSheetManager` when modified.
 
 use crate::style::stylesheet::global_stylesheet_manager;
 use std::fs;
@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 /// Polling-based CSS file watcher for hot-reloading stylesheets.
 ///
 /// Watches a single CSS file on disk and, when it changes, reloads the
-/// content into the global [`StyleSheetManager`] under the configured name.
+/// content into the global `StyleSheetManager` under the configured name.
 /// Uses a configurable polling interval to avoid excessive I/O.
 pub struct CssWatcher {
     /// Path to the CSS file being watched.
@@ -51,7 +51,7 @@ impl CssWatcher {
 
     /// Poll the file for changes.
     ///
-    /// Reloads CSS into the global [`StyleSheetManager`] if the file has been
+    /// Reloads CSS into the global `StyleSheetManager` if the file has been
     /// modified since the last poll. Respects the configured polling interval:
     /// if not enough time has passed, returns `Ok(false)` without checking.
     ///
@@ -96,7 +96,7 @@ impl CssWatcher {
     /// Force-reload the CSS file regardless of modification time.
     ///
     /// This always reads the file and registers it in the global
-    /// [`StyleSheetManager`], updating the internal modification timestamp.
+    /// `StyleSheetManager`, updating the internal modification timestamp.
     pub fn reload(&mut self) -> Result<(), String> {
         let metadata = fs::metadata(&self.path).map_err(|e| {
             format!("CssWatcher: failed to read metadata for '{}': {}", self.path, e)
@@ -128,7 +128,8 @@ impl Default for CssWatcher {
     }
 }
 
-#[cfg(test)]
+// Filesystem-watcher tests need `tempfile`, which is unavailable on wasm32 (no FS).
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::io::Write;

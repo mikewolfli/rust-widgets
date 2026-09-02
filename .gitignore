@@ -49,3 +49,6 @@ demo/control/target
 
 # Test outputs
 **/test_output/
+
+# Stray lint/build dumps
+clippy_output.txt

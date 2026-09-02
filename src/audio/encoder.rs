@@ -1,4 +1,7 @@
-//! Audio encoder — WAV, PCM, and MP3 encoding.
+//! Audio encoder — WAV and raw PCM are encoded natively. Compressed formats
+//! (MP3, FLAC, OGG, AAC, Opus) are encoded through FFmpeg and therefore
+//! require the `video-codecs` feature; without it, `encode` returns an error
+//! instead of writing raw PCM bytes under a compressed-format name.
 
 use crate::audio::format::AudioFormat;
 use crate::audio::samples::AudioBuffer;
@@ -7,28 +10,31 @@ use crate::audio::samples::AudioBuffer;
 use super::ffmpeg_encode;
 
 /// Encode an AudioBuffer to bytes in the specified format.
+///
+/// WAV and raw PCM are always supported. Compressed formats (Mp3, Flac, Ogg,
+/// Aac, Opus) are encoded through FFmpeg and require the `video-codecs`
+/// feature; without it they return an explicit error.
 pub fn encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8>, String> {
     match format {
         AudioFormat::Wav => encode_wav(buffer),
         AudioFormat::Pcm => encode_pcm(buffer),
-        // ── Real encoding via FFmpeg when feature is enabled ──
+        // ── Real compressed encoding via FFmpeg when the feature is enabled ──
         #[cfg(feature = "video-codecs")]
         AudioFormat::Mp3
         | AudioFormat::Flac
         | AudioFormat::Ogg
         | AudioFormat::Aac
         | AudioFormat::Opus => ffmpeg_encode(buffer, format),
-        // ── PCM fallback when FFmpeg is not available ──
+        // ── No FFmpeg: refuse instead of emitting bare PCM masquerading as a
+        //    compressed format ──
         #[cfg(not(feature = "video-codecs"))]
-        AudioFormat::Mp3 => encode_pcm(buffer),
-        #[cfg(not(feature = "video-codecs"))]
-        AudioFormat::Flac => encode_pcm(buffer),
-        #[cfg(not(feature = "video-codecs"))]
-        AudioFormat::Ogg => encode_pcm(buffer),
-        #[cfg(not(feature = "video-codecs"))]
-        AudioFormat::Aac => encode_pcm(buffer),
-        #[cfg(not(feature = "video-codecs"))]
-        AudioFormat::Opus => encode_pcm(buffer),
+        AudioFormat::Mp3
+        | AudioFormat::Flac
+        | AudioFormat::Ogg
+        | AudioFormat::Aac
+        | AudioFormat::Opus => {
+            Err(format!("encoding {:?} requires the `video-codecs` feature (FFmpeg)", format))
+        }
         AudioFormat::Unknown => Err("Cannot encode to Unknown format".into()),
     }
 }
@@ -114,6 +120,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "video-codecs")]
     fn test_encode_all_formats_succeed() {
         // Use enough samples so encoders with minimum frame-size (e.g. FLAC)
         // have data to work with: ~0.37 seconds of 44100 Hz mono = 16384 samples.
@@ -135,6 +142,36 @@ mod tests {
             assert!(result.is_ok(), "Encoding to {:?} should succeed: {:?}", format, result);
             let data = result.unwrap();
             assert!(!data.is_empty(), "Encoded {:?} data should not be empty", format);
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "video-codecs"))]
+    fn test_encode_compressed_formats_report_missing_feature() {
+        // Without `video-codecs` there is no real encoder for compressed
+        // formats, so `encode` must fail loudly instead of returning bare PCM
+        // bytes under a compressed-format name.
+        let samples: Vec<f32> = (0..16384)
+            .map(|i| {
+                let phase = (i as f32 / 44100.0 * 440.0 * 2.0 * std::f32::consts::PI).sin();
+                phase * 0.5
+            })
+            .collect();
+        let buf = AudioBuffer::new(44100, samples, 2);
+        for format in &[
+            AudioFormat::Mp3,
+            AudioFormat::Flac,
+            AudioFormat::Ogg,
+            AudioFormat::Aac,
+            AudioFormat::Opus,
+        ] {
+            let err = encode(&buf, *format)
+                .expect_err("encoding a compressed format without `video-codecs` must fail");
+            assert!(
+                err.contains("video-codecs"),
+                "error for {:?} should name the `video-codecs` feature, got: {err}",
+                format
+            );
         }
     }
 

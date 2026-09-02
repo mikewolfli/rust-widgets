@@ -1,13 +1,15 @@
-//! Linux IME bridge — IBus DBus protocol integration.
+//! Linux IME bridge — in-process composition state with optional IBus probe.
 //!
-//! Provides a state-tracking IME bridge that manages text composition via
-//! the IBus DBus interface. When the `zbus` feature is enabled (used by
-//! `linux-a11y`), the bridge can connect to the IBus daemon for real
-//! preedit input-method events.
+//! The bridge tracks marked text, cursor position, focus and composition
+//! state, and (when the `linux-a11y`/zbus feature is active) probes the IBus
+//! daemon over DBus to detect availability.
 //!
-//! Without DBus / IBus (or in headless/test builds) the bridge operates as
-//! a pure state machine tracking marked text, cursor position, and
-//! composition state.
+//! **Protocol status**: the full IBus *engine* protocol (CreateInputContext,
+//! ProcessKeyEvent round-trips, preedit streaming from the daemon) is not
+//! wired here; that requires the active engine context, which this bridge
+//! does not own. Commit/preedit operations are therefore modeled in-process
+//! and published through the [`ImeBridge`](crate::platform::ime::ImeBridge) state, which the compositor or
+//! host toolkit layer consumes.
 
 #![cfg(target_os = "linux")]
 
@@ -86,10 +88,12 @@ pub struct LinuxImeBridge {
     cursor_pos: Mutex<usize>,
 
     // ── Native IBus handle ──
-    /// Whether an IBus connection was successfully established.
-    #[allow(dead_code)]
+    /// Whether an IBus connection was successfully established (probe result).
     ibus_available: Mutex<bool>,
-    /// Opaque IBus connection handle.
+    /// Opaque IBus session-bus connection.
+    ///
+    /// Held open to keep the daemon session alive after the availability
+    /// probe; the engine protocol is not wired (see module docs).
     #[cfg(feature = "linux-a11y")]
     #[allow(dead_code)]
     ibus_connection: Mutex<Option<IbusConnection>>,
@@ -141,13 +145,18 @@ impl LinuxImeBridge {
         }
     }
 
+    /// Whether the IBus daemon was reachable when the bridge was created.
+    pub fn is_ibus_available(&self) -> bool {
+        *self.ibus_available.lock().unwrap()
+    }
+
     // ── Native IME interface (exposed for platform event dispatch) ──
 
     /// Set the cursor (insertion-point) rectangle — tells IBus where
-    /// to place the candidate popup.
+    /// to place the candidate popup. Published as state only; the DBus
+    /// SetCursorLocation call is part of the unwired engine protocol.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
-        log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}",);
-        // Native IBus:  ibus_engine_set_cursor_location(x, y, w, h)
+        log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}");
     }
 
     /// Process a raw key event through the IBus IME subsystem.
@@ -208,9 +217,6 @@ impl LinuxImeBridge {
 
         *self.marked_text.lock().unwrap() = text.to_string();
         *self.cursor_pos.lock().unwrap() = cursor;
-
-        // Native IBus:  ibus_engine_update_preedit(text, cursor, visible)
-        //              ibus_engine_show_preedit()
     }
 
     /// Get the current marked (preedit) text, if any.
@@ -233,9 +239,6 @@ impl LinuxImeBridge {
         log::debug!("[Linux IME] discard_marked_text");
         *self.marked_text.lock().unwrap() = String::new();
         *self.cursor_pos.lock().unwrap() = 0;
-
-        // Native IBus:  ibus_engine_hide_preedit()
-        //              ibus_engine_reset()
     }
 
     /// Clear internal composition state (shared helper).
@@ -254,8 +257,6 @@ impl ImeBridge for LinuxImeBridge {
         *self.focused_widget.lock().unwrap() = Some(widget_id);
         *self.active.lock().unwrap() = true;
         log::info!("[Linux IME] focus_in: widget={widget_id}");
-
-        // Native IBus:  ibus_engine_focus_in()
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
@@ -263,17 +264,11 @@ impl ImeBridge for LinuxImeBridge {
         *self.active.lock().unwrap() = false;
         self.clear_composition();
         log::info!("[Linux IME] focus_out: widget={widget_id}");
-
-        // Native IBus:  ibus_engine_focus_out()
-        //              ibus_engine_hide_preedit()
     }
 
     fn commit_text(&self, text: &str) {
         log::info!("[Linux IME] commit_text: '{text}'");
         self.clear_composition();
-
-        // Native IBus:  ibus_engine_commit_text(text)
-        //              ibus_engine_hide_preedit()
     }
 
     fn set_composition(&self, composition: &ImeComposition) {
@@ -285,14 +280,10 @@ impl ImeBridge for LinuxImeBridge {
 
         *self.marked_text.lock().unwrap() = text.to_string();
         *self.cursor_pos.lock().unwrap() = cursor;
-
-        // Native IBus:  ibus_engine_update_preedit(text, cursor, true)
-        //              ibus_engine_show_preedit()
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
-        log::debug!("[Linux IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
-        // Native IBus:  ibus_engine_set_cursor_location(x, y, w, h)
+        log::debug!("[Linux IME] set_candidate_window_position: ({}, {})", position.x, position.y);
     }
 
     fn is_active(&self) -> bool {

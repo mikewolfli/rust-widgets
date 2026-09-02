@@ -816,6 +816,7 @@ impl WaylandPlatform {
     /// Intended to be called from an `EventLoop` native pump callback
     /// on each iteration so that Wayland protocol events are dispatched
     /// without a separate blocking `run()` loop.
+    #[cfg(not(feature = "mini"))]
     pub(crate) fn dispatch_native_events(&self) {
         let mut guard = self.native_session.lock().unwrap();
         if let Some(ref mut session) = *guard {

@@ -7,13 +7,13 @@
 //!
 //! | Type | Description |
 //! |------|-------------|
-//! | [`Signal<T>`] | Typed signal with an `Arc<T>` payload. Supports `connect`, `connect_once`, `disconnect`, `block`/`unblock`, and priority-based ordering. |
-//! | [`GenericSignal`] | Zero-argument signal (no payload). Equivalent to `Signal<()>` but optimized for the common case of "something happened". |
-//! | [`Signal1<T>`] | One-argument signal via `GenericSignal` + `Arc<T>` wrapping. |
-//! | [`ConnectionHandle`] | Opaque handle returned by `connect()`; used to `disconnect()` or `block()`/`unblock()` a specific slot. |
-//! | [`ConnectionScope`] | RAII scope that auto-disconnects all tracked slots on drop. Prevents dangling slots when the listener lifetime is bounded. |
-//! | [`Priority`] | Execution order: `High` → `Normal` (default) → `Low`. |
-//! | [`CustomSignalHub`] | Central hub for registering and firing named custom signals. |
+//! | `Signal<T>` | Typed signal with an `Arc<T>` payload. Supports `connect`, `connect_once`, `disconnect`, `block`/`unblock`, and priority-based ordering. |
+//! | `GenericSignal` | Zero-argument signal (no payload). Equivalent to `Signal<()>` but optimized for the common case of "something happened". |
+//! | `Signal1<T>` | One-argument signal via `GenericSignal` + `Arc<T>` wrapping. |
+//! | `ConnectionHandle` | Opaque handle returned by `connect()`; used to `disconnect()` or `block()`/`unblock()` a specific slot. |
+//! | `ConnectionScope` | RAII scope that auto-disconnects all tracked slots on drop. Prevents dangling slots when the listener lifetime is bounded. |
+//! | `Priority` | Execution order: `High` → `Normal` (default) → `Low`. |
+//! | `CustomSignalHub` | Central hub for registering and firing named custom signals. |
 //!
 //! # Performance
 //!

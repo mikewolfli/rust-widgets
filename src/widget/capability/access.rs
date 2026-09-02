@@ -37,13 +37,18 @@ use crate::widget::advanced_widgets::tab_bar::TabBar;
 use crate::widget::advanced_widgets::time_edit::Time;
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::advanced_widgets::time_edit::TimeEdit;
+#[cfg(not(feature = "mini"))]
 use crate::widget::base_widgets::button::Button;
+#[cfg(not(feature = "mini"))]
 use crate::widget::base_widgets::checkbox::CheckBox;
 use crate::widget::base_widgets::checkbox::CheckState;
+#[cfg(not(feature = "mini"))]
 use crate::widget::base_widgets::label::Label;
+#[cfg(not(feature = "mini"))]
 use crate::widget::base_widgets::radiobutton::RadioButton;
 #[cfg(not(feature = "mini"))]
 use crate::widget::base_widgets::toggle_button::{ToggleButton, ToggleButtonState};
+#[cfg(not(feature = "mini"))]
 use crate::widget::capability::coercion::*;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 #[cfg(not(feature = "mini"))]
@@ -58,18 +63,22 @@ use crate::widget::chart_widgets::sparkline::Sparkline;
 use crate::widget::container_widgets::collapsible_pane::CollapsiblePane;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::dockwidget::DockWidget;
+#[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::groupbox::GroupBox;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::mdiarea::MdiArea;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::pager_page_view::PagerPageView;
-use crate::widget::container_widgets::scrollarea::{ScrollArea, ScrollBarPolicy};
+#[cfg(not(feature = "mini"))]
+use crate::widget::container_widgets::scrollarea::ScrollArea;
+use crate::widget::container_widgets::scrollarea::ScrollBarPolicy;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::splitter::Splitter;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::stackedwidget::StackedWidget;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::tabwidget::TabWidget;
+#[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::tile_view::TileView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::container_widgets::toolbox::ToolBox;
@@ -89,34 +98,53 @@ use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::popup_window::PopupWindow;
 #[cfg(not(feature = "mini"))]
 use crate::widget::dialog::progress_dialog::ProgressDialog;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::arc::Arc;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::image_view::ImageView;
 #[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::lcd_number::{LCDNumber, LCDNumberMode, SegmentStyle};
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::line::{Line, LineOrientation};
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::meter::Meter;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::mini_chart::{ChartType, MiniChart};
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::progressbar::ProgressBar;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::roller::Roller;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::scrollbar::ScrollBar;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::spinner::Spinner;
+#[cfg(not(feature = "mini"))]
 use crate::widget::display_widgets::switch::Switch;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::combobox::ComboBox;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::command_link::CommandLink;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::dropdown::Dropdown;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::font_combo_box::FontComboBox;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::keyboard::{Keyboard, KeyboardLayout};
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::lineedit::LineEdit;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::search_bar::SearchBar;
 #[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::shortcut_editor::ShortcutEditor;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::spinbox::SpinBox;
+#[cfg(not(feature = "mini"))]
 use crate::widget::input_widgets::textarea::TextArea;
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 use crate::widget::media_widgets::animated_image::AnimatedImage;
@@ -194,13 +222,19 @@ use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
 #[cfg(not(feature = "mini"))]
 use crate::widget::web_widgets::web_view::WebView;
+#[cfg(not(feature = "mini"))]
 use crate::widget::window::Window;
 use crate::widget::{Widget, WidgetKind};
 
+#[cfg(not(feature = "mini"))]
 include!("access_read_base.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_read_view.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_read_container.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_read_dialog.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_read_menu.in.rs");
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_read_input.in.rs");
@@ -208,6 +242,7 @@ include!("access_read_input.in.rs");
 include!("access_read_advanced.in.rs");
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_read_media.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_read_other.in.rs");
 
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
@@ -255,17 +290,23 @@ pub fn read_widget_property_value(
     result
 }
 
+#[cfg(not(feature = "mini"))]
 include!("access_write_base.in.rs");
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_input.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_write_view.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_write_container.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_write_dialog.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_write_menu.in.rs");
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_advanced.in.rs");
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 include!("access_write_media.in.rs");
+#[cfg(not(feature = "mini"))]
 include!("access_write_other.in.rs");
 
 #[cfg(not(any(feature = "mini", feature = "embedded")))]

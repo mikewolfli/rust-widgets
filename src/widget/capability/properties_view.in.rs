@@ -3,6 +3,7 @@
 
 macro_rules! impl_properties_view {
     () => {
+        #[cfg(not(feature = "mini"))]
         pub(crate) const LIST_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -36,6 +37,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TREE_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -63,6 +65,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TABLE_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -96,6 +99,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const DATA_GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -171,6 +175,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TREE_TABLE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -210,6 +215,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const VIRTUAL_TABLE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -273,6 +279,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const VIRTUAL_LIST_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -335,6 +342,7 @@ macro_rules! impl_properties_view {
             writable: true,
         }];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const PROPERTY_GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "property_count",

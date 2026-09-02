@@ -1,6 +1,6 @@
 //! Video frame representation.
 
-use crate::image::format::{ImageData, ImageFormat, DecodedImage};
+use crate::image::format::{DecodedImage, ImageData, ImageFormat};
 
 /// Type of video frame in the compression sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,12 +11,15 @@ pub enum FrameType {
     PFrame,
     /// Bidirectionally predicted frame.
     BFrame,
+    /// Synthetic placeholder frame produced when decoding of the original
+    /// frame data failed. Lets callers distinguish a real decode from a
+    /// generated stand-in instead of silently treating the stand-in as a
+    /// successfully decoded frame.
+    Synthetic,
     /// Unknown frame type.
     #[default]
     Unknown,
 }
-
-
 
 /// A single video frame with timestamp and pixel data.
 #[derive(Debug, Clone)]
@@ -36,24 +39,18 @@ pub struct VideoFrame {
 impl VideoFrame {
     /// Create a new video frame.
     pub fn new(timestamp: f64, data: Vec<u8>, width: u32, height: u32) -> Self {
-        Self {
-            timestamp,
-            width,
-            height,
-            data,
-            frame_type: FrameType::Unknown,
-        }
+        Self { timestamp, width, height, data, frame_type: FrameType::Unknown }
     }
 
     /// Create a new video frame with frame type.
-    pub fn with_type(timestamp: f64, data: Vec<u8>, width: u32, height: u32, frame_type: FrameType) -> Self {
-        Self {
-            timestamp,
-            width,
-            height,
-            data,
-            frame_type,
-        }
+    pub fn with_type(
+        timestamp: f64,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        frame_type: FrameType,
+    ) -> Self {
+        Self { timestamp, width, height, data, frame_type }
     }
 
     /// Returns the number of pixels in this frame.

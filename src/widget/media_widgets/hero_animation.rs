@@ -6,7 +6,7 @@
 //! position, size, and opacity interpolation based on a progress value from
 //! 0.0 (source) to 1.0 (target).
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;

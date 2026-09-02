@@ -4,7 +4,7 @@
 //! a grid background, snap-to-grid support, and drag interaction. It can be used to design
 //! custom easing functions for animations.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

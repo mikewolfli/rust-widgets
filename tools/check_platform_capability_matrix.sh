@@ -63,12 +63,15 @@ WIDGET_KIND_FILE="src/widget/kind.rs"
 if [[ ! -f "$WIDGET_KIND_FILE" ]]; then
   error "WidgetKind source file not found: $WIDGET_KIND_FILE"
 else
-  # Extract enum variants: lines with leading whitespace followed by an
-  # identifier, optionally followed by a comment.
+  # Extract enum variants: lines with 4-space indent, an identifier, then a
+  # trailing comma (doc comments, `#[cfg]` attributes, and `cfg_attr(...)`
+  # continuations do not match).
   WIDGET_KINDS=()
   while IFS= read -r line; do
-    # Match lines like "    Window," or "    WebEngineView," (not doc comments)
-    if [[ "$line" =~ ^[[:space:]]{4}([A-Za-z][A-Za-z0-9]+) ]]; then
+    # Match lines like "    Window," or "    WebEngineView, // comment" — the
+    # comma must immediately follow the identifier, which excludes attribute
+    # lines such as "    all(feature = ...)" and "    derive(...)".
+    if [[ "$line" =~ ^[[:space:]]{4}([A-Za-z][A-Za-z0-9]*), ]]; then
       WIDGET_KINDS+=("${BASH_REMATCH[1]}")
     fi
   done < "$WIDGET_KIND_FILE"

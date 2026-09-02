@@ -4,7 +4,7 @@
 //! iOS 13+ large title nav bar), back button with arrow, and translucent
 //! background effect.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

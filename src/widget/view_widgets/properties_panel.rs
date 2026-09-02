@@ -5,7 +5,7 @@
 //! Supports filter text for search, editable values (text, number, bool, color,
 //! choice, file), and emits `property_changed` on edits.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

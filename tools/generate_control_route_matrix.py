@@ -77,6 +77,8 @@ KIND_METHOD_OVERRIDES: Dict[str, str] = {
     "FileDialog": "create_file_dialog",
     "ColorDialog": "create_color_dialog",
     "FontDialog": "create_font_dialog",
+    # Frame is a type alias for GroupBox — native creates it via create_group_box.
+    "Frame": "create_group_box",
     "InputDialog": "create_dialog",
     "ProgressDialog": "create_dialog",
     "PieMenu": "create_menu",
@@ -133,11 +135,13 @@ def parse_widget_kinds(kind_rs: pathlib.Path) -> List[str]:
 def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
     text = routing_rs.read_text(encoding="utf-8")
     fn_start = text.find("pub fn route_preference_for_widget_kind")
-    cfg_test = text.find("#[cfg(test)]")
-    if fn_start < 0 or cfg_test < 0 or cfg_test <= fn_start:
+    # The tests module may be gated (e.g. `#[cfg(all(test, not(feature = "mini")))]`)
+    # or plain (`#[cfg(test)]`), so anchor on the `mod tests` declaration itself.
+    tests_mod = text.find("mod tests", fn_start)
+    if fn_start < 0 or tests_mod < 0 or tests_mod <= fn_start:
         raise ValueError("Could not isolate route_preference_for_widget_kind body")
 
-    body = text[fn_start:cfg_test]
+    body = text[fn_start:tests_mod]
 
     result: Dict[str, str] = {}
     segment_re = re.compile(
@@ -228,8 +232,18 @@ def parse_native_delegates(native_rs: pathlib.Path) -> Tuple[Set[str], Dict[str,
 
 
 def parse_custom_methods(custom_rs: pathlib.Path) -> Set[str]:
-    text = custom_rs.read_text(encoding="utf-8")
-    return set(extract_method_bodies(text).keys())
+    # The custom backend's method bodies live in per-category include files
+    # (create_widgets_*.in.rs) that are expanded via `macro_rules!` inside
+    # `create_widgets.rs`. Scan the whole directory so grades reflect the
+    # real implementations instead of the empty macro-invocation shell.
+    methods: Set[str] = set()
+    files = [custom_rs, *sorted(custom_rs.parent.glob("create_widgets_*.in.rs"))]
+    for source in files:
+        if not source.exists():
+            continue
+        text = source.read_text(encoding="utf-8")
+        methods.update(extract_method_bodies(text).keys())
+    return methods
 
 
 def parse_trait_methods(trait_rs: pathlib.Path) -> Set[str]:
@@ -390,12 +404,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--custom",
-        default="src/control_backend/custom.rs",
+        default="src/control_backend/custom/create_widgets.rs",
         help="Path to custom backend source file",
     )
     parser.add_argument(
         "--trait",
-        default="src/control_backend/trait_def.rs",
+        default="src/control_backend/trait_def/trait_def.rs",
         help="Path to ControlBackend trait source file",
     )
     parser.add_argument(

@@ -1,7 +1,9 @@
 //! Embedded runtime state, task queue, and shared engine internals.
 
+#[cfg(not(feature = "mini"))]
 use crate::compat::Condvar;
 use crate::compat::HashMap;
+#[cfg(not(feature = "mini"))]
 use crate::compat::Instant;
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
@@ -9,6 +11,7 @@ use crate::compat::OnceLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(feature = "mini"))]
 use core::time::Duration;
 
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
@@ -19,6 +22,7 @@ fn clamp_embedded_target_fps(fps: u32) -> u32 {
     fps.clamp(MIN_EMBEDDED_TARGET_FPS, MAX_EMBEDDED_TARGET_FPS)
 }
 
+#[cfg(not(feature = "mini"))]
 fn frame_interval_for_fps(fps: u32) -> Duration {
     Duration::from_nanos(1_000_000_000 / fps as u64)
 }

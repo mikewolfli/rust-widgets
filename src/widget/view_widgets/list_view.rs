@@ -1,5 +1,5 @@
 //! List view widget.
-use crate::core::{HorizontalAlignment};
+use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};

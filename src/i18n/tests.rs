@@ -404,6 +404,7 @@ fn i18n_manager_check_and_reload() {
 
 #[test]
 fn i18n_global_init() {
+    let _lock = crate::i18n::global::global_i18n_test_lock();
     // Global init works (uses separate test to avoid state pollution)
     // Ensure global is reset by calling init()
     global::init();
@@ -445,6 +446,7 @@ fn i18n_global_init() {
 
 #[test]
 fn tr_macro_basic() {
+    let _lock = crate::i18n::global::global_i18n_test_lock();
     // tr! macro works through the global i18n system
     // Setup global with a known translation
     let dir = TempDir::new().unwrap();

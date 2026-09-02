@@ -222,6 +222,14 @@ impl LineEdit {
     pub fn clear(&mut self) {
         self.set_text(String::new());
     }
+    /// Copy the current selection to the platform clipboard (no-op when empty).
+    #[cfg(not(feature = "mini"))]
+    fn copy_selection_to_clipboard(&self) {
+        let selection = self.selected_text();
+        if !selection.is_empty() {
+            crate::set_clipboard_text(&selection);
+        }
+    }
     /// Returns display text based on echo mode.
     fn display_text(&self) -> String {
         match self.echo_mode {
@@ -256,6 +264,11 @@ impl EventHandler for LineEdit {
             return;
         }
         if self.read_only {
+            // Read-only fields still allow copying the current selection.
+            #[cfg(not(feature = "mini"))]
+            if let Event::KeyPress { key: 67, modifiers: 2 } = event {
+                self.copy_selection_to_clipboard();
+            }
             return;
         }
         match event {
@@ -331,18 +344,49 @@ impl EventHandler for LineEdit {
                         self.select_all();
                     }
                     86 if modifiers & 2 != 0 => {
-                        // Ctrl+V: Paste (would need clipboard integration)
-                        // For now, just emit signal
-                        self.base.redraw_requested.emit();
+                        // Ctrl+V: Paste from the platform clipboard.
+                        #[cfg(not(feature = "mini"))]
+                        {
+                            if !self.read_only {
+                                let pasted = crate::get_clipboard_text();
+                                if !pasted.is_empty() {
+                                    self.insert_text(&pasted);
+                                }
+                            }
+                        }
+                        #[cfg(feature = "mini")]
+                        {
+                            // Clipboard integration is unavailable in the mini profile.
+                            self.base.redraw_requested.emit();
+                        }
                     }
                     67 if modifiers & 2 != 0 => {
-                        // Ctrl+C: Copy (would need clipboard integration)
-                        // For now, just emit signal
+                        // Ctrl+C: Copy selection to the platform clipboard.
+                        #[cfg(not(feature = "mini"))]
+                        {
+                            self.copy_selection_to_clipboard();
+                        }
+                        #[cfg(feature = "mini")]
+                        {
+                            // Clipboard integration is unavailable in the mini profile.
+                            self.base.redraw_requested.emit();
+                        }
                     }
                     88 if modifiers & 2 != 0 => {
-                        // Ctrl+X: Cut (would need clipboard integration)
-                        // For now, just emit signal
-                        self.base.redraw_requested.emit();
+                        // Ctrl+X: Copy selection, then delete it.
+                        #[cfg(not(feature = "mini"))]
+                        {
+                            let selection = self.selected_text();
+                            if !selection.is_empty() {
+                                crate::set_clipboard_text(&selection);
+                                self.backspace(); // removes the selection
+                            }
+                        }
+                        #[cfg(feature = "mini")]
+                        {
+                            // Clipboard integration is unavailable in the mini profile.
+                            self.base.redraw_requested.emit();
+                        }
                     }
                     _ => {
                         // Character input
@@ -601,5 +645,39 @@ mod tests {
         let _text_changed = &le.text_changed;
         let _editing_finished = &le.editing_finished;
         let _return_pressed = &le.return_pressed;
+    }
+
+    #[cfg(not(feature = "mini"))]
+    #[test]
+    fn lineedit_clipboard_copy_paste_cut() {
+        use crate::event::Event::KeyPress;
+
+        let mut source = LineEdit::new(Rect::new(0, 0, 200, 24));
+        source.set_text("hello world");
+        source.select_all();
+        // Ctrl+C copies the selection to the platform clipboard.
+        source.handle_event(&KeyPress { key: 67, modifiers: 2 });
+        assert_eq!(crate::get_clipboard_text(), "hello world");
+
+        // Ctrl+V pastes into another field.
+        let mut target = LineEdit::new(Rect::new(0, 0, 200, 24));
+        target.handle_event(&KeyPress { key: 86, modifiers: 2 });
+        assert_eq!(target.text(), "hello world");
+
+        // Ctrl+X on a selected field copies then removes the selection.
+        source.select_all();
+        source.handle_event(&KeyPress { key: 88, modifiers: 2 });
+        assert_eq!(source.text(), "");
+        assert_eq!(crate::get_clipboard_text(), "hello world");
+
+        // Read-only fields still copy via Ctrl+C.
+        let mut read_only = LineEdit::new(Rect::new(0, 0, 200, 24));
+        read_only.set_text("secret");
+        read_only.set_read_only(true);
+        read_only.select_all();
+        read_only.handle_event(&KeyPress { key: 67, modifiers: 2 });
+        assert_eq!(crate::get_clipboard_text(), "secret");
+        // …but editing stays blocked.
+        assert_eq!(read_only.text(), "secret");
     }
 }

@@ -1,7 +1,7 @@
-#![cfg(not(feature = "mini"))]
+#![cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 
 use rust_widgets::core::Rect;
-use rust_widgets::widget::menu_toolbar::menu::MenuItem;
+use rust_widgets::widget::menu_toolbar::menu::MenuEntry;
 use rust_widgets::{BaseWidget, ListModel, ListView, Menu, MenuBar, RibbonBar, TableModel};
 use rust_widgets::{TableWidget, ToolBar, TreeModel, TreeView, Widget};
 use std::sync::Arc;
@@ -134,7 +134,7 @@ fn table_widget_query_api_covers_model_delegate_and_size_overrides() {
 #[test]
 fn menu_item_state_query_handles_normal_and_out_of_range() {
     let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
-    let mut checkable = MenuItem::new("Auto Save");
+    let mut checkable = MenuEntry::new("Auto Save");
     checkable.set_checkable(true);
     menu.add_item(checkable);
 

@@ -1,7 +1,11 @@
+#[cfg(not(feature = "mini"))]
 use crate::compat::Condvar;
+#[cfg(not(feature = "mini"))]
 use crate::compat::Instant;
+#[cfg(not(feature = "mini"))]
 use crate::compat::Mutex;
 use alloc::collections::VecDeque;
+#[cfg(not(feature = "mini"))]
 use core::time::Duration;
 /// Default capacity for fixed-size and bounded queues.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;

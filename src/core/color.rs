@@ -219,7 +219,7 @@ impl Color {
         ((self.r as u32) << 24) | ((self.g as u32) << 16) | ((self.b as u32) << 8) | self.a as u32
     }
     /// Unpacks channels from `0xRRGGBBAA`.
-    /// Use [`from_u32_rgba`] instead.
+    /// Use `from_u32_rgba` instead.
     #[deprecated(since = "0.7.0", note = "use `from_u32_rgba` instead")]
     pub const fn from_rgba_u32(value: u32) -> Self {
         Self::from_u32_rgba(value)

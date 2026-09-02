@@ -638,16 +638,19 @@ The `AdaptiveRenderer` dynamically adjusts quality to meet a frame budget:
 
 ```rust
 #[cfg(feature = "quality-management")]
-use rust_widgets::render::quality::{QualityLevel, set_quality_level, current_quality_level};
+use rust_widgets::render::{current_quality_level, set_quality_level, QualityLevel};
 
-// Manual quality control
-set_quality_level(QualityLevel::High);   // AA 8×, full effects
-set_quality_level(QualityLevel::Medium); // AA 4×, simplified shadows
-set_quality_level(QualityLevel::Low);    // AA 1×, no shadows
+// Manual quality control. Levels feed the frame-budget adapters (the
+// AdaptiveRenderer and the wgpu compose path). Per-axis AA sample counts are
+// configured separately via `set_render_aa_samples_per_axis`.
+set_quality_level(QualityLevel::High);
+set_quality_level(QualityLevel::Medium);
+set_quality_level(QualityLevel::Low);
 
 // Query current metrics
 let fps = current_fps();
 let frame_time = average_frame_time();
+```
 
 // Adaptive mode: auto-adjusts based on frame time
 // If frame_time > 16ms → reduce quality

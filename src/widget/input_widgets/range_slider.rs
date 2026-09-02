@@ -12,8 +12,7 @@ use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Orientation of the RangeSlider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RangeSliderOrientation {
     /// Horizontal slider (left-to-right).
     #[default]
@@ -21,7 +20,6 @@ pub enum RangeSliderOrientation {
     /// Vertical slider (bottom-to-top).
     Vertical,
 }
-
 
 /// A dual-handle range slider for selecting a min-max value range.
 ///

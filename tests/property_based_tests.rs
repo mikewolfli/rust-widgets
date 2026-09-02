@@ -5,6 +5,9 @@
 //!
 //! Run with: cargo test --test property_based_tests
 
+// proptest (and its rand/getrandom chain) cannot compile for wasm32.
+#![cfg(not(target_arch = "wasm32"))]
+
 use proptest::prelude::*;
 use rust_widgets::core::{Color, Point, Rect};
 

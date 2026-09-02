@@ -46,6 +46,9 @@ impl DragDropManager {
     pub fn poll_drop_event() -> Option<DropEvent> {
         None
     }
+    /// Start a drag operation from a source widget via an explicit platform.
+    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
     pub(crate) fn begin_drag_with(
         platform: &dyn Platform,
         source_widget_id: ObjectId,
@@ -54,9 +57,15 @@ impl DragDropManager {
     ) -> bool {
         platform.begin_drag(source_widget_id, mime, payload)
     }
+    /// Inject a drop event into the backend queue via an explicit platform.
+    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
     pub(crate) fn inject_drop_event_with(platform: &dyn Platform, event: DropEvent) -> bool {
         platform.inject_drop_event(event)
     }
+    /// Poll the next pending drop event via an explicit platform.
+    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
     pub(crate) fn poll_drop_event_with(platform: &dyn Platform) -> Option<DropEvent> {
         platform.poll_drop_event()
     }

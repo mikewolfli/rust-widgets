@@ -1,12 +1,12 @@
 //! Menu widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
-pub struct MenuItem {
+pub struct MenuEntry {
     text: String,
     shortcut: String,
     checkable: bool,
@@ -15,7 +15,7 @@ pub struct MenuItem {
     separator: bool,
     has_submenu: bool,
 }
-impl MenuItem {
+impl MenuEntry {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -99,7 +99,7 @@ impl MenuItem {
 pub struct Menu {
     base: BaseWidget,
     title: String,
-    items: Vec<MenuItem>,
+    items: Vec<MenuEntry>,
     hovered_index: Option<usize>,
     pub triggered: Signal1<String>,
     pub triggered_index: Signal1<usize>,
@@ -126,21 +126,21 @@ impl Menu {
         self.title = title;
         self.base.request_redraw();
     }
-    pub fn items(&self) -> &[MenuItem] {
+    pub fn items(&self) -> &[MenuEntry] {
         &self.items
     }
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
     }
-    pub fn add_item(&mut self, item: MenuItem) {
+    pub fn add_item(&mut self, item: MenuEntry) {
         self.items.push(item);
     }
     pub fn add_separator(&mut self) {
-        self.items.push(MenuItem::separator());
+        self.items.push(MenuEntry::separator());
     }
     pub fn add_action(&mut self, text: impl Into<String>) -> usize {
         let idx = self.items.len();
-        self.items.push(MenuItem::new(text));
+        self.items.push(MenuEntry::new(text));
         idx
     }
     pub fn add_action_with_shortcut(
@@ -149,7 +149,7 @@ impl Menu {
         shortcut: impl Into<String>,
     ) -> usize {
         let idx = self.items.len();
-        self.items.push(MenuItem::new(text).with_shortcut(shortcut));
+        self.items.push(MenuEntry::new(text).with_shortcut(shortcut));
         idx
     }
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {

@@ -271,6 +271,13 @@ impl WidgetFactory {
 
     /// Check whether a widget instance matches a given capability's concrete type.
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
+        #[cfg(feature = "mini")]
+        {
+            let _ = widget;
+            let _ = canonical_name;
+            return true;
+        }
+        #[cfg(not(feature = "mini"))]
         match canonical_name {
             #[cfg(not(feature = "mini"))]
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),

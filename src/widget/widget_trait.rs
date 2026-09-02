@@ -12,10 +12,19 @@ use std::any::Any;
 /// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
+    ///
+    /// Every concrete widget must override this method (all 167 kinds do). The
+    /// default panics instead of silently returning a fake state, so a widget
+    /// that forgets the override fails loudly on first use rather than corrupting
+    /// geometry/visibility bookkeeping.
+    #[track_caller]
     fn base(&self) -> &BaseWidget {
         panic!("Widget::base() not implemented — override in {}", std::any::type_name::<Self>());
     }
     /// Returns mutable base widget state for default trait delegation.
+    ///
+    /// See [`Widget::base`]; every concrete widget overrides this method.
+    #[track_caller]
     fn base_mut(&mut self) -> &mut BaseWidget {
         panic!(
             "Widget::base_mut() not implemented — override in {}",

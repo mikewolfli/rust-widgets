@@ -4,7 +4,7 @@
 //! under the line, and a line connecting data points with configurable stroke.
 //! Axis ranges can be set manually or auto-computed from the data.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};

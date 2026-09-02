@@ -5,7 +5,7 @@
 //! Warning, Error, etc.). Each icon is drawn using basic shapes — lines, circles,
 //! rectangles, and paths — through the render context.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};

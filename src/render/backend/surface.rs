@@ -176,6 +176,28 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
+    /// Draw a polyline/polygon path from a list of points.
+    ///
+    /// When `filled` is true the path is closed implicitly and filled with
+    /// `color`; otherwise it is stroked with `width` and closed only when
+    /// `closed` is true. Supported by the software (scanline fill) and
+    /// SVG backends.
+    pub fn draw_path(
+        &mut self,
+        points: &[Point],
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    ) {
+        self.backend.execute_command(&RenderCommand::DrawPath {
+            points: points.to_vec(),
+            closed,
+            color,
+            filled,
+            width,
+        });
+    }
     pub fn draw_text(
         &mut self,
         origin: Point,

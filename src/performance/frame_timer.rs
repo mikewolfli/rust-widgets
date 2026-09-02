@@ -1,6 +1,6 @@
+use crate::compat::Instant;
 use alloc::collections::VecDeque;
 use core::time::Duration;
-use crate::compat::Instant;
 
 /// Tracks frame timestamps and computes running average FPS and frame time
 /// over a configurable sliding window (default 60 frames).

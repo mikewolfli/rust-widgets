@@ -11,7 +11,12 @@ use crate::platform::Platform;
 fn platform_creates_and_runs() {
     let backend = LinuxPlatform::new();
     backend.init();
+    // Without `gtk-native` the backend is an honest state backend; with the
+    // feature enabled it reports the native GTK backend name.
+    #[cfg(feature = "gtk-native")]
     assert_eq!(backend.backend_name(), "gtk");
+    #[cfg(not(feature = "gtk-native"))]
+    assert_eq!(backend.backend_name(), "linux-state-backend");
 
     // Create a window and a few basic widgets.
     let window = backend.create_window("TestWindow", 50, 50, 400, 300);

@@ -5,7 +5,7 @@
 //! optional min/max date constraints. A `date_changed` signal is emitted
 //! whenever the selected date changes.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,9 +16,8 @@ const MONTH_NAMES: &[&str] =
 
 /// Pre-formatted day strings ("01" through "31") reused across draw calls.
 const DAY_STRINGS: &[&str] = &[
-    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
-    "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
-    "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
+    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16",
+    "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
 ];
 
 /// Returns the number of days in the given month, accounting for leap years.
@@ -263,7 +262,13 @@ impl Draw for CupertinoDatePicker {
                     Color::rgba(130, 130, 150, 210)
                 };
 
-                context.draw_text(Point::new(text_x, text_y), text, &font, text_color, HorizontalAlignment::Left);
+                context.draw_text(
+                    Point::new(text_x, text_y),
+                    text,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
             }
 
             // Up arrow indicator (top of column)

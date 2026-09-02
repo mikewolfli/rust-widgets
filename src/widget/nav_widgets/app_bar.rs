@@ -6,7 +6,7 @@
 //! action text on the right. It emits `back_pressed` when the back area is
 //! tapped and `action_pressed` when the action area is tapped.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -131,7 +131,13 @@ impl Draw for AppBar {
                 - (metrics.descent as i32 / 2);
             let back_color =
                 if is_enabled { Color::FOREGROUND } else { Color::DISABLED_FOREGROUND };
-            context.draw_text(Point::new(back_x, back_y), back_text, &back_font, back_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(back_x, back_y),
+                back_text,
+                &back_font,
+                back_color,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Centered title ──
@@ -157,7 +163,13 @@ impl Draw for AppBar {
 
             let title_color =
                 if is_enabled { Color::FOREGROUND } else { Color::DISABLED_FOREGROUND };
-            context.draw_text(Point::new(title_x, title_y), &self.title, &title_font, title_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(title_x, title_y),
+                &self.title,
+                &title_font,
+                title_color,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Action text (right side) ──

@@ -5,7 +5,7 @@
 //! a date range. The range between the two dates is visually highlighted.
 //! A `range_changed` signal is emitted whenever the selection changes.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -259,7 +259,13 @@ impl Draw for DateRangePicker {
 
         // Navigation arrows
         let nav_font = Font::new("sans-serif", 12.0, true, false);
-        context.draw_text(Point::new(rect.x + 8, rect.y + 16), "<", &nav_font, Color::DARK_GRAY, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(rect.x + 8, rect.y + 16),
+            "<",
+            &nav_font,
+            Color::DARK_GRAY,
+            HorizontalAlignment::Left,
+        );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 16, rect.y + 16),
             ">",
@@ -344,7 +350,13 @@ impl Draw for DateRangePicker {
             } else {
                 Color::DARK_GRAY
             };
-            context.draw_text(Point::new(day_x, day_y), &day_text, &day_font, day_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(day_x, day_y),
+                &day_text,
+                &day_font,
+                day_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

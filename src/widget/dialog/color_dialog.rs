@@ -1,5 +1,5 @@
 //! Color dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -169,8 +169,7 @@ impl Draw for ColorDialog {
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
         context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
-        context
-            .draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::rgb(0, 0, 0));
+        context.draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::rgb(0, 0, 0));
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
             &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),

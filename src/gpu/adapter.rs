@@ -41,6 +41,7 @@ impl GpuType {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })) {
                 Ok(a) => a,
                 Err(_) => return None,
@@ -317,6 +318,7 @@ impl AdapterSelector {
                         power_preference: wgpu::PowerPreference::HighPerformance,
                         compatible_surface,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                 {
@@ -337,6 +339,7 @@ impl AdapterSelector {
                                 power_preference: wgpu::PowerPreference::LowPower,
                                 compatible_surface,
                                 force_fallback_adapter: false,
+                                apply_limit_buckets: false,
                             })
                             .await
                         {
@@ -356,6 +359,7 @@ impl AdapterSelector {
                         power_preference: wgpu::PowerPreference::LowPower,
                         compatible_surface,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                     .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,
@@ -366,6 +370,7 @@ impl AdapterSelector {
                         power_preference: wgpu::PowerPreference::HighPerformance,
                         compatible_surface,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                     .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
@@ -380,6 +385,7 @@ impl AdapterSelector {
                         power_preference: wgpu::PowerPreference::LowPower,
                         compatible_surface,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                     .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
@@ -394,6 +400,7 @@ impl AdapterSelector {
                         power_preference: wgpu::PowerPreference::LowPower,
                         compatible_surface,
                         force_fallback_adapter: true,
+                        apply_limit_buckets: false,
                     })
                     .await
                     .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,

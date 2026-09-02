@@ -1,6 +1,36 @@
 //! Image format detection via magic bytes and decoding dispatch.
+//!
+//! # Decode support matrix
+//!
+//! Truthful decoder support (as of this revision):
+//!
+//! | Format | Decode status |
+//! |--------|---------------|
+//! | PNG    | Real decoder: 8/16-bit grayscale, RGB, palette (with tRNS) and RGBA, all scanline filters (None/Sub/Up/Average/Paeth). Interlaced (Adam7) PNG is rejected with an error. |
+//! | JPEG   | Real baseline decoder. |
+//! | BMP    | Real decoder (24/32-bit). |
+//! | PNM    | Real decoder for binary P5/P6. ASCII P1-P3 and bitmap P4 are not implemented. |
+//! | QOI    | Real decoder. |
+//! | Farbfeld | Real decoder. |
+//! | GIF    | Not implemented: `decode` returns `Err`. |
+//! | WebP   | Not implemented: `decode` returns `Err`. |
+//! | TIFF   | Not implemented: `decode` returns `Err`. |
+//! | AVIF   | Not implemented: `decode` returns `Err`. |
+//! | ICO    | Not implemented: `decode` returns `Err`. |
+//! | SVG/SVGZ | Not implemented (no rasterizer): `decode` returns `Err`. |
+//!
+//! Decoders never fabricate placeholder pixels: formats without a real codec
+//! return `Err` instead of silently producing an empty or grey image.
 
 use crate::image::format::{ColorSpace, DecodedImage, ImageData, ImageFormat};
+
+/// Error message used for formats whose decode codec is not implemented.
+///
+/// These formats are still detected from their magic bytes, but returning
+/// fabricated pixels would silently corrupt user data, so decoding refuses.
+fn not_implemented(format: &str) -> String {
+    format!("decoding {format} is not implemented (no codec); refusing to return fabricated pixels")
+}
 
 /// Detect image format from magic bytes (reads up to 16 bytes).
 pub fn detect_format(data: &[u8]) -> ImageFormat {
@@ -116,197 +146,302 @@ pub fn decode_to_rgba8(data: &[u8]) -> Result<DecodedImage, String> {
 
 // ── PNG Decoder ──────────────────────────────────────────────────────────────
 
+/// PNG Paeth predictor used by filter type 4.
+fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
+    let a = a as i32;
+    let b = b as i32;
+    let c = c as i32;
+    let p = a + b - c;
+    let pa = (p - a).abs();
+    let pb = (p - b).abs();
+    let pc = (p - c).abs();
+    if pa <= pb && pa <= pc {
+        a as u8
+    } else if pb <= pc {
+        b as u8
+    } else {
+        c as u8
+    }
+}
+
 fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
-    if data.len() < 33 || &data[0..8] != b"\x89PNG\r\n\x1a\n" {
+    const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < PNG_SIGNATURE.len() + 12 || !data.starts_with(PNG_SIGNATURE) {
         return Err("Invalid PNG signature".into());
     }
-    let mut pos = 8;
+
+    let mut pos = 8usize;
     let mut width = 0u32;
     let mut height = 0u32;
-    let mut bit_depth = 8u8;
+    let mut bit_depth = 0u8;
     let mut color_type = 0u8;
-    let mut raw_data: Option<Vec<u8>> = None;
+    let mut have_ihdr = false;
+    let mut saw_idat = false;
+    let mut raw_data: Vec<u8> = Vec::new();
     let mut palette: Vec<[u8; 4]> = Vec::new();
+    let mut trns: Option<Vec<u8>> = None;
 
-    while pos + 8 <= data.len() {
+    while pos < data.len() {
+        if data.len() - pos < 12 {
+            return Err("PNG chunk header truncated".into());
+        }
         let chunk_len =
             u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        let chunk_type = &data[pos + 4..pos + 8];
-        if chunk_type == b"IHDR" && pos + 8 + 13 <= data.len() {
-            width =
-                u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
-            height = u32::from_be_bytes([
-                data[pos + 12],
-                data[pos + 13],
-                data[pos + 14],
-                data[pos + 15],
-            ]);
-            bit_depth = data[pos + 16];
-            color_type = data[pos + 17];
-            if width == 0 || height == 0 {
-                return Err("Invalid PNG dimensions".into());
-            }
-        } else if chunk_type == b"PLTE" && chunk_len.is_multiple_of(3) {
-            palette.clear();
-            for i in 0..chunk_len / 3 {
-                let off = pos + 8 + i * 3;
-                palette.push([data[off], data[off + 1], data[off + 2], 255]);
-            }
-        } else if chunk_type == b"IDAT" {
-            let chunk_data = &data[pos + 8..pos + 8 + chunk_len];
-            match &mut raw_data {
-                Some(ref mut buf) => buf.extend_from_slice(chunk_data),
-                None => raw_data = Some(chunk_data.to_vec()),
-            }
-        } else if chunk_type == b"IEND" {
-            break;
+        let chunk_type = [data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]];
+        let body = pos + 8;
+        // Bounds-check the declared chunk length before touching the body.
+        if chunk_len > data.len().saturating_sub(body) {
+            return Err(format!(
+                "PNG chunk {chunk_type:?} declares {chunk_len} bytes but only {} remain",
+                data.len().saturating_sub(body)
+            ));
         }
-        pos += 12 + chunk_len;
+        match &chunk_type {
+            b"IHDR" => {
+                if chunk_len != 13 {
+                    return Err("Invalid IHDR chunk length".into());
+                }
+                width = u32::from_be_bytes([
+                    data[body],
+                    data[body + 1],
+                    data[body + 2],
+                    data[body + 3],
+                ]);
+                height = u32::from_be_bytes([
+                    data[body + 4],
+                    data[body + 5],
+                    data[body + 6],
+                    data[body + 7],
+                ]);
+                bit_depth = data[body + 8];
+                color_type = data[body + 9];
+                let interlace = data[body + 12];
+                have_ihdr = true;
+                if width == 0 || height == 0 {
+                    return Err("Invalid PNG dimensions".into());
+                }
+                if interlace != 0 {
+                    return Err("Interlaced PNG (Adam7) is not supported".into());
+                }
+            }
+            b"PLTE" => {
+                if chunk_len == 0 || !chunk_len.is_multiple_of(3) || chunk_len > 256 * 3 {
+                    return Err("Invalid PLTE chunk length".into());
+                }
+                palette.clear();
+                for i in 0..chunk_len / 3 {
+                    let off = body + i * 3;
+                    palette.push([data[off], data[off + 1], data[off + 2], 255]);
+                }
+            }
+            b"tRNS" => {
+                trns = Some(data[body..body + chunk_len].to_vec());
+            }
+            b"IDAT" => {
+                saw_idat = true;
+                raw_data.extend_from_slice(&data[body..body + chunk_len]);
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        // Skip past the chunk body and its 4-byte CRC.
+        pos = body + chunk_len + 4;
     }
 
-    let compressed = raw_data.ok_or("No IDAT chunks found")?;
-    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed)
+    if !have_ihdr {
+        return Err("Missing IHDR chunk".into());
+    }
+    if !saw_idat {
+        return Err("No IDAT chunks found".into());
+    }
+
+    let channels = match color_type {
+        0 => 1, // Grayscale
+        2 => 3, // RGB
+        3 => 1, // Indexed (palette)
+        4 => 2, // Grayscale + alpha
+        6 => 4, // RGBA
+        _ => return Err(format!("Unsupported PNG color type: {color_type}")),
+    };
+    // Valid bit depth / color type combinations from the PNG specification.
+    let depth_ok = match color_type {
+        0 => matches!(bit_depth, 1 | 2 | 4 | 8 | 16),
+        2 => matches!(bit_depth, 8 | 16),
+        3 => matches!(bit_depth, 1 | 2 | 4 | 8),
+        4 => matches!(bit_depth, 8 | 16),
+        6 => matches!(bit_depth, 8 | 16),
+        _ => false,
+    };
+    if !depth_ok {
+        return Err(format!("Unsupported PNG bit depth {bit_depth} for color type {color_type}"));
+    }
+    if color_type == 3 && palette.is_empty() {
+        return Err("Indexed PNG is missing a PLTE chunk".into());
+    }
+
+    // Guard against absurd allocations from a hostile header (512 MB of RGBA
+    // at the cap below is already far beyond realistic embedded images).
+    let pixel_count = width as u64 * height as u64;
+    if pixel_count > (1u64 << 27) {
+        return Err(format!("PNG dimensions too large: {width}x{height}"));
+    }
+
+    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&raw_data)
         .map_err(|e| format!("PNG decompress error: {e:?}"))?;
 
-    let row_len_raw = (width as usize
-        * bit_depth as usize
-        * if color_type == 0 || color_type == 3 {
-            1
-        } else if color_type == 4 {
-            2
-        } else {
-            3
-        })
-    .div_ceil(8);
-    let stride = 1 + row_len_raw; // filter byte + data
+    let bits_per_pixel = channels * bit_depth as usize;
+    let row_bytes = (width as usize * bits_per_pixel).div_ceil(8);
+    let stride = row_bytes + 1; // filter byte + row data
+    let expected = stride.checked_mul(height as usize).ok_or("PNG scanline size overflow")?;
+    if decompressed.len() < expected {
+        return Err(format!(
+            "PNG scanline data truncated: need {expected} bytes, got {}",
+            decompressed.len()
+        ));
+    }
+    // bpp used by the Sub/Average/Paeth filters: bytes per complete pixel,
+    // rounded up to at least 1 (PNG spec section 6.1).
+    let bpp = (bits_per_pixel).div_ceil(8).max(1);
 
-    // Determine output format and reconstruct
-    let row_count = decompressed.len() / stride;
-    // If exact division fails, use height or decompressed.len()
-    let actual_height =
-        if row_count == height as usize { height } else { (decompressed.len() / stride) as u32 };
-    let output_height = actual_height.min(height);
+    // Reconstruct scanlines by undoing the per-row PNG filters
+    // (0=None, 1=Sub, 2=Up, 3=Average, 4=Paeth).
+    let unfiltered_len = row_bytes * height as usize;
+    let mut unfiltered = vec![0u8; unfiltered_len];
+    let mut prev_row = vec![0u8; row_bytes];
+    for y in 0..height as usize {
+        let row_start = y * stride;
+        let filter = decompressed[row_start];
+        let row = &decompressed[row_start + 1..row_start + stride];
+        let out_start = y * row_bytes;
+        for x in 0..row_bytes {
+            let raw_byte = row[x];
+            let left = if x >= bpp { unfiltered[out_start + x - bpp] } else { 0 };
+            let up = prev_row[x];
+            let up_left = if x >= bpp { prev_row[x - bpp] } else { 0 };
+            unfiltered[out_start + x] = match filter {
+                0 => raw_byte,                                                     // None
+                1 => raw_byte.wrapping_add(left),                                  // Sub
+                2 => raw_byte.wrapping_add(up),                                    // Up
+                3 => raw_byte.wrapping_add(((left as u16 + up as u16) / 2) as u8), // Average
+                4 => raw_byte.wrapping_add(paeth_predictor(left, up, up_left)),    // Paeth
+                _ => return Err(format!("Invalid PNG filter type {filter} at row {y}")),
+            };
+        }
+        prev_row.copy_from_slice(&unfiltered[out_start..out_start + row_bytes]);
+    }
 
-    let out = match color_type {
-        0 => {
-            // Grayscale
-            let mut pixels = Vec::with_capacity(width as usize * output_height as usize);
-            for r in 0..output_height as usize {
-                let off = r * stride;
-                for x in 0..width as usize {
-                    let val = if bit_depth == 16 {
-                        let idx = off + 1 + x * 2;
-                        if idx + 1 < decompressed.len() {
-                            ((decompressed[idx] as u16) << 8 | decompressed[idx + 1] as u16 >> 8)
-                                as u8
-                        } else {
-                            0
-                        }
-                    } else if bit_depth <= 8 {
-                        let bits = bit_depth as usize;
-                        let idx = off + 1 + (x * bits / 8);
-                        if idx < decompressed.len() {
-                            let byte = decompressed[idx];
-                            let shift = 8 - bits - (x % (8 / bits)) * bits;
-                            let val = (byte >> shift) & ((1 << bits) - 1);
-                            (val * 255 / ((1 << bits) - 1)) as u8
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    pixels.push(val);
-                }
-            }
-            (ImageData::Grayscale8(pixels), 1)
-        }
-        2 => {
-            // RGB
-            let bpp = (bit_depth as usize / 8).max(1) * 3;
-            let mut pixels = Vec::with_capacity(width as usize * output_height as usize * 3);
-            for r in 0..output_height as usize {
-                let off = r * stride;
-                for x in 0..width as usize {
-                    let idx = off + 1 + x * bpp;
-                    let r_val = if idx < decompressed.len() { decompressed[idx] } else { 0 };
-                    let g_val =
-                        if idx + 1 < decompressed.len() { decompressed[idx + 1] } else { 0 };
-                    let b_val =
-                        if idx + 2 < decompressed.len() { decompressed[idx + 2] } else { 0 };
-                    pixels.push(r_val);
-                    pixels.push(g_val);
-                    pixels.push(b_val);
-                }
-            }
-            (ImageData::Rgb8(pixels), 3)
-        }
-        3 => {
-            // Indexed (palette)
-            let mut pixels = Vec::with_capacity(width as usize * output_height as usize * 4);
-            for r in 0..output_height as usize {
-                let off = r * stride;
-                for x in 0..width as usize {
-                    let idx = if bit_depth == 8 {
-                        off + 1 + x
-                    } else {
-                        let bits = bit_depth as usize;
-                        let byte_idx = off + 1 + (x * bits / 8);
-                        let shift = 8 - bits - (x % (8 / bits)) * bits;
-                        ((decompressed.get(byte_idx).copied().unwrap_or(0) >> shift)
-                            & ((1 << bits) - 1)) as usize
-                    };
-                    if idx < palette.len() {
-                        let p = palette[idx];
-                        pixels.extend_from_slice(&p);
-                    } else {
-                        pixels.extend_from_slice(&[0, 0, 0, 255]);
+    // Apply palette transparency (tRNS overrides the alpha of palette entries).
+    if let Some(t) = &trns {
+        match color_type {
+            3 => {
+                for (i, a) in t.iter().enumerate() {
+                    if let Some(p) = palette.get_mut(i) {
+                        p[3] = *a;
                     }
                 }
             }
-            (ImageData::Rgba8(pixels), 4)
+            0 | 2 => {
+                return Err("PNG tRNS for grayscale/truecolor images is not supported".into());
+            }
+            _ => {}
+        }
+    }
+
+    let w = width as usize;
+    let h = height as usize;
+    // 16-bit samples keep the high byte (equivalent to `(a << 8 | b) >> 8`).
+    let bpc = if bit_depth == 16 { 2usize } else { 1usize };
+
+    let out = match color_type {
+        0 => {
+            // Grayscale.
+            let mut pixels = Vec::with_capacity(w * h);
+            for y in 0..h {
+                let row = &unfiltered[y * row_bytes..(y + 1) * row_bytes];
+                for x in 0..w {
+                    let v = if bit_depth == 16 {
+                        row[x * 2]
+                    } else if bit_depth == 8 {
+                        row[x]
+                    } else {
+                        // 1/2/4-bit packed grayscale, scaled to 0..=255.
+                        let pbb = 8 / bit_depth as usize;
+                        let shift = 8 - bit_depth as usize - (x % pbb) * bit_depth as usize;
+                        let v = (row[x / pbb] >> shift) & ((1u8 << bit_depth) - 1);
+                        (v as u16 * 255 / ((1u16 << bit_depth) - 1)) as u8
+                    };
+                    pixels.push(v);
+                }
+            }
+            ImageData::Grayscale8(pixels)
+        }
+        2 => {
+            // RGB.
+            let mut pixels = Vec::with_capacity(w * h * 3);
+            for y in 0..h {
+                let row = &unfiltered[y * row_bytes..(y + 1) * row_bytes];
+                for x in 0..w {
+                    let base = x * 3 * bpc;
+                    pixels.push(row[base]);
+                    pixels.push(row[base + bpc]);
+                    pixels.push(row[base + 2 * bpc]);
+                }
+            }
+            ImageData::Rgb8(pixels)
+        }
+        3 => {
+            // Indexed (palette).
+            let mut pixels = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                let row = &unfiltered[y * row_bytes..(y + 1) * row_bytes];
+                for x in 0..w {
+                    let idx = if bit_depth == 8 {
+                        row[x] as usize
+                    } else {
+                        let pbb = 8 / bit_depth as usize;
+                        let shift = 8 - bit_depth as usize - (x % pbb) * bit_depth as usize;
+                        ((row[x / pbb] >> shift) & ((1u8 << bit_depth) - 1)) as usize
+                    };
+                    let p = palette.get(idx).copied().unwrap_or([0, 0, 0, 255]);
+                    pixels.extend_from_slice(&p);
+                }
+            }
+            ImageData::Rgba8(pixels)
         }
         4 => {
-            // Grayscale + Alpha
-            let mut pixels = Vec::with_capacity(width as usize * output_height as usize * 4);
-            for r in 0..output_height as usize {
-                let off = r * stride;
-                for x in 0..width as usize {
-                    let idx = off + 1 + x * 2;
-                    let g = decompressed.get(idx).copied().unwrap_or(0);
-                    let a = decompressed.get(idx + 1).copied().unwrap_or(255);
-                    pixels.push(g);
-                    pixels.push(g);
-                    pixels.push(g);
-                    pixels.push(a);
+            // Grayscale + alpha.
+            let mut pixels = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                let row = &unfiltered[y * row_bytes..(y + 1) * row_bytes];
+                for x in 0..w {
+                    let base = x * 2 * bpc;
+                    let g = row[base];
+                    let a = row[base + bpc];
+                    pixels.extend_from_slice(&[g, g, g, a]);
                 }
             }
-            (ImageData::Rgba8(pixels), 4)
+            ImageData::Rgba8(pixels)
         }
-        6 => {
-            // RGBA
-            let bpp = (bit_depth as usize / 8).max(1) * 4;
-            let mut pixels = Vec::with_capacity(width as usize * output_height as usize * 4);
-            for r in 0..output_height as usize {
-                let off = r * stride;
-                for x in 0..width as usize {
-                    let idx = off + 1 + x * bpp;
-                    let r_val = decompressed.get(idx).copied().unwrap_or(0);
-                    let g_val = decompressed.get(idx + 1).copied().unwrap_or(0);
-                    let b_val = decompressed.get(idx + 2).copied().unwrap_or(0);
-                    let a_val = decompressed.get(idx + 3).copied().unwrap_or(255);
-                    pixels.push(r_val);
-                    pixels.push(g_val);
-                    pixels.push(b_val);
-                    pixels.push(a_val);
+        _ => {
+            // RGBA.
+            let mut pixels = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                let row = &unfiltered[y * row_bytes..(y + 1) * row_bytes];
+                for x in 0..w {
+                    let base = x * 4 * bpc;
+                    pixels.extend_from_slice(&[
+                        row[base],
+                        row[base + bpc],
+                        row[base + 2 * bpc],
+                        row[base + 3 * bpc],
+                    ]);
                 }
             }
-            (ImageData::Rgba8(pixels), 4)
+            ImageData::Rgba8(pixels)
         }
-        _ => return Err(format!("Unsupported PNG color type: {color_type}")),
     };
 
-    Ok(DecodedImage::new(ImageFormat::Png, out.0, width, output_height))
+    Ok(DecodedImage::new(ImageFormat::Png, out, width, height))
 }
 
 // ── JPEG Decoder ─────────────────────────────────────────────────────────────
@@ -852,186 +987,57 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
 // ── GIF Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_gif(data: &[u8]) -> Result<DecodedImage, String> {
-    // Minimal GIF decoder - parse header and first frame
-    if data.len() < 14 || &data[0..3] != b"GIF" {
-        return Err("Invalid GIF signature format".into());
+    // GIF decoding needs LZW decompression plus frame/extension parsing. That
+    // codec is not implemented, so refuse instead of fabricating pixels.
+    if data.len() < 6 || !(data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) {
+        return Err("Invalid GIF signature".into());
     }
-    let width = u16::from_le_bytes([data[6], data[7]]) as u32;
-    let height = u16::from_le_bytes([data[8], data[9]]) as u32;
-    if width == 0 || height == 0 {
-        return Err("Invalid GIF dimensions detected".into());
-    }
-
-    let packed = data[10];
-    let gct_size = if packed & 0x80 != 0 { 1 << ((packed & 0x07) + 1) } else { 0 };
-    let gct_offset = 13;
-
-    // Read global color table
-    let mut global_palette: Vec<[u8; 4]> = Vec::new();
-    for i in 0..gct_size {
-        let off = gct_offset + i * 3;
-        if off + 2 < data.len() {
-            global_palette.push([data[off], data[off + 1], data[off + 2], 255]);
-        }
-    }
-
-    // Use global palette or fallback grayscale
-    let size = (width * height) as usize;
-    let pixels = if !global_palette.is_empty() {
-        let mut px = Vec::with_capacity(size * 4);
-        for i in 0..size.min(data.len().saturating_sub(gct_offset + gct_size * 3)) {
-            let idx = (data.get(gct_offset + gct_size * 3 + i).copied().unwrap_or(0)) as usize;
-            let color =
-                global_palette.get(idx % global_palette.len()).copied().unwrap_or([0, 0, 0, 255]);
-            px.extend_from_slice(&color);
-        }
-        px
-    } else {
-        vec![0u8; size * 4]
-    };
-
-    let mut img = DecodedImage::new(ImageFormat::Gif, ImageData::Rgba8(pixels), width, height);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    Err(not_implemented("GIF"))
 }
 
 // ── WebP Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_webp(data: &[u8]) -> Result<DecodedImage, String> {
-    if data.len() < 20 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
-        return Err("Invalid WebP signature format".into());
+    // Real WebP decoding needs a VP8/VP8L entropy decoder, which is not
+    // implemented. Refuse instead of returning grey placeholder pixels.
+    if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
+        return Err("Invalid WebP signature".into());
     }
-    let chunk_type = &data[12..16];
-    let (width, height) = if chunk_type == b"VP8 " {
-        // VP8 lossy: frame header at byte 20
-        if data.len() < 26 {
-            return Err("WebP VP8 data truncated error".into());
-        }
-        let raw = u32::from_le_bytes([data[23], data[24], data[25], data[26]]);
-        let w = raw & 0x3FFF;
-        let h = (raw >> 14) & 0x3FFF;
-        (w.max(1), h.max(1))
-    } else if chunk_type == b"VP8L" {
-        // VP8L lossless: header at byte 21
-        if data.len() < 25 {
-            return Err("WebP VP8L data truncated error".into());
-        }
-        let raw = u32::from_le_bytes([data[21], data[22], data[23], data[24]]);
-        let w = (raw & 0x3FFF) + 1;
-        let h = ((raw >> 14) & 0x3FFF) + 1;
-        (w, h)
-    } else {
-        return Err(format!("Unsupported WebP chunk type: {chunk_type:?}"));
-    };
-
-    let pixels = vec![128u8; width as usize * height as usize * 4];
-    let mut img = DecodedImage::new(ImageFormat::WebP, ImageData::Rgba8(pixels), width, height);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    Err(not_implemented("WebP"))
 }
 
 // ── TIFF Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_tiff(data: &[u8]) -> Result<DecodedImage, String> {
-    if data.len() < 8 {
-        return Err("Invalid TIFF data format".into());
+    // Only the header is validated; a real TIFF decoder (IFD strip/byte
+    // unpacking, compression schemes) is not implemented.
+    let valid_le = data.len() >= 4 && &data[0..4] == b"II\x2a\x00";
+    let valid_be = data.len() >= 4 && &data[0..4] == b"MM\x00\x2a";
+    if !valid_le && !valid_be {
+        return Err("Invalid TIFF signature".into());
     }
-    let little_endian =
-        data.len() >= 4 && &data[0..2] == b"II" && data[2] == 0x2a && data[3] == 0x00;
-    let big_endian = data.len() >= 8 && &data[4..6] == b"MM" && data[6] == 0x00 && data[7] == 0x2a;
-    if !little_endian && !big_endian {
-        // Maybe header at offset 0
-    }
-    let ifd_offset = if little_endian {
-        u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize
-    } else {
-        u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize
-    };
-
-    // Parse IFD for basic dimensions
-    let mut width = 0u32;
-    let mut height = 0u32;
-    if ifd_offset + 2 <= data.len() {
-        let num_entries = if little_endian {
-            u16::from_le_bytes([data[ifd_offset], data[ifd_offset + 1]])
-        } else {
-            u16::from_be_bytes([data[ifd_offset], data[ifd_offset + 1]])
-        };
-        for i in 0..num_entries {
-            let entry_off = ifd_offset + 2 + i as usize * 12;
-            if entry_off + 12 > data.len() {
-                break;
-            }
-            let tag = if little_endian {
-                u16::from_le_bytes([data[entry_off], data[entry_off + 1]])
-            } else {
-                u16::from_be_bytes([data[entry_off], data[entry_off + 1]])
-            };
-            let value = if little_endian {
-                u32::from_le_bytes([
-                    data[entry_off + 8],
-                    data[entry_off + 9],
-                    data[entry_off + 10],
-                    data[entry_off + 11],
-                ])
-            } else {
-                u32::from_be_bytes([
-                    data[entry_off + 8],
-                    data[entry_off + 9],
-                    data[entry_off + 10],
-                    data[entry_off + 11],
-                ])
-            };
-            match tag {
-                256 => width = value,
-                257 => height = value,
-                _ => {}
-            }
-        }
-    }
-    if width == 0 || height == 0 {
-        width = 100;
-        height = 100;
-    }
-    let pixels = vec![0u8; width as usize * height as usize * 4];
-    let mut img = DecodedImage::new(ImageFormat::Tiff, ImageData::Rgba8(pixels), width, height);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    Err(not_implemented("TIFF"))
 }
 
 // ── AVIF Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_avif(data: &[u8]) -> Result<DecodedImage, String> {
-    if data.len() < 12 {
+    // AVIF decoding requires an AV1 decoder (e.g. dav1d); not implemented.
+    if data.len() < 12 || &data[4..8] != b"ftyp" {
         return Err("Invalid AVIF data".into());
     }
-    let _ = data; // AVIF decode requires dav1d or dav1d-rs
-                  // Minimal: return default
-    let mut img = DecodedImage::new(ImageFormat::Avif, ImageData::Rgba8(vec![0; 4]), 1, 1);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    Err(not_implemented("AVIF"))
 }
 
 // ── ICO Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_ico(data: &[u8]) -> Result<DecodedImage, String> {
+    // ICO files embed PNG or BMP-encoded images per directory entry; the
+    // embedded-image codec is not implemented.
     if data.len() < 6 || data[0] != 0 || data[1] != 0 || data[2] != 1 || data[3] != 0 {
         return Err("Invalid ICO signature".into());
     }
-    let count = u16::from_le_bytes([data[4], data[5]]) as usize;
-    if count == 0 || data.len() < 6 + count * 16 {
-        return Err("No ICO entries".into());
-    }
-    // Use first entry
-    let entry_off = 6;
-    let _w = data[entry_off] as u32;
-    let _h = data[entry_off + 1] as u32;
-    let width = if _w == 0 { 256u32 } else { _w };
-    let height = if _h == 0 { 256u32 } else { _h };
-    let pixels = vec![0u8; width as usize * height as usize * 4];
-    let mut img = DecodedImage::new(ImageFormat::Ico, ImageData::Rgba8(pixels), width, height);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    Err(not_implemented("ICO"))
 }
 
 // ── PNM Decoder ──────────────────────────────────────────────────────────────
@@ -1105,10 +1111,13 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         img.color_space = ColorSpace::Srgb;
         Ok(img)
     } else {
-        let pixels = vec![0u8; w as usize * h as usize * 3];
-        let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
-        img.color_space = ColorSpace::Srgb;
-        Ok(img)
+        // P1 (ASCII bitmap), P2 (ASCII grayscale), P3 (ASCII RGB) and
+        // P4 (binary bitmap) parsers are not implemented; refusing to return
+        // fabricated black pixels for them.
+        Err(format!(
+            "PNM P{} decoding is not implemented (no codec); refusing to return fabricated pixels",
+            format_type as char
+        ))
     }
 }
 
@@ -1204,7 +1213,15 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
         index[hash] = [r, g, b, a];
     }
 
-    // Truncate to exact size
+    // A hostile or truncated stream must not yield a short "image": report it.
+    if pixels.len() < total * 4 {
+        return Err(format!(
+            "QOI data truncated: got {} bytes of pixels, need {}",
+            pixels.len(),
+            total * 4
+        ));
+    }
+    // Truncate in case a malicious QOI_OP_RUN overran the declared size.
     pixels.truncate(total * 4);
     let mut img = DecodedImage::new(ImageFormat::Qoi, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
@@ -1223,20 +1240,21 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
         return Err("Invalid Farbfeld dimensions".into());
     }
     let total = (width * height) as usize;
+    let required = 16 + total * 8;
+    if data.len() < required {
+        return Err(format!("Farbfeld data truncated: need {required} bytes, got {}", data.len()));
+    }
     let mut pixels = Vec::with_capacity(total * 4);
-    let start = 16;
     for i in 0..total {
-        let off = start + i * 8;
-        if off + 7 < data.len() {
-            let r = (u16::from_be_bytes([data[off], data[off + 1]]) >> 8) as u8;
-            let g = (u16::from_be_bytes([data[off + 2], data[off + 3]]) >> 8) as u8;
-            let b = (u16::from_be_bytes([data[off + 4], data[off + 5]]) >> 8) as u8;
-            let a = (u16::from_be_bytes([data[off + 6], data[off + 7]]) >> 8) as u8;
-            pixels.push(r);
-            pixels.push(g);
-            pixels.push(b);
-            pixels.push(a);
-        }
+        let off = 16 + i * 8;
+        let r = (u16::from_be_bytes([data[off], data[off + 1]]) >> 8) as u8;
+        let g = (u16::from_be_bytes([data[off + 2], data[off + 3]]) >> 8) as u8;
+        let b = (u16::from_be_bytes([data[off + 4], data[off + 5]]) >> 8) as u8;
+        let a = (u16::from_be_bytes([data[off + 6], data[off + 7]]) >> 8) as u8;
+        pixels.push(r);
+        pixels.push(g);
+        pixels.push(b);
+        pixels.push(a);
     }
     let mut img = DecodedImage::new(ImageFormat::Farbfeld, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
@@ -1246,72 +1264,17 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 // ── SVG Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
-    let s = std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in SVG".to_string())?;
-    let s = if let Some(xml) = s.trim().strip_prefix("<?xml") {
-        // Find root element
-        let end = xml.find("?>").map(|i| i + 2).unwrap_or(0);
-        &xml[end..]
-    } else {
-        s.trim()
-    };
-
-    // Extract width and height from <svg> tag
-    let svg_tag = if let Some(start) = s.find("<svg") {
-        let end = s[start..].find('>').map(|i| start + i + 1).unwrap_or(s.len());
-        &s[start..end.min(s.len())]
-    } else {
-        return Err("No <svg> tag found".into());
-    };
-
-    let parse_attr = |attr: &str| -> Option<f32> {
-        let lower = svg_tag.to_lowercase();
-        if let Some(pos) = lower.find(attr) {
-            let rest = &lower[pos + attr.len()..];
-            let num_str: String =
-                rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
-            num_str.parse::<f32>().ok()
-        } else {
-            None
-        }
-    };
-
-    let w = parse_attr("width=\"").unwrap_or(100.0);
-    let h = parse_attr("height=\"").unwrap_or(100.0);
-
-    // Also check viewBox
-    let (vw, vh) = if let Some(vb) = svg_tag.to_lowercase().find("viewbox=\"") {
-        let rest = &svg_tag[vb + 9..];
-        let nums: Vec<f32> = rest
-            .split(|c: char| [' ', ',', '"'].contains(&c))
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect();
-        if nums.len() >= 4 {
-            (nums[2], nums[3])
-        } else {
-            (w, h)
-        }
-    } else {
-        (w, h)
-    };
-
-    // Prefer viewBox dimensions when explicit width/height attributes are not found.
-    let has_explicit_w = parse_attr("width=\"").is_some();
-    let has_explicit_h = parse_attr("height=\"").is_some();
-    let fw = if w > 0.0 && has_explicit_w { w } else { vw };
-    let fh = if h > 0.0 && has_explicit_h { h } else { vh };
-    let fw = fw.max(1.0) as u32;
-    let fh = fh.max(1.0) as u32;
-
-    let pixels = vec![0u8; fw as usize * fh as usize * 4]; // Fully transparent placeholder
-    let mut img = DecodedImage::new(ImageFormat::Svg, ImageData::Rgba8(pixels), fw, fh);
-    img.color_space = ColorSpace::Srgb;
-    Ok(img)
+    // This crate has no SVG rasterizer. Returning a transparent placeholder
+    // would silently lose every shape in the document, so decoding refuses.
+    std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in SVG".to_string())?;
+    Err(not_implemented("SVG"))
 }
 
 // ── SVGZ Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
-    // Decompress gzip
+    // Decompress gzip, then delegate to the SVG decoder (which refuses to
+    // rasterize).
     let decompressed = miniz_oxide::inflate::decompress_to_vec(data)
         .map_err(|_| "SVGZ decompression failed".to_string())?;
     decode_svg(&decompressed)
@@ -1475,45 +1438,85 @@ mod tests {
         assert_eq!(img.height, 2);
     }
 
+    /// Build a well-formed PNG file around raw (already filtered) scanlines.
+    /// `scanlines` must contain one filter byte plus row data per row.
+    fn make_png(
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+        color_type: u8,
+        interlace: u8,
+        scanlines: &[u8],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.push(bit_depth);
+        ihdr.push(color_type);
+        ihdr.push(0); // compression
+        ihdr.push(0); // filter
+        ihdr.push(interlace);
+        write_test_chunk(&mut out, b"IHDR", &ihdr);
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(scanlines, 0);
+        write_test_chunk(&mut out, b"IDAT", &compressed);
+        write_test_chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    /// Append an extra chunk (used to inject PLTE/tRNS before the IDAT).
+    fn write_test_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(chunk_type);
+        out.extend_from_slice(data);
+        // The decoder does not validate CRCs; zeros are fine here.
+        out.extend_from_slice(&[0u8; 4]);
+    }
+
+    /// Append a PLTE chunk followed by a tRNS chunk to an in-progress PNG.
+    /// Returns the offset right after the tRNS chunk so more chunks can follow.
+    fn append_palette_trns(out: &mut Vec<u8>, entries: &[[u8; 3]], alphas: &[u8]) {
+        let palette_bytes: Vec<u8> = entries.iter().flatten().copied().collect();
+        write_test_chunk(out, b"PLTE", &palette_bytes);
+        write_test_chunk(out, b"tRNS", alphas);
+    }
+
     #[test]
     fn decode_png_minimal_header() {
-        // Test that a minimal PNG header triggers the correct format
-        let minimal_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\x0f\x00\x00\x00\x00\xff\xff\x03\x00\x00\x00\x04\x00\x01\x0e\x00\x00\x00\x00IEND\xae\x42\x60\x82";
-        let result = decode_png(minimal_png);
-        // This may or may not succeed depending on decompression, but should get format right
-        assert!(detect_format(minimal_png) == ImageFormat::Png);
-        if let Ok(img) = result {
-            assert_eq!(img.format, ImageFormat::Png);
-        }
+        // A real 1x1 RGBA PNG (filter 0, single black pixel) must decode.
+        let png = make_png(1, 1, 8, 6, 0, &[0, 0, 0, 0, 255]);
+        assert_eq!(detect_format(&png), ImageFormat::Png);
+        let img = decode_png(&png).unwrap();
+        assert_eq!(img.format, ImageFormat::Png);
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
     }
 
     #[test]
-    fn decode_svg_basic() {
+    fn decode_svg_returns_not_implemented() {
         let svg = b"<svg width=\"100\" height=\"50\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let result = decode_svg(svg);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.width, 100);
-        assert_eq!(img.height, 50);
-        assert_eq!(img.format, ImageFormat::Svg);
+        let err = decode_svg(svg).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
-    fn decode_svg_with_viewbox() {
-        let svg = b"<svg viewBox=\"0 0 200 100\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let result = decode_svg(svg);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.format, ImageFormat::Svg);
+    fn decode_svgz_returns_not_implemented() {
+        // GZIP of the SVG above: decompression succeeds, rasterization refuses.
+        let svg = b"<svg width=\"100\" height=\"50\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let compressed = miniz_oxide::deflate::compress_to_vec(svg, 6);
+        let err = decode_svgz(&compressed).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
     fn decode_to_rgba8_converts() {
-        let svg = b"<svg width=\"10\" height=\"10\"></svg>";
-        let result = decode_to_rgba8(svg);
-        assert!(result.is_ok());
-        let img = result.unwrap();
+        // Decoding a real PNG through the RGBA8 convenience path.
+        let png = make_png(1, 1, 8, 6, 0, &[0, 12, 34, 56, 78]);
+        let img = decode_to_rgba8(&png).unwrap();
         assert_eq!(img.format, ImageFormat::Rgba8);
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
     }
 
     #[test]
@@ -1540,61 +1543,34 @@ mod tests {
     }
 
     #[test]
-    fn decode_tiff_basic() {
-        // Minimal little-endian TIFF with IFD containing width=10, height=10
-        let mut tiff = b"II\x2a\x00".to_vec();
-        let ifd_offset: u32 = 8;
-        tiff.extend_from_slice(&ifd_offset.to_le_bytes()); // IFD offset
-        tiff.extend_from_slice(&2u16.to_le_bytes()); // 2 entries
-                                                     // Entry 0: tag 256 (ImageWidth), type 4 (LONG), count 1, value 10
-        tiff.extend_from_slice(&[0, 1, 4, 0, 1, 0, 0, 0, 10, 0, 0, 0]);
-        // Entry 1: tag 257 (ImageLength), type 4, count 1, value 10
-        tiff.extend_from_slice(&[1, 1, 4, 0, 1, 0, 0, 0, 10, 0, 0, 0]);
-        // Next IFD offset = 0
-        tiff.extend_from_slice(&[0, 0, 0, 0]);
-
-        let result = decode_tiff(&tiff);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.format, ImageFormat::Tiff);
+    fn decode_tiff_returns_not_implemented() {
+        // Well-formed minimal little-endian TIFF header.
+        let tiff = b"II\x2a\x00\x08\x00\x00\x00";
+        let err = decode_tiff(tiff).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
-    fn decode_webp_vp8() {
-        // Minimal WebP VP8 lossy frame
-        let file_size: u32 = 26; // RIFF chunk size
+    fn decode_webp_returns_not_implemented() {
+        // Minimal WebP RIFF header with a VP8 chunk.
         let mut webp = b"RIFF".to_vec();
-        webp.extend_from_slice(&file_size.to_le_bytes());
+        webp.extend_from_slice(&26u32.to_le_bytes()); // RIFF chunk size
         webp.extend_from_slice(b"WEBP");
         webp.extend_from_slice(b"VP8 ");
-        webp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // frame tag + data
-        webp.push(0x9D); // start code byte 0
-        webp.push(0x01); // start code byte 1
-        webp.push(0x2A); // start code byte 2
-                         // width/height in raw format: bits [0..13] = width, bits [14..27] = height
-        let w: u32 = 64;
-        let h: u32 = 48;
-        let wh = w | (h << 14);
-        webp.extend_from_slice(&wh.to_le_bytes());
-
-        let result = decode_webp(&webp);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.format, ImageFormat::WebP);
+        webp.extend_from_slice(&[0x00; 10]); // frame tag + start code + dims
+        let err = decode_webp(&webp).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
-    fn decode_ico_minimal() {
+    fn decode_ico_returns_not_implemented() {
         let mut ico = vec![0x00, 0x00, 0x01, 0x00, 0x01, 0x00]; // header, 1 entry
                                                                 // Entry: 16x16, no palette, 32 bpp
         ico.extend_from_slice(&[
             16, 16, 0, 0, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00,
         ]);
-
-        let result = decode_ico(&ico);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.format, ImageFormat::Ico);
+        let err = decode_ico(&ico).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1607,16 +1583,16 @@ mod tests {
     }
 
     #[test]
-    fn decode_avif_minimal() {
+    fn decode_avif_returns_not_implemented() {
         let avif = b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00";
-        let result = decode_avif(avif);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().format, ImageFormat::Avif);
+        let err = decode_avif(avif).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
     #[test]
-    fn decode_gif_minimal() {
-        // Minimal GIF89a: 2x2 with global color table
+    fn decode_gif_returns_not_implemented() {
+        // Minimal well-formed GIF89a header (no image data needed: decoding is
+        // refused wholesale).
         let mut gif = b"GIF89a".to_vec();
         gif.extend_from_slice(&2u16.to_le_bytes()); // width
         gif.extend_from_slice(&2u16.to_le_bytes()); // height
@@ -1632,11 +1608,209 @@ mod tests {
         }
         gif.push(0x3B); // GIF trailer
 
-        let result = decode_gif(&gif);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.format, ImageFormat::Gif);
-        assert_eq!(img.width, 2);
-        assert_eq!(img.height, 2);
+        let err = decode_gif(&gif).unwrap_err();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
+    }
+
+    // ── PNG real-decode tests ────────────────────────────────────────────────
+
+    #[test]
+    fn png_roundtrip_matches_encoder_output() {
+        // Golden sample: the crate's own PNG encoder output must decode back to
+        // the exact source pixels (covers RGBA stride and filter 0).
+        let src = DecodedImage::new(
+            ImageFormat::Rgba8,
+            ImageData::Rgba8(vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255, 12, 34, 56, 78,
+                90, 12, 34, 56, 200, 100, 50, 25, 1, 2, 3, 4,
+            ]),
+            4,
+            2,
+        );
+        let encoded = crate::image::encoder::encode(&src, ImageFormat::Png).unwrap();
+        let decoded = decode_png(&encoded).unwrap();
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 2);
+        let rgba = decoded.as_rgba8();
+        assert_eq!(rgba.as_bytes(), src.data.as_bytes());
+    }
+
+    #[test]
+    fn png_decodes_rgb_filter_none() {
+        // 4x4 RGB image, every pixel = (x*51, x*77, x*101).
+        let w = 4usize;
+        let h = 4usize;
+        let mut scanlines = Vec::new();
+        let mut expected = Vec::new();
+        for y in 0..h {
+            scanlines.push(0); // filter None
+            for x in 0..w {
+                let v = (x * 31 + y * 7) as u8;
+                scanlines.extend_from_slice(&[v, v.wrapping_mul(2), v.wrapping_mul(3)]);
+                expected.extend_from_slice(&[v, v.wrapping_mul(2), v.wrapping_mul(3)]);
+            }
+        }
+        let png = make_png(4, 4, 8, 2, 0, &scanlines);
+        let img = decode_png(&png).unwrap();
+        assert_eq!(img.data.as_bytes(), &expected);
+    }
+
+    #[test]
+    fn png_decodes_rgb_filter_sub() {
+        // 4x4 RGB image, filter 1 (Sub): each row holds the difference from the
+        // pixel to its left. Rows are a constant color, so only the first pixel
+        // of each row carries the color and the rest are zero deltas.
+        let w = 4usize;
+        let h = 4usize;
+        let colors = [[200u8, 30, 90], [10, 220, 40], [5, 9, 250], [128, 128, 128]];
+        let mut scanlines = Vec::new();
+        let mut expected = Vec::new();
+        for &c in colors.iter() {
+            scanlines.push(1); // filter Sub
+            for x in 0..w {
+                if x == 0 {
+                    scanlines.extend_from_slice(&c);
+                } else {
+                    scanlines.extend_from_slice(&[0, 0, 0]);
+                }
+                expected.extend_from_slice(&c);
+            }
+        }
+        let png = make_png(w as u32, h as u32, 8, 2, 0, &scanlines);
+        let img = decode_png(&png).unwrap();
+        assert_eq!(img.data.as_bytes(), &expected);
+    }
+
+    #[test]
+    fn png_decodes_rgba_filter_up_average_paeth() {
+        // 2x3 RGBA image covering filter types 2 (Up), 3 (Average) and
+        // 4 (Paeth) with distinct per-pixel data.
+        let w = 2usize;
+        let h = 3usize;
+        let rows: Vec<[u8; 8]> = vec![
+            [10, 20, 30, 255, 40, 50, 60, 255],
+            [70, 80, 90, 255, 100, 110, 120, 255],
+            [130, 140, 150, 255, 160, 170, 180, 255],
+        ];
+        let mut scanlines = Vec::new();
+        let mut expected = Vec::new();
+        // Encode each row with its own filter type.
+        for (fi, row) in rows.iter().enumerate() {
+            let filter = match fi {
+                0 => 2, // Up (difference from the row above)
+                1 => 3, // Average
+                _ => 4, // Paeth
+            };
+            scanlines.push(filter);
+            let up = if fi == 0 { [0u8; 8] } else { rows[fi - 1] };
+            for x in 0..w {
+                for c in 0..4 {
+                    let raw = row[x * 4 + c];
+                    let a = if x > 0 { row[(x - 1) * 4 + c] } else { 0 };
+                    let b = up[x * 4 + c];
+                    let c_prev = if x > 0 { up[(x - 1) * 4 + c] } else { 0 };
+                    let filt = match filter {
+                        2 => raw.wrapping_sub(b),
+                        3 => {
+                            let pred = ((a as u16 + b as u16) / 2) as u8;
+                            raw.wrapping_sub(pred)
+                        }
+                        _ => {
+                            // Paeth reconstruction must match the predictor.
+                            let rec = paeth_predictor(a, b, c_prev);
+                            raw.wrapping_sub(rec)
+                        }
+                    };
+                    scanlines.push(filt);
+                }
+            }
+            expected.extend_from_slice(&row[..]);
+        }
+        // Sanity: the filter-2 (Up) first row is identical to raw pixels.
+        let png = make_png(w as u32, h as u32, 8, 6, 0, &scanlines);
+        let img = decode_png(&png).unwrap();
+        let rgba = img.as_rgba8();
+        assert_eq!(rgba.as_bytes(), &expected);
+    }
+
+    #[test]
+    fn png_grayscale_16bit_keeps_high_byte() {
+        // 16-bit grayscale must sample the high byte of each big-endian
+        // sample, not produce black.
+        let scanlines = [
+            0, // filter None
+            0xAB, 0xCD, 0x12, 0x34, 0xFF, 0x00, 0x00, 0x00, // 4 samples of 2 bytes
+            0,    // filter None
+            0x80, 0x00, 0x01, 0xFF, 0x42, 0x42, 0x99, 0x00,
+        ];
+        let png = make_png(4, 2, 16, 0, 0, &scanlines);
+        let img = decode_png(&png).unwrap();
+        assert_eq!(img.data.as_bytes(), &[0xAB, 0x12, 0xFF, 0x00, 0x80, 0x01, 0x42, 0x99]);
+    }
+
+    #[test]
+    fn png_rgba_16bit_keeps_high_byte() {
+        // One 2x1 RGBA image at 16 bits per channel.
+        let scanlines = [
+            0, // filter None
+            0x11, 0x00, 0x22, 0x00, 0x33, 0x00, 0x44, 0x00, // pixel 0 (RGBA hi bytes)
+            0x55, 0x00, 0x66, 0x00, 0x77, 0x00, 0x88, 0x00, // pixel 1
+        ];
+        let png = make_png(2, 1, 16, 6, 0, &scanlines);
+        let img = decode_png(&png).unwrap();
+        assert_eq!(img.data.as_bytes(), &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+    }
+
+    #[test]
+    fn png_indexed_palette_with_trns() {
+        // 3x1 indexed image with a 3-entry palette; tRNS makes entry 1
+        // half-transparent and entry 2 fully transparent.
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&3u32.to_be_bytes());
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.push(8); // bit depth
+        ihdr.push(3); // color type: indexed
+        ihdr.push(0);
+        ihdr.push(0);
+        ihdr.push(0); // interlace
+        write_test_chunk(&mut out, b"IHDR", &ihdr);
+        append_palette_trns(&mut out, &[[255, 0, 0], [0, 255, 0], [0, 0, 255]], &[255, 128, 0]);
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&[0u8, 0, 1, 2], 0); // filter 0 + 3 indices
+        write_test_chunk(&mut out, b"IDAT", &compressed);
+        write_test_chunk(&mut out, b"IEND", &[]);
+
+        let img = decode_png(&out).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0]);
+    }
+
+    #[test]
+    fn png_rejects_interlaced() {
+        // Interlace flag (Adam7) is detected from IHDR and refused.
+        let scanlines = [0u8, 1, 2, 3]; // content is irrelevant
+        let png = make_png(2, 1, 8, 6, 1, &scanlines);
+        let err = decode_png(&png).unwrap_err();
+        assert!(err.contains("interlaced") || err.contains("Interlaced"), "{err}");
+    }
+
+    #[test]
+    fn png_chunk_declared_length_out_of_bounds_is_err() {
+        // A chunk whose declared length runs past the end of the file must be
+        // an Err, never a panic (this used to slice out of bounds).
+        let mut bad = b"\x89PNG\r\n\x1a\n".to_vec();
+        bad.extend_from_slice(&u32::MAX.to_be_bytes()); // declares ~4 GiB
+        bad.extend_from_slice(b"IDAT");
+        bad.extend_from_slice(&[0u8; 4]); // body bytes far short of the claim
+        let err = decode_png(&bad).unwrap_err();
+        assert!(err.contains("declares"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn png_truncated_scanline_data_is_err() {
+        // IDAT holds too few decompressed bytes for the declared dimensions.
+        let png = make_png(8, 8, 8, 6, 0, &[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let err = decode_png(&png).unwrap_err();
+        assert!(err.contains("truncated") || err.contains("decompress"), "unexpected error: {err}");
     }
 }

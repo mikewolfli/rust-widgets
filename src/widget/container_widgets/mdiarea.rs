@@ -1,5 +1,5 @@
 //! MDI area widget.
-use crate::core::{HorizontalAlignment, Color, Font, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -455,26 +455,17 @@ impl Draw for MdiArea {
             // Draw sub-window frame
             let frame_rect = subwindow.geometry;
             // Draw frame background
-            let bg_color = if is_active {
-                Color::rgb(255, 255, 255)
-            } else {
-                Color::rgb(250, 250, 250)
-            };
+            let bg_color =
+                if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(250, 250, 250) };
             context.fill_rect(frame_rect, bg_color);
             // Draw frame border
-            let border_color = if is_active {
-                Color::rgb(0, 120, 215)
-            } else {
-                Color::rgb(200, 200, 200)
-            };
+            let border_color =
+                if is_active { Color::rgb(0, 120, 215) } else { Color::rgb(200, 200, 200) };
             context.draw_rect(frame_rect, border_color);
             // Draw title bar
             let title_bar_height = 24;
-            let title_bar_color = if is_active {
-                Color::rgb(0, 120, 215)
-            } else {
-                Color::rgb(180, 180, 180)
-            };
+            let title_bar_color =
+                if is_active { Color::rgb(0, 120, 215) } else { Color::rgb(180, 180, 180) };
             context.fill_rect(
                 Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
                 title_bar_color,
@@ -494,11 +485,8 @@ impl Draw for MdiArea {
                 let close_size = 12;
                 let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
                 let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
-                let close_color = if is_active {
-                    Color::rgb(255, 255, 255)
-                } else {
-                    Color::rgb(100, 100, 100)
-                };
+                let close_color =
+                    if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(100, 100, 100) };
                 context.draw_line(
                     Point::new(close_x, close_y),
                     Point::new(close_x + close_size, close_y + close_size),

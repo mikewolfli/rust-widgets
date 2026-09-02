@@ -223,96 +223,35 @@ fn all_widget_kinds_have_non_empty_debug_repr() {
 
 #[test]
 fn widget_kind_variants_are_exhaustive() {
-    let variants = [
-        "Window",
-        "Dialog",
-        "MessageBox",
-        "FileDialog",
-        "ColorDialog",
-        "FontDialog",
-        "InputDialog",
-        "ProgressDialog",
-        "PopupWindow",
-        "Button",
-        "CheckBox",
-        "RadioButton",
-        "Label",
-        "LineEdit",
-        "TextEdit",
-        "RichEdit",
-        "ComboBox",
-        "SpinBox",
-        "ListBox",
-        "ListView",
-        "TreeView",
-        "ProgressBar",
-        "Slider",
-        "ScrollBar",
-        "ScrollArea",
-        "Panel",
-        "Frame",
-        "DockPanel",
-        "GroupBox",
-        "TabWidget",
-        "Splitter",
-        "MdiArea",
-        "MenuBar",
-        "Menu",
-        "MenuItem",
-        "ContextMenu",
-        "ToolBar",
-        "StatusBar",
-        "Canvas",
-        "Table",
-        "Grid",
-        "Chart",
-        "ToggleButton",
-        "CheckListBox",
-        "DoubleSpinBox",
-        "Dial",
-        "Wizard",
-        "DatePicker",
-        "TimePicker",
-        "DateTimePicker",
-        "DirectoryDialog",
-        "DataView",
-        "PropertyGrid",
-        "Toolbox",
-        "StackedWidget",
-        "CollapsiblePane",
-        "DockWidget",
-        "WebView",
-        "ActivityIndicator",
-        "Calendar",
-        "ColumnView",
-        "UndoView",
-        "CommandLink",
-        "LCDNumber",
-        "FontComboBox",
-        "WebEngineView",
-        "WebEnginePage",
-        "WebEngineSettings",
-        "WebEngineDownloadItem",
-        "WebEngineCookieStore",
-        "WebEngineWebChannel",
-        "WebEngineFindTextResult",
-        "WebEngineNotification",
-        "WebEngineScriptDialog",
-        "WebEngineContextMenuRequest",
-        "Action",
-        "ToolButton",
-        "ToolBox",
-        "FreeformShape",
-        "TabBar",
-        "PieMenu",
-        "RibbonBar",
-    ];
+    // The capability matrix must list exactly the same widget set as the
+    // WidgetKind enum source. Rather than hard-coding a fragile count (the
+    // enum grew from 82 to 167 variants over time), both sides are derived
+    // dynamically: unit variants are lines of the form `    VariantName,`.
+    let kind_src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/widget/kind.rs"))
+            .expect("failed to read src/widget/kind.rs");
+    let kind_variants = kind_src
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed.ends_with(',') && trimmed.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        })
+        .count();
 
+    let matrix_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("plans")
+        .join("platform_capability_matrix.md");
+    let content = std::fs::read_to_string(&matrix_path).expect("failed to read capability matrix");
+    let matrix_rows = content.lines().filter(|line| line.starts_with("| **")).count();
+
+    assert!(
+        kind_variants >= 100,
+        "kind.rs unit-variant extraction looks wrong: got {kind_variants}"
+    );
     assert_eq!(
-        variants.len(),
-        82,
-        "WidgetKind variant count mismatch — expected 82, got {}",
-        variants.len()
+        matrix_rows, kind_variants,
+        "capability matrix rows ({matrix_rows}) must match WidgetKind source variants ({kind_variants})"
     );
 }
 
@@ -357,7 +296,7 @@ fn capability_matrix_matches_widget_kind() {
         "StatusBar",
         "Dialog",
         "Canvas",
-        "WebView",
+        "Toolbox",
         "RibbonBar",
     ];
 

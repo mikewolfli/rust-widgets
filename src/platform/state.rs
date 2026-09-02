@@ -10,7 +10,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug)]
-#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
     pub kind: K,
@@ -34,7 +37,10 @@ pub struct WidgetRecord<K> {
     pub height: u32,
 }
 /// Thread-safe state model split from native handle adapters.
-#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
 pub struct BackendState<K> {
     next_id: AtomicU64,
     widgets: Mutex<HashMap<ObjectId, WidgetRecord<K>>>,
@@ -324,7 +330,10 @@ mod tests {
     #[test]
     fn is_kind_returns_true_for_matching_kind() {
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        #[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+        #[cfg_attr(
+            all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+            derive(Serialize, Deserialize)
+        )]
         enum TestKind {
             Button,
             Label,
@@ -343,7 +352,10 @@ mod tests {
     #[test]
     fn is_kind_returns_false_for_nonexistent_widget() {
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        #[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+        #[cfg_attr(
+            all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+            derive(Serialize, Deserialize)
+        )]
         enum TestKind {
             Widget,
         }

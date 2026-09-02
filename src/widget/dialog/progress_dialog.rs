@@ -1,5 +1,5 @@
 //! Progress dialog widget.
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -186,10 +186,8 @@ impl Draw for ProgressDialog {
         let bar_y = rect.y + 62;
         let bar_w = rect.width.saturating_sub(20);
         let bar_h: u32 = 20;
-        context
-            .fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(220, 220, 220));
-        context
-            .draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(150, 150, 150));
+        context.fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(220, 220, 220));
+        context.draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(150, 150, 150));
         let fill_w = (bar_w as f32 * self.progress_fraction()) as i32;
         if fill_w > 0 {
             context.fill_rect(

@@ -272,8 +272,7 @@ impl Draw for MiniChart {
                     let g = (120.0 + t * 50.0) as u8;
                     let b = (200.0 - t * 180.0) as u8;
 
-                    context
-                        .fill_rect(Rect::new(bx, by, bar_width, bar_h), Color::rgb(r, g, b));
+                    context.fill_rect(Rect::new(bx, by, bar_width, bar_h), Color::rgb(r, g, b));
                 }
             }
         }

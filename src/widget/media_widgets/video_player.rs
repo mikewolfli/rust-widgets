@@ -1,17 +1,21 @@
-//! VideoPlayer — video player widget with play/pause/seek/volume controls.
+//! VideoPlayer — simulated video player widget (self-drawn UI, no media engine).
 //!
-//! The VideoPlayer widget provides a video player interface with a placeholder
-//! video area, transport controls (play/pause, seek bar, volume), time display,
-//! and fullscreen button. It emits signals for playback state changes and time
-//! updates.
+//! This is a simulation/preview component: it draws a player UI (video area
+//! background, transport controls, seek bar, time display) and tracks a local
+//! simulated clock. It does not open, demux or decode media files. play/pause/
+//! seek only move the simulated position, which advances when `tick` is called.
+//! It emits signals for playback state changes and time updates.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
-/// VideoPlayer — a video player widget with playback controls.
+/// VideoPlayer — simulated video player widget with playback controls.
+///
+/// Self-drawn UI only: no media is decoded or rendered. State (play/pause,
+/// position, volume) is simulated and displayed locally.
 pub struct VideoPlayer {
     base: BaseWidget,
     /// Source URI or path of the video.
@@ -60,7 +64,10 @@ impl VideoPlayer {
         }
     }
 
-    /// Loads a video source by URI or file path.
+    /// Records a video source URI or file path for display.
+    ///
+    /// The source is stored as a label only: it is not opened, demuxed or
+    /// decoded. Loading also resets the simulated clock and pauses playback.
     pub fn load(&mut self, source: &str) {
         self.source = source.to_string();
         self.current_time = 0.0;
@@ -73,13 +80,18 @@ impl VideoPlayer {
         &self.source
     }
 
-    /// Sets the video duration in seconds.
+    /// Sets the simulated video duration in seconds used by the clock, seek bar
+    /// and time display. The value comes from the caller; it is not measured
+    /// from any media file.
     pub fn set_duration(&mut self, duration: f64) {
         self.duration = duration.max(0.0);
         self.base.request_redraw();
     }
 
-    /// Starts playback.
+    /// Starts simulated playback.
+    ///
+    /// Marks the player as playing and emits `playback_started`. No media
+    /// frames are decoded; the position advances only when `tick` is called.
     pub fn play(&mut self) {
         if self.source.is_empty() {
             return;
@@ -114,7 +126,8 @@ impl VideoPlayer {
         self.is_playing
     }
 
-    /// Seeks to the given time in seconds (clamped to 0..duration).
+    /// Seeks the simulated playback clock to the given time in seconds
+    /// (clamped to 0..duration). Does not read any media data.
     pub fn seek(&mut self, time: f64) {
         self.current_time = time.clamp(0.0, self.duration);
         self.time_updated.emit(self.current_time);
@@ -181,8 +194,9 @@ impl VideoPlayer {
         self.controls_visible
     }
 
-    /// Advances playback time by the given number of seconds.
-    /// This simulates video frame advancement for testing.
+    /// Advances the simulated playback clock by the given number of seconds
+    /// (scaled by playback rate).
+    /// This simulates video frame advancement; no media is decoded.
     /// Returns true if playback reached the end.
     pub fn tick(&mut self, delta_secs: f64) -> bool {
         if !self.is_playing || self.duration <= 0.0 {
@@ -295,7 +309,13 @@ impl Draw for VideoPlayer {
         let btn_y = control_bar_y
             + (control_bar_height as i32 - btn_metrics.height as i32) / 2
             + btn_metrics.ascent as i32;
-        context.draw_text(Point::new(btn_x, btn_y), btn_text, &font, Color::WHITE, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(btn_x, btn_y),
+            btn_text,
+            &font,
+            Color::WHITE,
+            HorizontalAlignment::Left,
+        );
 
         // Seek bar.
         let seek_bar_x = btn_x + btn_metrics.width as i32 + 12;
@@ -346,7 +366,13 @@ impl Draw for VideoPlayer {
         let vol_y = control_bar_y
             + (control_bar_height as i32 - vol_metrics.height as i32) / 2
             + vol_metrics.ascent as i32;
-        context.draw_text(Point::new(vol_x, vol_y), vol_text, &font, Color::WHITE, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(vol_x, vol_y),
+            vol_text,
+            &font,
+            Color::WHITE,
+            HorizontalAlignment::Left,
+        );
 
         // Playback rate indicator.
         if (self.playback_rate - 1.0).abs() > 0.01 {
@@ -372,7 +398,13 @@ impl Draw for VideoPlayer {
         let fs_y = control_bar_y
             + (control_bar_height as i32 - fs_metrics.height as i32) / 2
             + fs_metrics.ascent as i32;
-        context.draw_text(Point::new(fs_x, fs_y), fs_text, &font, Color::WHITE, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(fs_x, fs_y),
+            fs_text,
+            &font,
+            Color::WHITE,
+            HorizontalAlignment::Left,
+        );
     }
 }
 

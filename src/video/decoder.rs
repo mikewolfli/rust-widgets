@@ -117,10 +117,19 @@ impl MjpegDecoder {
     pub fn new(data: Vec<u8>, _format: ContainerFormat) -> Self {
         let frame_offsets = Self::find_jpeg_frames(&data);
 
-        // Try to get dimensions from the first frame
+        // Try to get dimensions from the first frame.
         let (width, height) = if !frame_offsets.is_empty() {
             let (start, end) = frame_offsets[0];
-            Self::decode_dimensions(&data[start..end]).unwrap_or((320, 240))
+            match Self::decode_dimensions(&data[start..end]) {
+                Some(dim) => dim,
+                None => {
+                    log::warn!(
+                        "[MjpegDecoder] failed to decode dimensions from the first frame, \
+                         falling back to default size 320x240"
+                    );
+                    (320, 240)
+                }
+            }
         } else {
             log::warn!("[MjpegDecoder] No JPEG frames detected, using default size 320x240");
             (320, 240)
@@ -200,6 +209,27 @@ impl MjpegDecoder {
         Ok(rgba)
     }
 
+    /// Generate a colorful gradient frame used as a stand-in when a JPEG frame
+    /// fails to decode. The frame is tagged `FrameType::Synthetic` by the caller
+    /// so consumers can tell it apart from a genuinely decoded frame.
+    fn generate_synthetic_frame(width: u32, height: u32, frame_index: usize) -> Vec<u8> {
+        let w = width.max(1) as usize;
+        let h = height.max(1) as usize;
+        let mut pixels = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let r = ((x * 255 / w) as u8).wrapping_add(frame_index as u8 * 10);
+                let g = ((y * 255 / h) as u8).wrapping_add(frame_index as u8 * 20);
+                let b = 128u8.wrapping_add(frame_index as u8 * 30);
+                pixels.push(r);
+                pixels.push(g);
+                pixels.push(b);
+                pixels.push(255);
+            }
+        }
+        pixels
+    }
+
     /// Set a custom frame rate.
     pub fn set_frame_rate(&mut self, fps: f64) {
         self.frame_rate = fps.max(1.0);
@@ -218,29 +248,37 @@ impl VideoDecoder for MjpegDecoder {
 
         let (start, end) = self.frame_offsets[self.current_frame];
         let jpeg_data = &self.data[start..end];
-        let rgba = Self::decode_frame(jpeg_data).unwrap_or_else(|_| {
-            // Fallback: generate a colorful synthetic frame
-            let w = self.metadata.width.max(1) as usize;
-            let h = self.metadata.height.max(1) as usize;
-            let mut pixels = Vec::with_capacity(w * h * 4);
-            for y in 0..h {
-                for x in 0..w {
-                    let r = ((x * 255 / w) as u8).wrapping_add(self.current_frame as u8 * 10);
-                    let g = ((y * 255 / h) as u8).wrapping_add(self.current_frame as u8 * 20);
-                    let b = 128u8.wrapping_add(self.current_frame as u8 * 30);
-                    pixels.push(r);
-                    pixels.push(g);
-                    pixels.push(b);
-                    pixels.push(255);
-                }
+        // 1-based frame number for human-readable logs.
+        let frame_number = self.current_frame + 1;
+        let (rgba, decoded_ok) = match Self::decode_frame(jpeg_data) {
+            Ok(rgba) => (rgba, true),
+            Err(err) => {
+                log::warn!(
+                    "[MjpegDecoder] frame {frame_number} decode failed: {err}; \
+                     emitting synthetic placeholder frame"
+                );
+                (
+                    Self::generate_synthetic_frame(
+                        self.metadata.width,
+                        self.metadata.height,
+                        self.current_frame,
+                    ),
+                    false,
+                )
             }
-            pixels
-        });
+        };
 
         let fps = self.frame_rate.max(1.0);
         let timestamp = self.current_frame as f64 / fps;
-        let frame_type =
-            if self.current_frame == 0 { FrameType::IFrame } else { FrameType::PFrame };
+        // A failed decode is explicitly marked Synthetic. Only genuinely decoded
+        // frames carry I/P classification: the first one is an I-frame.
+        let frame_type = if !decoded_ok {
+            FrameType::Synthetic
+        } else if self.current_frame == 0 {
+            FrameType::IFrame
+        } else {
+            FrameType::PFrame
+        };
 
         let frame = VideoFrame::with_type(
             timestamp,
@@ -270,20 +308,26 @@ impl VideoDecoder for MjpegDecoder {
     }
 }
 
-/// A minimal valid 1x1 RGB JPEG image for testing.
-/// Generated from a known-working baseline JPEG.
+/// Fake MJPEG fixture used to test frame-boundary detection and the decode
+/// fallback path.
+///
+/// The bytes contain only SOI/JFIF-APP0/EOI markers: the framing parser sees
+/// valid frame boundaries, but there is no scan data, so real JPEG decoding
+/// fails and `read_frame` emits a logged `FrameType::Synthetic` placeholder.
 #[cfg(test)]
 fn test_jpeg_bytes() -> Vec<u8> {
-    // Minimal JPEG data with SOI (0xFFD8) and EOI (0xFFD9) markers.
-    // This creates two valid frame boundaries that the decoder can detect,
-    // even though the JPEG content itself is not fully valid for JPEG decoding.
-    // The MjpegDecoder gracefully falls back to synthetic frames when decode fails.
+    // SOI (0xFFD8) + JFIF APP0 segment + EOI (0xFFD9). No image scan data.
     vec![
         0xFF, 0xD8, // SOI
         0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, // JFIF APP0
         0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9, // EOI
     ]
 }
+
+/// Real baseline color JPEG (1440x1499) committed under `snapshots/` for
+/// snapshot tests; used here to exercise the genuine decode-success path.
+#[cfg(test)]
+const TEST_REAL_JPEG: &[u8] = include_bytes!("../../snapshots/header.jpg");
 
 #[cfg(test)]
 mod tests {
@@ -385,7 +429,8 @@ mod tests {
         let decoder = MjpegDecoder::new(data, ContainerFormat::Mjpeg);
         assert_eq!(decoder.metadata().container, ContainerFormat::Mjpeg);
         assert_eq!(decoder.metadata().total_frames, 2);
-        // JPEG decode of minimal test data falls back to default dimensions (320x240)
+        // The fake fixture has no scan data, so dimension decoding fails and the
+        // decoder falls back to the default 320x240.
         assert_eq!(decoder.metadata().width, 320);
         assert_eq!(decoder.metadata().height, 240);
     }
@@ -403,7 +448,30 @@ mod tests {
         assert!(!f.data.is_empty());
         // RGBA: 4 bytes per pixel for 320x240 = 307200 bytes
         assert_eq!(f.data.len(), 307200);
+        // The fake JPEG cannot be decoded, so the frame is explicitly marked
+        // Synthetic instead of masquerading as a successfully decoded I-frame.
+        assert_eq!(f.frame_type, FrameType::Synthetic);
+    }
+
+    #[test]
+    fn test_mjpeg_decoder_real_jpeg_decode_success() {
+        let mut decoder = MjpegDecoder::new(TEST_REAL_JPEG.to_vec(), ContainerFormat::Mjpeg);
+        // Dimensions are read from the real JPEG (1440x1499).
+        assert_eq!(decoder.metadata().width, 1440);
+        assert_eq!(decoder.metadata().height, 1499);
+        assert_eq!(decoder.metadata().total_frames, 1);
+
+        let frame = decoder.read_frame().unwrap();
+        assert!(frame.is_some());
+        let f = frame.unwrap();
+        // A genuinely decoded first frame is an I-frame, not a placeholder.
         assert_eq!(f.frame_type, FrameType::IFrame);
+        assert_eq!(f.width, 1440);
+        assert_eq!(f.height, 1499);
+        assert_eq!(f.data.len(), 1440 * 1499 * 4);
+
+        // End of stream after the single real frame.
+        assert!(decoder.read_frame().unwrap().is_none());
     }
 
     #[test]

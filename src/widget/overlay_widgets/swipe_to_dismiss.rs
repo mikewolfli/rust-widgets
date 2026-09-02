@@ -4,7 +4,7 @@
 //! background (e.g., red "Delete"). When the swipe passes the threshold,
 //! the widget emits the `dismissed` signal.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

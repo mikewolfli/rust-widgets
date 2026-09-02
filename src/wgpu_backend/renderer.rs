@@ -34,6 +34,7 @@ impl WgpuRenderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .map_err(|_| "wgpu adapter request failed".to_string())?;
@@ -150,7 +151,7 @@ impl WgpuRenderer {
             vertex: wgpu::VertexState {
                 module: &rect_vs_module,
                 entry_point: Some("vs_main"),
-                buffers: &[rect_vertex_buffer_layout],
+                buffers: &[Some(rect_vertex_buffer_layout)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -324,7 +325,9 @@ impl WgpuRenderer {
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
         map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice.get_mapped_range();
+        let mapped = buffer_slice
+            .get_mapped_range()
+            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
 
         // Copy row by row, stripping padding
         let unpadded = (width * 4) as usize;
@@ -510,7 +513,9 @@ impl WgpuRenderer {
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
         map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice.get_mapped_range();
+        let mapped = buffer_slice
+            .get_mapped_range()
+            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
 
         let unpadded = (width * 4) as usize;
         let padded = padded_bytes_per_row as usize;
@@ -732,7 +737,9 @@ impl WgpuRenderer {
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
         map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice.get_mapped_range();
+        let mapped = buffer_slice
+            .get_mapped_range()
+            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
         let mut pixels = vec![0u8; (width * height * bytes_per_pixel) as usize];
         for row in 0..height as usize {
             let src_start = row * padded_bytes_per_row as usize;

@@ -17,22 +17,31 @@
 //! Regardless of feature selection, `file://` URLs and the `simulation_engine` trait
 //! always take priority over the real HTTP path.
 
+#[cfg(not(feature = "mini"))]
 use super::history::{BrowserHistory, SessionHistory};
+#[cfg(not(feature = "mini"))]
 use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
+#[cfg(not(feature = "mini"))]
 use super::plugins::PluginManager;
+#[cfg(not(feature = "mini"))]
 use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
+#[cfg(not(feature = "mini"))]
 use crate::core::Rect;
+#[cfg(not(feature = "mini"))]
 use crate::signal::Signal1;
+#[cfg(not(feature = "mini"))]
 use crate::widget::{BaseWidget, WidgetKind};
 
 /// A pluggable simulation engine that can be set externally (e.g. in tests)
 /// to inject mock content or simulate different network conditions.
+#[cfg(not(feature = "mini"))]
 pub trait SimulationEngine: Send {
     /// Simulate navigation to the given URL and return simulated content.
     fn simulate_navigation(&mut self, url: &str) -> Result<String, String>;
 }
 
 /// Shared fields used by both WebEngineViewEnhanced and WebViewEnhanced.
+#[cfg(not(feature = "mini"))]
 pub struct WebViewCore {
     pub base: BaseWidget,
     pub url: String,
@@ -63,6 +72,7 @@ pub struct WebViewCore {
     pub simulation_engine: Option<Box<dyn SimulationEngine>>,
 }
 
+#[cfg(not(feature = "mini"))]
 impl WebViewCore {
     pub fn new(
         kind: WidgetKind,
@@ -472,6 +482,7 @@ impl WebViewCore {
 // ---------------------------------------------------------------------------
 // Widget trait delegation for WebViewCore (used by both wrappers)
 // ---------------------------------------------------------------------------
+#[cfg(not(feature = "mini"))]
 macro_rules! delegate_widget {
     ($wrapper:ty) => {
         impl Widget for $wrapper {
@@ -575,6 +586,7 @@ macro_rules! delegate_widget {
     };
 }
 
+#[cfg(not(feature = "mini"))]
 pub(crate) use delegate_widget;
 
 #[cfg(all(test, not(feature = "mini")))]

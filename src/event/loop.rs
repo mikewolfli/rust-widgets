@@ -4,7 +4,7 @@ use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
 use crate::compat::Mutex;
 use crate::core::ObjectId;
-#[cfg(feature = "touch")]
+#[cfg(all(feature = "touch", not(feature = "mini")))]
 use crate::gesture::GestureEngine;
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 #[cfg(not(feature = "mini"))]
 use std::thread;
-#[cfg(feature = "touch")]
+#[cfg(all(feature = "touch", not(feature = "mini")))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type alias for event dispatch function.
@@ -27,7 +27,7 @@ fn recover_lock<T>(
 }
 
 /// Returns the current timestamp in milliseconds since UNIX epoch.
-#[cfg(feature = "touch")]
+#[cfg(all(feature = "touch", not(feature = "mini")))]
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
@@ -46,6 +46,11 @@ pub struct AnimationFrameRequest {
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
+    #[cfg_attr(feature = "mini", allow(dead_code))]
+    // Only read by the non-mini `start()`; kept to mirror the desktop API.
+    // Under mini the queue uses a single-threaded channel, so the Arc is not
+    // Send/Sync — that is intentional for the mini (single-threaded) profile.
+    #[cfg_attr(feature = "mini", allow(clippy::arc_with_non_send_sync))]
     queue: Arc<Mutex<EventQueue>>,
     /// Independent sender for posting events without locking the queue.
     /// Avoids deadlock with the event loop thread which holds the queue mutex
@@ -58,6 +63,8 @@ pub struct EventLoop {
     thread_handle: Option<thread::JoinHandle<()>>,
     /// Processing thread handle (mini stub).
     #[cfg(feature = "mini")]
+    #[cfg_attr(feature = "mini", allow(dead_code))]
+    // kept to mirror the non-mini API
     thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
@@ -73,6 +80,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     /// Creates a new event loop.
+    #[cfg_attr(feature = "mini", allow(clippy::arc_with_non_send_sync))]
     pub fn new() -> Self {
         let queue = EventQueue::new();
         let sender = queue.sender();
@@ -357,7 +365,9 @@ mod tests {
     use crate::event::types::Event;
     use crate::event::EventPriority;
     use crate::event::EventQueue;
+    #[cfg(not(feature = "mini"))]
     use alloc::sync::Arc;
+    #[cfg(not(feature = "mini"))]
     use core::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -412,6 +422,7 @@ mod tests {
         assert_eq!(events[2], EventPriority::Idle);
     }
 
+    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
     #[test]
     fn test_native_pump_called_on_empty_queue() {
         let mut el = EventLoop::new();
@@ -433,6 +444,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
     #[test]
     fn test_event_loop_timer_integration() {
         let mut el = EventLoop::new();
@@ -457,6 +469,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
     #[test]
     fn test_event_loop_animation_frame_dispatch() {
         let mut el = EventLoop::new();
@@ -483,6 +496,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_event_loop_start_stop_idempotent() {
         let mut el = EventLoop::new();
@@ -504,6 +518,7 @@ mod tests {
         assert!(!el.is_running());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_event_loop_post_event_without_dispatch() {
         // Posting events should not panic even when no dispatch function is set

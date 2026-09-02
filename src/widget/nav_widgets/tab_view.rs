@@ -4,7 +4,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;

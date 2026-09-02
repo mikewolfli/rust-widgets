@@ -4,7 +4,7 @@
 //! supports play/pause/stop controls, loop count configuration, and emits signals
 //! when animation finishes or the current frame changes.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -317,9 +317,11 @@ impl Draw for AnimatedImage {
                     let cx = ix + indicator_size as i32 / 2;
                     let cy = iy + indicator_size as i32 / 2;
                     let tri_size = 10i32;
-                    let points = [Point::new(cx - tri_size / 2, cy - tri_size),
+                    let points = [
+                        Point::new(cx - tri_size / 2, cy - tri_size),
                         Point::new(cx - tri_size / 2, cy + tri_size),
-                        Point::new(cx + tri_size / 2, cy)];
+                        Point::new(cx + tri_size / 2, cy),
+                    ];
                     if let Some(first) = points.first() {
                         let mut prev = *first;
                         for p in points.iter().skip(1) {
@@ -360,14 +362,13 @@ impl EventHandler for AnimatedImage {
         }
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
-                if *button == 1
-                    && self.geometry().contains_point(*pos) {
-                        if self.playing {
-                            self.pause();
-                        } else {
-                            self.play();
-                        }
+                if *button == 1 && self.geometry().contains_point(*pos) {
+                    if self.playing {
+                        self.pause();
+                    } else {
+                        self.play();
                     }
+                }
             }
             _ => {
                 self.base.handle_event(event);

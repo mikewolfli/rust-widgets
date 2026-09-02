@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub(crate) struct PdfPageImpl {
     /// Page size in points.
     pub(crate) size: Size,
-    /// Encoded draw command payload (placeholder implementation).
+    /// Encoded PDF content-stream operators (text, lines, rects, images).
     pub(crate) content: Vec<u8>,
     /// Font resource key used for text operators.
     pub(crate) font_resource: String,

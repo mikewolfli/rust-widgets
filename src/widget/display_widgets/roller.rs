@@ -3,7 +3,7 @@
 //! Displays a scroll-wheel list of options where one item is highlighted in the
 //! center. Supports mouse wheel scrolling and click-to-select interaction.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -258,7 +258,13 @@ impl Draw for Roller {
                     )
                 };
 
-                context.draw_text(Point::new(text_x, text_y), &self.options[idx], &font, color, HorizontalAlignment::Left);
+                context.draw_text(
+                    Point::new(text_x, text_y),
+                    &self.options[idx],
+                    &font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
             }
         }
 

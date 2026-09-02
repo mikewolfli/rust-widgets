@@ -158,7 +158,10 @@ mod tests {
         assert!(!clip.has_format("text/plain"));
     }
 
+    // Spawning a thread is meaningless on wasm32 (single-threaded); the
+    // Send requirement is verified on the host where threads exist.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_clipboard_mock_thread_safety() {
         let clip = alloc::sync::Arc::new(MockClipboard::new());
         let clip2 = clip.clone();

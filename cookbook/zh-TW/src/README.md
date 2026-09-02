@@ -68,7 +68,7 @@ fn main() {
 | Android (JNI) | `android` | `android` |
 | Web (WASM) | `wasm` | `wasm` |
 | HarmonyOS | `harmony` | `harmony` |
-| Embedded (no_std) | `embedded` / `mini` | `embedded` / `mini` |
+| Embedded (no_std-ready) | `embedded` / `mini` | `embedded` / `mini` |
 
 ### 觸控與手勢
 
@@ -98,7 +98,7 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 ## 設計理念
 
 - **公開 API 中零 `unsafe` 程式碼。** 所有 `unsafe` 區塊僅限於平台 FFI 邊界，並經過詳盡的驗證與防恐慌安全處理。
-- **嵌入式環境的 `no_std` 支援。** 同一套程式碼庫透過條件編譯同時服務 std 與 `no_std` 目標平台。`compat.rs` 橋接層將 std 型別（`HashMap`、`Mutex`）映射為基於 arena 分配及無堆疊的替代方案（`BTreeMap`、`RefCell`、`MiniVec`、`MiniString`）。
+- **嵌入式環境的 no_std 就緒架構。** 同一套程式碼庫透過條件編譯服務多種目標；`compat.rs` 橋接層統一從 `core`/`alloc` 導入共享型別（`MiniVec`、`MiniString` 等）。目前 `mini` profile 在 std 上編譯，真正的 `#![no_std]` 開啟列為後續步驟。
 - **模組化功能系統。** 三個獨立的軸向——裝置設定檔、作業系統後端與功能能力——讓您能組合出完全符合需求的二進位檔。僅在需要使用時才引入圖表、列印或 i18n 等功能。
 - **無處不在的 Builder 模式。** 透過 Rust 型別系統實現編譯期驗證。每個控制項、樣式與佈局都使用符合人體工學的 builder API。
 
@@ -120,8 +120,8 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 | **圖表與資料視覺化** | LineChart、BarChart、PieChart、Sparkline |
 | **PDF 與列印** | 文件產生、系統列印服務 |
 | **效能與品質** | 基準測試、SVG 回歸測試、效能剖析 |
-| **記憶體管理** | Arena 分配、`no_std` 記憶體模型、記憶體洩漏偵測 |
-| **嵌入式支援** | `no_std` 設定檔、軟體光柵化、資源限制 |
+| **記憶體管理** | Arena 分配、no_std 就緒記憶體模型、記憶體洩漏偵測 |
+| **嵌入式支援** | `mini`/`embedded` 設定檔、軟體光柵化、資源限制 |
 | **Web 引擎** | WebView 設定、設定管理、通道、安全性 |
 | **進階主題** | 自訂後端、unsafe FFI、非同步整合 |
 | **API 參考** | 模組層級文件、Trait 參考、型別索引 |

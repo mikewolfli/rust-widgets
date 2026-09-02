@@ -4,7 +4,7 @@
 //! optional value labels on top. Each bar can have its own color, or all bars
 //! share a default color.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};

@@ -99,11 +99,23 @@ pub fn check_and_reload_all() -> Vec<crate::i18n::types::ReloadEvent> {
     }
 }
 
+/// Serializes tests that mutate the process-global i18n state.
+///
+/// `GLOBAL_I18N` is a process-wide static, and Rust runs `#[test]` functions on
+/// parallel threads. Tests that call `init()` / `init_with_options()` /
+/// `reset` race with each other; holding this lock keeps them sequential.
+#[cfg(test)]
+pub(crate) fn global_i18n_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn test_init_loads_english() {
+        let _lock = global_i18n_test_lock();
         init();
         let count = {
             let mgr = get_manager();

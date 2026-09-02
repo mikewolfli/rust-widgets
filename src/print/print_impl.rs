@@ -1,4 +1,9 @@
 //! Printing and print preview support.
+//!
+//! Note: there is currently no native/system print dialog integration.
+//! `print_page_dialog` is a console confirmation (y/n) that defaults to cancel
+//! when no interactive terminal is available, and `print_to_printer` submits
+//! rendered content through a platform print command.
 use crate::core::{Rect, Size};
 use std::collections::HashMap;
 use std::fs;
@@ -776,14 +781,18 @@ impl Default for PrintManager {
     }
 }
 
-/// Platform-specific: show a system print dialog.
+/// Console-based print confirmation for desktop platforms.
 /// On non-desktop platforms this returns an error message.
 ///
-/// Logs the event and optionally prompts the user via the console.
+/// There is no native/system print dialog integration yet: this function never
+/// opens a window. On an interactive terminal it asks for a y/n answer and
+/// returns `Ok(true)` only for an explicit "y"/"yes" reply.
+/// Without an interactive terminal it logs a warning and returns `Ok(false)`
+/// (cancel) so printing is never silently accepted.
 /// Returns `Ok(true)` if accepted, `Ok(false)` if cancelled.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn print_page_dialog() -> Result<bool, String> {
-    log::info!("[print] print_page_dialog() called — native dialog integration pending");
+    log::info!("[print] print_page_dialog() — no system dialog available; console confirmation");
     // Check if we have an interactive terminal available.
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
@@ -799,8 +808,10 @@ pub fn print_page_dialog() -> Result<bool, String> {
             return Ok(false);
         }
     }
-    // Default: assume accepted on desktop platforms.
-    Ok(true)
+    // No interactive terminal: default to cancel. Auto-accepting here could
+    // print pages the user never confirmed, so cancellation is the safe choice.
+    log::warn!("[print] no interactive terminal — defaulting to cancel");
+    Ok(false)
 }
 
 /// Platform-specific: show a system print dialog (fallback for unsupported platforms).

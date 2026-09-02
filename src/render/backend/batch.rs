@@ -291,12 +291,22 @@ impl BatchState {
             }
 
             BatchCommand::DrawImage { rect, image_id, opacity } => {
-                let data = images.get(image_id).cloned().unwrap_or_default();
+                let mut data = images.get(image_id).cloned().unwrap_or_default();
+                if data.is_empty() {
+                    log::warn!(
+                        "[batch] DrawImage references unknown image id {image_id}; dropping"
+                    );
+                    return None;
+                }
                 let applied_rect = state.apply_to_rect(rect);
                 let combined_opacity = state.opacity * opacity;
-                // Apply combined opacity by blending into the alpha of the first
-                // pixel of image data (best-effort when we can't inject metadata).
-                let _ = combined_opacity;
+                // RenderCommand::DrawImage has no alpha channel, so a partial
+                // opacity is baked into the image's alpha bytes (RGBA).
+                if combined_opacity < 1.0 && data.len() % 4 == 0 {
+                    for px in data.chunks_exact_mut(4) {
+                        px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
                 Some(RenderCommand::DrawImage {
                     x: applied_rect.x,
                     y: applied_rect.y,
@@ -306,17 +316,15 @@ impl BatchState {
                 })
             }
 
-            BatchCommand::DrawImageSubrect { dest, source: _source, image_id, opacity } => {
-                let data = images.get(image_id).cloned().unwrap_or_default();
-                let applied_dest = state.apply_to_rect(dest);
-                let _combined_opacity = state.opacity * opacity;
-                Some(RenderCommand::DrawImage {
-                    x: applied_dest.x,
-                    y: applied_dest.y,
-                    width: applied_dest.width,
-                    height: applied_dest.height,
-                    data,
-                })
+            BatchCommand::DrawImageSubrect { image_id, .. } => {
+                // Source-region cropping needs the source image's dimensions,
+                // which the image cache (ObjectId -> raw RGBA bytes) does not
+                // carry. Emitting a stretched full-image would silently render
+                // the wrong pixels, so drop the command and report it instead.
+                log::warn!(
+                    "[batch] DrawImageSubrect (image={image_id}) dropped: source-crop requires image dimensions metadata that is not stored"
+                );
+                None
             }
 
             BatchCommand::DrawText { position, text, color, font_size } => {

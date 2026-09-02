@@ -1,6 +1,6 @@
 //! SVG rendering backend — converts `RenderCommand`s into SVG elements.
 //!
-//! This backend implements [`PaintBackend`] by generating SVG markup
+//! This backend implements `PaintBackend` by generating SVG markup
 //! instead of rasterizing pixels. Any widget's `Draw::draw()` method
 //! can produce SVG output by simply swapping the backend.
 //!

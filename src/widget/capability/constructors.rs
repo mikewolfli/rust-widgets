@@ -1,6 +1,8 @@
 #[cfg(not(feature = "mini"))]
 use crate::core::Color;
-use crate::core::{Point, Rect};
+#[cfg(not(feature = "mini"))]
+use crate::core::Point;
+use crate::core::Rect;
 #[cfg(not(feature = "mini"))]
 use crate::widget::special_widgets::freeform_shape::ShapePath;
 use crate::widget::*;

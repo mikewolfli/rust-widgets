@@ -114,7 +114,15 @@ impl BaseWidget {
         &self.children
     }
     pub fn add_child(&mut self, child: ObjectId) {
-        self.children.push(child);
+        #[cfg(feature = "mini")]
+        {
+            // heapless::Vec::push returns Result under mini.
+            let _ = self.children.push(child);
+        }
+        #[cfg(not(feature = "mini"))]
+        {
+            self.children.push(child);
+        }
     }
     pub fn remove_child(&mut self, child: ObjectId) {
         self.children.retain(|&id| id != child);

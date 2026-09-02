@@ -269,8 +269,7 @@ impl EventHandler for ToolBox {
             Event::KeyPress { key, .. } => {
                 let next = match (self.orientation, key) {
                     // Vertical: Up/Down; Horizontal: Left/Right
-                    (Orientation::Vertical, 38)
-                    | (Orientation::Horizontal, 37) => {
+                    (Orientation::Vertical, 38) | (Orientation::Horizontal, 37) => {
                         // Up/Left
                         if self.current_index > 0 {
                             Some(self.current_index - 1)
@@ -278,8 +277,7 @@ impl EventHandler for ToolBox {
                             None
                         }
                     }
-                    (Orientation::Vertical, 40)
-                    | (Orientation::Horizontal, 39) => {
+                    (Orientation::Vertical, 40) | (Orientation::Horizontal, 39) => {
                         // Down/Right
                         let next = self.current_index + 1;
                         if next < self.items.len() {
@@ -384,11 +382,8 @@ impl Draw for ToolBox {
                     );
                 }
                 // Draw item text
-                let text_color = if !is_enabled {
-                    Color::rgb(150, 150, 150)
-                } else {
-                    Color::rgb(0, 0, 0)
-                };
+                let text_color =
+                    if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
                 context.draw_text(
                     Point::new(text_x, item_rect.y + item_rect.height as i32 / 2),
                     &item.text,

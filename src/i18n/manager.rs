@@ -47,8 +47,8 @@ impl I18nManager {
             let mut file = File::open(path).map_err(|e| format!("Failed to open file: {e}"))?;
             let mut content = String::new();
             file.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {e}"))?;
-            let translation_file: TranslationFile = serde_json::from_str(&content)
-                .map_err(|e| format!("Failed to parse JSON: {e}"))?;
+            let translation_file: TranslationFile =
+                serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
             self.translations.insert(language.to_string(), translation_file);
             if let Some(modified) = File::open(path)
                 .ok()

@@ -5,7 +5,7 @@
 //! contains text. It also supports placeholder text that is shown when the
 //! field is empty and unfocused.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -226,7 +226,13 @@ impl Draw for FloatingLabel {
             } else {
                 Color::rgba(160, 160, 160, 255)
             };
-            context.draw_text(Point::new(text_x, text_y), &self.text, &input_font, text_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &self.text,
+                &input_font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

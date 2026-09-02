@@ -5,7 +5,7 @@
 //! optional icon, enabled state, and optional children for submenu support.
 //! Selecting an item emits an `item_selected` signal with the item's value.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;

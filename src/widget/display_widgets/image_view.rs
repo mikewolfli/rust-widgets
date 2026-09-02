@@ -107,13 +107,7 @@ impl Draw for ImageView {
             let font = self.style().font.as_ref().unwrap_or(&default_font);
             let text_x = rect.x + rect.width as i32 / 2 - 4;
             let text_y = rect.y + rect.height as i32 / 2 - 8;
-            context.draw_text(
-                Point::new(text_x, text_y),
-                "?",
-                font,
-                fg,
-                HorizontalAlignment::Left,
-            );
+            context.draw_text(Point::new(text_x, text_y), "?", font, fg, HorizontalAlignment::Left);
         }
     }
 }

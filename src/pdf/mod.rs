@@ -9,6 +9,8 @@ pub mod metadata;
 pub mod page;
 pub mod reader;
 pub mod security;
+#[cfg(test)]
+mod tests;
 pub mod traits;
 pub mod types;
 pub mod writer;

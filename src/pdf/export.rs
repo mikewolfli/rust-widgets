@@ -3,7 +3,9 @@
 //! Provides [`PdfExporter`] and [`export_to_pdf`] to render widget trees
 //! into PDF documents by leveraging the SVG rendering pipeline.
 
-use crate::core::{Rect, Size};
+#[cfg(not(feature = "mini"))]
+use crate::core::Rect;
+use crate::core::Size;
 #[cfg(not(feature = "mini"))]
 use crate::widget::svg::render_widget_to_svg;
 use crate::widget::Draw;
@@ -237,6 +239,7 @@ impl Default for PdfExporter {
 /// This creates a valid PDF-1.4 file where each page's content stream contains
 /// the SVG markup wrapped in a `q`/`Q` pair. The SVG is embedded directly,
 /// making the output suitable for further processing or viewer consumption.
+#[cfg(not(feature = "mini"))]
 fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
         return Err("at least one page is required".to_string());
@@ -322,6 +325,7 @@ fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<V
 
 /// Build the content stream for a single PDF page, converting SVG content
 /// into real PDF content operators so viewers render the content visually.
+#[cfg(not(feature = "mini"))]
 fn build_content_stream(page: &ExportPage, _settings: &PdfExportSettings) -> String {
     let mut stream = String::new();
 
@@ -346,6 +350,7 @@ fn build_content_stream(page: &ExportPage, _settings: &PdfExportSettings) -> Str
 ///
 /// Parses basic SVG primitives (`rect`, `circle`, `path`) and emits
 /// the corresponding PDF operators so the content renders visually.
+#[cfg(not(feature = "mini"))]
 fn svg_to_pdf_operators(svg: &str) -> String {
     let mut pdf = String::new();
 
@@ -474,6 +479,7 @@ fn svg_to_pdf_operators(svg: &str) -> String {
 }
 
 /// Extract the value of an XML attribute by name using simple string search.
+#[cfg(not(feature = "mini"))]
 fn extract_attr(s: &str, name: &str) -> Option<String> {
     let pattern = format!("{name}=\"");
     if let Some(start) = s.find(&pattern) {
@@ -486,6 +492,7 @@ fn extract_attr(s: &str, name: &str) -> Option<String> {
 }
 
 /// Parse an SVG color string (#RRGGBB) into normalized RGB floats (0.0-1.0).
+#[cfg(not(feature = "mini"))]
 fn parse_svg_color(color: &str) -> Option<(f32, f32, f32)> {
     if color.starts_with('#') && color.len() == 7 {
         let r = u8::from_str_radix(&color[1..3], 16).ok()?;
@@ -498,6 +505,7 @@ fn parse_svg_color(color: &str) -> Option<(f32, f32, f32)> {
 }
 
 /// Convert a simplified SVG path `d` string to PDF path operators.
+#[cfg(not(feature = "mini"))]
 fn svg_path_to_pdf(d: &str) -> String {
     let mut pdf = String::new();
     let parts: Vec<&str> = d.split_whitespace().collect();
@@ -572,21 +580,26 @@ pub fn export_to_pdf(_widgets: &mut [&mut dyn Draw], _path: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "mini"))]
     use crate::core::Rect;
+    #[cfg(not(feature = "mini"))]
     use std::sync::{Arc, Mutex};
 
     /// A simple test widget that records draw calls.
+    #[cfg(not(feature = "mini"))]
     struct TestWidget {
         _geometry: Rect,
         draw_count: Arc<Mutex<u32>>,
     }
 
+    #[cfg(not(feature = "mini"))]
     impl TestWidget {
         fn new(width: u32, height: u32) -> Self {
             Self { _geometry: Rect::new(0, 0, width, height), draw_count: Arc::new(Mutex::new(0)) }
         }
     }
 
+    #[cfg(not(feature = "mini"))]
     impl Draw for TestWidget {
         fn draw(&mut self, _context: &mut crate::render::RenderContext) {
             *self.draw_count.lock().unwrap() += 1;
@@ -661,6 +674,7 @@ mod tests {
         assert!((ch - (841.89 - 144.0)).abs() < 0.01);
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn pdf_exporter_render_pages() {
         let mut widget = TestWidget::new(100, 50);
@@ -680,6 +694,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn build_svg_pdf_produces_valid_pdf_header() {
         let pages = vec![ExportPage::new(
@@ -705,6 +720,7 @@ mod tests {
         assert!(text.contains("%%EOF"));
     }
 
+    #[cfg(not(feature = "mini"))]
     #[test]
     fn build_svg_pdf_empty_pages_returns_error() {
         let pages = vec![];

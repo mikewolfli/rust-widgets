@@ -8,5 +8,4 @@
 pub mod platform_impl;
 pub mod types;
 
-pub use platform_impl::*;
 pub use types::*;

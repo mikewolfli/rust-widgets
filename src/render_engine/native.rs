@@ -1,6 +1,8 @@
 //! Native desktop render engine backed by platform adapters.
 
+#[cfg(not(feature = "mini"))]
 use super::engine_trait::RenderEngine;
+#[cfg(not(feature = "mini"))]
 use crate::core::RuntimeProfile;
 #[cfg(not(feature = "mini"))]
 use crate::platform::get_platform;

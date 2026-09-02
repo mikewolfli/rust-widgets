@@ -1,4 +1,7 @@
+// criterion (benchmark harness) cannot compile for wasm32.
+#![cfg(not(target_arch = "wasm32"))]
 //! Benchmarks for the signal system (emit, connect, disconnect).
+
 //!
 //! Covers:
 //! - `signal_emit_N_slots` — emit cost with 10 / 100 / 1000 slots

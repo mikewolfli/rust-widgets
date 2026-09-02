@@ -6,7 +6,7 @@
 //! highlighted with the accent color, and tapping a tab emits `selected_changed`
 //! with the new index.
 
-use crate::core::{HorizontalAlignment, Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -166,12 +166,24 @@ impl Draw for BottomNavigationBar {
             // Draw icon
             let icon_x = tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2;
             let icon_y = content_y + icon_metrics.ascent as i32;
-            context.draw_text(Point::new(icon_x, icon_y), &item.icon, &icon_font, icon_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(icon_x, icon_y),
+                &item.icon,
+                &icon_font,
+                icon_color,
+                HorizontalAlignment::Left,
+            );
 
             // Draw label
             let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;
             let label_y = content_y + icon_metrics.height as i32 + 4 + label_metrics.ascent as i32;
-            context.draw_text(Point::new(label_x, label_y), &item.label, &label_font, label_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(label_x, label_y),
+                &item.label,
+                &label_font,
+                label_color,
+                HorizontalAlignment::Left,
+            );
 
             // Draw selected indicator (accent line above icon)
             if is_selected && is_enabled {

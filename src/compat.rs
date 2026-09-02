@@ -1,8 +1,10 @@
 //! BLUE13 Phase 3: Alloc bridge — unified imports for std and no_std.
 //!
 //! All crate files should import common types from here instead of `std`
-//! when those types are not available in `core`/`alloc`. This enables
-//! `#![cfg_attr(feature = "mini", no_std)]` without `#[cfg]` in 200+ files.
+//! when those types are not available in `core`/`alloc`. This keeps the
+//! codebase ready for `#![cfg_attr(feature = "mini", no_std)]` without
+//! `#[cfg]` in 200+ files. Note: that attribute is not yet enabled — the
+//! `mini` profile currently compiles on std.
 
 // ── core re-exports (exported unconditionally, always available) ──
 pub use core::any::Any;
@@ -12,100 +14,10 @@ pub use core::hash::{Hash, Hasher};
 pub use core::sync::atomic;
 pub use core::time::Duration;
 
-// ── RwLock for mini builds (no_std compatible, single-threaded only) ──
-
-/// A simple RwLock implementation for mini (no_std) builds.
-/// Single-threaded only — uses RefCell internally.
-#[cfg(feature = "mini")]
-mod rwlock_mini {
-    use core::cell::{Ref, RefCell, RefMut};
-    use core::fmt;
-    use core::ops::{Deref, DerefMut};
-
-    pub struct RwLock<T> {
-        inner: RefCell<T>,
-    }
-
-    /// Poison error that wraps the inner guard (mini never actually poisons).
-    #[derive(Debug)]
-    pub struct RwLockPoisonError<G> {
-        guard: G,
-    }
-
-    impl<G> RwLockPoisonError<G> {
-        pub fn into_inner(self) -> G {
-            self.guard
-        }
-    }
-
-    impl<T> RwLock<T> {
-        pub const fn new(value: T) -> Self {
-            Self { inner: RefCell::new(value) }
-        }
-
-        pub fn read(
-            &self,
-        ) -> Result<RwLockReadGuard<'_, T>, RwLockPoisonError<RwLockReadGuard<'_, T>>> {
-            Ok(RwLockReadGuard { inner: self.inner.borrow() })
-        }
-
-        pub fn write(
-            &self,
-        ) -> Result<RwLockWriteGuard<'_, T>, RwLockPoisonError<RwLockWriteGuard<'_, T>>> {
-            Ok(RwLockWriteGuard { inner: self.inner.borrow_mut() })
-        }
-    }
-
-    pub struct RwLockReadGuard<'a, T> {
-        inner: Ref<'a, T>,
-    }
-
-    impl<'a, T> fmt::Debug for RwLockReadGuard<'a, T> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("RwLockReadGuard").finish_non_exhaustive()
-        }
-    }
-
-    impl<'a, T> Deref for RwLockReadGuard<'a, T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            &self.inner
-        }
-    }
-
-    pub struct RwLockWriteGuard<'a, T> {
-        inner: RefMut<'a, T>,
-    }
-
-    impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            &self.inner
-        }
-    }
-
-    impl<'a, T> DerefMut for RwLockWriteGuard<'a, T> {
-        fn deref_mut(&mut self) -> &mut T {
-            &mut self.inner
-        }
-    }
-
-    impl<'a, T> fmt::Debug for RwLockWriteGuard<'a, T> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("RwLockWriteGuard").finish_non_exhaustive()
-        }
-    }
-
-    // SAFETY: Under mini (single-threaded), no concurrent access is possible.
-    unsafe impl<T> Send for RwLock<T> {}
-    unsafe impl<T> Sync for RwLock<T> {}
-}
-
-#[cfg(feature = "mini")]
-pub use rwlock_mini::RwLock;
-
-// Under non-mini, re-export std::sync::RwLock
-#[cfg(not(feature = "mini"))]
+// ── RwLock (thread-safe in both profiles) ──
+// Under mini (which compiles on std), re-uses the battle-tested std RwLock
+// instead of a RefCell wrapper. A RefCell-backed "RwLock" would panic on
+// concurrent access (e.g. tests sharing a global), which is not a real lock.
 pub use std::sync::RwLock;
 
 // ── alloc re-exports (available in both std and no_std) ──
@@ -169,99 +81,11 @@ pub use alloc::collections::BTreeMap as HashMap;
 #[cfg(not(feature = "mini"))]
 pub use std::collections::HashMap;
 
-/// A thread-safe mutual exclusion primitive.
-/// Under mini (no_std), wraps `RefCell` with `lock()` → `RefMut`.
-/// Under desktop, re-exports `std::sync::Mutex`.
-#[cfg(feature = "mini")]
-pub struct Mutex<T> {
-    inner: core::cell::RefCell<T>,
-}
-
-/// A poison error wrapper for mini builds (no actual poisoning).
-#[cfg(feature = "mini")]
-#[derive(Debug)]
-pub struct PoisonError<T> {
-    inner: T,
-}
-
-#[cfg(feature = "mini")]
-impl<T> PoisonError<T> {
-    pub fn into_inner(self) -> T {
-        self.inner
-    }
-}
-
-#[cfg(feature = "mini")]
-impl<T> Mutex<T> {
-    pub const fn new(value: T) -> Self {
-        Self { inner: core::cell::RefCell::new(value) }
-    }
-
-    pub fn lock(&self) -> Result<MutexGuard<'_, T>, PoisonError<MutexGuard<'_, T>>> {
-        Ok(MutexGuard { inner: self.inner.borrow_mut() })
-    }
-
-    pub fn into_inner(self) -> T {
-        self.inner.into_inner()
-    }
-}
-
-#[cfg(feature = "mini")]
-impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Mutex").field("inner", &self.inner).finish()
-    }
-}
-
-#[cfg(feature = "mini")]
-impl<T: Default> Default for Mutex<T> {
-    fn default() -> Self {
-        Self { inner: core::cell::RefCell::new(T::default()) }
-    }
-}
-
-// SAFETY: Under mini (single-threaded), no concurrent access is possible.
-#[cfg(feature = "mini")]
-unsafe impl<T> Send for Mutex<T> {}
-#[cfg(feature = "mini")]
-unsafe impl<T> Sync for Mutex<T> {}
-
-#[cfg(feature = "mini")]
-pub struct MutexGuard<'a, T> {
-    inner: core::cell::RefMut<'a, T>,
-}
-
-#[cfg(feature = "mini")]
-unsafe impl<'a, T: Send> Send for MutexGuard<'a, T> {}
-#[cfg(feature = "mini")]
-unsafe impl<'a, T: Sync> Sync for MutexGuard<'a, T> {}
-
-#[cfg(feature = "mini")]
-impl<'a, T> core::fmt::Debug for MutexGuard<'a, T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MutexGuard").finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "mini")]
-impl<'a, T> core::ops::Deref for MutexGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.inner.deref()
-    }
-}
-
-#[cfg(feature = "mini")]
-impl<'a, T> core::ops::DerefMut for MutexGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.inner.deref_mut()
-    }
-}
-
-#[cfg(not(feature = "mini"))]
+// ── Mutex (thread-safe in both profiles) ──
+// Under mini (which compiles on std), re-uses the battle-tested std Mutex
+// instead of a RefCell wrapper. A RefCell-backed "Mutex" panics on
+// re-entrant/concurrent access — not a real mutual-exclusion primitive.
 pub use std::sync::Mutex;
-
-#[cfg(not(feature = "mini"))]
 pub use std::sync::MutexGuard;
 
 // ── Bump arena allocator (BLUE13 R5.5) ──
@@ -288,6 +112,9 @@ impl MiniArena {
 
     /// Allocate a value in the arena. Returns a mutable reference.
     /// The value lives until the arena is reset.
+    // NOTE: `&self -> &mut T` is the arena contract — the returned reference is
+    // exclusive until `reset()` because the arena is single-threaded under mini.
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T>(&self, val: T) -> &mut T {
         // SAFETY: Under mini (single-threaded), no concurrent access.
         // The Bump is only borrowed mutably here, and the returned reference
@@ -296,6 +123,8 @@ impl MiniArena {
     }
 
     /// Allocate a slice by copying from an iterator.
+    // NOTE: Same arena contract as `alloc` — see above.
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &mut [T] {
         // SAFETY: Same reasoning as alloc().
         unsafe { (*self.bump.get()).alloc_slice_copy(slice) }
@@ -313,6 +142,13 @@ impl MiniArena {
     pub fn allocated_bytes(&self) -> usize {
         // SAFETY: allocated_bytes() is a read-only operation safe under single-threaded.
         unsafe { (*self.bump.get()).allocated_bytes() }
+    }
+}
+
+#[cfg(feature = "mini")]
+impl Default for MiniArena {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -406,6 +242,13 @@ impl<T> OnceLock<T> {
 }
 
 #[cfg(feature = "mini")]
+impl<T> Default for OnceLock<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "mini")]
 // SAFETY: Under mini (no_std, single-threaded), no concurrent access is possible.
 unsafe impl<T> Sync for OnceLock<T> {}
 #[cfg(feature = "mini")]
@@ -414,65 +257,10 @@ unsafe impl<T> Send for OnceLock<T> {}
 #[cfg(not(feature = "mini"))]
 pub use std::sync::OnceLock;
 
-// ── Instant compat (no_std stub for mini builds) ──
-
-/// A measurement of a monotonically non-decreasing clock.
-/// Under mini, always returns `Duration::ZERO` for `elapsed()`.
-/// Under desktop, re-exports `std::time::Instant`.
-#[cfg(feature = "mini")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Instant;
-
-#[cfg(feature = "mini")]
-impl Instant {
-    pub fn now() -> Self {
-        Self
-    }
-    pub fn elapsed(&self) -> Duration {
-        Duration::ZERO
-    }
-    pub fn duration_since(&self, _other: Instant) -> Duration {
-        Duration::ZERO
-    }
-    pub fn checked_duration_since(&self, _other: Instant) -> Option<Duration> {
-        Some(Duration::ZERO)
-    }
-    pub fn saturating_duration_since(&self, _other: Instant) -> Duration {
-        Duration::ZERO
-    }
-    pub fn checked_add(&self, _duration: Duration) -> Option<Instant> {
-        Some(*self)
-    }
-    pub fn checked_sub(&self, _duration: Duration) -> Option<Instant> {
-        Some(*self)
-    }
-    pub fn as_nanos(&self) -> u64 {
-        0
-    }
-}
-
-#[cfg(feature = "mini")]
-impl core::ops::Add<Duration> for Instant {
-    type Output = Instant;
-    fn add(self, _other: Duration) -> Instant {
-        self
-    }
-}
-
-#[cfg(feature = "mini")]
-impl core::ops::Sub<Duration> for Instant {
-    type Output = Instant;
-    fn sub(self, _other: Duration) -> Instant {
-        self
-    }
-}
-
-#[cfg(feature = "mini")]
-impl core::ops::AddAssign<Duration> for Instant {
-    fn add_assign(&mut self, _other: Duration) {}
-}
-
-#[cfg(not(feature = "mini"))]
+// ── Instant (real clock in both profiles) ──
+// Under mini (which compiles on std), re-uses the real std clock. A zero-valued
+// stub would silently break every timing-based subsystem (timers, FPS counters,
+// animation frames) — not a working implementation.
 pub use std::time::Instant;
 
 // ── mpsc compat (single-threaded channel for mini builds) ──
@@ -496,6 +284,8 @@ pub mod mpsc {
     }
 
     impl<T> Sender<T> {
+        // `Result<(), ()>` mirrors the `std::sync::mpsc` API shape.
+        #[allow(clippy::result_unit_err)]
         pub fn send(&self, value: T) -> Result<(), ()> {
             self.inner.borrow_mut().push_back(value);
             Ok(())
@@ -507,17 +297,15 @@ pub mod mpsc {
     }
 
     impl<T> Receiver<T> {
+        #[allow(clippy::result_unit_err)]
         pub fn try_recv(&self) -> Result<T, ()> {
             self.inner.borrow_mut().pop_front().ok_or(())
         }
+        #[allow(clippy::result_unit_err)]
         pub fn recv(&self) -> Result<T, ()> {
-            loop {
-                if let Some(val) = self.inner.borrow_mut().pop_front() {
-                    return Ok(val);
-                }
-                // No threads under mini, so no events to wait on — return error
-                return Err(());
-            }
+            // No threads under mini, so there is nothing to wait on —
+            // return the first available value or an error.
+            self.inner.borrow_mut().pop_front().ok_or(())
         }
     }
 
@@ -545,6 +333,13 @@ impl Condvar {
     }
     pub fn notify_all(&self) {}
     pub fn notify_one(&self) {}
+}
+
+#[cfg(feature = "mini")]
+impl Default for Condvar {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(not(feature = "mini"))]

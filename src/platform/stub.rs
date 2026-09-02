@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 /// Handle kind discriminator for stub widget records.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))), derive(Serialize, Deserialize))]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
 pub(crate) enum StubHandleKind {
     Window,
     Button,

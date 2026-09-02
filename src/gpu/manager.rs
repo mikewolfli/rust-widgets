@@ -28,9 +28,10 @@ pub enum GpuOperationMode {
 
 /// Self-contained quality level tracker used by `GpuManager`.
 ///
-/// Replaces the previous dependency on `crate::quality::QualityManager` which
-/// does not export the type. This local implementation provides the same
-/// degrade/upgrade logic with frame-time monitoring.
+/// This local tracker keeps the GPU layer independent of the global
+/// [`crate::quality::QualityManager`], which is only fed by the wgpu compose
+/// path; the GPU manager applies its own frame-time degrade/upgrade logic
+/// against render completion timings.
 struct GpuQualityTracker {
     /// Current quality level.
     level: QualityLevel,

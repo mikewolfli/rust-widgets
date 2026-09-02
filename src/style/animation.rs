@@ -506,7 +506,7 @@ impl AnimationDriver {
         // Phase 1: Advance internal animation state (iteration counting,
         // on_complete callbacks) by calling update() on every active animation.
         // This must happen before progress snapshots so is_completed() is accurate.
-        for (_, entry) in self.animations.iter_mut() {
+        for entry in self.animations.values_mut() {
             if entry.anim.is_running() {
                 entry.anim.update();
             }
@@ -667,13 +667,7 @@ where
 {
     let duration_ms = theme.get_transition(&from, &to)?;
     let duration = Duration::from_millis(duration_ms as u64);
-    Some(driver.animate_linear(
-        format!("state_{from:?}_to_{to:?}"),
-        0.0,
-        1.0,
-        duration,
-        on_tick,
-    ))
+    Some(driver.animate_linear(format!("state_{from:?}_to_{to:?}"), 0.0, 1.0, duration, on_tick))
 }
 
 /// A group of animations that run concurrently.

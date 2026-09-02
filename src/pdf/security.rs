@@ -1,56 +1,51 @@
-//! PDF security serialization, parsing, and encryption.
+//! PDF security serialization, parsing, and content-level encryption.
 //!
-//! Provides both diagnostic/placeholder security metadata serialization
-//! (always available) and real AES-128-CBC encryption when the
-//! `pdf-encryption` feature is enabled.
+//! # Document-level security model
+//!
+//! Setting a [`PdfSecurity`] records *intent*: the serialized marker states the
+//! requested permissions and explicitly notes that the document is **not
+//! encrypted** (document-level PDF encryption is not wired into the writer).
+//! Passwords are never written into the output file — echoing them into an
+//! unencrypted document would leak the secrets in plain text.
+//!
+//! # Content-level encryption tooling (`pdf-encryption` feature)
+//!
+//! With the `pdf-encryption` feature the module additionally provides real
+//! AES-128-CBC primitives ([`PdfEncryption`], [`encrypt_pdf`]) that encrypt
+//! arbitrary byte content with a password-derived key. These are content-level
+//! helpers, not a substitute for a standards-compliant PDF encryption
+//! dictionary pipeline.
 
 use crate::pdf::types::*;
 
-// ═══════════════════════════════════════════════════════════════════════
-// Diagnostic / Placeholder Mode (always available)
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Serialize security diagnostics entries.
+/// Serialize the security intent marker.
 ///
-/// Without the `pdf-encryption` feature, emits a comment-only marker
-/// indicating encryption intent without producing a compliant encryption
-/// dictionary (avoiding fake /RW* keys that would confuse PDF readers).
-///
-/// With the `pdf-encryption` feature, this function produces a real
-/// encryption dictionary entry instead of the placeholder comment.
+/// Returns the empty string for a default (fully open) security profile.
+/// Otherwise returns a standalone `%` comment line stating the requested
+/// permissions and warning that the output is NOT encrypted. Never contains
+/// password material.
 pub(crate) fn serialize_security_diagnostics_entries(security: &PdfSecurity) -> String {
     if *security == PdfSecurity::default() {
         return String::new();
     }
-    // When real encryption is available, delegate to the encryption path.
-    #[cfg(feature = "pdf-encryption")]
-    {
-        build_encryption_dictionary_from_security(security)
-    }
-    // Fallback: emit a comment-only marker.
-    #[cfg(not(feature = "pdf-encryption"))]
-    {
-        let user_password = security.user_password.as_deref().unwrap_or("");
-        let owner_password = security.owner_password.as_deref().unwrap_or("");
-        format!(
-            " % RW-NOTE: PDF encryption not implemented (password=\"{}\", owner=\"{}\", print={}, edit={}, copy={}, annot={})",
-            pdf_escape_literal(user_password),
-            pdf_escape_literal(owner_password),
-            security.print_permission,
-            security.edit_permission,
-            security.copy_permission,
-            security.annotation_permission,
-        )
-    }
+    format!(
+        "% RW-NOTE: PDF encryption requested but not implemented (print={}, edit={}, copy={}, annot={}) — document is NOT encrypted",
+        security.print_permission,
+        security.edit_permission,
+        security.copy_permission,
+        security.annotation_permission,
+    )
 }
 
 /// Parse security diagnostics from document info text.
 ///
-/// Looks for the `% RW-NOTE: PDF encryption not implemented` comment that
-/// was placed by [`serialize_security_diagnostics_entries`] and reconstructs
-/// the original [`PdfSecurity`] from the embedded parameters.
+/// Looks for the `% RW-NOTE: PDF encryption ...` comment that was placed by
+/// [`serialize_security_diagnostics_entries`] and reconstructs the original
+/// [`PdfSecurity`] from the embedded permission parameters. Legacy files that
+/// embedded plain-text passwords (older builds) are still parsed for
+/// backward compatibility, but new output never contains passwords.
 pub(crate) fn parse_security_diagnostics(text: &str) -> Option<PdfSecurity> {
-    if !text.contains("RW-NOTE: PDF encryption not implemented") {
+    if !text.contains("RW-NOTE: PDF encryption") {
         return None;
     }
     let user_password = parse_legacy_password(text).unwrap_or_default();
@@ -191,38 +186,6 @@ impl PdfEncryption {
     }
 }
 
-/// Convert a `PdfSecurity` into an encryption dictionary string.
-///
-/// Called by `serialize_security_diagnostics_entries` when the
-/// `pdf-encryption` feature is active.
-#[cfg(feature = "pdf-encryption")]
-fn build_encryption_dictionary_from_security(security: &PdfSecurity) -> String {
-    let user_pw = security.user_password.as_deref().unwrap_or("");
-    let owner_pw = security.owner_password.as_deref().unwrap_or("");
-
-    // Encode permission flags from the PdfSecurity booleans.
-    let mut permissions: u32 = 0;
-    if security.print_permission {
-        permissions |= 1 << 2; // bit 3
-    }
-    if security.edit_permission {
-        permissions |= 1 << 3; // bit 4
-    }
-    if security.copy_permission {
-        permissions |= 1 << 4; // bit 5
-    }
-    if security.annotation_permission {
-        permissions |= 1 << 5; // bit 6
-    }
-    // Bits 1-2 reserved; bit 0 (always 1) for ISO 32000 compatibility.
-    permissions |= 1 << 0;
-    // Bit 1 (always 1) for PDF 2.0 compatibility.
-    permissions |= 1 << 1;
-
-    let enc = PdfEncryption::new(user_pw, owner_pw, permissions);
-    enc.build_encryption_dictionary()
-}
-
 /// Encrypt PDF content with AES-128-CBC using a key derived from
 /// the user password and a random salt.
 ///
@@ -360,56 +323,49 @@ mod tests {
             annotation_permission: false,
         };
         let result = serialize_security_diagnostics_entries(&security);
-        // Without pdf-encryption feature, the placeholder is emitted.
-        // With the feature, we get a real encryption dictionary.
-        #[cfg(not(feature = "pdf-encryption"))]
-        {
-            assert!(result.contains("RW-NOTE: PDF encryption not implemented"));
-            assert!(result.contains("password=\"hello\""));
-            assert!(result.contains("owner=\"world\""));
-            assert!(result.contains("print=true"));
-            assert!(result.contains("edit=false"));
-            assert!(result.contains("copy=true"));
-            assert!(result.contains("annot=false"));
-        }
-        #[cfg(feature = "pdf-encryption")]
-        {
-            // With encryption enabled, result should be a PDF encryption dict.
-            assert!(result.contains("/Filter /Standard"));
-            assert!(result.contains("/V 5"));
-            assert!(result.contains("/R 6"));
-            assert!(result.contains("/O <"));
-            assert!(result.contains("/U <"));
-            assert!(result.contains("/P"));
-            assert!(result.contains("/StmF /StmCrypt"));
-            assert!(result.contains("/StrF /StmCrypt"));
-        }
+        // The marker is a standalone comment regardless of features: the
+        // writer never emits a document-level encryption dictionary, so the
+        // output must honestly state that it is NOT encrypted, and passwords
+        // must never appear in plain text.
+        assert!(result.contains("RW-NOTE: PDF encryption"));
+        assert!(result.contains("NOT encrypted"));
+        assert!(result.contains("print=true"));
+        assert!(result.contains("edit=false"));
+        assert!(result.contains("copy=true"));
+        assert!(result.contains("annot=false"));
+        assert!(!result.contains("hello"));
+        assert!(!result.contains("world"));
+        assert!(!result.contains("password="));
     }
 
     #[test]
     fn test_round_trip_via_comment_format() {
-        let _security = PdfSecurity {
-            user_password: Some("test123".to_string()),
-            owner_password: None,
-            print_permission: false,
-            edit_permission: true,
-            copy_permission: false,
-            annotation_permission: true,
-        };
-        #[cfg(not(feature = "pdf-encryption"))]
-        let serialized = serialize_security_diagnostics_entries(&_security);
-
+        // Only meaningful without document-level encryption: with the feature
+        // enabled the marker is identical (the writer never emits a dict).
         #[cfg(not(feature = "pdf-encryption"))]
         {
+            let security = PdfSecurity {
+                user_password: Some("test123".to_string()),
+                owner_password: None,
+                print_permission: false,
+                edit_permission: true,
+                copy_permission: false,
+                annotation_permission: true,
+            };
+            let serialized = serialize_security_diagnostics_entries(&security);
+            // Permissions round-trip…
             let parsed = parse_security_diagnostics(&serialized);
             assert!(parsed.is_some());
             let parsed = parsed.unwrap();
-            assert_eq!(parsed.user_password, Some("test123".to_string()));
-            assert_eq!(parsed.owner_password, None);
             assert!(!parsed.print_permission);
             assert!(parsed.edit_permission);
             assert!(!parsed.copy_permission);
             assert!(parsed.annotation_permission);
+            // …but passwords must never be written into an unencrypted output.
+            assert!(!serialized.contains("test123"));
+            assert!(parsed.user_password.is_none());
+            assert!(parsed.owner_password.is_none());
+            assert!(serialized.contains("NOT encrypted"));
         }
     }
 

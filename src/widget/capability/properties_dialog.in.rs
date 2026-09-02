@@ -3,6 +3,7 @@
 
 macro_rules! impl_properties_dialog {
     () => {
+        #[cfg(not(feature = "mini"))]
         pub(crate) const COLOR_PICKER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "hex_rgba",
@@ -24,6 +25,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MESSAGE_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -45,6 +47,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const FILE_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -78,6 +81,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const FONT_DIALOG_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "modal",
             value_kind: PropertyValueKind::Bool,
@@ -85,6 +89,7 @@ macro_rules! impl_properties_dialog {
             writable: false,
         }];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const INPUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -124,6 +129,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const PROGRESS_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -157,6 +163,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const POPUP_WINDOW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "has_content",
             value_kind: PropertyValueKind::Bool,

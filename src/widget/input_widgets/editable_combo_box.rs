@@ -5,7 +5,7 @@
 //! A `text_changed` signal is emitted when the text field content changes,
 //! and an `item_selected` signal is emitted when a dropdown item is clicked.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -133,16 +133,15 @@ impl EditableComboBox {
     /// Selects the item at the given index and sets the text field to its value.
     /// Emits `item_selected`. Returns `true` if the selection changed.
     pub fn select_index(&mut self, index: usize) -> bool {
-        if index < self.items.len()
-            && self.selected_index != Some(index) {
-                self.selected_index = Some(index);
-                self.text = self.items[index].clone();
-                self.text_changed.emit(self.text.clone());
-                self.item_selected.emit(index);
-                self.expanded = false;
-                self.base.request_redraw();
-                return true;
-            }
+        if index < self.items.len() && self.selected_index != Some(index) {
+            self.selected_index = Some(index);
+            self.text = self.items[index].clone();
+            self.text_changed.emit(self.text.clone());
+            self.item_selected.emit(index);
+            self.expanded = false;
+            self.base.request_redraw();
+            return true;
+        }
         false
     }
 }
@@ -190,7 +189,13 @@ impl Draw for EditableComboBox {
         let display_text = if self.text.is_empty() && !is_enabled { "" } else { &self.text };
         let text_color =
             if is_enabled { Color::rgba(0, 0, 0, 255) } else { Color::rgba(180, 180, 180, 255) };
-        context.draw_text(Point::new(text_x, text_y), display_text, &font, text_color, HorizontalAlignment::Left);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            display_text,
+            &font,
+            text_color,
+            HorizontalAlignment::Left,
+        );
 
         // Draw dropdown arrow
         let arrow_x = rect.x + rect.width as i32 - 20;
@@ -243,7 +248,13 @@ impl Draw for EditableComboBox {
             } else {
                 Color::rgba(180, 180, 180, 255)
             };
-            context.draw_text(Point::new(item_text_x, item_text_y), item, &font, item_color, HorizontalAlignment::Left);
+            context.draw_text(
+                Point::new(item_text_x, item_text_y),
+                item,
+                &font,
+                item_color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

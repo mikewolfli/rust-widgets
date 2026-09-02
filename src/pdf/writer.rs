@@ -177,15 +177,13 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         page_object_ids.push(page_obj_id);
     }
     let info_obj_id = (objects.len() + 1) as u32;
-    let security_entries = serialize_security_diagnostics_entries(&doc.security);
     objects.push(format!(
-        "<< /Title ({}) /Author ({}) /Subject ({}) /Creator ({}) /Producer ({}){} >>",
+        "<< /Title ({}) /Author ({}) /Subject ({}) /Creator ({}) /Producer ({}) >>",
         pdf_escape_literal(&doc.metadata.title),
         pdf_escape_literal(&doc.metadata.author),
         pdf_escape_literal(&doc.metadata.subject),
         pdf_escape_literal(&doc.metadata.creator),
         pdf_escape_literal(&doc.metadata.producer),
-        security_entries,
     ));
     let kids = page_object_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
     let acroform_obj_id = if all_form_field_object_ids.is_empty() {
@@ -213,6 +211,12 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         offsets.push(out.len());
         let obj_id = idx + 1;
         out.extend_from_slice(format!("{obj_id} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    // Security marker as a standalone comment line *outside* any dictionary so
+    // it can never corrupt object/trailer structure or leak plaintext secrets.
+    let security_marker = serialize_security_diagnostics_entries(&doc.security);
+    if !security_marker.is_empty() {
+        out.extend_from_slice(format!("\n{security_marker}\n").as_bytes());
     }
     let xref_offset = out.len();
     out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());

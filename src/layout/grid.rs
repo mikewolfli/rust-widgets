@@ -65,9 +65,7 @@ impl GridLayout {
     /// Sets the uniform column stretch factor (applied to all columns).
     pub fn set_column_stretch(&mut self, stretch: u32) {
         let stretch = stretch.max(1);
-        for s in &mut self.column_stretches {
-            *s = stretch;
-        }
+        self.column_stretches.fill(stretch);
     }
 
     /// Returns the stretch factor for a specific column.
@@ -95,9 +93,7 @@ impl GridLayout {
     /// Sets the uniform row stretch factor (applied to all rows).
     pub fn set_row_stretch(&mut self, stretch: u32) {
         let stretch = stretch.max(1);
-        for s in &mut self.row_stretches {
-            *s = stretch;
-        }
+        self.row_stretches.fill(stretch);
     }
 
     /// Returns the stretch factor for a specific row.
@@ -143,9 +139,7 @@ impl Layout for GridLayout {
         self.cells.contains(&Some(id))
     }
     fn clear(&mut self) {
-        for cell in &mut self.cells {
-            *cell = None;
-        }
+        self.cells.fill(None);
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         let available_width = rect

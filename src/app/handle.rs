@@ -923,6 +923,51 @@ impl LineEditHandle {
         });
     }
 
+    /// Return the placeholder text set via [`Self::set_placeholder`].
+    pub fn placeholder(&self) -> String {
+        LINE_EDIT_STATES.with(|map| {
+            map.borrow().get(&self.raw_id()).map(|s| s.placeholder.clone()).unwrap_or_default()
+        })
+    }
+
+    /// Return whether the line-edit is read-only.
+    pub fn is_read_only(&self) -> bool {
+        LINE_EDIT_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.read_only).unwrap_or(false))
+    }
+
+    /// Return the maximum number of characters allowed (default 32767).
+    pub fn max_length(&self) -> u32 {
+        LINE_EDIT_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.max_length).unwrap_or(32767))
+    }
+
+    /// Return the current echo mode.
+    pub fn echo_mode(&self) -> EchoMode {
+        LINE_EDIT_STATES.with(|map| {
+            map.borrow().get(&self.raw_id()).map(|s| s.echo_mode).unwrap_or(EchoMode::Normal)
+        })
+    }
+
+    /// Return the current selection range `(start, end)`.
+    ///
+    /// When [`Self::select_all`] was used, the range is `(0, u32::MAX)` and
+    /// [`Self::is_select_all`] reports `true`.
+    pub fn selection(&self) -> (u32, u32) {
+        LINE_EDIT_STATES.with(|map| {
+            map.borrow()
+                .get(&self.raw_id())
+                .map(|s| (s.selection_start, s.selection_end))
+                .unwrap_or((0, 0))
+        })
+    }
+
+    /// Return whether the whole text range is selected via [`Self::select_all`].
+    pub fn is_select_all(&self) -> bool {
+        LINE_EDIT_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.select_all).unwrap_or(false))
+    }
+
     /// Select all text in the line-edit.
     pub fn select_all(&self) {
         LINE_EDIT_STATES.with(|map| {
@@ -1409,5 +1454,60 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             assert!(!map.borrow().contains_key(&id));
         });
+    }
+
+    #[test]
+    fn line_edit_handle_state_defaults() {
+        let id: ObjectId = 5001;
+        let handle = LineEditHandle::from_raw(id);
+        assert_eq!(handle.placeholder(), "");
+        assert!(!handle.is_read_only());
+        assert_eq!(handle.max_length(), 32767);
+        assert_eq!(handle.echo_mode(), EchoMode::Normal);
+        assert_eq!(handle.selection(), (0, 0));
+        assert!(!handle.is_select_all());
+    }
+
+    #[test]
+    fn line_edit_handle_state_roundtrip() {
+        let id: ObjectId = 5002;
+        let handle = LineEditHandle::from_raw(id);
+        handle.set_placeholder("Type here...");
+        handle.set_read_only(true);
+        handle.set_max_length(64);
+        handle.set_echo_mode(EchoMode::Password);
+
+        assert_eq!(handle.placeholder(), "Type here...");
+        assert!(handle.is_read_only());
+        assert_eq!(handle.max_length(), 64);
+        assert_eq!(handle.echo_mode(), EchoMode::Password);
+    }
+
+    #[test]
+    fn line_edit_handle_selection_semantics() {
+        let id: ObjectId = 5003;
+        let handle = LineEditHandle::from_raw(id);
+
+        // select_all sets an unbounded range and the select-all marker.
+        handle.select_all();
+        assert!(handle.is_select_all());
+        assert_eq!(handle.selection(), (0, u32::MAX));
+
+        // A precise selection clears the select-all marker.
+        handle.set_selection(2, 5);
+        assert!(!handle.is_select_all());
+        assert_eq!(handle.selection(), (2, 5));
+    }
+
+    #[test]
+    fn line_edit_handle_states_are_scoped_per_widget() {
+        let a = LineEditHandle::from_raw(5004);
+        let b = LineEditHandle::from_raw(5005);
+        a.set_max_length(8);
+        b.set_read_only(true);
+        assert_eq!(a.max_length(), 8);
+        assert!(!a.is_read_only());
+        assert_eq!(b.max_length(), 32767);
+        assert!(b.is_read_only());
     }
 }

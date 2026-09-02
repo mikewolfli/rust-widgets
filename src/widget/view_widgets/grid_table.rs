@@ -1103,9 +1103,7 @@ mod tests {
         tbl.ensure_column_widths(20);
         // All cols default to 120, so with 600px width and 48px row-number gutter,
         // we should fit 4 columns (552/120 ≈ 4)
-        for w in &mut tbl.column_widths {
-            *w = 120;
-        }
+        tbl.column_widths.fill(120);
         tbl.update_visibility();
 
         // 400px height - 28px header = 372px data area, / 24px row height ≈ 15 rows

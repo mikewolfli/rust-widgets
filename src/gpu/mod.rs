@@ -42,6 +42,7 @@ pub use buffer_pool::{
     GpuBufferAllocation, GpuBufferPoolStats, GpuMemoryProfile, GpuStagingBufferPool,
     GpuUploadBatcher, MappingStrategy, StagingBufferPoolConfig,
 };
+pub use init::{init, init_with_strategy, is_gpu_available, subsystem_summary};
 pub use manager::{
     GpuManager, GpuManagerAction, GpuManagerBuilder, GpuManagerError, GpuOperationMode,
 };
@@ -49,6 +50,5 @@ pub use performance::{
     AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceMonitorStrategy,
     PerformanceSample, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
-pub use init::{init, init_with_strategy, is_gpu_available, subsystem_summary};
 pub use texture_atlas::TextureAtlas;
 pub mod init;

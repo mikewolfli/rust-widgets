@@ -1,11 +1,11 @@
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
+use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
 use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
 use crate::render::core::types::{ShapedText, TextMetrics};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
-use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
 
 /// PaintBackend implementation that generates SVG markup from render commands.
 ///

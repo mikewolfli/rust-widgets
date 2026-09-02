@@ -88,10 +88,8 @@ impl Draw for Line {
 
         // Resolve line color: preferred explicit color, then style border_color,
         // then a default gray.
-        let line_color = self
-            .color
-            .or_else(|| self.style().border_color)
-            .unwrap_or(Color::rgb(180, 180, 180));
+        let line_color =
+            self.color.or_else(|| self.style().border_color).unwrap_or(Color::rgb(180, 180, 180));
 
         draw_line(context, rect, is_vertical, self.thickness, line_color);
     }

@@ -1,5 +1,6 @@
 //! Runtime timer manager that emits `Event::Timer` into the event queue.
 use super::event_queue::EventSender;
+#[cfg(not(feature = "mini"))]
 use super::types::Event;
 use crate::compat::HashMap;
 use crate::compat::Instant;
@@ -33,8 +34,14 @@ pub struct TimerManager {
     state: Arc<Mutex<TimerState>>,
     #[cfg(not(feature = "mini"))]
     thread_handle: Option<thread::JoinHandle<()>>,
+    /// Mini stub handle.
     #[cfg(feature = "mini")]
+    #[cfg_attr(feature = "mini", allow(dead_code))]
+    // kept to mirror the non-mini API
     thread_handle: Option<()>,
+    /// Sender used by the mini `pump` to post due timer events.
+    #[cfg(feature = "mini")]
+    sender: EventSender,
 }
 
 impl TimerManager {
@@ -94,9 +101,9 @@ impl TimerManager {
 
     /// Create a timer manager (mini stub — single-threaded, no background thread).
     #[cfg(feature = "mini")]
-    pub fn new(_sender: EventSender) -> Self {
+    pub fn new(sender: EventSender) -> Self {
         let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
-        Self { state, thread_handle: None }
+        Self { state, sender, thread_handle: None }
     }
 
     /// Acquire the lock on timer state, recovering from poisoning.
@@ -145,6 +152,48 @@ impl TimerManager {
     pub fn clear(&self) {
         self.lock_timers().timers.clear();
     }
+
+    /// Pump due timers synchronously, posting their `Event::Timer` events.
+    ///
+    /// Mini mode has no background worker thread, so callers (e.g. an event
+    /// loop iteration) invoke this periodically to fire due timers.
+    #[cfg(feature = "mini")]
+    pub fn pump(&self) {
+        let now = crate::compat::Instant::now();
+        let mut due_events = Vec::new();
+
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if !guard.running {
+                return;
+            }
+
+            let keys: Vec<(ObjectId, u32)> = guard.timers.keys().copied().collect();
+            for key in keys {
+                if let Some(entry) = guard.timers.get_mut(&key) {
+                    if now >= entry.next_fire {
+                        due_events.push(key);
+                        if entry.repeating {
+                            // Reset based on current time to avoid cumulative drift.
+                            entry.next_fire = crate::compat::Instant::now() + entry.interval;
+                        }
+                    }
+                }
+            }
+
+            for &(target, id) in &due_events {
+                if let Some(entry) = guard.timers.get(&(target, id)) {
+                    if !entry.repeating {
+                        guard.timers.remove(&(target, id));
+                    }
+                }
+            }
+        }
+
+        for (target, id) in due_events {
+            let _ = self.sender.post(target, crate::event::types::Event::timer(id));
+        }
+    }
 }
 
 #[cfg(not(feature = "mini"))]
@@ -192,7 +241,7 @@ impl IdleTask {
     }
 }
 
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(feature = "mini"), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::event::EventQueue;
@@ -259,5 +308,34 @@ mod tests {
         }
 
         assert_eq!(post_stop_hits, 0);
+    }
+}
+
+#[cfg(all(test, feature = "mini"))]
+mod mini_tests {
+    use super::*;
+    use crate::event::EventQueue;
+
+    #[test]
+    fn mini_pump_fires_due_timers() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+        manager
+            .start_timer(7, 11, Duration::from_millis(1), false)
+            .expect("one-shot timer should start");
+
+        let mut found = false;
+        for _ in 0..1000 {
+            manager.pump();
+            if let Some((target, event, _priority)) = queue.dequeue() {
+                if target == 7 && matches!(event, crate::event::types::Event::Timer { id: 11 }) {
+                    found = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(found, "mini pump should have posted the due timer event");
     }
 }

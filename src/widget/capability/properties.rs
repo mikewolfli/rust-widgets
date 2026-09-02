@@ -760,6 +760,12 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
 }
 
 // ── Container widget capabilities ─────────────────────────────
+/// Scroll area capability.
+///
+/// Not registered in mini mode, but kept compiled so the shared
+/// `SCROLL_AREA_PROPERTIES` table (defined in the ungated
+/// `properties_container.in.rs`) stays reachable.
+#[cfg_attr(feature = "mini", allow(dead_code))]
 pub(crate) fn scroll_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ScrollArea,

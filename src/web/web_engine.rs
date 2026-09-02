@@ -21,7 +21,7 @@ use crate::widget::{Widget, WidgetKind};
 /// Enhanced web engine view widget.
 ///
 /// When the `"webkit-engine"` feature is enabled, this widget delegates
-/// navigation to a real [`WebKitBackend`] instead of using the simulated
+/// navigation to a real `WebKitBackend` instead of using the simulated
 /// 0→50→100 progress callbacks.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,

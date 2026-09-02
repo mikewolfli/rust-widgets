@@ -50,9 +50,6 @@ pub enum TabShape {
     #[default]
     Rounded,
     /// Triangular tabs
-    ///
-    /// Note: Triangular tabs currently render as rectangular.
-    #[doc(hidden)]
     Triangular,
     /// Rectangular tabs
     Rectangular,
@@ -398,6 +395,24 @@ impl Draw for TabWidget {
                             Color::rgb(180, 180, 180)
                         };
                         context.draw_rounded_rect_stroke(tab_rect, radius, border_color, 1);
+                    }
+                    TabShape::Triangular => {
+                        // Real triangular tab: apex at the top-center, base along
+                        // the bottom edge of the tab strip.
+                        let apex_x = tab_rect.x + tab_rect.width as i32 / 2;
+                        let base_y = tab_rect.y + tab_rect.height as i32;
+                        let points = [
+                            Point::new(apex_x, tab_rect.y),
+                            Point::new(tab_rect.x, base_y),
+                            Point::new(tab_rect.x + tab_rect.width as i32, base_y),
+                        ];
+                        context.draw_path(&points, true, bg_color, true, 0);
+                        let border_color = if !is_enabled || is_current {
+                            Color::rgb(200, 200, 200)
+                        } else {
+                            Color::rgb(180, 180, 180)
+                        };
+                        context.draw_path(&points, true, border_color, false, 1);
                     }
                     _ => {
                         context.fill_rect(tab_rect, bg_color);

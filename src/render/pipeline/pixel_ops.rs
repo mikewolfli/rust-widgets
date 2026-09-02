@@ -7,7 +7,7 @@ use font8x8::{UnicodeFonts, BASIC_FONTS};
 /// Configuration for `draw_bitmap_glyph`.
 pub(crate) struct GlyphDrawConfig<'a> {
     /// Glyph character code.
-    pub ch: u8,
+    pub ch: char,
     /// X position of the glyph.
     pub x: i32,
     /// Y position of the glyph.
@@ -27,7 +27,7 @@ pub(crate) struct GlyphDrawConfig<'a> {
 }
 
 pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
-    let ch = config.ch as char;
+    let ch = config.ch;
     if ch.is_whitespace() || config.w == 0 || config.h == 0 {
         return;
     }

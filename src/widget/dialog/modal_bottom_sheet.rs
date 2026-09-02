@@ -4,7 +4,7 @@
 //! drag handle, title, and optional content. Supports show/hide, drag-to-dismiss,
 //! and overlay-click-to-dismiss. Emits a `dismissed` signal when closed.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;

@@ -4,7 +4,7 @@
 //! labels, percentage annotations, exploded slices, and donut mode.
 //! Each slice has a label, numeric value, color, and optional explosion offset.
 
-use crate::core::{HorizontalAlignment, Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -364,7 +364,13 @@ impl Draw for PieChart {
                     let pct_metrics = context.measure_text(&pct_text, &pct_font);
                     let pct_x = pct_pos.x - pct_metrics.width as i32 / 2;
                     let pct_y = pct_pos.y + pct_metrics.height as i32 / 2;
-                    context.draw_text(Point::new(pct_x, pct_y), &pct_text, &pct_font, Color::WHITE, HorizontalAlignment::Left);
+                    context.draw_text(
+                        Point::new(pct_x, pct_y),
+                        &pct_text,
+                        &pct_font,
+                        Color::WHITE,
+                        HorizontalAlignment::Left,
+                    );
                 }
             }
 

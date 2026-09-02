@@ -19,7 +19,8 @@ mod global;
 mod macros;
 mod manager;
 mod options;
-#[cfg(test)]
+// File-based tests need `tempfile`, which is unavailable on wasm32 (no FS).
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 mod types;
 mod watcher;

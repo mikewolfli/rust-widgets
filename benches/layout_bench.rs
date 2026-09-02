@@ -1,4 +1,7 @@
+// criterion (benchmark harness) cannot compile for wasm32.
+#![cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+
 use rust_widgets::core::Rect;
 use rust_widgets::layout::{FlowAlignment, FlowDirection, FlowLayout, FlowLayoutConfig};
 use rust_widgets::widget::base_widgets::button::Button;

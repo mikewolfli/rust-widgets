@@ -1,5 +1,6 @@
 //! A11y wiring: connects `FocusManager` to the platform's `AccessibilityBridge`.
 
+#[cfg(not(feature = "mini"))]
 use crate::event::focus::FocusManager;
 
 /// Wire a `FocusManager` to the platform's `AccessibilityBridge` if available.

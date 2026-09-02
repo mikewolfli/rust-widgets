@@ -8,8 +8,6 @@ pub mod barcode_scanner;
 #[cfg(not(feature = "mini"))]
 pub mod bezier_curve_editor;
 #[cfg(not(feature = "mini"))]
-pub mod chip;
-#[cfg(not(feature = "mini"))]
 pub mod date_range_picker;
 #[cfg(not(feature = "mini"))]
 pub mod mobile_date_picker;
@@ -25,8 +23,6 @@ pub use avatar::Avatar;
 pub use barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
 #[cfg(not(feature = "mini"))]
 pub use bezier_curve_editor::BezierCurveEditor;
-#[cfg(not(feature = "mini"))]
-pub use chip::Chip;
 #[cfg(not(feature = "mini"))]
 pub use date_range_picker::DateRangePicker;
 #[cfg(not(feature = "mini"))]

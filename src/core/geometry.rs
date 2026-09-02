@@ -178,10 +178,13 @@ impl Size {
         }
     }
     /// Creates a size from isize dimensions (clamped to u32 range).
+    ///
+    /// NOTE: goes through `i64` so the clamp stays correct on 32-bit targets
+    /// (where `u32::MAX as isize` would overflow to `-1`).
     pub fn from_isize(width: isize, height: isize) -> Self {
         Self {
-            width: width.clamp(0, u32::MAX as isize) as u32,
-            height: height.clamp(0, u32::MAX as isize) as u32,
+            width: (width.max(0) as i64).min(u32::MAX as i64) as u32,
+            height: (height.max(0) as i64).min(u32::MAX as i64) as u32,
         }
     }
     /// Creates a size from tuple of f64 (rounded).
@@ -277,7 +280,7 @@ impl Rect {
         Self { x: x as i32, y: y as i32, width, height }
     }
     /// Creates a rectangle from mixed types (i32 for position, u32 for size).
-    /// Use [`new`] instead.
+    /// Use `new` instead.
     #[deprecated(since = "0.7.0", note = "use `new` instead")]
     pub const fn from_mixed(x: i32, y: i32, width: u32, height: u32) -> Self {
         Self::new(x, y, width, height)
@@ -331,12 +334,15 @@ impl Rect {
         }
     }
     /// Creates a rectangle from isize coordinates (clamped to appropriate ranges).
+    ///
+    /// NOTE: conversions go through `i64`/`u64` so the clamps stay correct on
+    /// 32-bit targets (where `u32::MAX as isize` would overflow to `-1`).
     pub fn from_isize(x: isize, y: isize, width: isize, height: isize) -> Self {
         Self {
             x: x.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
             y: y.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
-            width: width.clamp(0, u32::MAX as isize) as u32,
-            height: height.clamp(0, u32::MAX as isize) as u32,
+            width: (width.max(0) as i64).min(u32::MAX as i64) as u32,
+            height: (height.max(0) as i64).min(u32::MAX as i64) as u32,
         }
     }
     /// Creates a rectangle from tuple of f64 (rounded).
@@ -483,13 +489,13 @@ impl Rect {
         )
     }
     /// Creates rectangle with padding applied.
-    /// Use [`shrink`] instead.
+    /// Use `shrink` instead.
     #[deprecated(since = "0.7.0", note = "use `shrink` instead")]
     pub fn with_padding(&self, padding: i32) -> Self {
         self.shrink(padding)
     }
     /// Creates rectangle with margin applied.
-    /// Use [`grow`] instead.
+    /// Use `grow` instead.
     #[deprecated(since = "0.7.0", note = "use `grow` instead")]
     pub fn with_margin(&self, margin: i32) -> Self {
         self.grow(margin)

@@ -7,8 +7,9 @@ use crate::control_backend::native::NativeControlBackend;
 #[cfg(all(feature = "controls-native", not(feature = "mini"), feature = "controls-custom"))]
 use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::control_backend::trait_def::ControlBackend;
-#[cfg(all(feature = "controls-native", feature = "controls-custom"))]
+#[cfg(all(feature = "controls-native", feature = "controls-custom", not(feature = "mini")))]
 use crate::control_backend::types::ControlRoutePreference;
+#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;
 
@@ -90,7 +91,14 @@ impl crate::control_backend::trait_def::ControlBackend for NoControlBackend {
     ) -> ObjectId {
         0
     }
-    fn create_slider(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_slider(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     fn create_progress_bar(
@@ -113,10 +121,24 @@ impl crate::control_backend::trait_def::ControlBackend for NoControlBackend {
     ) -> ObjectId {
         0
     }
-    fn create_list_box(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_list_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
-    fn create_panel(&self, _parent: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
+    fn create_panel(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
         0
     }
     fn create_scroll_area(
@@ -152,16 +174,38 @@ impl crate::control_backend::trait_def::ControlBackend for NoControlBackend {
         0
     }
     fn set_widget_text(&self, _widget_id: ObjectId, _text: &str) {}
-    fn get_widget_text(&self, _widget_id: ObjectId) -> String { String::new() }
+    fn get_widget_text(&self, _widget_id: ObjectId) -> String {
+        String::new()
+    }
     fn set_widget_enabled(&self, _widget_id: ObjectId, _enabled: bool) {}
-    fn is_widget_enabled(&self, _widget_id: ObjectId) -> bool { false }
+    fn is_widget_enabled(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
     fn set_widget_visible(&self, _widget_id: ObjectId, _visible: bool) {}
-    fn is_widget_visible(&self, _widget_id: ObjectId) -> bool { false }
-    fn set_widget_geometry(&self, _widget_id: ObjectId, _x: i32, _y: i32, _width: u32, _height: u32) {}
-    fn set_widget_ime_enabled(&self, _widget_id: ObjectId, _enabled: bool) -> bool { false }
-    fn is_widget_ime_enabled(&self, _widget_id: ObjectId) -> bool { false }
-    fn set_widget_accessibility_name(&self, _widget_id: ObjectId, _name: &str) -> bool { false }
-    fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String { String::new() }
+    fn is_widget_visible(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
+    fn set_widget_geometry(
+        &self,
+        _widget_id: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) {
+    }
+    fn set_widget_ime_enabled(&self, _widget_id: ObjectId, _enabled: bool) -> bool {
+        false
+    }
+    fn is_widget_ime_enabled(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
+    fn set_widget_accessibility_name(&self, _widget_id: ObjectId, _name: &str) -> bool {
+        false
+    }
+    fn get_widget_accessibility_name(&self, _widget_id: ObjectId) -> String {
+        String::new()
+    }
 }
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 fn no_control_backend() -> &'static NoControlBackend {
@@ -250,6 +294,7 @@ pub fn active_control_policy() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "mini"))]
     use crate::widget::WidgetKind;
 
     #[test]

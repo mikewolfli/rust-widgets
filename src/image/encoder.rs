@@ -935,7 +935,7 @@ fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
     ihdr.push(0); // interlace
     write_png_chunk(&mut out, b"IHDR", &ihdr);
 
-    // IDAT chunk (raw unfiltered rows with filter byte 0)
+    // IDAT chunk: zlib-compressed rows, each prefixed with filter type 0 (None).
     let mut raw = Vec::with_capacity((1 + w as usize * 4) * h as usize);
     for row in 0..h as usize {
         raw.push(0); // filter type: None
@@ -943,8 +943,8 @@ fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
         let end = (off + w as usize * 4).min(pixels.len());
         raw.extend_from_slice(&pixels[off..end]);
     }
-    // Store uncompressed (zlib stored block)
-    write_png_chunk(&mut out, b"IDAT", &raw);
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 0);
+    write_png_chunk(&mut out, b"IDAT", &compressed);
 
     // IEND chunk
     write_png_chunk(&mut out, b"IEND", &[]);
@@ -1127,11 +1127,8 @@ fn encode_pnm(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let h = image.height;
     let is_grayscale = matches!(image.data, ImageData::Grayscale8(_));
 
-    let header = if is_grayscale {
-        format!("P5\n{w} {h}\n255\n")
-    } else {
-        format!("P6\n{w} {h}\n255\n")
-    };
+    let header =
+        if is_grayscale { format!("P5\n{w} {h}\n255\n") } else { format!("P6\n{w} {h}\n255\n") };
 
     let mut out = Vec::new();
     out.extend_from_slice(header.as_bytes());
@@ -1170,12 +1167,27 @@ mod tests {
         DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(pixels), w, h)
     }
 
+    /// Decode `encoded` back with the library decoder and require the exact
+    /// same RGBA8 pixels the encoder started from.
+    fn assert_roundtrip_pixels(img: &DecodedImage, encoded: &[u8]) {
+        let decoded = crate::image::decoder::decode(encoded)
+            .unwrap_or_else(|e| panic!("decoder rejected encoder output: {e}"));
+        let decoded_rgba = decoded.as_rgba8();
+        let src_rgba = img.as_rgba8();
+        assert_eq!(
+            decoded_rgba.as_bytes(),
+            src_rgba.as_bytes(),
+            "decoded pixels differ from the encoded source"
+        );
+    }
+
     #[test]
     fn encode_png_roundtrip() {
         let img = make_test_image();
         let encoded = encode_png(&img).unwrap();
         assert!(encoded.starts_with(b"\x89PNG"));
         assert!(encoded.len() > 33);
+        assert_roundtrip_pixels(&img, &encoded);
     }
 
     #[test]
@@ -1183,6 +1195,7 @@ mod tests {
         let img = make_test_image();
         let encoded = encode_bmp(&img).unwrap();
         assert!(encoded.starts_with(b"BM"));
+        assert_roundtrip_pixels(&img, &encoded);
     }
 
     #[test]
@@ -1190,6 +1203,7 @@ mod tests {
         let img = make_test_image();
         let encoded = encode_qoi(&img).unwrap();
         assert!(encoded.starts_with(b"qoif"));
+        assert_roundtrip_pixels(&img, &encoded);
     }
 
     #[test]
@@ -1197,6 +1211,7 @@ mod tests {
         let img = make_test_image();
         let encoded = encode_farbfeld(&img).unwrap();
         assert!(encoded.starts_with(b"farbfeld"));
+        assert_roundtrip_pixels(&img, &encoded);
     }
 
     #[test]
@@ -1204,6 +1219,7 @@ mod tests {
         let img = make_test_image();
         let encoded = encode_pnm(&img).unwrap();
         assert!(encoded.starts_with(b"P6"));
+        assert_roundtrip_pixels(&img, &encoded);
     }
 
     #[test]
@@ -1239,6 +1255,9 @@ mod tests {
 
     #[test]
     fn encode_gif_roundtrip() {
+        // The GIF encoder emits a real GIF89a + LZW stream. The decoder side
+        // is not implemented (decode_gif returns Err), so only the encoded
+        // structure is asserted here.
         let img = make_test_image();
         let encoded = encode_gif(&img).unwrap();
         assert!(encoded.starts_with(b"GIF89a"), "GIF must start with GIF89a");
@@ -1255,6 +1274,9 @@ mod tests {
 
     #[test]
     fn encode_tiff_roundtrip() {
+        // The TIFF encoder emits a real little-endian TIFF. The decoder side
+        // is not implemented (decode_tiff returns Err), so only the encoded
+        // structure is asserted here.
         let img = make_test_image();
         let encoded = encode_tiff(&img).unwrap();
         assert!(encoded.starts_with(b"II"), "TIFF must start with II");
@@ -1273,6 +1295,9 @@ mod tests {
 
     #[test]
     fn encode_svg_roundtrip() {
+        // The SVG encoder emits a real SVG document embedding a base64 PNG.
+        // This crate has no SVG rasterizer (decode_svg returns Err), so only
+        // the encoded structure is asserted here.
         let img = make_test_image();
         let encoded = encode_svg(&img).unwrap();
         let s = String::from_utf8_lossy(&encoded);

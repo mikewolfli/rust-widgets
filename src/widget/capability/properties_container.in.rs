@@ -30,6 +30,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const SPLITTER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "orientation",
@@ -45,6 +46,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TOOL_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -99,6 +101,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const TAB_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "tab_count",
@@ -132,6 +135,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const STACKED_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "widget_count",
@@ -147,6 +151,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const COLLAPSIBLE_PANE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -162,6 +167,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -183,6 +189,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
+        #[cfg(not(feature = "mini"))]
         pub(crate) const MDI_AREA_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "subwindow_count",
