@@ -969,8 +969,13 @@ pub extern "C" fn rw_mobile_attach_native_view(native_handle: u64) -> CBool {
     })
 }
 #[no_mangle]
+/// Return the C ABI binding contract version.
+///
+/// Independent of the crate semantic version: bumped only when the exported
+/// `rw_*` symbol set or its calling conventions change. `8` marks the stable
+/// 1.0 ABI line.
 pub extern "C" fn rw_bindings_api_version() -> c_uint {
-    c_try!({ 7 })
+    c_try!({ 8 })
 }
 /// Return Node.js binding status bitmask.
 ///

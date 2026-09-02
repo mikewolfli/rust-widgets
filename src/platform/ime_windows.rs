@@ -38,6 +38,15 @@ struct TsfThreadMgr {
     _private: (),
 }
 
+// SAFETY: `TsfThreadMgr` holds an msctf.dll handle (and, in a full
+// implementation, TSF COM interface pointers) that is only touched from the
+// Windows message-loop thread. It lives inside the process-global platform
+// singleton (a `OnceLock`), and is never shared across threads concurrently —
+// the same discipline used for HWNDs, which the Windows backend stores as
+// `usize` in `Win32MenuState`.
+unsafe impl Send for TsfThreadMgr {}
+unsafe impl Sync for TsfThreadMgr {}
+
 impl TsfThreadMgr {
     /// Attempt to create a TSF thread manager by loading `msctf.dll` at
     /// runtime and calling `TF_GetThreadMgr` via dynamic dispatch.

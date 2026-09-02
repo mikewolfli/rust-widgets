@@ -6,8 +6,6 @@
 
 #[cfg(not(feature = "mini"))]
 use crate::compat::OnceLock;
-#[cfg(all(not(feature = "mini"), feature = "embedded"))]
-use crate::core::PlatformFamily;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "mini"), not(feature = "embedded")))]
@@ -26,8 +24,6 @@ pub use crate::platform::types::*;
 use crate::platform::wayland::WaylandPlatform;
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
-#[cfg(all(not(feature = "mini"), feature = "embedded"))]
-use crate::platform::StubPlatform;
 
 // ---------------------------------------------------------------------------
 // Linux runtime auto-detection: Wayland vs X11/GTK
@@ -51,9 +47,13 @@ fn is_wayland_session() -> bool {
 // Platform constructor (auto-detect on Linux)
 // ---------------------------------------------------------------------------
 
+/// Embedded: stripped-down render-engine-only runtime.
 #[cfg(all(not(feature = "mini"), feature = "embedded"))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new("embedded-runtime-stub", PlatformFamily::Embedded))
+    Box::new(crate::platform::stub::StubPlatform::new(
+        "embedded-runtime-stub",
+        crate::core::PlatformFamily::Embedded,
+    ))
 }
 
 #[cfg(all(not(feature = "mini"), target_os = "windows", not(feature = "embedded")))]
@@ -81,7 +81,10 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(feature = "macos", feature = "macos-legacy"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new("macos-fallback-stub", PlatformFamily::Desktop))
+    Box::new(crate::platform::stub::StubPlatform::new(
+        "macos-fallback-stub",
+        crate::core::PlatformFamily::Desktop,
+    ))
 }
 
 /// Linux runtime auto-detection:
@@ -138,7 +141,10 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
-    Box::new(StubPlatform::new("unknown-runtime-stub", PlatformFamily::Desktop))
+    Box::new(crate::platform::stub::StubPlatform::new(
+        "unknown-runtime-stub",
+        crate::core::PlatformFamily::Desktop,
+    ))
 }
 
 // ---------------------------------------------------------------------------

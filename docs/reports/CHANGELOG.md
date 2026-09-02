@@ -2,82 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.9.6 (2026-06-09) — BLUE11 Release
+## 1.0.0 (2026-09-02) — Stable Release
 
-### New Widgets (28 new controls)
-- **Popular Controls**: Switch, SearchBox, Chip, Badge, SkeletonLoader, FAB, Avatar, Rating, Stepper, Divider, Carousel, EmptyState, ColorWell, QRCode
-- **Mobile-First**: PullToRefresh, BottomSheet, BottomNavigationBar, NavigationDrawer, AppBar, MobileDatePicker, ContextMenu (alias)
-- **Platform Styles**: CupertinoSwitch, MaterialSnackbar, AdaptiveScaffold
-- **Desktop Advanced**: PropertyGrid, WizardDialog, TagInput
-- **Input Support**: ImePreedit
-- **Layout**: MasonryLayout
+### Stability & Quality
+- **Stable public API line declared**; `rw_bindings_api_version` bumped to `8` for the 1.0 ABI contract.
+- **Full compile matrix at zero errors/warnings**: every profile (desktop/tablet/mobile/mini/embedded/bare),
+  every capability feature and cross-combination, plus all installed targets
+  (windows-msvc, android aarch64/x86_64/armv7, wasm32-unknown-unknown/wasip1/wasip1-threads) verified clean.
+- **Platform code compiled for the first time**: Windows (TSF `Send` safety, winapi pointer types) and
+  Android backends now build and lint cleanly.
+- **WASM end-to-end**: real `cargo test` on `wasm32-wasip1` (2158 tests passing via wasmtime);
+  browser wasm (`wasm32-unknown-unknown`) builds/lints clean.
+- **Tablet/mobile profiles compile for the first time**: dependency/feature gaps fixed
+  (i18n/video feature cohesion, `tr!` macro gating, runtime stub cfg), 3509/3514 tests passing.
 
-### Visual Effects (R5)
-- BoxShadow, Blur, ClipPath, BlendMode (16 modes), ConicGradient render commands
-- Software and SVG backend support for all new commands
+### Honest implementation pass (no fake/stub behavior)
+- Audio: removed synthetic FLAC/OGG/AAC/Opus decoding and PCM-impersonating encoders; missing codec
+  features now return explicit `Err`. Real FFmpeg/symphonia paths verified (2195 tests).
+- Image: PNG decoder rewritten (scanline filters, RGBA stride, 16-bit sampling, bounds safety);
+  GIF/WebP/TIFF/AVIF/ICO/SVG decoders now refuse instead of fabricating pixels.
+- Video MJPEG failures are explicit (`FrameType::Synthetic` + diagnostics); web-engine JS evaluation
+  wired to a real engine; PDF security markers no longer leak passwords.
+- Line-edit clipboard shortcuts wired; undo zero-capacity panic fixed; software text rastering
+  handles Unicode instead of truncating to `u8`.
+- Dead code removed (`misc_widgets/chip.rs`, `image/svg_utils.rs`); dead test file mounted (`pdf/tests.rs`).
 
-### Animation System (R6)
-- KeyframeAnimation with multi-keyframe interpolation
-- TransitionManager for CSS-style property transitions
-- SpringAnimation with physical spring dynamics
-- ThemeStateManager dark/light auto mode
+### Bindings & docs
+- FFI bindings complete: C++ header and Python wrapper cover all 105 exported symbols (105/105);
+  `rw_bindings_api_version` = 8 for the 1.0 ABI line.
+- Capability matrix regenerated at 167 rows matching the 167 `WidgetKind` variants, with honest
+  degradation notes; `unexpected_cfgs` lint restored to `warn`.
+- README/docs aligned with code; version bumped 0.9.10 → 1.0.0 everywhere (Cargo, demo banner,
+  Node.js package, migration guide).
 
-### Accessibility (R7)
-- AccessibleRole mappings for all 30+ new widgets
-- AriaProperties struct for platform API bridging
-- FocusTraversalStrategy (TabOrder, RowMajor, ColumnMajor)
-- HighContrastMode support (BlackOnWhite, WhiteOnBlack, Custom)
-- ReducedMotionPreference detection
-
-### Event System (R8)
-- Pointer Events with pressure and tilt support
-- Gamepad Events (press, release, axis, connect/disconnect)
-- AsyncTask with thread-local task queue
-- IdleTask with frame-threshold scheduling
-
-### Configuration & Documentation (R4)
-- Cargo.toml enhanced (authors, categories, include/exclude)
-- deny.toml for cargo-deny license auditing
-- ARCHITECTURE.md and TUTORIAL.md documentation
-- WIDGET_GALLERY.md visual reference
-- .gitignore coverage improvements
-
-### Quality & CI (R3)
-- 130+ new tests across all new widgets
-- CI: cargo-deny license audit job
-- CI: docs-build check job
-- Full feature build verification
-
-### Architecture (R9)
-- Widget re-export normalization
-- containers.rs confirmed at 849 lines (no split needed)
-- missing_docs and unsafe_code lint warnings added
-
-## 0.9.10 (2026-07-23) — Code Quality Release
-
-### Infrastructure
-- **mod.rs refactoring (20/20 complete)**: All module declaration files now contain only `pub mod` declarations and `pub use` re-exports; implementation code moved to dedicated files (custom_paint, init, legacy_types, a11y_wiring, arc_helpers, gpu_types, backend, test_types)
-- **Three profiles at 0 errors**: `default`, `mini`, and `embedded` all pass `cargo check` with zero errors
-- **0 clippy warnings**: All unnecessary casts and manual range checks eliminated
-- **0 `#[deprecated]` items**: All 28 deprecated annotations removed
-- **0 `todo!()` / `unimplemented!()`** across the entire codebase
-
-### Bug Fixes
-- PdfPage naming conflict: struct renamed to `ExportPage`, trait retained as `PdfPage`
-- Control backend dispatcher: fixed overlapping `#[cfg]` conditions causing duplicate function definitions in mini profile
-- Embedded profile: 70 errors fixed (chrono/serde dependency gating, advanced widget module gating)
-
-### Dependency Management
-- `serde::Serialize`/`Deserialize` derives made conditional: `#[cfg_attr(feature = "serde", derive(...))]` across core types (Color, Font, WidgetRecord, etc.)
-- `chrono` imports gated behind `not(mini)` / `not(embedded)` in capability layer
-- `serde_json::Value` usage gated behind `not(embedded)` for json module
-- Asset, advanced_widgets, media_widgets modules gated behind `cfg` for embedded profile
-
-### Test
-- Total: 3771 tests passing (3676 lib, 70 integration, 25 doctests)
-
-## [Unreleased]
-
+### Full release backlog (folded in from the former `[Unreleased]` section)
 ### Added
 
 - Signal-first event model migration notes for `v9`:
@@ -171,6 +129,29 @@ All notable changes to this project are documented in this file.
   now available for forward-compatible style contracts.
 - Geometry callers can incrementally adopt primitive helpers without breaking existing `Rect` call sites.
 
+## 0.9.10 (2026-07-23) — Code Quality Release
+
+### Infrastructure
+- **mod.rs refactoring (20/20 complete)**: All module declaration files now contain only `pub mod` declarations and `pub use` re-exports; implementation code moved to dedicated files (custom_paint, init, legacy_types, a11y_wiring, arc_helpers, gpu_types, backend, test_types)
+- **Three profiles at 0 errors**: `default`, `mini`, and `embedded` all pass `cargo check` with zero errors
+- **0 clippy warnings**: All unnecessary casts and manual range checks eliminated
+- **0 `#[deprecated]` items**: All 28 deprecated annotations removed
+- **0 `todo!()` / `unimplemented!()`** across the entire codebase
+
+### Bug Fixes
+- PdfPage naming conflict: struct renamed to `ExportPage`, trait retained as `PdfPage`
+- Control backend dispatcher: fixed overlapping `#[cfg]` conditions causing duplicate function definitions in mini profile
+- Embedded profile: 70 errors fixed (chrono/serde dependency gating, advanced widget module gating)
+
+### Dependency Management
+- `serde::Serialize`/`Deserialize` derives made conditional: `#[cfg_attr(feature = "serde", derive(...))]` across core types (Color, Font, WidgetRecord, etc.)
+- `chrono` imports gated behind `not(mini)` / `not(embedded)` in capability layer
+- `serde_json::Value` usage gated behind `not(embedded)` for json module
+- Asset, advanced_widgets, media_widgets modules gated behind `cfg` for embedded profile
+
+### Test
+- Total: 3771 tests passing (3676 lib, 70 integration, 25 doctests)
+
 ## [0.10.0] - 2026-06-10
 
 ### Added
@@ -248,6 +229,57 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Missing docs lint changed from `allow` to `warn` to surface documentation gaps.
+
+## 0.9.6 (2026-06-09) — BLUE11 Release
+
+### New Widgets (28 new controls)
+- **Popular Controls**: Switch, SearchBox, Chip, Badge, SkeletonLoader, FAB, Avatar, Rating, Stepper, Divider, Carousel, EmptyState, ColorWell, QRCode
+- **Mobile-First**: PullToRefresh, BottomSheet, BottomNavigationBar, NavigationDrawer, AppBar, MobileDatePicker, ContextMenu (alias)
+- **Platform Styles**: CupertinoSwitch, MaterialSnackbar, AdaptiveScaffold
+- **Desktop Advanced**: PropertyGrid, WizardDialog, TagInput
+- **Input Support**: ImePreedit
+- **Layout**: MasonryLayout
+
+### Visual Effects (R5)
+- BoxShadow, Blur, ClipPath, BlendMode (16 modes), ConicGradient render commands
+- Software and SVG backend support for all new commands
+
+### Animation System (R6)
+- KeyframeAnimation with multi-keyframe interpolation
+- TransitionManager for CSS-style property transitions
+- SpringAnimation with physical spring dynamics
+- ThemeStateManager dark/light auto mode
+
+### Accessibility (R7)
+- AccessibleRole mappings for all 30+ new widgets
+- AriaProperties struct for platform API bridging
+- FocusTraversalStrategy (TabOrder, RowMajor, ColumnMajor)
+- HighContrastMode support (BlackOnWhite, WhiteOnBlack, Custom)
+- ReducedMotionPreference detection
+
+### Event System (R8)
+- Pointer Events with pressure and tilt support
+- Gamepad Events (press, release, axis, connect/disconnect)
+- AsyncTask with thread-local task queue
+- IdleTask with frame-threshold scheduling
+
+### Configuration & Documentation (R4)
+- Cargo.toml enhanced (authors, categories, include/exclude)
+- deny.toml for cargo-deny license auditing
+- ARCHITECTURE.md and TUTORIAL.md documentation
+- WIDGET_GALLERY.md visual reference
+- .gitignore coverage improvements
+
+### Quality & CI (R3)
+- 130+ new tests across all new widgets
+- CI: cargo-deny license audit job
+- CI: docs-build check job
+- Full feature build verification
+
+### Architecture (R9)
+- Widget re-export normalization
+- containers.rs confirmed at 849 lines (no split needed)
+- missing_docs and unsafe_code lint warnings added
 
 ## [0.5.19] - 2026-03-03
 

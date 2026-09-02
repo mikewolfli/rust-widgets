@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "0.9.10"
+version = "1.0.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -14,7 +14,9 @@ rust-version = "1.87"
 include = ["build.rs", "src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "language/**/*", "tools/widget_gallery.rs", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
 
 [lints.rust]
-unexpected_cfgs = "allow"
+# `target_os = "ohos"` (HarmonyOS NEXT) is not yet in rustc's built-in
+# known target_os list; declare it explicitly so the check stays meaningful.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }
 
 [lib]
 crate-type = ["lib", "cdylib"]
@@ -50,8 +52,12 @@ desktop = [
 ]
 
 ## Tablet: touch-first, GPU, native controls, no desktop extras.
+##
+## Shares the desktop UI-compilation surface (JSON, i18n hot-reload watcher,
+## chrono-backed widgets, serde) minus print/pdf/chart/a11y/js extras.
 tablet = [
     "os-auto", "wgpu", "touch", "i18n",
+    "desktop-runtime", "serde", "serde_json", "dep:chrono",
     "quality-management", "controls-native", "controls-custom",
     "image",
 ]
@@ -59,6 +65,7 @@ tablet = [
 ## Mobile: touch, GPU, mobile API, native controls.
 mobile = [
     "os-auto", "wgpu", "touch", "i18n",
+    "desktop-runtime", "serde", "serde_json", "dep:chrono",
     "quality-management", "mobile-api",
     "controls-native", "controls-custom",
     "image",
@@ -96,13 +103,14 @@ touch = []
 gpu = ["dep:wgpu"]
 wgpu = ["gpu"]
 software = []
-i18n = []
+i18n = ["dep:notify", "dep:crossbeam-channel", "dep:serde", "dep:serde_json"]
 chart = []
 print = []
 pdf = []
 a11y = []
 image = ["dep:miniz_oxide"]
-video = ["dep:jpeg-decoder"]
+# Video frames reuse the image format types (DecodedImage/ImageFormat).
+video = ["dep:jpeg-decoder", "image"]
 audio = ["dep:minimp3_fixed"]
 holographic = []
 projection = []

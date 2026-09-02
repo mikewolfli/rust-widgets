@@ -226,7 +226,9 @@ pub mod windows {
         /// Get the registered clipboard format ID for "HTML Format".
         unsafe fn html_format_id() -> UINT {
             let name = std::ffi::CString::new("HTML Format").unwrap();
-            RegisterClipboardFormatA(name.as_ptr() as *const u8)
+            // winapi's *-A entry points take `*const i8` (CHAR); `c_char` is
+            // `i8` on Windows MSVC, matching the C ABI.
+            RegisterClipboardFormatA(name.as_ptr() as *const std::os::raw::c_char)
         }
     }
 

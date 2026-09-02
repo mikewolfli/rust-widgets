@@ -33,7 +33,7 @@ impl DataPoint {
 /// Simplified line/bar chart widget for mini builds.
 ///
 /// Provides a compact chart suitable for mini UI builds where the full
-/// [`ChartWidget`](crate::widget::special_widgets::chart::ChartWidget) is too heavy.
+/// `ChartWidget` (desktop profile) is too heavy.
 pub struct MiniChart {
     base: BaseWidget,
     chart_type: ChartType,

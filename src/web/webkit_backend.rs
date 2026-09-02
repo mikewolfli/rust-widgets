@@ -37,7 +37,7 @@ impl WebKitBackend {
         // webkit2gtk's WebView::new() asserts GTK is initialised and
         // panics otherwise.
         let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| webkit2gtk::WebView::new()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(webkit2gtk::WebView::new));
         match result {
             Ok(webview) => Ok(Self { webview }),
             Err(_) => Err("GTK not initialized or no display available".to_string()),

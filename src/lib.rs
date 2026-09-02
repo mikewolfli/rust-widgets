@@ -109,19 +109,19 @@ pub mod wgpu_backend;
 pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "i18n"))]
 #[macro_export]
 macro_rules! tr {
     ($key:expr) => {{
-        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
+        log::warn!("i18n tr! called but the i18n feature is disabled, key={}", $key);
         $key.to_string()
     }};
     ($key:expr, $count:expr) => {{
-        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
+        log::warn!("i18n tr! called but the i18n feature is disabled, key={}", $key);
         $key.to_string()
     }};
     ($key:expr, $context:expr, $count:expr) => {{
-        log::warn!("i18n tr! called but i18n not loaded (non-desktop build), key={}", $key);
+        log::warn!("i18n tr! called but the i18n feature is disabled, key={}", $key);
         $key.to_string()
     }};
 }

@@ -67,7 +67,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let cb2 = cb.clone();
     cb2.on_value_changed(move |_val: String| {
         let checked = cb.is_checked();
-        l.append(&format!("[CheckBox] checked={}", checked));
+        l.append(format!("[CheckBox] checked={}", checked));
     });
     log.append("[CheckBox] at (20,120,200,28)");
 
@@ -97,7 +97,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let l = Arc::clone(log);
     let sb2 = sb.clone();
     sb2.on_value_changed(move |_val: String| {
-        l.append(&format!("[SpinBox] value={}", sb.value()));
+        l.append(format!("[SpinBox] value={}", sb.value()));
     });
     log.append("[SpinBox] range=[0..100], value=50");
 
@@ -112,7 +112,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     cbx2.on_value_changed(move |_val: String| {
         let idx = cbx.current_index().unwrap_or(0);
         let text = cbx.item_text(idx).unwrap_or_else(|| String::from("(none)"));
-        l.append(&format!("[ComboBox] selected '{}' (idx={})", text, idx));
+        l.append(format!("[ComboBox] selected '{}' (idx={})", text, idx));
     });
     log.append("[ComboBox] items=[Red,Green,Blue,Yellow]");
 
@@ -121,7 +121,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let l = Arc::clone(log);
     let le2 = le.clone();
     le2.on_value_changed(move |_val: String| {
-        l.append(&format!("[LineEdit] text='{}'", le.text()));
+        l.append(format!("[LineEdit] text='{}'", le.text()));
     });
     log.append("[LineEdit] with placeholder");
 
@@ -136,7 +136,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let l = Arc::clone(log);
     let sl2 = sl.clone();
     sl2.on_value_changed(move |_val: String| {
-        l.append(&format!("[Slider] value={}", sl.value()));
+        l.append(format!("[Slider] value={}", sl.value()));
     });
     log.append("[Slider] range=[0..100], value=50");
 
@@ -147,7 +147,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let l = Arc::clone(log);
     let pb2 = pb.clone();
     pb2.on_value_changed(move |_val: String| {
-        l.append(&format!("[ProgressBar] value={}", pb.value()));
+        l.append(format!("[ProgressBar] value={}", pb.value()));
     });
     log.append("[ProgressBar] range=[0..100], value=75");
 
@@ -188,7 +188,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 pub fn run() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     rust_widgets  —  Controls Demo v0.9.10            ║");
+    println!("║     rust_widgets  —  Controls Demo v1.0.0             ║");
     println!("║     App 框架 · 原生窗口 · 实时事件日志                  ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
@@ -220,7 +220,7 @@ pub fn run() {
 
     // 创建窗口（必须在 init 之后，run 之前）
     let win = app.new_window("Controls Demo — rust_widgets", 100, 100, 600, 520);
-    log.append(&format!("[Window] created: id={:?}", win.raw_id()));
+    log.append(format!("[Window] created: id={:?}", win.raw_id()));
 
     // 构建全部控件
     build_all_controls(&win, &log);

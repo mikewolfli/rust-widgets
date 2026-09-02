@@ -288,7 +288,7 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
 fn decode_flac(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(feature = "symphonia-codecs")]
     {
-        return decode_with_symphonia(data, AudioFormat::Flac);
+        decode_with_symphonia(data, AudioFormat::Flac)
     }
 
     #[cfg(not(feature = "symphonia-codecs"))]
@@ -309,7 +309,7 @@ fn decode_flac(data: &[u8]) -> Result<AudioBuffer, String> {
 fn decode_ogg_vorbis(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(feature = "symphonia-codecs")]
     {
-        return decode_with_symphonia(data, AudioFormat::Ogg);
+        decode_with_symphonia(data, AudioFormat::Ogg)
     }
 
     #[cfg(not(feature = "symphonia-codecs"))]
@@ -332,7 +332,7 @@ fn decode_ogg_vorbis(data: &[u8]) -> Result<AudioBuffer, String> {
 fn decode_aac(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(feature = "symphonia-codecs")]
     {
-        return decode_with_symphonia(data, AudioFormat::Aac);
+        decode_with_symphonia(data, AudioFormat::Aac)
     }
 
     #[cfg(not(feature = "symphonia-codecs"))]
@@ -372,7 +372,7 @@ fn decode_aac(data: &[u8]) -> Result<AudioBuffer, String> {
 fn decode_opus(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(feature = "symphonia-codecs")]
     {
-        return decode_with_symphonia(data, AudioFormat::Opus);
+        decode_with_symphonia(data, AudioFormat::Opus)
     }
 
     #[cfg(not(feature = "symphonia-codecs"))]

@@ -2,6 +2,8 @@
 //!
 //! Detects orphan widgets, empty layouts, zero-size widgets, and overlapping
 //! widgets in both JSON-declarative and native programmatic layouts.
+#![allow(clippy::missing_const_for_thread_local)]
+// thread-local init blocks below are already const; the lint misfires on some targets (e.g. android)
 //!
 //! # Zero-overhead guarantee
 //!

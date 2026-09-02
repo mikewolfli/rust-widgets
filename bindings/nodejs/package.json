@@ -1,6 +1,6 @@
 {
   "name": "rust-widgets",
-  "version": "0.9.6",
+  "version": "1.0.0",
   "description": "Node.js binding for the rust-widgets native GUI library (cross-platform, 60+ widgets, hardware-adaptive rendering)",
   "main": "index.js",
   "private": true,

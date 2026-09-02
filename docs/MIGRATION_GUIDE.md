@@ -1,14 +1,19 @@
-# Migration Guide: 0.9.x → 0.10.x
+# Migration Guide: 0.9.x → 1.0.0
+
+> **Note (2026-09-02)**: this guide was originally drafted for the planned
+> "0.10.0" milestone. The project now releases that milestone as the stable
+> **1.0.0** line — every "0.10.x" version mentioned below should be read as
+> "1.0.0".
 
 ## Overview
 
 This guide covers breaking changes, new features, and migration steps when upgrading
-from rust_widgets v0.9.x to v0.10.x. This release adds 55+ new controls, 6 new layout
+from rust_widgets v0.9.x to v1.0.0. This release adds 55+ new controls, 6 new layout
 managers, native FFI for macOS/iOS/Wayland/WASM/Android, a style sheet engine, i18n/l10n
 infrastructure, undo/redo framework, data binding, print framework, and PDF export.
 
-**Version:** 0.10.0  
-**Target Rust version:** 1.87+  
+**Version:** 1.0.0
+**Target Rust version:** 1.87+
 **Edition:** 2021
 
 ---
