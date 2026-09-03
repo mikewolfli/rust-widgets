@@ -627,7 +627,7 @@ graph TB
 | | `AudioVisualizer` | ✗ | 音频波形显示 |
 | | `CameraPreview` | ✗ | 相机取景器 |
 | | `BarcodeScanner` | ✗ | 条码/二维码扫描器 |
-| | `AnimatedImage` | ✗ | 动画 GIF/APNG/WebP |
+| | `AnimatedImage` | ✗ | 帧序列动画；经 `load_frames` 注入 RGBA 帧（不内置流解码） |
 | | `HeroAnimation` | ✗ | 共享元素过渡动画 |
 | | `BezierCurveEditor` | ✗ | 贝塞尔曲线编辑器 |
 | | `LottieWidget` | ✗ | Lottie 动画播放器 |

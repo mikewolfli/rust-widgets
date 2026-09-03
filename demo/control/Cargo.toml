@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 rust_widgets = { path = "../.." }
+
+# Linux 桌面：rust_widgets 的 `desktop` profile 不含 GTK 后端（需显式启用），
+# 不加此 feature 时 demo 走无窗口的状态后端。这里按平台启用原生 GTK，
+# 使 `cargo run` 直接弹出真实窗口。Windows/macOS 由 desktop 默认后端覆盖。
+[target.'cfg(target_os = "linux")'.dependencies]
+rust_widgets = { path = "../..", features = ["gtk-native"] }

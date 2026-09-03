@@ -1,6 +1,6 @@
 # 嵌入式支持
 
-rust-widgets 通过 `no_std` 兼容配置文件（`mini`）支持嵌入式及资源受限目标平台，该配置包含 `AtomicBool` 全局标志、固定 DPI 模式、轻量级控件工厂、硬件输入处理以及自适应资源管理。
+rust-widgets 通过 no_std 就绪配置文件（`mini`，当前在 std 上编译）支持嵌入式及资源受限目标平台，该配置包含 `AtomicBool` 全局标志、固定 DPI 模式、轻量级控件工厂、硬件输入处理以及自适应资源管理。
 
 ## 架构概述
 
@@ -530,8 +530,8 @@ cargo build --profile release-embedded --no-default-features \
 
 ```toml
 [dependencies]
-rust_widgets = { version = "0.9", default-features = false, features = [
-    "mini",          # 兼容 no_std，无堆集合
+rust_widgets = { version = "1.0", default-features = false, features = [
+    "mini",          # no_std 就绪配置，heapless 支撑的 MiniVec
     "embedded",      # 嵌入式模式 + 轻量控件
 ] }
 ```
@@ -653,4 +653,4 @@ fn embedded_main() {
 | `LightweightStyle` | 紧凑默认值的最小堆样式 |
 | `LightweightConfig` | 嵌入式特性开关（阴影、动画等） |
 | `init_embedded()` / `init_desktop()` | 一次性环境初始化 |
-| `mini` 特性 | 通过无堆替代方案实现 no_std 兼容 |
+| `mini` 特性 | no_std 就绪：经 compat.rs 从 core/alloc 导入，heapless 支撑的 MiniVec |

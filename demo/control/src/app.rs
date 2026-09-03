@@ -214,6 +214,18 @@ pub fn run() {
 
     log.append("[App] created");
 
+    // 说明当前运行后端：无原生窗口的后端（如 Linux 未启用 gtk-native 时）
+    // 会如实提示，避免"事件日志正常但看不到窗口"的困惑。
+    let backend = rust_widgets::backend_name();
+    let gui_mode = rust_widgets::runtime_gui_mode();
+    println!("[run] backend={backend} gui_mode={gui_mode:?}");
+    if gui_mode == rust_widgets::RuntimeGuiMode::PreviewOrStub {
+        println!(
+            "[run] 提示: 当前后端不创建原生窗口。Linux 桌面请以 `gtk-native` feature 构建: \
+             cargo run --features ... (见 demo/control/Cargo.toml)"
+        );
+    }
+
     // init: 初始化平台 + i18n
     app.init();
     log.append("[App] init() done");
@@ -225,6 +237,11 @@ pub fn run() {
     // 构建全部控件
     build_all_controls(&win, &log);
     log.append("[App] controls ready — starting event loop");
+
+    // 显示窗口：WindowHandle::show() → platform show_widget → GTK show_all。
+    // 不调用则事件循环正常但窗口永不可见（Linux/GTK 下尤为明显）。
+    win.show();
+    log.append(format!("[Window] shown: id={:?}", win.raw_id()));
 
     // run: 启动平台事件循环，显示原生窗口
     app.run();

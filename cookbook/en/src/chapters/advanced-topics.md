@@ -737,7 +737,7 @@ fn test_std_only_feature() {
 ```toml
 # Cargo.toml
 [dependencies]
-rust_widgets = { version = "0.9", default-features = false, features = [
+rust_widgets = { version = "1.0", default-features = false, features = [
     "mini",
 ] }
 
@@ -750,7 +750,10 @@ strip = true
 panic = "abort"
 ```
 
-The `mini` feature provides `no_std` compatibility:
+The `mini` feature provides a `no_std`-ready foundation — every crate module
+imports shared types through `compat.rs` from `core`/`alloc`, so flipping on
+`#![no_std]` is a tracked step. **Note**: the `mini` profile currently compiles
+on std; the attribute below is the design intent, not yet enabled:
 
 ```rust
 // In no_std mode, HashMap → BTreeMap (via compat.rs)
@@ -759,8 +762,7 @@ The `mini` feature provides `no_std` compatibility:
 // String → MiniString
 // All trait implementations must be Send + Sync compatible
 
-#![no_std]
-extern crate alloc;
+// Design intent for a true no_std build; mini currently compiles on std.
 
 use rust_widgets::embedded::{
     EmbeddedConfig, ResourceManager, ResourceConstraint,

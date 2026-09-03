@@ -1,7 +1,7 @@
 # Embedded Support
 
 rust-widgets supports embedded and resource-constrained targets through a
-`no_std`-compatible profile (`mini`) with `AtomicBool` global flags, fixed-DPI
+no_std-ready profile (`mini`, currently compiles on std) with `AtomicBool` global flags, fixed-DPI
 mode, lightweight widget factories, hardware input handling, and adaptive
 resource management.
 
@@ -537,8 +537,8 @@ cargo build --profile release-embedded --no-default-features \
 
 ```toml
 [dependencies]
-rust_widgets = { version = "0.9", default-features = false, features = [
-    "mini",          # no_std compatible, heapless collections
+rust_widgets = { version = "1.0", default-features = false, features = [
+    "mini",          # no_std-ready profile, heapless-backed MiniVec
     "embedded",      # embedded mode + lightweight widgets
 ] }
 ```
@@ -661,4 +661,4 @@ fn embedded_main() {
 | `LightweightStyle` | Minimal heap style with compact defaults |
 | `LightweightConfig` | Feature toggles for embedded (shadows, animations, etc.) |
 | `init_embedded()` / `init_desktop()` | One-shot environment initialization |
-| `mini` feature | no_std compatibility via heapless alternatives |
+| `mini` feature | no_std-ready profile: core/alloc imports via compat.rs, heapless-backed MiniVec |

@@ -732,7 +732,7 @@ fn test_std_only_feature() {
 ```toml
 # Cargo.toml
 [dependencies]
-rust_widgets = { version = "0.9", default-features = false, features = [
+rust_widgets = { version = "1.0", default-features = false, features = [
     "mini",
 ] }
 
@@ -745,7 +745,9 @@ strip = true
 panic = "abort"
 ```
 
-`mini` 特性提供了 `no_std` 兼容性：
+`mini` 特性提供 `no_std` 就绪基础——所有模块经 `compat.rs` 从 `core`/`alloc` 导入共享类型，
+启用 `#![no_std]` 是已跟踪的后续步骤。**注意**：当前 `mini` profile 在 std 上编译；
+下面的属性是设计意图，尚未启用：
 
 ```rust
 // 在 no_std 模式下，HashMap → BTreeMap（通过 compat.rs）
@@ -754,8 +756,7 @@ panic = "abort"
 // String → MiniString
 // 所有 trait 实现必须兼容 Send + Sync
 
-#![no_std]
-extern crate alloc;
+// 真正的 no_std 构建设计意图；mini 当前在 std 上编译。
 
 use rust_widgets::embedded::{
     EmbeddedConfig, ResourceManager, ResourceConstraint,

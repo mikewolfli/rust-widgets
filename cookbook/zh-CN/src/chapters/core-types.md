@@ -931,7 +931,7 @@ assert_eq!(v.to_u32(), 0x000906);
 
 // 从字符串解析：
 let v2 = Version::parse_str("1.2.3").unwrap();
-let v3: Version = "0.9.6".parse().unwrap();
+let v3: Version = "1.0.0".parse().unwrap();
 ```
 
 ### 比较
@@ -954,7 +954,7 @@ assert!(v1.is_older_than(&v3));
 
 ```rust
 let v = Version::new(0, 9, 6);
-println!("{}", v);  // "0.9.6"
+println!("{}", v);  // "1.0.0"
 
 // 无效字符串：
 assert!(Version::parse_str("1.2").is_err());       // 缺少 patch
@@ -1027,13 +1027,13 @@ pub struct CoreConfig {
 ```rust
 use rust_widgets::core::CoreConfig;
 
-// 桌面：Full profile, Desktop platform, desktop capabilities, v0.9.6
+// 桌面：Full profile, Desktop platform, desktop capabilities, v1.0.0
 let desktop_config = CoreConfig::desktop();
 
-// 嵌入式：Embedded profile, Embedded platform, embedded capabilities, v0.9.6
+// 嵌入式：Embedded profile, Embedded platform, embedded capabilities, v1.0.0
 let embedded_config = CoreConfig::embedded();
 
-// 移动端：Full profile, Mobile platform, mobile capabilities, v0.9.6
+// 移动端：Full profile, Mobile platform, mobile capabilities, v1.0.0
 let mobile_config = CoreConfig::mobile();
 ```
 

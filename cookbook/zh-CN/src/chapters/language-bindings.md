@@ -95,7 +95,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="0.9.6",
+    version="1.0.0",
     packages=find_packages(),
     description="rust-widgets GUI 库的 Python 绑定",
 )
@@ -487,7 +487,7 @@ Node.js 绑定使用 `ffi-napi` 和 `ref-napi` 加载原生库并直接从 JavaS
 ```json
 {
   "name": "rust-widgets",
-  "version": "0.9.6",
+  "version": "1.0.0",
   "description": "rust-widgets GUI 库的 Node.js 绑定",
   "main": "index.js",
   "dependencies": {

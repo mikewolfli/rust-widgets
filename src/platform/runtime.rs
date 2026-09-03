@@ -184,6 +184,13 @@ pub fn capabilities() -> PlatformCapabilities {
     get_platform().capabilities()
 }
 
+/// Returns the backend name of the active platform (e.g. `"gtk"`, `"cocoa"`,
+/// `"WindowsPlatform"`, `"wasm-state-backend"`).
+#[cfg(not(feature = "mini"))]
+pub fn backend_name() -> &'static str {
+    get_platform().backend_name()
+}
+
 /// Runtime GUI mode contract used by demos/tools to explain visible behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeGuiMode {

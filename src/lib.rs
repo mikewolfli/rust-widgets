@@ -823,8 +823,8 @@ pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String
 // Re-exports from platform module for convenience
 #[cfg(not(feature = "mini"))]
 pub use platform::{
-    capabilities, dpi_scale_factor, get_platform, init as platform_init, quit as platform_quit,
-    run as platform_run, runtime_gui_mode, runtime_gui_mode_for,
+    backend_name, capabilities, dpi_scale_factor, get_platform, init as platform_init,
+    quit as platform_quit, run as platform_run, runtime_gui_mode, runtime_gui_mode_for,
 };
 pub use platform::{
     CapabilityContract, DesktopBackend, DropEvent, EmbeddedCapabilityContract, MobileBackend,

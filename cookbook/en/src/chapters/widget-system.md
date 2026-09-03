@@ -631,7 +631,7 @@ graph TB
 | | `AudioVisualizer` | ✗ | Audio waveform display |
 | | `CameraPreview` | ✗ | Camera viewfinder |
 | | `BarcodeScanner` | ✗ | Barcode/QR scanner |
-| | `AnimatedImage` | ✗ | Animated GIF/APNG/WebP |
+| | `AnimatedImage` | ✗ | Frame-sequence animation; feed RGBA frames via `load_frames` (stream decoding not built in) |
 | | `HeroAnimation` | ✗ | Shared element transition |
 | | `BezierCurveEditor` | ✗ | Bezier curve editor |
 | | `LottieWidget` | ✗ | Lottie animation player |

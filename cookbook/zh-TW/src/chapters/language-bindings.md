@@ -95,7 +95,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="0.9.6",
+    version="1.0.0",
     packages=find_packages(),
     description="Python bindings for the rust-widgets GUI library",
 )
@@ -487,7 +487,7 @@ Node.js 綁定使用 `ffi-napi` 和 `ref-napi` 來載入原生函式庫，並直
 ```json
 {
   "name": "rust-widgets",
-  "version": "0.9.6",
+  "version": "1.0.0",
   "description": "Node.js bindings for the rust-widgets GUI library",
   "main": "index.js",
   "dependencies": {

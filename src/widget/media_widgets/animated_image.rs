@@ -1,8 +1,13 @@
-//! AnimatedImage widget — plays animated images (GIF/APNG/WebP frame sequences).
+//! AnimatedImage widget — plays caller-provided animation frame sequences.
 //!
-//! The AnimatedImage widget manages a sequence of frames with individual delays,
-//! supports play/pause/stop controls, loop count configuration, and emits signals
-//! when animation finishes or the current frame changes.
+//! The widget manages a sequence of [`AnimatedFrame`]s (raw RGBA + delay) with
+//! play/pause/stop controls, loop-count configuration, and signals when the
+//! animation finishes or the current frame changes.
+//!
+//! **Decoding note**: GIF/APNG/WebP *stream* decoding is not built in. Decode
+//! the container yourself (per frame) and hand the RGBA frames to
+//! [`AnimatedImage::load_frames`]. [`AnimatedImage::load_from_bytes`] refuses
+//! raw streams rather than fabricating placeholder frames.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -70,78 +75,35 @@ impl AnimatedImage {
         }
     }
 
-    /// Loads frames from raw byte data. The data is treated as a simple
-    /// frame sequence for simulation purposes.
+    /// Replace the frame sequence with caller-decoded RGBA frames.
     ///
-    /// In a real implementation, this would decode GIF/APNG/WebP streams.
-    /// Here we create a single placeholder frame with the given dimensions.
-    pub fn load_from_bytes(
-        &mut self,
-        data: &[u8],
-        format: AnimatedImageFormat,
-    ) -> Result<(), String> {
-        if data.is_empty() {
-            return Err("No data provided".to_string());
+    /// Each frame carries its own `delay_ms`. Returns `Err` for an empty list.
+    pub fn load_frames(&mut self, frames: Vec<AnimatedFrame>) -> Result<(), String> {
+        if frames.is_empty() {
+            return Err("No frames provided".to_string());
         }
-
-        // For simulation, create a simple colored test pattern frame based on data hash.
-        // In production, this would parse the actual image format.
-        let width = 64u32;
-        let height = 64u32;
-        let pixel_count = (width * height) as usize;
-        let mut frame_data = Vec::with_capacity(pixel_count * 4);
-
-        // Generate a simple pattern based on the input data.
-        let seed: u8 = data.iter().fold(0u8, |a, b| a.wrapping_add(*b));
-        for y in 0..height {
-            for x in 0..width {
-                let r = (x as u8).wrapping_mul(seed);
-                let g = (y as u8).wrapping_mul(seed.wrapping_add(1));
-                let b = seed.wrapping_sub(x as u8);
-                let a = 255u8;
-                frame_data.push(r);
-                frame_data.push(g);
-                frame_data.push(b);
-                frame_data.push(a);
-            }
-        }
-
-        let delay = match format {
-            AnimatedImageFormat::Gif => 100,
-            AnimatedImageFormat::Apng => 40,
-            AnimatedImageFormat::WebP => 33,
-        };
-
-        self.frames.push(AnimatedFrame { data: frame_data, width, height, delay_ms: delay });
-
-        // If data is long enough, simulate a second frame.
-        if data.len() > 32 {
-            let mut frame_data2 = Vec::with_capacity(pixel_count * 4);
-            for y in 0..height {
-                for x in 0..width {
-                    let r = seed.wrapping_mul(y as u8).wrapping_add(100);
-                    let g = (x as u8).wrapping_mul(seed.wrapping_add(2));
-                    let b = seed.wrapping_add(y as u8);
-                    let a = 255u8;
-                    frame_data2.push(r);
-                    frame_data2.push(g);
-                    frame_data2.push(b);
-                    frame_data2.push(a);
-                }
-            }
-            self.frames.push(AnimatedFrame {
-                data: frame_data2,
-                width,
-                height,
-                delay_ms: delay + 20,
-            });
-        }
-
+        self.frames = frames;
         self.current_frame = 0;
         self.frame_timer = 0;
         self.loops_completed = 0;
         self.playing = false;
+        self.base.request_redraw();
         Ok(())
+    }
+
+    /// Load frames from raw GIF/APNG/WebP bytes.
+    ///
+    /// This widget does not include container decoders, so raw streams are
+    /// rejected with an explicit error instead of fabricating placeholder
+    /// frames. Decode the stream per frame and use [`Self::load_frames`].
+    pub fn load_from_bytes(
+        &mut self,
+        _data: &[u8],
+        format: AnimatedImageFormat,
+    ) -> Result<(), String> {
+        Err(format!(
+            "decoding {format:?} streams is not implemented; decode frames and pass them via AnimatedImage::load_frames"
+        ))
     }
 
     /// Starts playback of the animation.
@@ -387,6 +349,14 @@ mod tests {
         (0..len).map(|i| (i % 255) as u8).collect()
     }
 
+    /// Two 2-frame sequences for playback/advance tests.
+    fn two_test_frames() -> Vec<AnimatedFrame> {
+        vec![
+            AnimatedFrame { data: vec![10u8; 16], width: 2, height: 2, delay_ms: 100 },
+            AnimatedFrame { data: vec![20u8; 16], width: 2, height: 2, delay_ms: 100 },
+        ]
+    }
+
     #[test]
     fn animated_image_creation_defaults() {
         let img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
@@ -398,27 +368,43 @@ mod tests {
     }
 
     #[test]
-    fn animated_image_load_from_bytes_and_frame_count() {
+    fn animated_image_load_frames_sets_sequence() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        let frames = vec![
+            AnimatedFrame { data: vec![0u8; 16], width: 2, height: 2, delay_ms: 100 },
+            AnimatedFrame { data: vec![1u8; 16], width: 2, height: 2, delay_ms: 50 },
+        ];
+        img.load_frames(frames).unwrap();
         assert_eq!(img.frame_count(), 2);
         assert_eq!(img.current_frame(), 0);
     }
 
     #[test]
-    fn animated_image_empty_data_returns_error() {
+    fn animated_image_load_frames_rejects_empty() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let result = img.load_from_bytes(&[], AnimatedImageFormat::Gif);
+        assert!(img.load_frames(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn animated_image_load_from_bytes_rejects_raw_streams() {
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
+        let data = make_test_data(128);
+        // Raw GIF/APNG/WebP bytes are refused (no built-in container decoder),
+        // never silently turned into placeholder frames.
+        let result = img.load_from_bytes(&data, AnimatedImageFormat::Gif);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "No data provided");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("not implemented"), "{msg}");
+        assert!(msg.contains("load_frames"), "{msg}");
+        assert_eq!(img.frame_count(), 0);
     }
 
     #[test]
     fn animated_image_play_pause_stop() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        let frames =
+            vec![AnimatedFrame { data: vec![0u8; 16], width: 2, height: 2, delay_ms: 100 }];
+        img.load_frames(frames).unwrap();
 
         assert!(!img.is_playing());
         img.play();
@@ -435,8 +421,7 @@ mod tests {
     #[test]
     fn animated_image_advance_frame_wraps_with_infinite_loop() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.play();
         assert_eq!(img.frame_count(), 2);
 
@@ -454,8 +439,7 @@ mod tests {
     #[test]
     fn animated_image_advance_frame_finite_loop() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.set_loop_count(2);
         img.play();
         assert_eq!(img.loops_completed, 0);
@@ -482,8 +466,7 @@ mod tests {
     #[test]
     fn animated_image_frame_changed_signal() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.play();
 
         let captured = Arc::new(Mutex::new(None));
@@ -501,8 +484,7 @@ mod tests {
     #[test]
     fn animated_image_animation_finished_signal() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.set_loop_count(1);
         img.play();
 
@@ -524,8 +506,7 @@ mod tests {
     #[test]
     fn animated_image_tick_advances_frame() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.play();
 
         let changed = img.tick(30); // below frame delay (100ms)
@@ -540,8 +521,7 @@ mod tests {
     #[test]
     fn animated_image_tick_not_playing_does_nothing() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         // Not playing.
         let changed = img.tick(500);
         assert!(!changed);
@@ -561,8 +541,7 @@ mod tests {
     #[test]
     fn animated_image_disabled_blocks_events() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.set_enabled(false);
 
         img.handle_event(&Event::MousePress { pos: Point::new(50, 50), button: 1 });
@@ -572,8 +551,7 @@ mod tests {
     #[test]
     fn animated_image_reset() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        img.load_from_bytes(&data, AnimatedImageFormat::Gif).unwrap();
+        img.load_frames(two_test_frames()).unwrap();
         img.play();
         img.advance_frame();
         assert_eq!(img.current_frame(), 1);
@@ -586,8 +564,13 @@ mod tests {
     #[test]
     fn animated_image_svg_output() {
         let mut img = AnimatedImage::new(Rect::new(0, 0, 100, 100));
-        let data = make_test_data(64);
-        img.load_from_bytes(&data, AnimatedImageFormat::Apng).unwrap();
+        img.load_frames(vec![AnimatedFrame {
+            data: vec![0u8; 4],
+            width: 1,
+            height: 1,
+            delay_ms: 100,
+        }])
+        .unwrap();
         let svg = crate::widget::svg::render_to_svg(&mut img);
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("width=\"100\""));

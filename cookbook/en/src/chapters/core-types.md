@@ -939,7 +939,7 @@ assert_eq!(v.to_u32(), 0x000906);
 
 // Parse from string:
 let v2 = Version::parse_str("1.2.3").unwrap();
-let v3: Version = "0.9.6".parse().unwrap();
+let v3: Version = "1.0.0".parse().unwrap();
 ```
 
 ### Comparison
@@ -962,7 +962,7 @@ assert!(v1.is_older_than(&v3));
 
 ```rust
 let v = Version::new(0, 9, 6);
-println!("{}", v);  // "0.9.6"
+println!("{}", v);  // "1.0.0"
 
 // Invalid strings:
 assert!(Version::parse_str("1.2").is_err());       // missing patch
@@ -1035,13 +1035,13 @@ pub struct CoreConfig {
 ```rust
 use rust_widgets::core::CoreConfig;
 
-// Desktop: Full profile, Desktop platform, desktop capabilities, v0.9.6
+// Desktop: Full profile, Desktop platform, desktop capabilities, v1.0.0
 let desktop_config = CoreConfig::desktop();
 
-// Embedded: Embedded profile, Embedded platform, embedded capabilities, v0.9.6
+// Embedded: Embedded profile, Embedded platform, embedded capabilities, v1.0.0
 let embedded_config = CoreConfig::embedded();
 
-// Mobile: Full profile, Mobile platform, mobile capabilities, v0.9.6
+// Mobile: Full profile, Mobile platform, mobile capabilities, v1.0.0
 let mobile_config = CoreConfig::mobile();
 ```
 

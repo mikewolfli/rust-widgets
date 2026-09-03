@@ -67,7 +67,7 @@ pub use crate::platform::contract::{negotiate_capability_contract, CapabilityCon
 pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
 pub use crate::platform::runtime::RuntimeGuiMode;
 #[cfg(not(feature = "mini"))]
-pub use crate::platform::runtime::{capabilities, get_platform, init, quit, run};
+pub use crate::platform::runtime::{backend_name, capabilities, get_platform, init, quit, run};
 #[cfg(not(feature = "mini"))]
 pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
 #[cfg(feature = "mobile-api")]

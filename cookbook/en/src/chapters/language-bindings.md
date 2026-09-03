@@ -103,7 +103,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="0.9.6",
+    version="1.0.0",
     packages=find_packages(),
     description="Python bindings for the rust-widgets GUI library",
 )
@@ -499,7 +499,7 @@ and call C ABI functions directly from JavaScript.
 ```json
 {
   "name": "rust-widgets",
-  "version": "0.9.6",
+  "version": "1.0.0",
   "description": "Node.js bindings for the rust-widgets GUI library",
   "main": "index.js",
   "dependencies": {

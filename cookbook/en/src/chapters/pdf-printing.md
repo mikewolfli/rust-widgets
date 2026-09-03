@@ -517,7 +517,7 @@ let metadata = PdfMetadata {
     author: "Jane Smith".into(),
     subject: "Q2 2026 Financial Results".into(),
     keywords: "finance, quarterly, 2026, report".into(),
-    creator: "rust-widgets 0.9.6".into(),
+    creator: "rust-widgets 1.0.0".into(),
     producer: "rust-widgets PDF Engine".into(),
     creation_date: "2026-06-10T12:00:00Z".into(),
     modification_date: "2026-06-10T12:00:00Z".into(),
