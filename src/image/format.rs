@@ -5,7 +5,7 @@
 //! The [`ImageFormat`] enum is a format identifier list; it does **not** imply
 //! that this crate ships a codec for every variant. Actual codec status:
 //!
-//! - **Decoded & encoded**: PNG, JPEG, BMP, QOI, Farbfeld, PNM (P5/P6).
+//! - **Decoded & encoded**: PNG, JPEG, BMP, QOI, Farbfeld, PNM (P1-P6).
 //! - **Encoded only** (decoding returns `Err`): GIF, TIFF, SVG/SVGZ.
 //! - **Neither** (detected by magic bytes; `decode` returns
 //!   `Err("... not implemented ...")`): WebP, AVIF, ICO.

@@ -1081,7 +1081,9 @@ impl Platform for MacOSPlatform {
                         HandleKind::Label | HandleKind::StatusBar => {
                             NSTextField::setStringValue_(native, ns_text)
                         }
-                        HandleKind::ComboBox => {}
+                        HandleKind::ComboBox => {
+                            let _: () = msg_send![native, setTitle: ns_text];
+                        }
                         HandleKind::ListBox => {
                             let _: () = msg_send![native, setStringValue: ns_text];
                         }
@@ -1090,8 +1092,12 @@ impl Platform for MacOSPlatform {
                                 let _: () = msg_send![native, setDoubleValue: value];
                             }
                         }
-                        HandleKind::MenuBar | HandleKind::ToolBar => {}
-                        HandleKind::Panel => {}
+                        HandleKind::MenuBar => {
+                            let _: () = msg_send![native, setTitle: ns_text];
+                        }
+                        HandleKind::ToolBar | HandleKind::Panel => {
+                            let _: () = msg_send![native, setAccessibilityLabel: ns_text];
+                        }
                         HandleKind::Menu | HandleKind::MenuItem => {
                             let _: () = msg_send![native, setTitle: ns_text];
                         }

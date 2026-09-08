@@ -9,7 +9,7 @@
 //! | PNG    | Real decoder: 8/16-bit grayscale, RGB, palette (with tRNS) and RGBA, all scanline filters (None/Sub/Up/Average/Paeth). Interlaced (Adam7) PNG is rejected with an error. |
 //! | JPEG   | Real baseline decoder. |
 //! | BMP    | Real decoder (24/32-bit). |
-//! | PNM    | Real decoder for binary P5/P6. ASCII P1-P3 and bitmap P4 are not implemented. |
+//! | PNM    | Real decoder for ASCII P1-P3 and binary P4-P6. |
 //! | QOI    | Real decoder. |
 //! | Farbfeld | Real decoder. |
 //! | GIF    | Not implemented: `decode` returns `Err`. |
@@ -1048,6 +1048,71 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
     }
     let format_type = data[1];
 
+    // ASCII PNM formats have token-based headers and allow comments anywhere
+    // between tokens, so parse them separately from the binary formats.
+    if matches!(format_type, b'1' | b'2' | b'3') {
+        let header = std::str::from_utf8(&data[2..]).map_err(|_| "PNM: non-UTF-8 ASCII data")?;
+        let mut tokens = header
+            .lines()
+            .flat_map(|line| line.split('#').next().unwrap_or_default().split_whitespace());
+        let w = tokens
+            .next()
+            .ok_or("PNM: missing width")?
+            .parse::<u32>()
+            .map_err(|_| "Invalid PNM width")?;
+        let h = tokens
+            .next()
+            .ok_or("PNM: missing height")?
+            .parse::<u32>()
+            .map_err(|_| "Invalid PNM height")?;
+        if w == 0 || h == 0 {
+            return Err("Invalid PNM dimensions".into());
+        }
+        let maxval = if format_type == b'1' {
+            1
+        } else {
+            tokens
+                .next()
+                .ok_or("PNM: missing maxval")?
+                .parse::<u32>()
+                .map_err(|_| "Invalid PNM maxval")?
+        };
+        if maxval == 0 || maxval > 65535 {
+            return Err("Invalid PNM maxval".into());
+        }
+
+        let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
+        let channel_count = if format_type == b'3' { 3 } else { 1 };
+        let sample_count =
+            pixel_count.checked_mul(channel_count).ok_or("PNM sample count overflow")?;
+        let mut pixels = Vec::with_capacity(sample_count * 3);
+        for sample_index in 0..sample_count {
+            let sample = tokens
+                .next()
+                .ok_or_else(|| format!("PNM: missing sample at index {sample_index}"))?
+                .parse::<u32>()
+                .map_err(|_| format!("PNM: invalid sample at index {sample_index}"))?;
+            if sample > maxval {
+                return Err(format!("PNM: sample {sample} exceeds maxval {maxval}"));
+            }
+            let scaled = (sample * 255 / maxval) as u8;
+            if format_type == b'1' {
+                let value = if scaled == 0 { 255 } else { 0 };
+                pixels.extend_from_slice(&[value, value, value]);
+            } else if format_type == b'2' {
+                pixels.extend_from_slice(&[scaled, scaled, scaled]);
+            } else {
+                pixels.push(scaled);
+            }
+        }
+        if tokens.next().is_some() {
+            return Err("PNM: too many samples".into());
+        }
+        let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
+        img.color_space = ColorSpace::Srgb;
+        return Ok(img);
+    }
+
     // Parse binary PNM header: scan for newlines to find dimension fields.
     // Format: P<type>\n<w> <h>\n<maxval>\n<binary data>
     // Find first newline (after magic)
@@ -1061,6 +1126,47 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         .position(|&b| b == b'\n')
         .map(|p| p + first_nl + 1)
         .ok_or("PNM: missing second newline")?;
+
+    if format_type == b'4' {
+        let w = std::str::from_utf8(&data[first_nl + 1..second_nl])
+            .map_err(|_| "PNM: non-UTF-8 in dimension line")?
+            .split_whitespace()
+            .next()
+            .ok_or("Cannot parse PNM width")?
+            .parse::<u32>()
+            .map_err(|_| "Invalid PNM width")?;
+        let h = std::str::from_utf8(&data[first_nl + 1..second_nl])
+            .map_err(|_| "PNM: non-UTF-8 in dimension line")?
+            .split_whitespace()
+            .nth(1)
+            .ok_or("Cannot parse PNM height")?
+            .parse::<u32>()
+            .map_err(|_| "Invalid PNM height")?;
+        if w == 0 || h == 0 {
+            return Err("Invalid PNM dimensions".into());
+        }
+        let row_bytes = (w as usize).div_ceil(8);
+        let packed_len = row_bytes.checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
+        let data_start = second_nl + 1;
+        let packed = data.get(data_start..data_start + packed_len).ok_or_else(|| {
+            format!(
+                "PNM P4 bitmap truncated: need {packed_len} bytes, got {}",
+                data.len().saturating_sub(data_start)
+            )
+        })?;
+        let mut pixels = Vec::with_capacity((w as usize) * (h as usize) * 3);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let bit = (packed[y * row_bytes + x / 8] >> (7 - (x % 8))) & 1;
+                let value = if bit == 0 { 255 } else { 0 };
+                pixels.extend_from_slice(&[value, value, value]);
+            }
+        }
+        let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
+        img.color_space = ColorSpace::Srgb;
+        return Ok(img);
+    }
+
     let third_nl = data[second_nl + 1..]
         .iter()
         .position(|&b| b == b'\n')
@@ -1077,47 +1183,57 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
     let w = dim_parts[0].parse::<u32>().map_err(|_| "Invalid PNM width")?;
     let h = dim_parts[1].parse::<u32>().map_err(|_| "Invalid PNM height")?;
 
-    // Parse maxval from the line between second and third newline
-    let maxval_line = std::str::from_utf8(&data[second_nl + 1..third_nl]).unwrap_or("255");
-    let maxval =
-        maxval_line.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(255);
+    // Parse maxval from the line between second and third newline.
+    let maxval_line = std::str::from_utf8(&data[second_nl + 1..third_nl])
+        .map_err(|_| "PNM: non-UTF-8 in maxval line")?;
+    let maxval = maxval_line
+        .split_whitespace()
+        .next()
+        .ok_or("PNM: missing maxval")?
+        .parse::<u32>()
+        .map_err(|_| "Invalid PNM maxval")?;
+    if maxval == 0 || maxval > 65535 {
+        return Err("Invalid PNM maxval".into());
+    }
 
     // Binary data starts after the third newline (or after second if no third)
     let data_start = if third_nl < data.len() { third_nl + 1 } else { data.len() };
 
     if format_type == b'5' || format_type == b'6' {
-        let _bpp = if format_type == b'5' { 1usize } else { 3usize };
-        let pixel_data = if data_start < data.len() { &data[data_start..] } else { &[] };
-        let mut pixels = Vec::with_capacity(w as usize * h as usize * 3);
+        if w == 0 || h == 0 {
+            return Err("Invalid PNM dimensions".into());
+        }
+        let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
+        // P5 stores one sample per pixel; P6 stores three (RGB).
+        let sample_count = if format_type == b'5' {
+            pixel_count
+        } else {
+            pixel_count.checked_mul(3).ok_or("PNM sample count overflow")?
+        };
+        let available = data.len().saturating_sub(data_start);
+        if available < sample_count {
+            return Err(format!(
+                "PNM P{} data truncated: need {sample_count} bytes, got {available}",
+                format_type as char
+            ));
+        }
+        let pixel_data = &data[data_start..data_start + sample_count];
+        let mut pixels = Vec::with_capacity(pixel_count * 3);
         let maxval_f = maxval as f32;
-        for i in 0..(w * h) as usize {
-            if format_type == b'5' {
-                let v = pixel_data.get(i).copied().unwrap_or(0);
-                let scaled = if maxval != 255 { (v as f32 / maxval_f * 255.0) as u8 } else { v };
-                pixels.push(scaled);
-                pixels.push(scaled);
-                pixels.push(scaled);
-            } else {
-                let off = i * 3;
-                let r = pixel_data.get(off).copied().unwrap_or(0);
-                let g = pixel_data.get(off + 1).copied().unwrap_or(0);
-                let b = pixel_data.get(off + 2).copied().unwrap_or(0);
-                pixels.push(r);
-                pixels.push(g);
-                pixels.push(b);
+        if format_type == b'5' {
+            for &v in pixel_data {
+                let scaled =
+                    if maxval != 255 { (v as f32 / maxval_f * 255.0).round() as u8 } else { v };
+                pixels.extend_from_slice(&[scaled, scaled, scaled]);
             }
+        } else {
+            pixels.extend_from_slice(pixel_data);
         }
         let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
         img.color_space = ColorSpace::Srgb;
         Ok(img)
     } else {
-        // P1 (ASCII bitmap), P2 (ASCII grayscale), P3 (ASCII RGB) and
-        // P4 (binary bitmap) parsers are not implemented; refusing to return
-        // fabricated black pixels for them.
-        Err(format!(
-            "PNM P{} decoding is not implemented (no codec); refusing to return fabricated pixels",
-            format_type as char
-        ))
+        Err("Unsupported binary PNM format".into())
     }
 }
 
@@ -1580,6 +1696,71 @@ mod tests {
         assert!(result.is_ok());
         let img = result.unwrap();
         assert_eq!(img.format, ImageFormat::Pnm);
+    }
+
+    #[test]
+    fn decode_pnm_binary_rgb() {
+        let pnm = b"P6\n1 2\n255\n\x00\x00\x00\xFF\xFF\xFF";
+        let img = decode_pnm(pnm).unwrap();
+        assert_eq!(img.format, ImageFormat::Pnm);
+        assert_eq!(img.data.as_bytes(), &[0, 0, 0, 255, 255, 255]);
+    }
+
+    #[test]
+    fn decode_pnm_binary_rejects_truncated_data() {
+        let grayscale = b"P5\n3 2\n255\n\x00\x80";
+        let grayscale_err = decode_pnm(grayscale).unwrap_err();
+        assert!(grayscale_err.contains("truncated"), "unexpected error: {grayscale_err}");
+
+        let rgb = b"P6\n1 1\n255\n\xFF\x00";
+        let rgb_err = decode_pnm(rgb).unwrap_err();
+        assert!(rgb_err.contains("truncated"), "unexpected error: {rgb_err}");
+    }
+
+    #[test]
+    fn decode_pnm_binary_bitmap_uses_msb_first_bits() {
+        let pnm = b"P4\n10 2\n\xA0\x00\x40\x00";
+        let img = decode_pnm(pnm).unwrap();
+        assert_eq!(img.width, 10);
+        assert_eq!(img.height, 2);
+        // 0xA0 = 0b1010_0000 (MSB-first), 0x40 = 0b0100_0000. The two trailing
+        // padding bits of each row are ignored by the decoder.
+        let expected_values = [
+            0, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255, 255, 255,
+            255, 255,
+        ];
+        let expected_rgb: Vec<u8> =
+            expected_values.into_iter().flat_map(|value| [value; 3]).collect();
+        assert_eq!(img.data.as_bytes(), expected_rgb.as_slice());
+    }
+
+    #[test]
+    fn decode_pnm_binary_bitmap_rejects_truncated_data() {
+        let pnm = b"P4\n10 2\n\xA0";
+        let err = decode_pnm(pnm).unwrap_err();
+        assert!(err.contains("truncated"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn decode_pnm_ascii_bitmap_grayscale_and_rgb() {
+        let bitmap = b"P1\n# bitmap comment\n2 1\n0 1\n";
+        let bitmap = decode_pnm(bitmap).unwrap();
+        assert_eq!(bitmap.data.as_bytes(), &[255, 255, 255, 0, 0, 0]);
+
+        let grayscale = b"P2\n2 1\n100\n0 50\n";
+        let grayscale = decode_pnm(grayscale).unwrap();
+        assert_eq!(grayscale.data.as_bytes(), &[0, 0, 0, 127, 127, 127]);
+
+        let rgb = b"P3\n1 1\n255\n12 34 56\n";
+        let rgb = decode_pnm(rgb).unwrap();
+        assert_eq!(rgb.data.as_bytes(), &[12, 34, 56]);
+    }
+
+    #[test]
+    fn decode_pnm_ascii_rejects_invalid_sample_values() {
+        let pnm = b"P2\n1 1\n10\n11\n";
+        let err = decode_pnm(pnm).unwrap_err();
+        assert!(err.contains("exceeds maxval"), "unexpected error: {err}");
     }
 
     #[test]

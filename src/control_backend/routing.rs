@@ -4,6 +4,19 @@ use crate::widget::WidgetKind;
 pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePreference {
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
     {
+        #[cfg(target_os = "windows")]
+        if matches!(
+            kind,
+            WidgetKind::MessageBox
+                | WidgetKind::FileDialog
+                | WidgetKind::ColorDialog
+                | WidgetKind::FontDialog
+                | WidgetKind::SpinBox
+                | WidgetKind::ScrollArea
+        ) {
+            return ControlRoutePreference::CustomRequired;
+        }
+
         match kind {
             WidgetKind::Window
             | WidgetKind::Dialog
@@ -186,7 +199,7 @@ mod tests {
     use super::*;
     use crate::widget::WidgetKind;
 
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(all(not(any(feature = "mini", feature = "embedded")), not(target_os = "windows")))]
     #[test]
     fn native_preferred_widget_kinds() {
         // Widgets expected to prefer native backend.
@@ -240,6 +253,27 @@ mod tests {
                 ControlRoutePreference::NativePreferred,
                 "WidgetKind::{:?} should be NativePreferred",
                 kind,
+            );
+        }
+    }
+
+    #[cfg(all(not(any(feature = "mini", feature = "embedded")), target_os = "windows"))]
+    #[test]
+    fn windows_surrogate_widget_kinds_use_custom_backend() {
+        let custom_required = [
+            WidgetKind::MessageBox,
+            WidgetKind::FileDialog,
+            WidgetKind::ColorDialog,
+            WidgetKind::FontDialog,
+            WidgetKind::SpinBox,
+            WidgetKind::ScrollArea,
+        ];
+
+        for kind in custom_required {
+            assert_eq!(
+                route_preference_for_widget_kind(kind),
+                ControlRoutePreference::CustomRequired,
+                "WidgetKind::{kind:?} should use the custom backend on Windows",
             );
         }
     }
