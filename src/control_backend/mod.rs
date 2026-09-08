@@ -44,7 +44,10 @@ mod tests {
     fn route_preference_for_widget_kind_re_exported() {
         use crate::widget::WidgetKind;
         let pref = route_preference_for_widget_kind(WidgetKind::Button);
+        #[cfg(not(feature = "embedded"))]
         assert_eq!(pref, ControlRoutePreference::NativePreferred);
+        #[cfg(feature = "embedded")]
+        assert_eq!(pref, ControlRoutePreference::CustomRequired);
     }
 
     #[test]

@@ -59,9 +59,10 @@ pub mod i18n;
 #[cfg(feature = "image")]
 pub mod image;
 /// Declarative JSON window engine (QML-like).
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "embedded"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 pub mod json;
 /// Layout managers.
 pub mod layout;
@@ -101,6 +102,7 @@ pub mod util;
 #[cfg(feature = "video")]
 pub mod video;
 /// Web view and engine components.
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod web;
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
 #[cfg(feature = "gpu-wgpu")]
@@ -126,8 +128,10 @@ macro_rules! tr {
     }};
 }
 /// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 pub mod app;
 #[cfg(feature = "chart")]
 /// Charting primitives.

@@ -275,7 +275,7 @@ impl WidgetFactory {
         {
             let _ = widget;
             let _ = canonical_name;
-            return true;
+            true
         }
         #[cfg(not(feature = "mini"))]
         match canonical_name {

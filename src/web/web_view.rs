@@ -165,7 +165,7 @@ impl Draw for WebViewEnhanced {
 
         // ── Address bar area (30px at top) ──
         let addr_h = 30u32;
-        let addr_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, addr_h);
+        let addr_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), addr_h);
         context.fill_rect(addr_rect, Color::rgb(245, 245, 245));
         // Bottom border of address bar
         context.draw_line(
@@ -199,7 +199,8 @@ impl Draw for WebViewEnhanced {
             addr_rect.y + addr_rect.height as i32 + if self.core.loading { 3 } else { 0 };
         let content_h = (rect.y + rect.height as i32) - content_y - 1;
         if content_h > 0 {
-            let content_rect = Rect::new(rect.x + 1, content_y, rect.width - 2, content_h as u32);
+            let content_rect =
+                Rect::new(rect.x + 1, content_y, rect.width.saturating_sub(2), content_h as u32);
             // Content background
             context.fill_rect(content_rect, bg_color);
 

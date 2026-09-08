@@ -114,7 +114,8 @@ impl Draw for Stepper {
         context.draw_rounded_rect_stroke(rect, 4, Color::rgba(180, 180, 180, 200), 1);
 
         // --- Minus button (left) ---
-        let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, rect.height - 2);
+        let inner_height = rect.height.saturating_sub(2);
+        let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, inner_height);
         let minus_color = if !is_enabled {
             Color::rgba(200, 200, 200, 200)
         } else {
@@ -146,7 +147,7 @@ impl Draw for Stepper {
             rect.x + rect.width as i32 - btn_width as i32 - 1,
             rect.y + 1,
             btn_width,
-            rect.height - 2,
+            inner_height,
         );
         let plus_color = if !is_enabled {
             Color::rgba(200, 200, 200, 200)
@@ -207,13 +208,14 @@ impl EventHandler for Stepper {
                 let btn_width = rect.height.min(rect.width / 3).max(20);
 
                 // Minus button area (left)
-                let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, rect.height - 2);
+                let inner_height = rect.height.saturating_sub(2);
+                let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, inner_height);
                 // Plus button area (right)
                 let plus_rect = Rect::new(
                     rect.x + rect.width as i32 - btn_width as i32 - 1,
                     rect.y + 1,
                     btn_width,
-                    rect.height - 2,
+                    inner_height,
                 );
 
                 if minus_rect.contains(*pos) {

@@ -166,20 +166,32 @@ impl Font {
     pub fn with_family(&self, family: impl Into<String>) -> Self {
         Self::with_weight(family, self.size, self.weight, self.italic)
     }
-    /// Returns font size as i32 (rounded).
+    /// Returns font size as i32 (rounded and clamped to the signed range).
     pub fn size_i32(&self) -> i32 {
-        self.size.round() as i32
+        if !self.size.is_finite() {
+            return 0;
+        }
+        self.size.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
     }
-    /// Returns font size as u32 (rounded and clamped to positive).
+    /// Returns font size as u32 (rounded and clamped to the unsigned range).
     pub fn size_u32(&self) -> u32 {
-        self.size.round().max(0.0) as u32
+        if !self.size.is_finite() {
+            return 0;
+        }
+        self.size.round().clamp(0.0, u32::MAX as f32) as u32
     }
     /// Creates a larger font by scaling the size.
     pub fn scaled(&self, scale: f32) -> Self {
+        if !scale.is_finite() || scale <= 0.0 {
+            return self.clone();
+        }
         Self::with_weight(&self.family, self.size * scale, self.weight, self.italic)
     }
     /// Creates a smaller font by scaling the size.
     pub fn scaled_down(&self, scale: f32) -> Self {
+        if !scale.is_finite() || scale <= 0.0 {
+            return self.clone();
+        }
         Self::with_weight(&self.family, self.size / scale, self.weight, self.italic)
     }
     /// Returns whether the font is bold (weight >= 700).
@@ -349,6 +361,29 @@ mod tests {
         let normalized_to_bold = Font::with_weight("Sans", 12.0, 650, false);
         assert_eq!(normalized_to_bold.weight(), 700);
         assert!(normalized_to_bold.is_bold());
+    }
+
+    #[test]
+    fn invalid_scale_preserves_font_validity() {
+        let font = Font::default_ui();
+        assert_eq!(font.scaled(0.0), font);
+        assert_eq!(font.scaled_down(0.0), font);
+        assert_eq!(font.scaled(f32::NAN), font);
+        assert_eq!(font.scaled_down(f32::INFINITY), font);
+        assert!(font.scaled(2.0).is_valid());
+        assert!(font.scaled_down(2.0).is_valid());
+    }
+
+    #[test]
+    fn invalid_font_size_conversions_are_deterministic() {
+        let mut font = Font::default_ui();
+        font.set_size(f32::NAN);
+        assert_eq!(font.size_i32(), 0);
+        assert_eq!(font.size_u32(), 0);
+
+        font.set_size(f32::INFINITY);
+        assert_eq!(font.size_i32(), 0);
+        assert_eq!(font.size_u32(), 0);
     }
     #[cfg(all(test, feature = "serde", feature = "serde_json", not(feature = "embedded")))]
     #[test]

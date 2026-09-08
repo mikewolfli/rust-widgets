@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Replace rust_widgets_ prefix with rw_ across bindings and generated files."""
 
-import re
-
 FILES = [
     # Rust binding implementations
     "src/bindings/binding_impl.rs",
@@ -15,18 +13,20 @@ FILES = [
     "src/print/print_impl.rs",
     "src/wgpu_backend/renderer.rs",
     # C headers
-    "include/rust_widgets_generated.h",
-    "include/rust_widgets_errors.h",
-    "include/rust_widgets.h",
+    "include/rw_generated.h",
+    "include/rw_errors.h",
     "examples/rust_widgets.generated.h",
-    "examples/rust_widgets.h",
+    "examples/rw.h",
     # Python bindings
     "bindings/python/rust_widgets/__init__.py",
     "bindings/python/rust_widgets/errors.py",
+    "examples/python/rust_widgets.py",
     # Code generators
     "tools/generate_c_header.py",
     "tools/generate_error_header.py",
 ]
+
+missing = []
 
 for fpath in FILES:
     try:
@@ -50,6 +50,10 @@ for fpath in FILES:
         else:
             print(f"  SKIPPED: {fpath} (no changes)")
     except FileNotFoundError:
+        missing.append(fpath)
         print(f"  NOT FOUND: {fpath}")
+
+if missing:
+    raise SystemExit(f"Refusing to continue: {len(missing)} configured files are missing.")
 
 print("\nDone!")

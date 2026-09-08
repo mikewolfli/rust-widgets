@@ -228,11 +228,11 @@ impl Draw for InputDialog {
         // Input field
         let input_y = rect.y + 60;
         context.fill_rect(
-            Rect::new(rect.x + 10, input_y, rect.width - 20, 26),
+            Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26),
             Color::rgb(255, 255, 255),
         );
         context.draw_rect(
-            Rect::new(rect.x + 10, input_y, rect.width - 20, 26),
+            Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26),
             Color::rgb(150, 150, 150),
         );
         let display_text = match self.mode {

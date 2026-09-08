@@ -192,7 +192,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_text_edit(
             &self,
             parent: ObjectId,
@@ -222,7 +222,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_rich_edit(
             &self,
             parent: ObjectId,
@@ -252,7 +252,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_check_list_box(
             &self,
             parent: ObjectId,
@@ -280,7 +280,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_double_spin_box(
             &self,
             parent: ObjectId,
@@ -309,7 +309,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_dial(
             &self,
             parent: ObjectId,
@@ -337,7 +337,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_command_link(
             &self,
             parent: ObjectId,
@@ -367,7 +367,7 @@ macro_rules! impl_input_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_font_combo_box(
             &self,
             parent: ObjectId,

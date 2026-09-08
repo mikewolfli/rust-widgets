@@ -1,8 +1,14 @@
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::core::Rect;
 
 fn main() {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(all(
+        any(feature = "desktop", feature = "tablet", feature = "mobile"),
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     {
         use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
         let mut editor = CodeEditor::new(Rect::new(0, 0, 640, 400));

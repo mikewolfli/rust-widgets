@@ -38,11 +38,11 @@ cargo test --lib
 
 | 配置 | 命令 | 渲染后端 | 控件数 | i18n | GPU |
 |------|------|----------|--------|------|-----|
-| 桌面 | `cargo check` | 原生 OS | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
-| 平板 | `--features tablet` | 原生 OS | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
-| 手机 | `--features mobile` | 手机 API | 80+ | ✅ | ✅（软件）；wgpu 需 `gpu-wgpu` |
-| 嵌入式 | `--features embedded` | 软件 | 30+ | — | — |
-| **Mini** | `--features mini` | **精简 std** + alloc | **30+** | — | — |
+| 桌面 | `cargo check` | 原生 OS | 完整控件集 | ✅ | ✅（desktop 默认启用 wgpu） |
+| 平板 | `--no-default-features --features tablet` | 原生 OS | 完整控件集 | ✅ | ✅（tablet 默认启用 wgpu） |
+| 手机 | `--no-default-features --features mobile` | 手机 API | 完整控件集 | ✅ | ✅（mobile 默认启用 wgpu） |
+| 嵌入式 | `--no-default-features --features embedded` | 软件 | 核心控件集 | — | — |
+| **Mini** | `--no-default-features --features mini` | **精简 std** + alloc | **核心控件集** | — | — |
 
 ### 操作系统支持
 
@@ -83,7 +83,7 @@ cargo test --lib
 
 ### Rust 原生设计
 - no_std 就绪架构：所有文件经 `compat.rs`（`core`/`alloc`）导入共享类型，启用 `#![cfg_attr(feature = "mini", no_std)]` 是已跟踪的后续步骤——当前 `mini` profile 在 std 上编译。
-- `compat.rs` 桥接：`HashMap→BTreeMap`，`Mutex→RefCell`，`MiniVec<T,64>`，`MiniString<256>`，`MiniArena`
+- `compat.rs` 桥接：`HashMap→BTreeMap`，轻量 profile 使用兼容锁实现，`MiniVec<T,64>`，`MiniString<256>`，`MiniArena`
 - `enum WidgetKind` + `trait Widget/Draw/EventHandler` — 零成本抽象
 - Builder 模式：`Style::new().bg_color(RED).pad_all(8).build()`
 
@@ -140,9 +140,9 @@ cargo test --lib
 
 **菜单**：PieMenu、RibbonBar、MenuButton、DropdownMenu、Popover、SegmentedButton
 
-### Mini（精简 std profile，约 30 个核心控件）
+### Mini / Embedded（精简核心控件集）
 
-Window、Dialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、GroupBox、Menu、MenuItem、ToggleButton、Switch、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、TabView、AnimatedImage
+Window、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、Panel、Frame、GroupBox、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch
 
 ---
 

@@ -410,7 +410,7 @@ pub struct AriaProperties {
 
 // ─── WidgetKind → AccessibleRole mapping ────────────────────────────────
 
-#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "mini"), not(feature = "embedded")))]
 impl From<WidgetKind> for AccessibleRole {
     fn from(kind: WidgetKind) -> Self {
         match kind {
@@ -470,7 +470,7 @@ impl From<WidgetKind> for AccessibleRole {
     }
 }
 
-#[cfg(feature = "mini")]
+#[cfg(any(feature = "mini", feature = "embedded"))]
 impl From<WidgetKind> for AccessibleRole {
     fn from(kind: WidgetKind) -> Self {
         // Mini exposes a core widget subset — map it properly instead of
@@ -502,7 +502,7 @@ impl From<WidgetKind> for AccessibleRole {
 }
 
 /// Map [`WidgetKind`] to the newer [`A11yRole`] enum.
-#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "mini"), not(feature = "embedded")))]
 impl From<WidgetKind> for A11yRole {
     fn from(kind: WidgetKind) -> Self {
         match kind {
@@ -600,7 +600,7 @@ impl From<WidgetKind> for A11yRole {
     }
 }
 
-#[cfg(feature = "mini")]
+#[cfg(any(feature = "mini", feature = "embedded"))]
 impl From<WidgetKind> for A11yRole {
     fn from(kind: WidgetKind) -> Self {
         // Mini exposes a core widget subset — map it properly instead of

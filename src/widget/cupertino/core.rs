@@ -181,7 +181,7 @@ impl Draw for MaterialSnackbar {
         let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
 
         // ── Background pill ──
-        let bar_rect = Rect::new(rect.x + 12, bar_y, rect.width - 24, bar_height);
+        let bar_rect = Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
         context.fill_rounded_rect(bar_rect, bar_height / 2, Color::rgba(50, 50, 50, 240));
 
         // ── Message text (left side) ──
@@ -237,7 +237,8 @@ impl EventHandler for MaterialSnackbar {
                 let rect = self.geometry();
                 let bar_height = 48u32;
                 let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
-                let bar_rect = Rect::new(rect.x + 12, bar_y, rect.width - 24, bar_height);
+                let bar_rect =
+                    Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
 
                 if !bar_rect.contains_point(*pos) {
                     return;
@@ -795,7 +796,7 @@ impl Draw for MaterialNavigationRail {
             // ── Selected indicator bar ──
             if is_selected {
                 context.fill_rect(
-                    crate::core::Rect::new(rect.x, item_y + 8, 4, item_height - 16),
+                    crate::core::Rect::new(rect.x, item_y + 8, 4, item_height.saturating_sub(16)),
                     Color::rgba(25, 118, 210, 255), // Material blue
                 );
             }
@@ -806,8 +807,8 @@ impl Draw for MaterialNavigationRail {
                     crate::core::Rect::new(
                         rect.x + 8,
                         item_y + 8,
-                        rail_width - 16,
-                        item_height - 16,
+                        rail_width.saturating_sub(16),
+                        item_height.saturating_sub(16),
                     ),
                     8,
                     Color::rgba(25, 118, 210, 25), // Very light blue tint

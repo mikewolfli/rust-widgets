@@ -38,11 +38,11 @@ cargo test --lib
 
 | Profile | Command | Backend | Widgets | i18n | GPU |
 |---------|---------|---------|---------|------|-----|
-| Desktop | `cargo check` | Native OS | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
-| Tablet | `--features tablet` | Native OS | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
-| Mobile | `--features mobile` | Mobile API | 80+ | ✅ | ✅ (software); wgpu via `gpu-wgpu` |
-| Embedded | `--features embedded` | Software | 30+ | — | — |
-| **Mini** | `--features mini` | **reduced std** + alloc | **30+** | — | — |
+| Desktop | `cargo check` | Native OS | Full widget set | ✅ | ✅ (wgpu enabled by desktop) |
+| Tablet | `--no-default-features --features tablet` | Native OS | Full widget set | ✅ | ✅ (wgpu enabled by tablet) |
+| Mobile | `--no-default-features --features mobile` | Mobile API | Full widget set | ✅ | ✅ (wgpu enabled by mobile) |
+| Embedded | `--no-default-features --features embedded` | Software | Core widget set | — | — |
+| **Mini** | `--no-default-features --features mini` | **reduced std** + alloc | **Core widget set** | — | — |
 
 ### OS Backends
 
@@ -83,7 +83,7 @@ cargo test --lib
 
 ### Rust-Native Design
 - no_std-ready architecture: all files import shared types via `compat.rs` (`core`/`alloc`) so enabling `#![cfg_attr(feature = "mini", no_std)]` is a tracked step — the `mini` profile currently compiles on std.
-- `compat.rs` bridge: `HashMap→BTreeMap`, `Mutex→RefCell`, `MiniVec<T,64>`, `MiniString<256>`, `MiniArena` (bumpalo)
+- `compat.rs` bridge: `HashMap→BTreeMap`, lightweight-profile lock compatibility, `MiniVec<T,64>`, `MiniString<256>`, `MiniArena` (bumpalo)
 - `enum WidgetKind` + `trait Widget` + `trait Draw` + `trait EventHandler` — zero-cost abstractions
 - Builder pattern: `Style::new().bg_color(RED).pad_all(8).build()` — compile-time checking
 
@@ -142,9 +142,9 @@ cargo test --lib
 
 **Special**: FreeformShape, QRCode, ColorHistory, ColorWell, MasonryLayout, Stepper, Divider, SwipeToDismiss, Toolbox, PropertiesPanel, PropertyGrid, WizardDialog, Wizard, AnimatedImage, HeroAnimation, BezierCurveEditor, LottieWidget, RiveWidget, VideoPlayer, ImageGallery, AudioVisualizer, CameraPreview, BarcodeScanner, Breakcrumb, CodeEditor, ColorPicker, CommandEntry, CommandPalette, DiffViewer, MapView, MediaPlayer, NotificationCenter, Snackbar, SplitButton, TerminalView, ToastStack
 
-### Mini (reduced std profile, ~30 core widgets)
+### Mini / Embedded (reduced core widget set)
 
-Window, Dialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, GroupBox, Menu, MenuItem, ToggleButton, Switch, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, TabView, AnimatedImage
+Window, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, Panel, Frame, GroupBox, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch
 
 ---
 

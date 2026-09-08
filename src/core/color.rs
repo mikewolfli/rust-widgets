@@ -12,6 +12,14 @@ pub struct Color {
     pub a: u8,
 }
 impl Color {
+    fn channel_from_unit(value: f32) -> u8 {
+        if !value.is_finite() {
+            0
+        } else {
+            (value.clamp(0.0, 1.0) * 255.0).round() as u8
+        }
+    }
+
     /// Convenience constructor for an RGBA color.
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
@@ -33,10 +41,10 @@ impl Color {
     /// Creates a color from f32 values (0.0-1.0 range).
     pub fn from_f32(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
-            r: (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-            g: (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-            b: (b.clamp(0.0, 1.0) * 255.0).round() as u8,
-            a: (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+            r: Self::channel_from_unit(r),
+            g: Self::channel_from_unit(g),
+            b: Self::channel_from_unit(b),
+            a: Self::channel_from_unit(a),
         }
     }
     /// Creates a color from f32 RGB values with full alpha.
@@ -172,6 +180,9 @@ impl Color {
     pub fn parse_hex(text: &str) -> Option<Self> {
         let raw = text.trim();
         let hex = raw.strip_prefix('#')?;
+        if !hex.is_ascii() {
+            return None;
+        }
         let parse_byte = |slice: &str| u8::from_str_radix(slice, 16).ok();
         let parse_nibble = |ch: char| ch.to_digit(16).map(|n| (n as u8) * 17);
         match hex.len() {
@@ -242,11 +253,11 @@ impl Color {
     }
     /// Creates a color with modified alpha (f32 in 0.0-1.0 range).
     pub fn with_alpha_f32(&self, alpha: f32) -> Self {
-        Self::rgba(self.r, self.g, self.b, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
+        Self::rgba(self.r, self.g, self.b, Self::channel_from_unit(alpha))
     }
     /// Blends two colors with given weight (0.0 = self, 1.0 = other).
     pub fn blend(&self, other: &Self, weight: f32) -> Self {
-        let w = weight.clamp(0.0, 1.0);
+        let w = if weight.is_finite() { weight.clamp(0.0, 1.0) } else { 0.0 };
         let inv_w = 1.0 - w;
         Self::from_f32(
             self.r as f32 / 255.0 * inv_w + other.r as f32 / 255.0 * w,
@@ -312,6 +323,7 @@ mod tests {
         assert_eq!(Color::parse_hex("#abc"), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xFF)));
         assert_eq!(Color::parse_hex(" #AbCd "), Some(Color::rgba(0xAA, 0xBB, 0xCC, 0xDD)));
         assert_eq!(Color::parse_hex("112233"), None);
+        assert_eq!(Color::parse_hex("#aééa"), None);
         assert_eq!(Color::parse_hex("#12"), None);
         let color = Color::rgba(0x0A, 0x1B, 0x2C, 0x7D);
         assert_eq!(color.to_hex_rgb(), "#0A1B2C");
@@ -337,6 +349,16 @@ mod tests {
 
         let c4 = Color::from_i32(-10, 300, 128, 255);
         assert_eq!(c4, Color::rgba(0, 255, 128, 255));
+    }
+
+    #[test]
+    fn non_finite_float_inputs_are_deterministic() {
+        assert_eq!(
+            Color::from_f32(f32::NAN, f32::INFINITY, 0.5, f32::NEG_INFINITY),
+            Color::rgba(0, 0, 128, 0)
+        );
+        assert_eq!(Color::WHITE.with_alpha_f32(f32::NAN), Color::rgba(255, 255, 255, 0));
+        assert_eq!(Color::RED.blend(&Color::BLUE, f32::NAN), Color::RED);
     }
     #[test]
     fn color_tuple_constructors() {

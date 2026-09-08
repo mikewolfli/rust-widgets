@@ -1,12 +1,24 @@
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::core::Rect;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::widget::base_widgets::button::Button;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::widget::window::Window;
 
 fn main() {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(all(
+        any(feature = "desktop", feature = "tablet", feature = "mobile"),
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     {
         let mut window = Window::new("Rust Widgets Demo".to_string(), Rect::new(0, 0, 800, 480));
         let mut button = Button::new("Start".to_string(), Rect::new(20, 60, 120, 36));

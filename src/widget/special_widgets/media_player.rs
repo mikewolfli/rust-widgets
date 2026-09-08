@@ -247,7 +247,7 @@ impl EventHandler for MediaPlayer {
                     && pos.y >= bar_rect.y
                     && pos.y < bar_rect.y + bar_rect.height as i32
                 {
-                    if self.duration_ms > 0 {
+                    if self.duration_ms > 0 && bar_rect.width > 0 {
                         let ratio =
                             ((pos.x - bar_rect.x) as f32 / bar_rect.width as f32).clamp(0.0, 1.0);
                         self.seek_to((ratio * self.duration_ms as f32) as u64);
@@ -323,6 +323,14 @@ mod tests {
         assert_eq!(player.duration_ms(), 120_000);
         assert_eq!(player.position_ms(), 0);
         assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn narrow_progress_bar_does_not_divide_by_zero() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 10, 80));
+        player.set_source("/tmp/video.mp4", 120_000);
+        player.handle_event(&Event::MousePress { pos: Point::new(5, 62), button: 1 });
+        assert_eq!(player.position_ms(), 0);
     }
 
     #[test]

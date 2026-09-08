@@ -231,7 +231,7 @@ impl Draw for EditableComboBox {
             let item_rect = Rect::new(
                 rect.x + 1,
                 drop_down_y + (i as i32) * (item_height as i32),
-                rect.width - 2,
+                rect.width.saturating_sub(2),
                 item_height,
             );
 

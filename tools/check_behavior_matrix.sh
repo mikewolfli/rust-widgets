@@ -11,8 +11,22 @@ mkdir -p "$REPORT_DIR"
 run_case() {
   local title="$1"
   shift
+  local output_file
+  output_file="$(mktemp)"
   echo "- running: $title"
-  "$@"
+  if ! "$@" >"$output_file" 2>&1; then
+    cat "$output_file"
+    rm -f "$output_file"
+    return 1
+  fi
+  cat "$output_file"
+  if [[ "${1:-}" == "cargo" && "${2:-}" == "test" ]] \
+    && ! grep -Eq 'running [1-9][0-9]* tests?' "$output_file"; then
+    echo "QA case ran zero tests: $title" >&2
+    rm -f "$output_file"
+    return 1
+  fi
+  rm -f "$output_file"
   echo "- ✅ $title" >> "$REPORT_FILE"
 }
 
@@ -46,7 +60,7 @@ echo "[7/14] embedded combo/list state-event-data parity"
 run_case "embedded combo/list parity" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_combo_list_state_event_data_roundtrip
 
 echo "[8/14] embedded runtime deterministic task order"
-run_case "embedded runtime deterministic order" cargo test --lib --no-default-features --features embedded render_engine::tests::embedded_task_queue_order_is_deterministic
+run_case "embedded runtime deterministic order" cargo test --lib --no-default-features --features embedded render_engine::embedded_engine::tests::embedded_task_queue_order_is_deterministic
 
 echo "[9/14] full+mobile-api capability contract"
 run_case "full+mobile-api capability contract" cargo test --features "full,mobile-api" platform::tests::consistency_capability_contract_by_profile
@@ -55,10 +69,10 @@ echo "[10/14] full+mobile-api typed trigger parity"
 run_case "full+mobile-api typed trigger parity" cargo test --features "full,mobile-api" platform::tests::consistency_typed_widget_trigger_roundtrip
 
 echo "[11/14] gpu covered-controls parity command suite"
-run_case "gpu covered-controls parity command suite" cargo test --lib --features gpu-wgpu render::tests::gpu_parity_covered_controls_emit_non_empty_command_suite
+run_case "gpu covered-controls parity command suite" cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend
 
 echo "[12/14] gpu covered-controls parity auto compose"
-run_case "gpu covered-controls parity auto compose" cargo test --lib --features gpu-wgpu render::tests::gpu_parity_covered_controls_auto_compose_runs_with_gpu_or_cpu_backend
+run_case "gpu covered-controls parity auto compose" cargo test --lib --features gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected
 
 echo "[13/14] embedded demo schema parity"
 run_case "embedded demo schema parity" bash tools/check_embedded_demo_schema.sh

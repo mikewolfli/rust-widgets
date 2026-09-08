@@ -71,7 +71,7 @@ impl Draw for Switch {
         // Track dimensions
         let track_width = rect.width.max(44);
         let track_height = (rect.height.max(24)).min(track_width / 2);
-        let knob_size = track_height - 4;
+        let knob_size = track_height.saturating_sub(4);
 
         let track_x = rect.x;
         let track_y = rect.y + (rect.height as i32 - track_height as i32) / 2;

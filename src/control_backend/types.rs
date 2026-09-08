@@ -29,6 +29,7 @@ impl Default for CustomControlState {
             visible: HashMap::new(),
             ime_enabled: HashMap::new(),
             accessibility_names: HashMap::new(),
+            #[cfg(not(feature = "embedded"))]
             menu_trigger_queue: VecDeque::new(),
             widget_trigger_queue: VecDeque::new(),
             widget_properties: HashMap::new(),
@@ -42,6 +43,7 @@ pub(crate) struct CustomControlState {
     pub(crate) visible: HashMap<ObjectId, bool>,
     pub(crate) ime_enabled: HashMap<ObjectId, bool>,
     pub(crate) accessibility_names: HashMap<ObjectId, String>,
+    #[cfg(not(feature = "embedded"))]
     pub(crate) menu_trigger_queue: VecDeque<ObjectId>,
     pub(crate) widget_trigger_queue: VecDeque<WidgetTriggerEvent>,
     // Store widget properties for custom painting
@@ -100,6 +102,7 @@ mod tests {
         assert!(state.visible.is_empty());
         assert!(state.ime_enabled.is_empty());
         assert!(state.accessibility_names.is_empty());
+        #[cfg(not(feature = "embedded"))]
         assert!(state.menu_trigger_queue.is_empty());
         assert!(state.widget_trigger_queue.is_empty());
         assert!(state.widget_properties.is_empty());

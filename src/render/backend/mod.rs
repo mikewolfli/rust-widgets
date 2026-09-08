@@ -17,5 +17,5 @@ pub use surface::{
     SoftwareRenderConfig, SoftwareSurface,
 };
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "desktop", not(any(feature = "mini", feature = "embedded"))))]
 pub(crate) use surface::software_render_config_test_lock;

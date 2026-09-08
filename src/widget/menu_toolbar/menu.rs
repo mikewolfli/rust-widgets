@@ -351,7 +351,12 @@ impl Draw for Menu {
             let is_hovered = self.hovered_index == Some(i);
             if is_hovered {
                 context.fill_rect(
-                    Rect::new(rect.x + 2, y as i32, rect.width - 4, Self::item_height() as u32),
+                    Rect::new(
+                        rect.x + 2,
+                        y as i32,
+                        rect.width.saturating_sub(4),
+                        Self::item_height() as u32,
+                    ),
                     Color::rgb(0, 120, 215),
                 );
             }

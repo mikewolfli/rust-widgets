@@ -27,7 +27,10 @@ impl Point {
     }
     /// Creates a point from u32 coordinates.
     pub const fn from_u32(x: u32, y: u32) -> Self {
-        Self { x: x as i32, y: y as i32 }
+        Self {
+            x: if x > i32::MAX as u32 { i32::MAX } else { x as i32 },
+            y: if y > i32::MAX as u32 { i32::MAX } else { y as i32 },
+        }
     }
     /// Creates a point from i64 coordinates (clamped to i32 range).
     pub fn from_i64(x: i64, y: i64) -> Self {
@@ -105,7 +108,7 @@ impl Point {
 impl std::ops::Add<(i32, i32)> for Point {
     type Output = Self;
     fn add(self, (dx, dy): (i32, i32)) -> Self {
-        Self::new(self.x + dx, self.y + dy)
+        Self::new(self.x.saturating_add(dx), self.y.saturating_add(dy))
     }
 }
 impl From<(i32, i32)> for Point {
@@ -207,9 +210,9 @@ impl Size {
     pub fn to_f64(&self) -> (f64, f64) {
         (self.width as f64, self.height as f64)
     }
-    /// Converts size to i32 dimensions (may overflow for large sizes).
+    /// Converts size to i32 dimensions, clamping oversized axes to `i32::MAX`.
     pub fn to_i32(&self) -> (i32, i32) {
-        (self.width as i32, self.height as i32)
+        (self.width.min(i32::MAX as u32) as i32, self.height.min(i32::MAX as u32) as i32)
     }
     /// Returns `true` when either axis is zero.
     pub const fn is_empty(&self) -> bool {
@@ -232,7 +235,7 @@ impl Size {
 impl std::ops::Add<(u32, u32)> for Size {
     type Output = Self;
     fn add(self, (dw, dh): (u32, u32)) -> Self {
-        Self::new(self.width + dw, self.height + dh)
+        Self::new(self.width.saturating_add(dw), self.height.saturating_add(dh))
     }
 }
 impl std::fmt::Display for Size {
@@ -277,7 +280,12 @@ impl Rect {
     }
     /// Creates a rectangle from u32 coordinates.
     pub const fn from_u32(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self { x: x as i32, y: y as i32, width, height }
+        Self {
+            x: if x > i32::MAX as u32 { i32::MAX } else { x as i32 },
+            y: if y > i32::MAX as u32 { i32::MAX } else { y as i32 },
+            width,
+            height,
+        }
     }
     /// Creates a rectangle from mixed types (i32 for position, u32 for size).
     /// Use `new` instead.
@@ -375,12 +383,12 @@ impl Rect {
     }
     /// Returns (right, bottom) exclusive max edge coordinates.
     fn max_coords(&self) -> (i32, i32) {
-        (self.x + self.width as i32, self.y + self.height as i32)
+        (self.x.saturating_add_unsigned(self.width), self.y.saturating_add_unsigned(self.height))
     }
     /// Returns `true` if the rectangle contains the point (inclusive origin, exclusive max edge).
     pub const fn contains_point(&self, point: Point) -> bool {
-        let max_x = self.x + self.width as i32;
-        let max_y = self.y + self.height as i32;
+        let max_x = self.x.saturating_add_unsigned(self.width);
+        let max_y = self.y.saturating_add_unsigned(self.height);
         point.x >= self.x && point.y >= self.y && point.x < max_x && point.y < max_y
     }
     pub fn intersects(&self, other: &Rect) -> bool {
@@ -405,20 +413,20 @@ impl Rect {
     /// width and height. If the original already meets or exceeds the minimum,
     /// returns a clone of self.
     pub fn expand_to_touch_target(&self, min_size: Size) -> Rect {
-        let ex_w =
-            if min_size.width > self.width { (min_size.width - self.width) as i32 } else { 0 };
-        let ey_h =
-            if min_size.height > self.height { (min_size.height - self.height) as i32 } else { 0 };
+        let target_width = self.width.max(min_size.width);
+        let target_height = self.height.max(min_size.height);
+        let ex_w = target_width - self.width;
+        let ey_h = target_height - self.height;
         // Split expansion evenly on both sides.
         let dx_l = ex_w / 2;
         let dx_r = ex_w - dx_l;
         let dy_t = ey_h / 2;
         let dy_b = ey_h - dy_t;
         Rect {
-            x: self.x - dx_l,
-            y: self.y - dy_t,
-            width: self.width + dx_l as u32 + dx_r as u32,
-            height: self.height + dy_t as u32 + dy_b as u32,
+            x: self.x.saturating_sub_unsigned(dx_l),
+            y: self.y.saturating_sub_unsigned(dy_t),
+            width: self.width.saturating_add(dx_l).saturating_add(dx_r),
+            height: self.height.saturating_add(dy_t).saturating_add(dy_b),
         }
     }
     pub fn union(&self, other: &Rect) -> Rect {
@@ -428,7 +436,9 @@ impl Rect {
         let (ox, oy) = other.max_coords();
         let max_x = sx.max(ox);
         let max_y = sy.max(oy);
-        Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32)
+        let width = (max_x as i64 - x as i64).clamp(0, u32::MAX as i64) as u32;
+        let height = (max_y as i64 - y as i64).clamp(0, u32::MAX as i64) as u32;
+        Rect::new(x, y, width, height)
     }
     pub fn intersection(&self, other: &Rect) -> Option<Rect> {
         let x = self.x.max(other.x);
@@ -438,7 +448,9 @@ impl Rect {
         let max_x = sx.min(ox);
         let max_y = sy.min(oy);
         if max_x > x && max_y > y {
-            Some(Rect::new(x, y, (max_x - x) as u32, (max_y - y) as u32))
+            let width = (max_x as i64 - x as i64).clamp(0, u32::MAX as i64) as u32;
+            let height = (max_y as i64 - y as i64).clamp(0, u32::MAX as i64) as u32;
+            Some(Rect::new(x, y, width, height))
         } else {
             None
         }
@@ -453,15 +465,18 @@ impl Rect {
     }
     /// Gets the right edge coordinate (exclusive).
     pub fn right(&self) -> i32 {
-        self.x + self.width as i32
+        self.x.saturating_add_unsigned(self.width)
     }
     /// Gets the bottom edge coordinate (exclusive).
     pub fn bottom(&self) -> i32 {
-        self.y + self.height as i32
+        self.y.saturating_add_unsigned(self.height)
     }
     /// Gets the center point of the rectangle.
     pub fn center(&self) -> Point {
-        Point::new(self.x + (self.width as i32) / 2, self.y + (self.height as i32) / 2)
+        Point::new(
+            self.x.saturating_add_unsigned(self.width / 2),
+            self.y.saturating_add_unsigned(self.height / 2),
+        )
     }
     /// Converts rectangle to f64 coordinates.
     pub fn to_f64(&self) -> (f64, f64, f64, f64) {
@@ -482,8 +497,8 @@ impl Rect {
     /// Creates rectangle from center point and size.
     pub fn from_center(center: Point, size: Size) -> Self {
         Self::new(
-            center.x.saturating_sub((size.width as i32) / 2),
-            center.y.saturating_sub((size.height as i32) / 2),
+            center.x.saturating_sub_unsigned(size.width / 2),
+            center.y.saturating_sub_unsigned(size.height / 2),
             size.width,
             size.height,
         )
@@ -510,37 +525,41 @@ impl Rect {
     }
     /// Clamps a point to be inside the rectangle.
     pub fn clamp_point(&self, point: Point) -> Point {
-        let max_x = self.x.saturating_add((self.width.max(1) - 1) as i32);
-        let max_y = self.y.saturating_add((self.height.max(1) - 1) as i32);
+        let max_x = self.x.saturating_add_unsigned(self.width.max(1) - 1);
+        let max_y = self.y.saturating_add_unsigned(self.height.max(1) - 1);
         Point::new(point.x.clamp(self.x, max_x), point.y.clamp(self.y, max_y))
     }
     /// Shrinks the rectangle by `amount` on all sides.
     pub fn shrink(&self, amount: i32) -> Self {
+        let amount = amount as i64;
         Self::new(
-            self.x + amount,
-            self.y + amount,
-            (self.width as i32 - 2 * amount).max(0) as u32,
-            (self.height as i32 - 2 * amount).max(0) as u32,
+            (self.x as i64 + amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            (self.y as i64 + amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            (self.width as i64 - 2 * amount).clamp(0, u32::MAX as i64) as u32,
+            (self.height as i64 - 2 * amount).clamp(0, u32::MAX as i64) as u32,
         )
     }
     /// Grows the rectangle by `amount` on all sides.
     pub fn grow(&self, amount: i32) -> Self {
+        let amount = amount as i64;
         Self::new(
-            self.x - amount,
-            self.y - amount,
-            (self.width as i32 + 2 * amount).max(0) as u32,
-            (self.height as i32 + 2 * amount).max(0) as u32,
+            (self.x as i64 - amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            (self.y as i64 - amount).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            (self.width as i64 + 2 * amount).clamp(0, u32::MAX as i64) as u32,
+            (self.height as i64 + 2 * amount).clamp(0, u32::MAX as i64) as u32,
         )
     }
     /// Extends the rectangle to include the given point.
     pub fn extend_to_include(&self, point: Point) -> Self {
-        let max_x = self.x + self.width as i32;
-        let max_y = self.y + self.height as i32;
+        let max_x = self.x.saturating_add_unsigned(self.width);
+        let max_y = self.y.saturating_add_unsigned(self.height);
         let new_x = self.x.min(point.x);
         let new_y = self.y.min(point.y);
-        let new_max_x = max_x.max(point.x + 1);
-        let new_max_y = max_y.max(point.y + 1);
-        Self::new(new_x, new_y, (new_max_x - new_x) as u32, (new_max_y - new_y) as u32)
+        let new_max_x = max_x.max(point.x.saturating_add(1));
+        let new_max_y = max_y.max(point.y.saturating_add(1));
+        let width = (new_max_x as i64 - new_x as i64).clamp(0, u32::MAX as i64) as u32;
+        let height = (new_max_y as i64 - new_y as i64).clamp(0, u32::MAX as i64) as u32;
+        Self::new(new_x, new_y, width, height)
     }
 }
 impl Default for Rect {
@@ -713,6 +732,61 @@ mod tests {
         // Width needs expansion: 10->32, height already >= 32
         assert_eq!(expanded.width, 32);
         assert_eq!(expanded.height, 100);
+    }
+
+    #[test]
+    fn geometry_arithmetic_saturates_at_numeric_limits() {
+        let size = Size::new(u32::MAX, u32::MAX) + (1, 1);
+        assert_eq!(size, Size::new(u32::MAX, u32::MAX));
+
+        let expanded = Rect::new(i32::MIN, i32::MIN, 1, 1)
+            .expand_to_touch_target(Size::new(u32::MAX, u32::MAX));
+        assert_eq!(expanded.width, u32::MAX);
+        assert_eq!(expanded.height, u32::MAX);
+        assert_eq!(expanded.x, i32::MIN);
+        assert_eq!(expanded.y, i32::MIN);
+    }
+
+    #[test]
+    fn point_and_rect_edges_saturate_at_i32_limits() {
+        assert_eq!(Point::from_u32(u32::MAX, u32::MAX), Point::new(i32::MAX, i32::MAX));
+        assert_eq!(Point::new(i32::MAX, i32::MIN) + (1, -1), Point::new(i32::MAX, i32::MIN));
+
+        let rect = Rect::new(i32::MAX, i32::MAX, u32::MAX, u32::MAX);
+        assert_eq!(rect.right(), i32::MAX);
+        assert_eq!(rect.bottom(), i32::MAX);
+        assert!(!rect.contains_point(Point::new(i32::MAX, i32::MAX)));
+        assert_eq!(rect.center(), Point::new(i32::MAX, i32::MAX));
+    }
+
+    #[test]
+    fn size_to_i32_clamps_oversized_axes() {
+        let size = Size::new(u32::MAX, i32::MAX as u32 + 1);
+        assert_eq!(size.to_i32(), (i32::MAX, i32::MAX));
+    }
+
+    #[test]
+    fn rectangle_transformations_handle_extreme_ranges() {
+        let rect = Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX);
+        let union = rect.union(&Rect::new(i32::MAX, i32::MAX, 1, 1));
+        assert_eq!(union.width, u32::MAX);
+        assert_eq!(union.height, u32::MAX);
+
+        let intersection = rect.intersection(&Rect::new(0, 0, 10, 10));
+        assert_eq!(intersection, Some(Rect::new(0, 0, 10, 10)));
+
+        let shrunk = rect.shrink(i32::MIN);
+        assert_eq!(shrunk.x, i32::MIN);
+        assert_eq!(shrunk.width, u32::MAX);
+
+        let grown = Rect::new(0, 0, 1, 1).grow(i32::MIN);
+        assert_eq!(grown.x, i32::MAX);
+        assert_eq!(grown.width, 0);
+
+        let extended =
+            Rect::new(i32::MIN, i32::MIN, 1, 1).extend_to_include(Point::new(i32::MAX, i32::MAX));
+        assert_eq!(extended.width, u32::MAX);
+        assert_eq!(extended.height, u32::MAX);
     }
 
     #[test]

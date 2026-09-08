@@ -110,9 +110,15 @@ impl Version {
             patch: (value & 0xFF) as u16,
         }
     }
-    /// Converts version to u32 (major.minor.patch packed).
+    /// Converts version to u32 (`major:16 | minor:8 | patch:8` packed).
+    ///
+    /// Minor and patch values above 255 are saturated because the packed
+    /// representation reserves only eight bits for each component.
     pub const fn to_u32(&self) -> u32 {
-        ((self.major as u32) << 16) | ((self.minor as u32) << 8) | (self.patch as u32)
+        ((self.major as u32) << 16)
+            | (((if self.minor > u8::MAX as u16 { u8::MAX as u16 } else { self.minor }) as u32)
+                << 8)
+            | (if self.patch > u8::MAX as u16 { u8::MAX as u16 } else { self.patch }) as u32
     }
     pub fn is_compatible_with(&self, other: &Self) -> bool {
         self.major == other.major
@@ -223,7 +229,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Desktop,
             capabilities: PlatformCapabilities::desktop(),
-            version: Version::new(0, 6, 1),
+            version: Version::new(1, 0, 0),
         }
     }
     /// Creates default embedded configuration.
@@ -232,7 +238,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Embedded,
             platform: PlatformFamily::Embedded,
             capabilities: PlatformCapabilities::embedded(),
-            version: Version::new(0, 6, 1),
+            version: Version::new(1, 0, 0),
         }
     }
     /// Creates default mobile configuration.
@@ -241,7 +247,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Mobile,
             capabilities: PlatformCapabilities::mobile(),
-            version: Version::new(0, 6, 1),
+            version: Version::new(1, 0, 0),
         }
     }
 }
@@ -270,6 +276,13 @@ mod tests {
     fn test_version_to_u32() {
         let v = Version::new(1, 2, 3);
         assert_eq!(v.to_u32(), 0x010203);
+    }
+
+    #[test]
+    fn test_version_packing_saturates_narrow_components() {
+        let v = Version::new(1, u16::MAX, u16::MAX);
+        assert_eq!(v.to_u32(), 0x01FFFF);
+        assert_eq!(Version::from_u32(v.to_u32()), Version::new(1, 255, 255));
     }
 
     #[test]
@@ -357,9 +370,7 @@ mod tests {
         let desktop = CoreConfig::desktop();
         assert_eq!(desktop.profile, RuntimeProfile::Full);
         assert_eq!(desktop.platform, PlatformFamily::Desktop);
-        assert_eq!(desktop.version.major, 0);
-        assert_eq!(desktop.version.minor, 6);
-        assert_eq!(desktop.version.patch, 1);
+        assert_eq!(desktop.version, Version::new(1, 0, 0));
 
         let embedded = CoreConfig::embedded();
         assert_eq!(embedded.profile, RuntimeProfile::Embedded);

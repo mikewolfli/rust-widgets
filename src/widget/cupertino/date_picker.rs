@@ -234,7 +234,8 @@ impl Draw for CupertinoDatePicker {
 
             // Highlight bar for the center (selected) row
             let highlight_y = rect.y + 2 * row_height as i32;
-            let highlight_rect = Rect::new(col_x + 4, highlight_y, col_width - 8, row_height);
+            let highlight_rect =
+                Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
             context.fill_rounded_rect(highlight_rect, 6, Color::rgba(60, 120, 240, 50));
 
             // Draw the five visible rows

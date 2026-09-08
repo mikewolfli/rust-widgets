@@ -359,7 +359,12 @@ impl Draw for MaskedEdit {
                     // Draw cursor if at this segment position
                     if self.focused && is_enabled && seg_idx == self.cursor_pos {
                         context.fill_rect(
-                            Rect::new(display_x, geom.y + 2, char_width, geom.height - 4),
+                            Rect::new(
+                                display_x,
+                                geom.y + 2,
+                                char_width,
+                                geom.height.saturating_sub(4),
+                            ),
                             Color::rgb(25, 118, 210),
                         );
                         context.draw_text(

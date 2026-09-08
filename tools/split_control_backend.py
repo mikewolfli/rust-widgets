@@ -22,6 +22,12 @@ BACKEND_DIR = os.path.join(
 )
 SOURCE = os.path.join(BACKEND_DIR, "implementation.rs")
 
+if not os.path.exists(SOURCE):
+    raise SystemExit(
+        "split_control_backend.py is a one-time migration tool; "
+        "the legacy implementation.rs source no longer exists."
+    )
+
 with open(SOURCE) as f:
     lines = f.readlines()
 

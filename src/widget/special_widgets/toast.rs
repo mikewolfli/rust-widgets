@@ -235,8 +235,12 @@ impl Draw for ToastStack {
                 continue;
             }
 
-            let row =
-                Rect::new(rect.x + 4, y + 2, rect.width.saturating_sub(8), self.row_height - 4);
+            let row = Rect::new(
+                rect.x + 4,
+                y + 2,
+                rect.width.saturating_sub(8),
+                self.row_height.saturating_sub(4),
+            );
             let bg = if self.selected_index == Some(index) {
                 Color::rgb(225, 235, 250)
             } else {

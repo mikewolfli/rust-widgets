@@ -1,55 +1,55 @@
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod carousel;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod collapsible_pane;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod dockwidget;
 pub mod groupbox;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod masonry_layout;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod mdiarea;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod pager_page_view;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod safe_area;
 pub mod scrollarea;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod splitter;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod stackedwidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod stepper;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod tabwidget;
 pub mod tile_view;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod toolbox;
 // Re-export container widgets
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use carousel::Carousel;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use collapsible_pane::CollapsiblePane;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use masonry_layout::{MasonryItem, MasonryLayout};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use mdiarea::MdiArea;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use pager_page_view::PagerPageView;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use safe_area::{SafeArea, SafeAreaInsets};
 pub use scrollarea::ScrollArea;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use splitter::Splitter;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use stackedwidget::StackedWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use stepper::Stepper;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use tabwidget::TabWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use toolbox::ToolBox;

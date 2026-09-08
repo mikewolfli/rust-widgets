@@ -318,7 +318,7 @@ impl Draw for PropertiesPanel {
                 let value_rect = Rect::new(
                     geom.x + VALUE_COL_LEFT,
                     y,
-                    geom.width - VALUE_COL_LEFT as u32,
+                    geom.width.saturating_sub(VALUE_COL_LEFT as u32),
                     ROW_HEIGHT,
                 );
                 let display = Self::value_display_text(&entry.value);

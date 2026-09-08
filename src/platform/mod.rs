@@ -59,6 +59,9 @@ pub(crate) mod runtime;
 pub mod state;
 mod stub;
 pub mod types;
+
+#[cfg(all(test, not(feature = "mini")))]
+mod tests;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).
 pub mod virtual_keyboard;
 

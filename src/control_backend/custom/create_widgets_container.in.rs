@@ -27,7 +27,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_dock_panel(
             &self,
             parent: ObjectId,
@@ -55,7 +55,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_tab_widget(
             &self,
             parent: ObjectId,
@@ -83,7 +83,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_splitter(
             &self,
             parent: ObjectId,
@@ -111,7 +111,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_stack_widget(
             &self,
             parent: ObjectId,
@@ -139,7 +139,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_mdi_area(
             &self,
             parent: ObjectId,
@@ -167,7 +167,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_toolbox(
             &self,
             parent: ObjectId,
@@ -195,7 +195,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_collapsible_pane(
             &self,
             parent: ObjectId,
@@ -226,7 +226,7 @@ macro_rules! impl_container_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(any(feature = "mini", feature = "embedded")))]
         fn create_dock_widget(
             &self,
             parent: ObjectId,

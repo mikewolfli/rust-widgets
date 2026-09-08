@@ -202,7 +202,7 @@ impl Draw for CheckBox {
                     let partial_rect = Rect::new(
                         checkbox_rect.x + 4,
                         checkbox_rect.y + checkbox_rect.height as i32 / 2 - 1,
-                        checkbox_rect.width - 8,
+                        checkbox_rect.width.saturating_sub(8),
                         2,
                     );
                     context.fill_rect(partial_rect, check_color);

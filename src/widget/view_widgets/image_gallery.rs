@@ -378,8 +378,8 @@ impl Draw for ImageGallery {
             let inner_rect = Rect::new(
                 thumb_rect.x + 2,
                 thumb_rect.y + 2,
-                thumb_rect.width - 4,
-                thumb_rect.height - 4,
+                thumb_rect.width.saturating_sub(4),
+                thumb_rect.height.saturating_sub(4),
             );
             context.fill_rounded_rect(inner_rect, 2, Color::rgba(60, 60, 60, 200));
 

@@ -1,8 +1,9 @@
-# BLUE10 R5.7 — WGPU Upgrade Evaluation
+# BLUE10 R5.7 — WGPU Upgrade Evaluation (Historical)
 
 > Evaluated: 2026-06-08
-> Current version: wgpu 0.16.3
-> Target version: wgpu 0.22.x
+> Historical baseline: wgpu 0.16.3
+> Historical target: wgpu 0.22.x
+> **Status:** Superseded. The current project uses `wgpu = 30.0.1` via the `wgpu` feature.
 
 ## Scope of Impact
 
@@ -42,6 +43,6 @@ No swapchains, shaders, render pipelines, or bind groups are used — the render
 | Test coverage | 0 tests for wgpu path | GPU path is behind `gpu-wgpu` feature flag |
 | Effort | 2-3 hours | Straightforward API migration |
 
-## Recommendation
+## Historical Recommendation
 
-Proceed with upgrade. The API surface is small and well-contained. The offscreen texture readback pattern is stable across wgpu versions.
+The original recommendation was to proceed with the 0.16.x to 0.22.x migration. That migration has since been superseded by the current `wgpu 30.0.1` dependency; use `Cargo.toml` and the active profile QA scripts as the source of truth for further upgrades.

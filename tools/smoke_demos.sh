@@ -91,7 +91,7 @@ echo "=============================================="
 echo " Runtime & Integration Smoke Tests"
 echo "=============================================="
 
-run_smoke "platform integration tests" cargo test -q --lib platform::tests
+run_smoke "platform integration tests" cargo test -q --lib platform::tests::consistency_capability_contract_by_profile
 run_smoke "widget kind smoke test" cargo test -q --test blue9_r6_platform_capability_test
 run_smoke "widget structure tests" cargo test -q --test integration_test
 

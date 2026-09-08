@@ -2,7 +2,7 @@ use crate::control_backend::types::ControlRoutePreference;
 use crate::widget::WidgetKind;
 /// Returns the policy preference for one widget kind.
 pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePreference {
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     {
         match kind {
             WidgetKind::Window
@@ -174,19 +174,19 @@ pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePrefere
             | WidgetKind::MiniCanvas => ControlRoutePreference::CustomRequired,
         }
     }
-    #[cfg(feature = "mini")]
+    #[cfg(any(feature = "mini", feature = "embedded"))]
     {
         let _ = kind;
         ControlRoutePreference::CustomRequired
     }
 }
 
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(any(feature = "mini", feature = "embedded"))))]
 mod tests {
     use super::*;
     use crate::widget::WidgetKind;
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     #[test]
     fn native_preferred_widget_kinds() {
         // Widgets expected to prefer native backend.
@@ -244,7 +244,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     #[test]
     fn custom_required_widget_kinds() {
         // Widgets expected to require custom-painted backend.

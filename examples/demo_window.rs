@@ -1,10 +1,19 @@
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::core::Rect;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::widget::window::Window;
 
 fn main() {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(all(
+        any(feature = "desktop", feature = "tablet", feature = "mobile"),
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     {
         let mut window = Window::new("Demo Window".to_string(), Rect::new(0, 0, 640, 360));
         window.set_title("Window demo".to_string());

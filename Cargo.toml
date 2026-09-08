@@ -11,12 +11,29 @@ readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.87"
-include = ["build.rs", "src/**/*", "tests/**/*", "benches/**/*", "examples/**/*", "include/**/*", "language/**/*", "tools/widget_gallery.rs", "LICENSE", "README.md", "README.zh-CN.md", "CHANGELOG.md", "clippy.toml", "rustfmt.toml"]
+include = [
+    "build.rs",
+    "src/**/*",
+    "tests/**/*",
+    "benches/**/*",
+    "examples/**/*",
+    "include/**/*",
+    "language/**/*",
+    "tools/widget_gallery.rs",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "clippy.toml",
+    "rustfmt.toml",
+]
 
 [lints.rust]
 # `target_os = "ohos"` (HarmonyOS NEXT) is not yet in rustc's built-in
 # known target_os list; declare it explicitly so the check stays meaningful.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_os, values("ohos"))',
+] }
 
 [lib]
 crate-type = ["lib", "cdylib"]
@@ -42,13 +59,28 @@ default = ["desktop"]
 ##   cargo build --features "desktop,audio-output,symphonia-codecs,video-codecs"
 ## Or use the `full` meta-feature for everything.
 desktop = [
-    "os-auto", "cocoa-legacy", "desktop-runtime", "wgpu", "touch", "i18n",
-    "chart", "print", "pdf", "a11y",
-    "quality-management", "advanced-widgets",
-    "controls-native", "controls-custom",
-    "image", "video", "audio",
-    "pdf-encryption", "js-engine",
-    "dep:chrono", "serde", "serde_json",
+    "os-auto",
+    "cocoa-legacy",
+    "desktop-runtime",
+    "wgpu",
+    "touch",
+    "i18n",
+    "chart",
+    "print",
+    "pdf",
+    "a11y",
+    "quality-management",
+    "advanced-widgets",
+    "controls-native",
+    "controls-custom",
+    "image",
+    "video",
+    "audio",
+    "pdf-encryption",
+    "js-engine",
+    "dep:chrono",
+    "serde",
+    "serde_json",
 ]
 
 ## Tablet: touch-first, GPU, native controls, no desktop extras.
@@ -56,18 +88,34 @@ desktop = [
 ## Shares the desktop UI-compilation surface (JSON, i18n hot-reload watcher,
 ## chrono-backed widgets, serde) minus print/pdf/chart/a11y/js extras.
 tablet = [
-    "os-auto", "wgpu", "touch", "i18n",
-    "desktop-runtime", "serde", "serde_json", "dep:chrono",
-    "quality-management", "controls-native", "controls-custom",
+    "os-auto",
+    "wgpu",
+    "touch",
+    "i18n",
+    "desktop-runtime",
+    "serde",
+    "serde_json",
+    "dep:chrono",
+    "quality-management",
+    "controls-native",
+    "controls-custom",
     "image",
 ]
 
 ## Mobile: touch, GPU, mobile API, native controls.
 mobile = [
-    "os-auto", "wgpu", "touch", "i18n",
-    "desktop-runtime", "serde", "serde_json", "dep:chrono",
-    "quality-management", "mobile-api",
-    "controls-native", "controls-custom",
+    "os-auto",
+    "wgpu",
+    "touch",
+    "i18n",
+    "desktop-runtime",
+    "serde",
+    "serde_json",
+    "dep:chrono",
+    "quality-management",
+    "mobile-api",
+    "controls-native",
+    "controls-custom",
     "image",
 ]
 
@@ -75,18 +123,34 @@ mobile = [
 embedded = ["software", "controls-custom"]
 
 ## LVGL-style mini: ~15 core widgets, software raster, no alloc-heavy deps.
-mini = ["software", "controls-custom", "dep:heapless", "dep:hashbrown", "dep:spin", "dep:bumpalo"]
+mini = [
+    "software",
+    "controls-custom",
+    "dep:heapless",
+    "dep:hashbrown",
+    "dep:spin",
+    "dep:bumpalo",
+]
 
 
 # ── Axis 2: OS BACKENDS (composable; `os-auto` picks by target_os) ──
 
 os-auto = []
-macos = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-core-graphics"]
+macos = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-graphics",
+]
 macos-legacy = ["dep:cocoa", "dep:objc", "dep:objc-foundation"]
 ios = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-ui-kit"]
 windows = []
 linux-gtk = ["dep:gtk"]
-linux-wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-cursor"]
+linux-wayland = [
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:wayland-cursor",
+]
 linux-a11y = ["dep:zbus", "dep:pollster"]
 android = ["dep:jni"]
 # Explicit `jni` feature name so `--features jni` (documented by
@@ -147,7 +211,6 @@ unstable-pipeline-routing = []
 unstable-special-widgets = []
 
 
-
 # ── AUDIO CODEC FEATURES ──
 
 ## Real audio codecs via symphonia (FLAC, OGG Vorbis, AAC, Opus).
@@ -176,12 +239,25 @@ gpu-wgpu = ["gpu", "dep:pollster"]
 ## Everything (not for production — pick a specific device profile).
 full = [
     "desktop",
-    "macos", "macos-legacy", "ios", "linux-gtk", "linux-wayland",
-    "linux-a11y", "android", "wasm", "harmony",
-    "holographic", "projection",
-    "unstable-pipeline-routing", "unstable-special-widgets",
-    "pdf-encryption", "symphonia-codecs", "audio-output", "js-engine",
-    "webkit-engine", "video-codecs",
+    "macos",
+    "macos-legacy",
+    "ios",
+    "linux-gtk",
+    "linux-wayland",
+    "linux-a11y",
+    "android",
+    "wasm",
+    "harmony",
+    "holographic",
+    "projection",
+    "unstable-pipeline-routing",
+    "unstable-special-widgets",
+    "pdf-encryption",
+    "symphonia-codecs",
+    "audio-output",
+    "js-engine",
+    "webkit-engine",
+    "video-codecs",
 ]
 
 
@@ -226,24 +302,46 @@ js-sys = { version = "0.3", optional = true }
 ffmpeg-next = { version = "7.0", optional = true }
 
 web-sys = { version = "0.3", features = [
-    "Window", "Document", "Element", "HtmlElement", "Node",
-    "Event", "MouseEvent", "KeyboardEvent", "console",
-    "HtmlCanvasElement", "CanvasRenderingContext2d",
-    "Clipboard", "Navigator", "Location",
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "Event",
+    "MouseEvent",
+    "KeyboardEvent",
+    "console",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "Clipboard",
+    "Navigator",
+    "Location",
 ], optional = true }
 
 jni = { version = "0.21", features = ["invocation"], optional = true }
 
 heapless = { version = "0.8", optional = true }
-hashbrown = { version = "0.15", optional = true, default-features = false, features = ["alloc"] }
+hashbrown = { version = "0.15", optional = true, default-features = false, features = [
+    "alloc",
+] }
 spin = { version = "0.9", optional = true }
 bumpalo = { version = "3.17", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
-    "winuser", "commctrl", "commdlg", "winbase", "synchapi",
-    "wingdi", "shellapi", "ole2", "combaseapi", "objbase",
-    "knownfolders", "shlobj", "errhandlingapi",
+    "winuser",
+    "commctrl",
+    "commdlg",
+    "winbase",
+    "synchapi",
+    "wingdi",
+    "shellapi",
+    "ole2",
+    "combaseapi",
+    "objbase",
+    "knownfolders",
+    "shlobj",
+    "errhandlingapi",
     "libloaderapi",
 ] }
 
@@ -264,7 +362,10 @@ objc2-ui-kit = { version = "0.3", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["staging", "client"], optional = true }
+wayland-protocols = { version = "0.32", features = [
+    "staging",
+    "client",
+], optional = true }
 wayland-cursor = { version = "0.31", optional = true }
 zbus = { version = "5", optional = true }
 webkit2gtk = { version = "2.0", optional = true }

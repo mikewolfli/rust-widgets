@@ -40,7 +40,11 @@ pub fn scale_f32(value: f32) -> f32 {
 }
 /// Convert pixels to points (1/72 inch)
 pub fn pixels_to_points(pixels: f32, dpi: u32) -> f32 {
-    pixels * 72.0 / dpi as f32
+    if !pixels.is_finite() || dpi == 0 {
+        0.0
+    } else {
+        pixels * 72.0 / dpi as f32
+    }
 }
 /// Convert points to pixels
 pub fn points_to_pixels(points: f32, dpi: u32) -> f32 {
@@ -54,14 +58,14 @@ pub struct DpiScaler {
 }
 impl DpiScaler {
     pub fn new(dpi: u32) -> Self {
-        Self { dpi, base_dpi: BASE_DPI }
+        Self { dpi: dpi.max(1), base_dpi: BASE_DPI }
     }
     pub fn with_base_dpi(mut self, base: u32) -> Self {
-        self.base_dpi = base;
+        self.base_dpi = base.max(1);
         self
     }
     pub fn scale_factor(&self) -> f32 {
-        self.dpi as f32 / self.base_dpi as f32
+        self.dpi as f32 / self.base_dpi.max(1) as f32
     }
     pub fn scale(&self, value: i32) -> i32 {
         (value as f32 * self.scale_factor()) as i32
@@ -121,5 +125,13 @@ mod tests {
         assert!((pixels - 16.0).abs() < 0.01);
         let points = pixels_to_points(16.0, 96);
         assert!((points - 12.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn invalid_dpi_inputs_are_safe() {
+        assert_eq!(pixels_to_points(96.0, 0), 0.0);
+        let scaler = DpiScaler::new(0).with_base_dpi(0);
+        assert_eq!(scaler.scale_factor(), 1.0);
+        assert_eq!(scaler.unscale(120), 120);
     }
 }

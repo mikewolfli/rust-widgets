@@ -116,7 +116,12 @@ impl Draw for CupertinoSegmentedControl {
 
         // ── Sliding highlight (white pill for selected segment) ──
         let sel_x = rect.x + (self.selected_index as i32) * seg_w;
-        let sel_rect = Rect::new(sel_x + 2, rect.y + 2, (seg_w - 4) as u32, rect.height - 4);
+        let sel_rect = Rect::new(
+            sel_x + 2,
+            rect.y + 2,
+            seg_w.saturating_sub(4) as u32,
+            rect.height.saturating_sub(4),
+        );
         context.fill_rounded_rect(sel_rect, corner_radius, Color::WHITE);
 
         // ── Segment labels ──

@@ -93,7 +93,7 @@ pub use backend::{
     SoftwareSurface,
 };
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "desktop", not(any(feature = "mini", feature = "embedded"))))]
 pub(crate) use backend::software_render_config_test_lock;
 
 // Pixel ops

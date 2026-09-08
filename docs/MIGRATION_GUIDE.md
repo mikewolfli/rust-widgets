@@ -24,7 +24,7 @@ infrastructure, undo/redo framework, data binding, print framework, and PDF expo
 
 Several `WidgetKind` variants have been renamed for consistency:
 
-| 0.9.x (Old) | 0.10.x (New) | Reason |
+| 0.9.x (Old) | 1.0.0 (New) | Reason |
 |---|---|---|
 | `ToolBox` | `Toolbox` | Lowercase 'b' for naming consistency |
 | `DataView` | Type alias `DataView` | Now an explicit type alias in widget::data_view |
@@ -102,7 +102,7 @@ The IME bridge types have been renamed for consistency with the `Real` suffix co
 // 0.9.x
 use crate::platform::ime_macos::MacOsImeBridge;
 
-// 0.10.x
+// 1.0.0
 use crate::platform::ime_macos::MacOsImeBridgeReal;
 ```
 
@@ -113,7 +113,7 @@ use crate::platform::ime_macos::MacOsImeBridgeReal;
 | *(not available)* | `desktop` | Default profile — full desktop PC |
 | *(not available)* | `tablet` | Touch-enabled, GPU-accelerated |
 | *(not available)* | `mobile` | Mobile with touch + mobile API |
-| *(not available)* | `embedded` | Stripped-down, no touch/i18n |
+| *(not available)* | `embedded` | Software-rendered core profile; use with `--no-default-features` |
 | *(not available)* | `full` | Meta-feature enabling all compatible features |
 
 The `full` meta-feature is **not** a runtime device profile — it enables everything that can coexist
@@ -234,7 +234,7 @@ as the base for production builds.
 Update the version requirement:
 ```toml
 [dependencies]
-rust_widgets = "0.10"
+rust_widgets = "1.0"
 ```
 
 Choose a device profile and enable desired features:
@@ -304,16 +304,16 @@ If you were previously using custom feature sets, review the new device profiles
 Run tests on each target platform:
 ```bash
 # Linux
-cargo test --features desktop,wayland-native
+cargo test --no-default-features --features desktop,wayland-native
 
 # macOS
-cargo test --features desktop,objc2-macos
+cargo test --no-default-features --features desktop,objc2-macos
 
 # Windows
-cargo test --features desktop  # Win32 is automatically enabled
+cargo test --no-default-features --features desktop  # Win32 is automatically enabled
 
 # WASM
-cargo check --target wasm32-unknown-unknown --features wasm
+cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
 ```
 
 ---
@@ -324,10 +324,10 @@ cargo check --target wasm32-unknown-unknown --features wasm
 [features]
 # Device-class profiles
 default = ["desktop"]
-desktop = ["desktop-runtime", "gpu-wgpu", "quality-management", "controls-native", "controls-custom", "advanced-widgets", "print", "pdf", "chart"]
-tablet  = ["touch", "gpu-wgpu", "quality-management", "controls-native", "controls-custom"]
-mobile  = ["touch", "gpu-wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom"]
-embedded = []  # stripped-down, no i18n/touch
+desktop = ["desktop-runtime", "wgpu", "quality-management", "controls-native", "controls-custom", "advanced-widgets", "print", "pdf", "chart"]
+tablet  = ["touch", "wgpu", "quality-management", "controls-native", "controls-custom"]
+mobile  = ["touch", "wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom"]
+embedded = ["software", "controls-custom"]
 
 # Interaction features
 touch       = []   # Touch events + 11 gesture recognizers
@@ -336,7 +336,7 @@ projection  = []   # Remote-control / air gestures
 
 # Platform backends
 desktop-runtime = []
-gpu-wgpu        = ["wgpu"]
+wgpu            = ["gpu"]
 wayland-native  = ["wayland-client", "wayland-protocols", "wayland-cursor"]
 gtk-native      = ["gtk"]
 objc2-macos     = ["objc2", "objc2-foundation", "objc2-app-kit", "objc2-core-graphics"]

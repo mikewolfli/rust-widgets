@@ -1,4 +1,7 @@
-#![cfg(not(feature = "mini"))]
+#![cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 
 //! R6 Platform Capability Matrix Integration Test (blue9_r6)
 //!

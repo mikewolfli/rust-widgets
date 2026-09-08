@@ -62,7 +62,12 @@ impl ColorDialog {
 
     fn picker_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(rect.x + 10, rect.y + 38, rect.width - 20, rect.height.saturating_sub(120))
+        Rect::new(
+            rect.x + 10,
+            rect.y + 38,
+            rect.width.saturating_sub(20),
+            rect.height.saturating_sub(120),
+        )
     }
 
     fn point_in_rect(pos: Point, rect: Rect) -> bool {

@@ -254,7 +254,7 @@ impl Draw for NavigationDrawer {
                 let divider_y = y_offset;
                 let divider_color = Color::rgba(0, 0, 0, 10);
                 context.fill_rect(
-                    Rect::new(rect.x + 16, divider_y, panel_width - 32, 1),
+                    Rect::new(rect.x + 16, divider_y, panel_width.saturating_sub(32), 1),
                     divider_color,
                 );
             }

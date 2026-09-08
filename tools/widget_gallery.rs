@@ -2,19 +2,37 @@
 //!
 //! Usage: cargo run --example widget_gallery [output_dir]
 
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::core::Rect;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::widget::svg::render_to_svg;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use rust_widgets::widget::*;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use std::fs;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 use std::path::PathBuf;
 
 /// Gallery entry for a widget
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
 struct GalleryEntry {
     name: &'static str,
     kind: WidgetKind,
@@ -23,7 +41,10 @@ struct GalleryEntry {
 }
 
 fn main() {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(all(
+        any(feature = "desktop", feature = "tablet", feature = "mobile"),
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     {
         let out_dir = std::env::args().nth(1).unwrap_or_else(|| "widget_gallery".to_string());
         let out_path = PathBuf::from(&out_dir);

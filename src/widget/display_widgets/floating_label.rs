@@ -149,7 +149,7 @@ impl Draw for FloatingLabel {
             Color::rgba(180, 180, 180, 255)
         };
         let underline_y = rect.y + rect.height as i32 - 2;
-        let underline_rect = Rect::new(rect.x + 2, underline_y, rect.width - 4, 2);
+        let underline_rect = Rect::new(rect.x + 2, underline_y, rect.width.saturating_sub(4), 2);
         context.fill_rounded_rect(underline_rect, 1, border_color);
 
         // Fonts
