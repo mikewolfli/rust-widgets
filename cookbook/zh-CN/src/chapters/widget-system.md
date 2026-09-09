@@ -368,21 +368,21 @@ impl Draw for MyWidget {
 impl EventHandler for BaseWidget {
     fn handle_event(&mut self, event: &Event) {
         match event {
-            Event::MouseDown { position, button, .. } => {
+            Event::MouseDown((position, button)) | Event::MousePress { pos: position, button } => {
                 self.mouse_pressed = true;
                 self.mouse_down.emit((*position, *button));
             }
-            Event::MouseUp { position, button, .. } => {
+            Event::MouseUp((position, button)) | Event::MouseRelease { pos: position, button } => {
                 self.mouse_pressed = false;
                 self.mouse_up.emit((*position, *button));
             }
-            Event::MouseMove { position, .. } => {
+            Event::MouseMove { pos: position } => {
                 self.hover.emit(*position);
             }
-            Event::KeyDown { key, modifiers, .. } => {
+            Event::KeyDown((key, modifiers)) | Event::KeyPress { key, modifiers } => {
                 self.key_down.emit((*key, *modifiers));
             }
-            Event::KeyUp { key, modifiers, .. } => {
+            Event::KeyUp((key, modifiers)) | Event::KeyRelease { key, modifiers } => {
                 self.key_up.emit((*key, *modifiers));
             }
             Event::FocusGained => {
@@ -390,18 +390,6 @@ impl EventHandler for BaseWidget {
             }
             Event::FocusLost => {
                 self.focus_lost.emit();
-            }
-            Event::Click => {
-                self.clicked.emit();
-            }
-            Event::Redraw => {
-                self.redraw_requested.emit();
-            }
-            Event::Layout => {
-                self.layout_requested.emit();
-            }
-            Event::ValueChanged => {
-                self.changed.emit();
             }
             _ => {}
         }
@@ -415,7 +403,7 @@ impl EventHandler for BaseWidget {
 impl EventHandler for MyWidget {
     fn handle_event(&mut self, event: &Event) {
         // 预处理：
-        if let Event::Click = event {
+        if let Event::MousePress { pos, button: 1 } = event {
             log::info!("MyWidget 在 ({},{}) 被点击", self.position().x, self.position().y);
         }
 
@@ -424,8 +412,8 @@ impl EventHandler for MyWidget {
 
         // 后处理：
         if self.base.is_enabled() {
-            if let Event::MouseMove { position, .. } = event {
-                self.track_mouse_trail(*position);
+            if let Event::MouseMove { pos } = event {
+                self.track_mouse_trail(*pos);
             }
         }
     }
@@ -868,7 +856,7 @@ impl Widget for CounterWidget {
 impl EventHandler for CounterWidget {
     fn handle_event(&mut self, event: &Event) {
         // 预处理点击事件以递增计数器
-        if let Event::Click = event {
+        if let Event::MousePress { button: 1, .. } = event {
             self.increment();
         }
 
@@ -919,8 +907,8 @@ fn main() {
         println!("计数器被点击了！");
     });
 
-    // 模拟一次点击（在实际应用中，事件循环会发送 Click 事件）：
-    counter.handle_event(&Event::Click);
+    // 模拟一次点击：
+    counter.handle_event(&Event::mouse_press(20, 20, 1));
     println!("计数现在是：{}", counter.count());  // → 1
 }
 ```

@@ -4,6 +4,15 @@
 //! This is a state-driven backend that can be progressively enhanced
 //! with native UIKit/SwiftUI bindings.
 //!
+//! ## Menu / status-bar semantics (iOS)
+//!
+//! iOS has no desktop `MenuBar`/`StatusBar` chrome. These handles are modelled
+//! as **in-process data**: kind-constrained parents, textual payload, and
+//! injectable trigger events. They are intentionally *not* advertised as native
+//! menu capability (`capabilities().native_menu == false`) and never attached to
+//! a UIKit view. Apps that need UIKit contextual menus should build them from the
+//! same data instead of treating these handles as native menus.
+//!
 //! ## UIKit Integration Path (BLUE11 R2.4)
 //!
 //! All widget creation methods (`create_window`, `create_button`, etc.)
@@ -23,7 +32,11 @@
 
 use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::platform::{
+    DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
+};
+#[cfg(feature = "ios-uikit-ffi")]
+use objc2::msg_send;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -39,6 +52,16 @@ impl Platform for IosMobilePlatform {
 
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Mobile
+    }
+
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            dpi_scaling: true,
+            ime: true,
+            accessibility: true,
+            native_menu: false,
+            typed_widget_trigger: true,
+        }
     }
 
     fn init(&self) {
@@ -326,19 +349,19 @@ impl Platform for IosMobilePlatform {
     }
 
     fn get_widget_text(&self, widget_id: u64) -> String {
-        self.state.widget_text(widget_id)
+        self.state.text(widget_id)
     }
 
-    fn set_widget_text(&self, widget_id: u64, text: &str) -> bool {
-        self.state.set_widget_text(widget_id, text)
+    fn set_widget_text(&self, widget_id: u64, text: &str) {
+        let _ = self.state.set_text(widget_id, text);
+        #[cfg(feature = "ios-uikit-ffi")]
+        super::native::set_native_text(widget_id, text);
     }
 
-    fn get_widget_geometry(&self, widget_id: u64) -> Option<(i32, i32, u32, u32)> {
-        self.state.widget_geometry(widget_id)
-    }
-
-    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) -> bool {
-        self.state.set_widget_geometry(widget_id, x, y, width, height)
+    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
+        self.state.set_geometry(widget_id, x, y, width, height);
+        #[cfg(feature = "ios-uikit-ffi")]
+        super::native::set_native_frame(widget_id, x, y, width, height);
     }
 
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
@@ -403,7 +426,7 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        let id = self.insert_widget(IosHandleKind::Panel, "ScrollArea", x, y, width, height);
+        let id = self.insert_widget(IosHandleKind::ScrollArea, "ScrollArea", x, y, width, height);
 
         #[cfg(feature = "ios-uikit-ffi")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
@@ -418,18 +441,21 @@ impl Platform for IosMobilePlatform {
     }
 
     // ─── Menu Bar / Menu / Menu Item ───
+    //
+    // iOS has no desktop menu chrome. These handles are an in-process data
+    // model: MenuBar is owned by a Window, Menu belongs to a MenuBar/Menu, and
+    // MenuItem belongs to a Menu. Triggers are delivered through the injectable
+    // `pending_menu_events` queue; `native_menu` capability stays false.
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
+        if !matches!(self.kind_of(parent), Some(IosHandleKind::Window)) {
             return 0;
         }
-        let id = self.insert_widget(IosHandleKind::MenuBar, "MenuBar", x, y, width, height);
-        // On iOS, menu bars are state-only (no native NSMenu equivalent).
-        id
+        self.insert_widget(IosHandleKind::MenuBar, "MenuBar", x, y, width, height)
     }
 
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
+        if !matches!(self.kind_of(parent), Some(IosHandleKind::MenuBar | IosHandleKind::Menu)) {
             return 0;
         }
         let id = self.insert_widget(IosHandleKind::Menu, text, x, y, width, height);
@@ -454,7 +480,7 @@ impl Platform for IosMobilePlatform {
     }
 
     fn menu_add_item(&self, parent_menu: u64, text: &str, _shortcut: Option<&str>) -> u64 {
-        if self.kind_of(parent_menu).is_none() {
+        if !matches!(self.kind_of(parent_menu), Some(IosHandleKind::Menu)) {
             return 0;
         }
         let id = self.insert_widget(IosHandleKind::MenuItem, text, 0, 0, 0, 0);
@@ -470,7 +496,7 @@ impl Platform for IosMobilePlatform {
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
-        if self.kind_of(menu_item_id).is_none() {
+        if !matches!(self.kind_of(menu_item_id), Some(IosHandleKind::MenuItem)) {
             return false;
         }
         self.menus
@@ -484,10 +510,19 @@ impl Platform for IosMobilePlatform {
     // ─── Widget Trigger Events ───
 
     fn poll_widget_triggered(&self) -> Option<u64> {
-        self.state.pop_widget_event().map(|event| event.widget_id)
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        #[cfg(feature = "ios-uikit-ffi")]
+        {
+            for widget_id in super::native::drain_button_events() {
+                self.state.push_widget_event(WidgetTriggerEvent {
+                    widget_id,
+                    kind: WidgetTriggerKind::Clicked,
+                });
+            }
+        }
         self.state.pop_widget_event()
     }
 
@@ -502,7 +537,7 @@ impl Platform for IosMobilePlatform {
     // ─── Tool Bar / Status Bar ───
 
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
+        if !matches!(self.kind_of(parent), Some(IosHandleKind::Window)) {
             return 0;
         }
         self.insert_widget(IosHandleKind::ToolBar, "ToolBar", x, y, width, height)
@@ -517,7 +552,7 @@ impl Platform for IosMobilePlatform {
         width: u32,
         height: u32,
     ) -> u64 {
-        if self.kind_of(parent).is_none() {
+        if !matches!(self.kind_of(parent), Some(IosHandleKind::Window)) {
             return 0;
         }
         self.insert_widget(IosHandleKind::StatusBar, text, x, y, width, height)
@@ -538,24 +573,26 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
+        #[cfg(not(feature = "ios-uikit-ffi"))]
+        let _ = title;
         let id = self.insert_widget(IosHandleKind::MessageBox, text, x, y, width, height);
 
         #[cfg(feature = "ios-uikit-ffi")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let alert = super::native::create_ui_alert(mtm, title, text);
-            let ptr = objc2::rc::Retained::into_raw(alert) as *mut std::ffi::c_void;
-            super::native::store_native_view(id, ptr);
             // Present the alert on the parent window's root view controller.
             if let Some(parent_ptr) = super::native::get_native_view(parent) {
                 unsafe {
-                    let parent_obj: *mut objc2::runtime::Object = parent_ptr as *mut _;
-                    let root_vc: *mut objc2::runtime::Object =
+                    let parent_obj: *mut objc2::runtime::AnyObject = parent_ptr as *mut _;
+                    let root_vc: *mut objc2::runtime::AnyObject =
                         msg_send![parent_obj, rootViewController];
                     if !root_vc.is_null() {
-                        let _: () = msg_send![root_vc, presentViewController: &*alert animated: 1u8 completion: 0u64 as *mut objc2::runtime::Object];
+                        let _: () = msg_send![root_vc, presentViewController: &*alert, animated: 1u8, completion: 0u64 as *mut objc2::runtime::AnyObject];
                     }
                 }
             }
+            let ptr = &*alert as *const _ as *mut std::ffi::c_void;
+            super::native::store_native_view(id, ptr);
         }
 
         id
@@ -590,7 +627,7 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        self.insert_widget(IosHandleKind::LineEdit, "SpinBox", x, y, width, height)
+        self.insert_widget(IosHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
 
     // ─── List View ───
@@ -599,7 +636,7 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        let id = self.insert_widget(IosHandleKind::ListBox, "ListView", x, y, width, height);
+        let id = self.insert_widget(IosHandleKind::ListView, "ListView", x, y, width, height);
 
         #[cfg(feature = "ios-uikit-ffi")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
@@ -617,16 +654,22 @@ impl Platform for IosMobilePlatform {
 
     fn show_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, true);
+        #[cfg(feature = "ios-uikit-ffi")]
+        super::native::set_native_hidden(widget_id, false);
     }
 
     fn hide_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, false);
+        #[cfg(feature = "ios-uikit-ffi")]
+        super::native::set_native_hidden(widget_id, true);
     }
 
     // ─── Enabled / Visible ───
 
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
         self.state.set_enabled(widget_id, enabled);
+        #[cfg(feature = "ios-uikit-ffi")]
+        super::native::set_native_enabled(widget_id, enabled);
     }
 
     fn is_widget_enabled(&self, widget_id: u64) -> bool {
@@ -789,5 +832,33 @@ mod tests {
         let _window_id = platform.create_window("Window", 0, 0, 320, 568);
         let result = platform.serialize_state();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ios_platform_reports_explicit_mobile_capabilities() {
+        let platform = IosMobilePlatform::new();
+        let caps = platform.capabilities();
+
+        assert_eq!(platform.family(), PlatformFamily::Mobile);
+        assert!(caps.dpi_scaling);
+        assert!(caps.ime);
+        assert!(caps.accessibility);
+        assert!(!caps.native_menu);
+        assert!(caps.typed_widget_trigger);
+    }
+
+    #[test]
+    fn ios_platform_preserves_semantic_kinds_for_extended_controls() {
+        let platform = IosMobilePlatform::new();
+        platform.init();
+        let window = platform.create_window("Window", 0, 0, 320, 568);
+
+        let spin = platform.create_spin_box(window, 0, 0, 80, 44);
+        let list_view = platform.create_list_view(window, 0, 50, 320, 120);
+        let scroll = platform.create_scroll_area(window, 0, 180, 320, 120);
+
+        assert_eq!(platform.kind_of(spin), Some(IosHandleKind::SpinBox));
+        assert_eq!(platform.kind_of(list_view), Some(IosHandleKind::ListView));
+        assert_eq!(platform.kind_of(scroll), Some(IosHandleKind::ScrollArea));
     }
 }

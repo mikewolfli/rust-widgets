@@ -1,6 +1,6 @@
 # 事件系統
 
-`rust-widgets` 事件系統提供了一個全面的分層通訊管線：來自平台泵的輸入事件、用於解耦發布的基於 `mpsc` 的佇列、用於分派的背景事件迴圈、焦點/指針/計時器管理，以及觸控到滑鼠的事件轉譯。系統包含 **54 個事件變體**，涵蓋滑鼠、鍵盤、觸控、手勢、繪製、計時器和遊戲手把輸入。
+`rust-widgets` 事件系統提供了一個全面的分層通訊管線：來自平台泵的輸入事件、用於解耦發布的基於 `mpsc` 的佇列、用於分派的背景事件迴圈、焦點/指針/計時器管理、文字輸入/IME 提交，以及觸控到滑鼠的事件轉譯。
 
 ---
 
@@ -16,20 +16,25 @@ Platform Pump → EventLoop (bg thread) → EventQueue (mpsc) → EventHandler::
 
 ---
 
-## `Event` 列舉——54 個變體
+## `Event` 列舉
 
 ```rust
 pub enum Event {
     // 滑鼠
-    MouseDown,                              MouseUp,
+    MouseDown((Point, u32)),                MouseUp((Point, u32)),
     MouseMove { pos: Point },               MousePress { pos: Point, button: u32 },
     MouseRelease { pos: Point, button: u32 }, MouseDoubleClick { pos: Point, button: u32 },
     MouseEnter { pos: Point },              MouseLeave { pos: Point },
-    Wheel { delta: (f32, f32), modifiers: u32 },
+    Wheel { delta: Point, modifiers: u32 },
 
     // 鍵盤
-    KeyDown, KeyUp,
+    KeyDown((u32, u32)),                    KeyUp((u32, u32)),
     KeyPress { key: u32, modifiers: u32 },  KeyRelease { key: u32, modifiers: u32 },
+
+    // Text input and IME
+    TextInput { text: String },
+    ImePreedit { text: String, cursor: usize },
+    ImeCommit { text: String },
 
     // 焦點
     FocusGained, FocusLost,
@@ -68,7 +73,7 @@ pub enum Event {
 
     // 方向 & 生命週期
     OrientationChanged { orientation: ScreenOrientation },
-    Custom { name: String, payload: Box<dyn std::any::Any> },
+    Custom { name: String, payload: Vec<u8> },
     Quit,
 }
 ```
@@ -81,11 +86,11 @@ pub enum Event {
 
 ```rust
 pub trait EventHandler {
-    fn handle_event(&mut self, event: &Event) -> bool;
+    fn handle_event(&mut self, event: &Event);
 }
 ```
 
-回傳 `true` 表示事件已被消費（停止傳播），`false` 則傳遞給下一個處理器。
+容器負責決定是否把事件繼續轉發給子控制項；handler 本身不回傳 consumed 標誌。
 
 ---
 
@@ -184,20 +189,19 @@ let events = translator.translate_touch_event(&touch_event);
 
 ```rust
 impl EventHandler for InteractiveButton {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
-            Event::MouseEnter { .. } => { self.state = WidgetState::Hover; true }
-            Event::MouseLeave { .. } => { self.state = WidgetState::Normal; true }
+            Event::MouseEnter { .. } => { self.state = WidgetState::Hover; }
+            Event::MouseLeave { .. } => { self.state = WidgetState::Normal; }
             Event::MousePress { pos, button: 0 } if self.bounds.contains(*pos) => {
-                self.state = WidgetState::Pressed; true
+                self.state = WidgetState::Pressed;
             }
             Event::MouseRelease { pos, button: 0 } => {
                 if self.state == WidgetState::Pressed && self.bounds.contains(*pos) {
                     self.on_click();
                 }
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }
@@ -208,14 +212,13 @@ impl EventHandler for InteractiveButton {
 ```rust
 let timer_id = event_loop.start_timer(animation_widget, Duration::from_millis(16));
 impl EventHandler for AnimatedWidget {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::Timer { id } if *id == ANIM_TIMER_ID => {
                 self.animation_progress += 0.016;
                 self.request_repaint();
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }

@@ -4,7 +4,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Lightweight markdown editor with preview toggle and metrics.
 pub struct MarkdownEditor {
@@ -16,6 +19,9 @@ pub struct MarkdownEditor {
     pub text_changed: Signal1<String>,
     /// Emitted when preview mode changes.
     pub preview_mode_changed: Signal1<bool>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl MarkdownEditor {
@@ -28,6 +34,9 @@ impl MarkdownEditor {
             cursor_line: 0,
             text_changed: Signal1::new(),
             preview_mode_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -42,7 +51,17 @@ impl MarkdownEditor {
         if self.text == next {
             return;
         }
+        let before = self.text.clone();
         self.text = next.clone();
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "markdown_editor_text",
+            )));
+        }
         self.cursor_line = self.cursor_line.min(self.line_count().saturating_sub(1));
         self.text_changed.emit(next);
         self.base.request_layout();
@@ -51,12 +70,13 @@ impl MarkdownEditor {
 
     /// Appends one line to markdown.
     pub fn append_line(&mut self, line: impl AsRef<str>) {
-        if !self.text.is_empty() {
-            self.text.push('\n');
+        let mut next = self.text.clone();
+        if !next.is_empty() {
+            next.push('\n');
         }
-        self.text.push_str(line.as_ref());
+        next.push_str(line.as_ref());
+        self.set_text(next);
         self.cursor_line = self.line_count().saturating_sub(1);
-        self.text_changed.emit(self.text.clone());
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -107,6 +127,40 @@ impl MarkdownEditor {
         self.cursor_line
     }
 
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        self.cursor_line = self.cursor_line.min(self.line_count().saturating_sub(1));
+        self.text_changed.emit(self.text.clone());
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     fn move_cursor(&mut self, delta: isize) {
         let lines = self.line_count();
         if lines == 0 {
@@ -145,6 +199,12 @@ impl EventHandler for MarkdownEditor {
 
         if let Event::KeyPress { key, modifiers } = event {
             match *key {
+                90 if *modifiers == 2 => {
+                    let _ = self.undo();
+                }
+                89 if *modifiers == 2 => {
+                    let _ = self.redo();
+                }
                 38 => self.move_cursor(-1),
                 40 => self.move_cursor(1),
                 80 | 112 if *modifiers != 0 => self.toggle_preview_mode(),
@@ -250,5 +310,31 @@ mod tests {
 
         editor.handle_event(&Event::key_press(38, 0));
         assert_eq!(editor.cursor_line(), 1);
+    }
+
+    #[test]
+    fn undo_redo_restores_markdown_text() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("# One");
+        editor.append_line("body");
+
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "# One");
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "# One\nbody");
+    }
+
+    #[test]
+    fn keyboard_shortcuts_drive_markdown_history() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("draft");
+        editor.set_text("final");
+
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(editor.text(), "draft");
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(editor.text(), "final");
     }
 }

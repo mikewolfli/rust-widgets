@@ -4,6 +4,16 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 1.1.0 (2026-09-09) — Version Contract Sync Release
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for full details.
+
+### Highlights
+- **Crate version bumped `1.0.0` → `1.1.0`** (stable line; no ABI / `Version`-type API break)
+- **Version references aligned across code & docs**: Cargo, Node.js `package.json`, Python `setup.py`,
+  demo/control banner, CoreConfig default version contract, cookbook/README mentions
+- **`CoreConfig::desktop()/embedded()/mobile()`** default version synced to `1.1.0`
+
 ## 1.0.0 (2026-09-02) — Stable Release
 
 See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for full details.

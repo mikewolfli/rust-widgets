@@ -8,7 +8,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// iOS-style search bar widget.
 ///
@@ -27,6 +30,9 @@ pub struct SearchBar {
     pub search_submitted: Signal1<String>,
     /// Emitted when the user taps the cancel button.
     pub canceled: GenericSignal,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl SearchBar {
@@ -41,6 +47,9 @@ impl SearchBar {
             text_changed: Signal1::new(),
             search_submitted: Signal1::new(),
             canceled: GenericSignal::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -53,7 +62,17 @@ impl SearchBar {
     pub fn set_text(&mut self, text: impl Into<String>) {
         let new_text = text.into();
         if self.text != new_text {
+            let before = self.text.clone();
             self.text = new_text.clone();
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.text.clone(),
+                    "search_bar_text",
+                )));
+            }
             self.text_changed.emit(new_text);
             self.base.request_redraw();
         }
@@ -97,10 +116,40 @@ impl SearchBar {
     /// Clears the search text. Emits `text_changed` signal.
     pub fn clear(&mut self) {
         if !self.text.is_empty() {
-            self.text.clear();
-            self.text_changed.emit(String::new());
-            self.base.request_redraw();
+            self.set_text(String::new());
         }
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 
     /// Submits the current search text.
@@ -280,7 +329,15 @@ impl EventHandler for SearchBar {
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
+                if *key == 90 && *modifiers == 2 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *key == 89 && *modifiers == 2 {
+                    let _ = self.redo();
+                    return;
+                }
                 if *key == 13 || *key == 10 {
                     // Enter key — submit search
                     self.submit();
@@ -300,6 +357,14 @@ impl EventHandler for SearchBar {
                     }
                 }
             }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if !text.is_empty() {
+                    let mut new_text = self.text.clone();
+                    new_text.push_str(text);
+                    self.set_text(new_text);
+                }
+            }
+            Event::ImePreedit { .. } => {}
             _ => {
                 self.base.handle_event(event);
             }
@@ -417,5 +482,43 @@ mod tests {
         let svg = render_to_svg(&mut sb);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn search_bar_undo_redo_restores_text() {
+        let mut sb = make_search_bar();
+        sb.set_text("alpha");
+        sb.set_text("beta");
+
+        assert!(sb.can_undo());
+        assert!(sb.undo());
+        assert_eq!(sb.text(), "alpha");
+        assert!(sb.can_redo());
+        assert!(sb.redo());
+        assert_eq!(sb.text(), "beta");
+    }
+
+    #[test]
+    fn search_bar_key_shortcuts_drive_history() {
+        let mut sb = make_search_bar();
+        sb.handle_event(&Event::KeyPress { key: 97, modifiers: 0 });
+        sb.handle_event(&Event::KeyPress { key: 98, modifiers: 0 });
+        assert_eq!(sb.text(), "ab");
+
+        sb.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(sb.text(), "a");
+        sb.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(sb.text(), "ab");
+    }
+
+    #[test]
+    fn search_bar_accepts_unicode_text_input_events() {
+        let mut sb = make_search_bar();
+        sb.handle_event(&Event::text_input("你好"));
+        sb.handle_event(&Event::ime_commit("世界"));
+
+        assert_eq!(sb.text(), "你好世界");
+        assert!(sb.undo());
+        assert_eq!(sb.text(), "你好");
     }
 }

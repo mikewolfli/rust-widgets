@@ -16,6 +16,7 @@ pub mod floating_label;
 pub mod font_preview;
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod icon;
+#[cfg(feature = "image")]
 pub mod image_view;
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod lcd_number;

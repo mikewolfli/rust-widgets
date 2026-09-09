@@ -81,6 +81,12 @@ pub enum Event {
     KeyPress { key: u32, modifiers: u32 },
     /// Keyboard key release.
     KeyRelease { key: u32, modifiers: u32 },
+    /// Text committed by keyboard layout, IME, virtual keyboard, or paste-like input.
+    TextInput { text: String },
+    /// IME preedit/composition text changed without committing to the widget value.
+    ImePreedit { text: String, cursor: usize },
+    /// IME composition committed text to the widget value.
+    ImeCommit { text: String },
     /// Repaint request.
     Paint,
     /// Resize notification.
@@ -190,6 +196,18 @@ impl Event {
     /// Creates a key release event.
     pub fn key_release(key: u32, modifiers: u32) -> Self {
         Self::KeyRelease { key, modifiers }
+    }
+    /// Creates a committed text input event.
+    pub fn text_input(text: impl Into<String>) -> Self {
+        Self::TextInput { text: text.into() }
+    }
+    /// Creates an IME preedit/composition event.
+    pub fn ime_preedit(text: impl Into<String>, cursor: usize) -> Self {
+        Self::ImePreedit { text: text.into(), cursor }
+    }
+    /// Creates an IME commit event.
+    pub fn ime_commit(text: impl Into<String>) -> Self {
+        Self::ImeCommit { text: text.into() }
     }
     /// Creates a paint/repaint request event.
     pub fn paint() -> Self {
@@ -459,6 +477,25 @@ mod tests {
     fn mouse_event_gesture_class_is_none() {
         let e = Event::mouse_press(1, 2, 0);
         assert_eq!(e.gesture_class(), None);
+    }
+
+    #[test]
+    fn text_input_and_ime_events_carry_unicode_text() {
+        match Event::text_input("你好") {
+            Event::TextInput { text } => assert_eq!(text, "你好"),
+            _ => panic!("expected TextInput"),
+        }
+        match Event::ime_preedit("に", 1) {
+            Event::ImePreedit { text, cursor } => {
+                assert_eq!(text, "に");
+                assert_eq!(cursor, 1);
+            }
+            _ => panic!("expected ImePreedit"),
+        }
+        match Event::ime_commit("本") {
+            Event::ImeCommit { text } => assert_eq!(text, "本"),
+            _ => panic!("expected ImeCommit"),
+        }
     }
 
     #[cfg(feature = "touch")]

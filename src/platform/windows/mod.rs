@@ -1,5 +1,6 @@
 //! Windows platform backend implementation.
 
+mod dialogs;
 pub mod helpers;
 mod notify;
 mod platform_impl;

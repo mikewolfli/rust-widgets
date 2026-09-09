@@ -9,7 +9,59 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_SHORTCUT_EDITOR_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct ShortcutEditorCommand {
+    id: CommandId,
+    target: Rc<RefCell<Vec<ShortcutEntry>>>,
+    before: Vec<ShortcutEntry>,
+    after: Vec<ShortcutEntry>,
+}
+
+impl ShortcutEditorCommand {
+    fn new(
+        target: Rc<RefCell<Vec<ShortcutEntry>>>,
+        before: Vec<ShortcutEntry>,
+        after: Vec<ShortcutEntry>,
+    ) -> Self {
+        Self {
+            id: CommandId(NEXT_SHORTCUT_EDITOR_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for ShortcutEditorCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit shortcut list".to_string(),
+            timestamp_ms: 0,
+            command_type: "shortcut_editor",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after.clone();
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before.clone();
+        Ok(())
+    }
+}
 
 fn floor_char_boundary(s: &str, index: usize) -> usize {
     let len = s.len();
@@ -25,7 +77,7 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 /// A single shortcut entry in the editor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutEntry {
     /// Unique identifier for this shortcut.
     pub id: String,
@@ -80,6 +132,8 @@ pub struct ShortcutEditor {
     filter_text: String,
     /// Emitted when a shortcut's key binding changes. Emits (id, new_keys).
     pub shortcut_changed: Signal1<(String, Vec<String>)>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<Vec<ShortcutEntry>>>,
 }
 
 impl ShortcutEditor {
@@ -90,20 +144,26 @@ impl ShortcutEditor {
             shortcuts: Vec::new(),
             filter_text: String::new(),
             shortcut_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     /// Adds a shortcut entry.
     pub fn add_shortcut(&mut self, entry: ShortcutEntry) {
+        let before = self.shortcuts.clone();
         self.shortcuts.push(entry);
+        self.record_shortcut_state(before);
         self.base.request_redraw();
     }
 
     /// Removes a shortcut by its id. Returns `true` if found and removed.
     pub fn remove_shortcut(&mut self, id: &str) -> bool {
         let initial_len = self.shortcuts.len();
+        let before = self.shortcuts.clone();
         self.shortcuts.retain(|s| s.id != id);
         if self.shortcuts.len() != initial_len {
+            self.record_shortcut_state(before);
             self.base.request_redraw();
             return true;
         }
@@ -112,14 +172,21 @@ impl ShortcutEditor {
 
     /// Removes all shortcuts.
     pub fn clear_shortcuts(&mut self) {
+        let before = self.shortcuts.clone();
         self.shortcuts.clear();
+        self.record_shortcut_state(before);
         self.base.request_redraw();
     }
 
     /// Updates the key bindings for a shortcut by id. Returns `true` if found.
     pub fn update_shortcut_keys(&mut self, id: &str, keys: Vec<String>) -> bool {
+        let before = self.shortcuts.clone();
         if let Some(entry) = self.shortcuts.iter_mut().find(|s| s.id == id) {
+            if entry.keys == keys {
+                return false;
+            }
             entry.keys = keys.clone();
+            self.record_shortcut_state(before);
             self.shortcut_changed.emit((id.to_string(), keys));
             self.base.request_redraw();
             return true;
@@ -183,6 +250,69 @@ impl ShortcutEditor {
     /// Returns a mutable reference to shortcuts.
     pub fn shortcuts_mut(&mut self) -> &mut Vec<ShortcutEntry> {
         &mut self.shortcuts
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_shortcut_state();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_shortcut_state();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn record_shortcut_state(&mut self, before: Vec<ShortcutEntry>) {
+        if before == self.shortcuts {
+            return;
+        }
+        let after = self.shortcuts.clone();
+        *self.history_target.borrow_mut() = after.clone();
+        self.undo_stack.push(Box::new(ShortcutEditorCommand::new(
+            self.history_target.clone(),
+            before,
+            after,
+        )));
+    }
+
+    fn restore_shortcut_state(&mut self) {
+        self.shortcuts = self.history_target.borrow().clone();
+        self.base.request_redraw();
+    }
+
+    fn update_first_visible_editable_shortcut(&mut self, key_name: String) -> bool {
+        let lower = self.filter_text.to_lowercase();
+        let target_id = self
+            .shortcuts
+            .iter()
+            .find(|entry| {
+                entry.editable
+                    && (lower.is_empty()
+                        || entry.name.to_lowercase().contains(&lower)
+                        || entry.id.to_lowercase().contains(&lower)
+                        || entry.category.to_lowercase().contains(&lower)
+                        || entry.keys.iter().any(|k| k.to_lowercase().contains(&lower)))
+            })
+            .map(|entry| entry.id.clone());
+
+        if let Some(id) = target_id {
+            return self.update_shortcut_keys(&id, vec![key_name]);
+        }
+        false
     }
 }
 
@@ -315,13 +445,20 @@ impl EventHandler for ShortcutEditor {
         }
         match event {
             Event::KeyPress { key, modifiers } => {
+                if *key == 90 && *modifiers == 2 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *key == 89 && *modifiers == 2 {
+                    let _ = self.redo();
+                    return;
+                }
                 // Record key events for shortcut editing
                 // Ignore modifier-only presses
                 if *key > 0 && *key < 0xFF {
                     let key_name = keycode_to_name(*key, *modifiers);
                     if !key_name.is_empty() {
-                        // Attempt to assign to the first unbound/selected shortcut
-                        // In a full implementation, this would target a specific highlighted entry
+                        self.update_first_visible_editable_shortcut(key_name);
                         self.base.key_down.emit((*key, *modifiers));
                         return;
                     }
@@ -449,6 +586,43 @@ mod tests {
         assert_eq!(keys, vec!["Ctrl+Shift+S"]);
 
         assert!(!se.update_shortcut_keys("nonexistent", vec![]));
+    }
+
+    #[test]
+    fn shortcut_editor_undo_redo_restores_shortcut_keys() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File").with_keys(vec!["Ctrl+S"]));
+        se.update_shortcut_keys("save", vec!["Ctrl+Shift+S".to_string()]);
+
+        assert!(se.can_undo());
+        assert!(se.undo());
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+S"]);
+        assert!(se.can_redo());
+        assert!(se.redo());
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+Shift+S"]);
+    }
+
+    #[test]
+    fn shortcut_editor_keypress_updates_first_editable_visible_entry() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
+
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+S"]);
+    }
+
+    #[test]
+    fn shortcut_editor_filter_limits_keypress_target() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
+        se.add_shortcut(ShortcutEntry::new("copy", "Copy", "Edit"));
+        se.set_filter("copy");
+
+        se.handle_event(&Event::KeyPress { key: 67, modifiers: 2 });
+
+        assert!(se.shortcuts()[0].keys.is_empty());
+        assert_eq!(se.shortcuts()[1].keys, vec!["Ctrl+C"]);
     }
 
     #[test]

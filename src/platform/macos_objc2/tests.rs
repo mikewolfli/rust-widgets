@@ -4,6 +4,7 @@
 //! existing platform backends to ensure migration safety.
 
 use crate::platform::macos_objc2::MacOSObjc2Platform;
+use crate::platform::macos_objc2::MacObjc2HandleKind;
 use crate::platform::Platform;
 use crate::WidgetTriggerKind;
 
@@ -116,6 +117,21 @@ fn objc2_menu_stack_parity() {
 }
 
 #[test]
+fn objc2_menu_items_store_parsed_shortcuts() {
+    let backend = MacOSObjc2Platform::new();
+    backend.init();
+    let window = backend.create_window("w", 0, 0, 200, 120);
+    let menu_bar = backend.create_menu_bar(window, 0, 0, 200, 24);
+    let menu = backend.create_menu(menu_bar, "File", 0, 0, 100, 24);
+
+    let item = backend.menu_add_item(menu, "Save", Some("Cmd+Shift+S"));
+    let shortcut = backend.menu_shortcut_of(item).expect("shortcut should be stored");
+
+    assert_eq!(shortcut.0, "s");
+    assert_ne!(shortcut.1, 0);
+}
+
+#[test]
 fn objc2_ime_accessibility_parity() {
     // Verify IME and accessibility state parity.
     let backend = MacOSObjc2Platform::new();
@@ -179,6 +195,21 @@ fn objc2_controls_parity() {
     assert!(backend.is_widget_enabled(line_edit), "LineEdit should be enabled");
     backend.set_widget_visible(line_edit, true);
     assert!(backend.is_widget_visible(line_edit), "LineEdit should be visible");
+}
+
+#[test]
+fn objc2_extended_controls_preserve_semantic_kinds() {
+    let backend = MacOSObjc2Platform::new();
+    backend.init();
+    let window = backend.create_window("w", 0, 0, 240, 180);
+
+    let spin = backend.create_spin_box(window, 10, 10, 80, 24);
+    let list_view = backend.create_list_view(window, 10, 40, 160, 80);
+    let scroll = backend.create_scroll_area(window, 10, 130, 160, 40);
+
+    assert_eq!(backend.kind_of(spin), Some(MacObjc2HandleKind::SpinBox));
+    assert_eq!(backend.kind_of(list_view), Some(MacObjc2HandleKind::ListView));
+    assert_eq!(backend.kind_of(scroll), Some(MacObjc2HandleKind::ScrollArea));
 }
 
 #[test]

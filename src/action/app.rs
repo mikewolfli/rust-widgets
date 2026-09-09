@@ -103,7 +103,11 @@ impl<'a> ActionRouter<'a> {
         if !self.shortcut_mgr.register(action_id.clone(), shortcut.clone(), "") {
             return false;
         }
-        self.action_mgr.bind_shortcut_type(&shortcut, action_id)
+        if self.action_mgr.bind_shortcut_type(&shortcut, action_id.clone()) {
+            return true;
+        }
+        self.shortcut_mgr.unregister(&action_id);
+        false
     }
 
     /// Routes a triggered shortcut action id to ActionManager.trigger_action().

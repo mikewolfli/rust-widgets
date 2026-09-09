@@ -3,7 +3,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-#[cfg(not(feature = "mini"))]
+#[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Button interaction state.
@@ -17,7 +17,7 @@ pub enum ButtonState {
 pub struct Button {
     base: BaseWidget,
     text: String,
-    #[cfg(not(feature = "mini"))]
+    #[cfg(feature = "image")]
     icon: Option<Image>,
     pressed: bool,
     default_button: bool,
@@ -33,7 +33,7 @@ impl Button {
         Self {
             base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
             text,
-            #[cfg(not(feature = "mini"))]
+            #[cfg(feature = "image")]
             icon: None,
             pressed: false,
             default_button: false,
@@ -107,13 +107,13 @@ impl Button {
         }
     }
     /// Sets the icon displayed on the button.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(feature = "image")]
     pub fn set_icon(&mut self, icon: Image) {
         self.icon = Some(icon);
         self.base.request_redraw();
     }
     /// Returns a reference to the button icon, if set.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(feature = "image")]
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
@@ -264,7 +264,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Point, Rect, Size};
     use crate::event::Event;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(all(feature = "image", not(feature = "mini")))]
     use crate::widget::Image;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -274,7 +274,7 @@ mod tests {
         Button::new("Click".into(), Rect::new(10, 20, 120, 36))
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(all(feature = "image", not(feature = "mini")))]
     fn make_image() -> Image {
         Image::from_rgba(vec![0u8; 8 * 8 * 4], 8, 8)
     }
@@ -284,7 +284,7 @@ mod tests {
     }
 
     // ── 1. Button creation ─────────────────────────────────────────────
-    #[cfg(not(feature = "mini"))]
+    #[cfg(feature = "image")]
     #[test]
     fn button_creation_text_geometry_defaults_icon() {
         let b = make_button();
@@ -485,7 +485,7 @@ mod tests {
         assert!(b.text().is_empty());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(all(feature = "image", not(feature = "mini")))]
     #[test]
     fn set_icon_and_default_icon() {
         let mut b = make_button();

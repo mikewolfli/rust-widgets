@@ -32,6 +32,22 @@ impl Platform for WindowsPlatform {
     fn show_widget(&self, widget_id: ObjectId) {
         self.state.set_visible(widget_id, true);
         #[cfg(target_os = "windows")]
+        {
+            use crate::platform::windows::dialogs::present_native_dialog;
+            if let Some(kind) = self.state.kind_of(widget_id) {
+                if matches!(
+                    kind,
+                    WindowsHandleKind::MessageBox
+                        | WindowsHandleKind::FileDialog
+                        | WindowsHandleKind::ColorDialog
+                        | WindowsHandleKind::FontDialog
+                ) {
+                    present_native_dialog(self, widget_id, kind);
+                    return;
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
         if let Some(hwnd) = self.get_native_handle(widget_id) {
             // SAFETY: hwnd is guaranteed valid by get_native_handle() which only returns
             // handles registered via bind_native_handle(). ShowWindow and UpdateWindow are
@@ -1386,10 +1402,23 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // State-backed MessageBox surrogate until native MessageBoxW integration lands.
-            let _ = (parent, text);
-            log::warn!("[rust_widgets][windows] MessageBox surrogate for '{}'", title);
-            self.state.create_widget(WindowsHandleKind::Panel, "MessageBox", x, y, width, height)
+            // Non-blocking creation: register a state handle + native-dialog
+            // metadata; the modal MessageBoxW is presented from show_widget.
+            let id =
+                self.state.create_widget(WindowsHandleKind::MessageBox, text, x, y, width, height);
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.insert(
+                    id,
+                    Win32DialogData {
+                        parent_hwnd: self
+                            .get_native_handle(parent)
+                            .map(|h| h as usize)
+                            .unwrap_or(0),
+                        title: title.to_string(),
+                    },
+                );
+            }
+            id
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1399,7 +1428,7 @@ impl Platform for WindowsPlatform {
     }
     fn create_file_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -1407,19 +1436,33 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // State-backed FileDialog surrogate until native IFileOpenDialog integration lands.
-            log::warn!("[rust_widgets][windows] FileDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "FileDialog", x, y, width, height)
+            // Non-blocking creation; the modal GetOpenFileNameW is presented
+            // from show_widget and the selected path is stored into state text.
+            let id =
+                self.state.create_widget(WindowsHandleKind::FileDialog, "", x, y, width, height);
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.insert(
+                    id,
+                    Win32DialogData {
+                        parent_hwnd: self
+                            .get_native_handle(parent)
+                            .map(|h| h as usize)
+                            .unwrap_or(0),
+                        title: "Open File".to_string(),
+                    },
+                );
+            }
+            id
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (x, y, width, height);
+            let _ = (parent, x, y, width, height);
             0
         }
     }
     fn create_color_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -1427,19 +1470,33 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // State-backed ColorDialog surrogate until native CHOOSECOLORW integration lands.
-            log::warn!("[rust_widgets][windows] ColorDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "ColorDialog", x, y, width, height)
+            // Non-blocking creation; the modal ChooseColorW is presented from
+            // show_widget and the selected #RRGGBB is stored into state text.
+            let id =
+                self.state.create_widget(WindowsHandleKind::ColorDialog, "", x, y, width, height);
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.insert(
+                    id,
+                    Win32DialogData {
+                        parent_hwnd: self
+                            .get_native_handle(parent)
+                            .map(|h| h as usize)
+                            .unwrap_or(0),
+                        title: "Choose Color".to_string(),
+                    },
+                );
+            }
+            id
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (x, y, width, height);
+            let _ = (parent, x, y, width, height);
             0
         }
     }
     fn create_font_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -1447,13 +1504,27 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // State-backed FontDialog surrogate until native CHOOSEFONTW integration lands.
-            log::warn!("[rust_widgets][windows] FontDialog surrogate");
-            self.state.create_widget(WindowsHandleKind::Panel, "FontDialog", x, y, width, height)
+            // Non-blocking creation; the modal ChooseFontW is presented from
+            // show_widget and the selected family name is stored into state text.
+            let id =
+                self.state.create_widget(WindowsHandleKind::FontDialog, "", x, y, width, height);
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.insert(
+                    id,
+                    Win32DialogData {
+                        parent_hwnd: self
+                            .get_native_handle(parent)
+                            .map(|h| h as usize)
+                            .unwrap_or(0),
+                        title: "Choose Font".to_string(),
+                    },
+                );
+            }
+            id
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (x, y, width, height);
+            let _ = (parent, x, y, width, height);
             0
         }
     }

@@ -4,7 +4,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
+#[cfg(feature = "image")]
+use crate::widget::Image;
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// MDI area widget.
@@ -24,6 +26,7 @@ pub struct MdiSubWindow {
     widget: ObjectId,
     geometry: Rect,
     title: String,
+    #[cfg(feature = "image")]
     icon: Option<Image>,
     minimized: bool,
     maximized: bool,
@@ -72,6 +75,7 @@ impl MdiSubWindow {
             widget,
             geometry,
             title: String::new(),
+            #[cfg(feature = "image")]
             icon: None,
             minimized: false,
             maximized: false,
@@ -101,10 +105,12 @@ impl MdiSubWindow {
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
+    #[cfg(feature = "image")]
     /// Returns icon.
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
+    #[cfg(feature = "image")]
     /// Sets icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;

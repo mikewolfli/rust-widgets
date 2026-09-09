@@ -8,19 +8,24 @@
 
 #![cfg(target_os = "ios")]
 #![cfg(feature = "ios-uikit-ffi")]
+// Preview/FFI helpers are wired from platform_impl.rs via conditional compilation.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use objc2::msg_send;
-use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, Object};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyClass, AnyObject, NSObject};
 use objc2::MainThreadMarker;
-use objc2_foundation::{CGPoint, CGRect, CGSize, NSString};
+use objc2::{msg_send, DefinedClass};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::NSString;
 use objc2_ui_kit::{
-    UIButton, UIButtonType, UIColor, UILabel, UIPickerView, UIProgressView, UISlider, UISwitch,
-    UITableView, UITableViewStyle, UITextField, UIView, UIViewController, UIWindow,
+    NSObjectUIAccessibility, UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIButton,
+    UIColor, UIControlState, UILabel, UIPickerView, UIProgressView, UIScrollView, UISlider,
+    UIStackView, UISwitch, UITableView, UITableViewStyle, UITextField, UIView, UIViewController,
+    UIWindow,
 };
 
 // ─── Native view pointer storage ───
@@ -75,6 +80,64 @@ pub(crate) fn get_parent(widget_id: u64) -> Option<u64> {
     PARENT_MAP.lock().unwrap().get(&widget_id).copied()
 }
 
+// ─── Native state setters (forward Rust state to UIKit views) ───
+
+/// Apply a frame rect to a stored native UIView.
+pub(crate) fn set_native_frame(widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    let frame = make_rect(x, y, width, height);
+    unsafe {
+        let view: *mut AnyObject = ptr as *mut AnyObject;
+        let _: () = msg_send![view, setFrame: frame];
+    }
+}
+
+/// Show/hide a stored native UIView.
+pub(crate) fn set_native_hidden(widget_id: u64, hidden: bool) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let view: *mut AnyObject = ptr as *mut AnyObject;
+        let _: () = msg_send![view, setHidden: hidden];
+    }
+}
+
+/// Enable/disable a stored native UIControl when the receiver supports it.
+pub(crate) fn set_native_enabled(widget_id: u64, enabled: bool) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let view: *mut AnyObject = ptr as *mut AnyObject;
+        let selector = sel!(setEnabled:);
+        let responds: bool = msg_send![view, respondsToSelector: selector];
+        if responds {
+            let _: () = msg_send![view, setEnabled: enabled];
+        }
+    }
+}
+
+/// Update a stored native view's text through the UIKit text/title setters.
+pub(crate) fn set_native_text(widget_id: u64, text: &str) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    let value = NSString::from_str(text);
+    unsafe {
+        let view: *mut AnyObject = ptr as *mut AnyObject;
+        for selector in [sel!(setText:), sel!(setTitle:forState:), sel!(setAccessibilityLabel:)] {
+            let responds: bool = msg_send![view, respondsToSelector: selector];
+            if responds {
+                let _: () = msg_send![view, performSelector: selector, withObject: &*value];
+                return;
+            }
+        }
+    }
+}
+
 // ─── View hierarchy management ───
 
 /// Add a widget's native view as a subview of its parent window.
@@ -96,17 +159,17 @@ pub(crate) fn add_as_subview(widget_id: u64, parent_id: u64) {
         // Get the root view controller's view from the parent window.
         // UIWindow::rootViewController returns a UIViewController whose `view`
         // property is the content view where subviews should be added.
-        let parent: *mut Object = parent_ptr as *mut Object;
-        let root_vc: *mut Object = msg_send![parent, rootViewController];
+        let parent: *mut AnyObject = parent_ptr as *mut AnyObject;
+        let root_vc: *mut AnyObject = msg_send![parent, rootViewController];
         if root_vc.is_null() {
             return;
         }
-        let content_view: *mut Object = msg_send![root_vc, view];
+        let content_view: *mut AnyObject = msg_send![root_vc, view];
         if content_view.is_null() {
             return;
         }
         // Add the child view as a subview of the content view.
-        let child: *mut Object = child_ptr as *mut Object;
+        let child: *mut AnyObject = child_ptr as *mut AnyObject;
         let _: () = msg_send![content_view, addSubview: child];
     }
 }
@@ -127,29 +190,20 @@ pub(crate) fn drain_button_events() -> Vec<u64> {
 
 // ─── Objective-C button target class ───
 
-use objc2::declare_class;
-use objc2::runtime::NSObject;
+use objc2::define_class;
 use objc2::sel;
 
-/// A lightweight Objective-C helper class that holds a widget ID
-/// and forwards `buttonTapped:` messages to the Rust event queue.
-///
-/// One instance is created per UIButton and stored as the button's
-/// target. When tapped, `handle_tap` pushes the widget ID into
-/// `BUTTON_EVENT_QUEUE` for the Rust platform to drain.
-declare_class!(
-    struct ButtonTarget {
-        widget_id: u64,
-    }
+// A lightweight Objective-C helper class that holds a widget ID and forwards
+// `buttonTapped:` messages to the Rust event queue.
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[ivars = u64]
+    struct ButtonTarget;
 
-    unsafe impl ClassType for ButtonTarget {
-        type Super = NSObject;
-    }
-
-    unsafe impl ButtonTarget {
-        #[sel(buttonTapped:)]
+    impl ButtonTarget {
+        #[unsafe(method(buttonTapped:))]
         fn handle_tap(&self, _sender: &NSObject) {
-            BUTTON_EVENT_QUEUE.lock().unwrap().push_back(self.widget_id);
+            BUTTON_EVENT_QUEUE.lock().unwrap().push_back(*self.ivars());
         }
     }
 );
@@ -157,12 +211,9 @@ declare_class!(
 impl ButtonTarget {
     /// Create a new `ButtonTarget` with the given widget ID.
     fn new(mtm: MainThreadMarker, widget_id: u64) -> Retained<Self> {
-        // SAFETY: Allocating and initializing on the main thread (mtm).
-        // `set_ivar` sets the `widget_id` ivar declared by `declare_class!`.
-        let obj = unsafe { mtm.alloc() };
-        let obj = obj.set_ivar(widget_id);
-        // SAFETY: `init` from NSObject returns a valid retained object.
-        unsafe { obj.init() }
+        let obj: Allocated<Self> = mtm.alloc();
+        let obj = obj.set_ivars(widget_id);
+        unsafe { msg_send![super(obj), init] }
     }
 }
 
@@ -186,12 +237,9 @@ pub(crate) fn wire_button_action(widget_id: u64) {
     // `target` is a valid NSObject subclass with the `buttonTapped:` method.
     // `UIControlEventTouchUpInside = 1 << 6 = 64`.
     unsafe {
-        let button: *mut Object = ptr as *mut Object;
-        let _: () = msg_send![button,
-            addTarget: &*target
-            action: action_sel
-            forControlEvents: 64u64
-        ];
+        let button: *mut AnyObject = ptr as *mut AnyObject;
+        let _: () =
+            msg_send![button, addTarget: &*target, action: action_sel, forControlEvents: 64u64];
     }
 
     // Store the target so it stays alive for the button's lifetime.
@@ -217,22 +265,23 @@ fn make_rect(x: i32, y: i32, width: u32, height: u32) -> CGRect {
 pub(crate) fn create_ui_window(
     mtm: MainThreadMarker,
     title: &str,
-    x: i32,
-    y: i32,
+    _x: i32,
+    _y: i32,
     width: u32,
     height: u32,
 ) -> Retained<UIWindow> {
     let frame = make_rect(0, 0, width, height);
-    // SAFETY: UIWindow::initWithFrame is called on the main thread (guaranteed by mtm).
-    // objc2 init methods return Retained<T> which is always a valid object.
-    // UIViewController creation follows the same safe pattern.
-    let window = unsafe { UIWindow::initWithFrame(mtm.alloc(), frame) };
-    window.setBackgroundColor(UIColor::white());
-    let vc = unsafe { UIViewController::initWithNibName_bundle(mtm.alloc(), None, None) };
+    // `init(windowScene:)` requires a UIWindowScene obtained from a real
+    // UIApplication scene session, which is unavailable in the preview path.
+    #[allow(deprecated)]
+    let window = UIWindow::initWithFrame(mtm.alloc(), frame);
+    let bg = UIColor::whiteColor();
+    window.setBackgroundColor(Some(&bg));
+    let vc = UIViewController::initWithNibName_bundle(mtm.alloc(), None, None);
     window.setRootViewController(Some(&vc));
     window.makeKeyAndVisible();
     // Set window title via accessibility label
-    window.setAccessibilityLabel(&NSString::from_str(title));
+    window.setAccessibilityLabel(Some(&NSString::from_str(title)), mtm);
     window
 }
 
@@ -249,9 +298,8 @@ pub(crate) fn create_ui_button(
     // SAFETY: UIButton::initWithFrame on main thread (mtm guard).
     // objc2 init methods return Retained<T> which ensures the object is valid.
     // No additional error checking is needed since objc2 handles memory management.
-    let button = unsafe { UIButton::initWithFrame(mtm.alloc(), frame) };
-    button.setTitle(&NSString::from_str(text));
-    button.setButtonType(UIButtonType::System);
+    let button = UIButton::initWithFrame(mtm.alloc(), frame);
+    button.setTitle_forState(Some(&NSString::from_str(text)), UIControlState::Normal);
     button
 }
 
@@ -267,8 +315,8 @@ pub(crate) fn create_ui_label(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UILabel::initWithFrame on main thread (mtm).
     // Retained<UILabel> is guaranteed valid by objc2.
-    let label = unsafe { UILabel::initWithFrame(mtm.alloc(), frame) };
-    label.setText(&NSString::from_str(text));
+    let label = UILabel::initWithFrame(mtm.alloc(), frame);
+    label.setText(Some(&NSString::from_str(text)));
     label
 }
 
@@ -284,8 +332,8 @@ pub(crate) fn create_ui_checkbox(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UISwitch::initWithFrame on main thread (mtm).
     // objc2 Retained<UISwitch> is always valid after init.
-    let switch_ctl = unsafe { UISwitch::initWithFrame(mtm.alloc(), frame) };
-    switch_ctl.setAccessibilityLabel(&NSString::from_str(text));
+    let switch_ctl = UISwitch::initWithFrame(mtm.alloc(), frame);
+    switch_ctl.setAccessibilityLabel(Some(&NSString::from_str(text)), mtm);
     switch_ctl
 }
 
@@ -301,8 +349,8 @@ pub(crate) fn create_ui_line_edit(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UITextField::initWithFrame on main thread (mtm).
     // objc2 init returns valid Retained<UITextField>.
-    let text_field = unsafe { UITextField::initWithFrame(mtm.alloc(), frame) };
-    text_field.setText(&NSString::from_str(text));
+    let text_field = UITextField::initWithFrame(mtm.alloc(), frame);
+    text_field.setText(Some(&NSString::from_str(text)));
     text_field
 }
 
@@ -318,9 +366,8 @@ pub(crate) fn create_ui_radio_button(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIButton::initWithFrame on main thread (mtm).
     // objc2 guarantees valid Retained<UIButton>.
-    let button = unsafe { UIButton::initWithFrame(mtm.alloc(), frame) };
-    button.setTitle(&NSString::from_str(text));
-    button.setButtonType(UIButtonType::System);
+    let button = UIButton::initWithFrame(mtm.alloc(), frame);
+    button.setTitle_forState(Some(&NSString::from_str(text)), UIControlState::Normal);
     button
 }
 
@@ -335,7 +382,7 @@ pub(crate) fn create_ui_slider(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UISlider::initWithFrame on main thread (mtm).
     // Retained<UISlider> is always valid.
-    let slider = unsafe { UISlider::initWithFrame(mtm.alloc(), frame) };
+    let slider = UISlider::initWithFrame(mtm.alloc(), frame);
     slider.setMinimumValue(0.0);
     slider.setMaximumValue(100.0);
     slider
@@ -352,7 +399,7 @@ pub(crate) fn create_ui_progress_bar(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIProgressView::initWithFrame on main thread (mtm).
     // objc2 Retained<UIProgressView> is guaranteed valid.
-    let progress = unsafe { UIProgressView::initWithFrame(mtm.alloc(), frame) };
+    let progress = UIProgressView::initWithFrame(mtm.alloc(), frame);
     progress
 }
 
@@ -367,7 +414,7 @@ pub(crate) fn create_ui_combo_box(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIPickerView::initWithFrame on main thread (mtm).
     // objc2 Retained<UIPickerView> is always valid after init.
-    let picker = unsafe { UIPickerView::initWithFrame(mtm.alloc(), frame) };
+    let picker = UIPickerView::initWithFrame(mtm.alloc(), frame);
     picker
 }
 
@@ -382,8 +429,7 @@ pub(crate) fn create_ui_list_box(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UITableView::initWithFrame_style on main thread (mtm).
     // objc2 init reliably returns a valid Retained<UITableView>.
-    let table =
-        unsafe { UITableView::initWithFrame_style(mtm.alloc(), frame, UITableViewStyle::Plain) };
+    let table = UITableView::initWithFrame_style(mtm.alloc(), frame, UITableViewStyle::Plain);
     table
 }
 
@@ -398,8 +444,9 @@ pub(crate) fn create_ui_panel(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIView::initWithFrame on main thread (mtm).
     // Retained<UIView> is guaranteed valid by objc2.
-    let panel = unsafe { UIView::initWithFrame(mtm.alloc(), frame) };
-    panel.setBackgroundColor(UIColor::clear());
+    let panel = UIView::initWithFrame(mtm.alloc(), frame);
+    let bg = UIColor::clearColor();
+    panel.setBackgroundColor(Some(&bg));
     panel
 }
 
@@ -410,27 +457,22 @@ pub(crate) fn create_ui_scroll(
     y: i32,
     width: u32,
     height: u32,
-) -> Retained<Object> {
+) -> Retained<UIScrollView> {
     let frame = make_rect(x, y, width, height);
-    // SAFETY: UIScrollView is created via msg_send! on the main thread.
-    // alloc/initWithFrame returns a valid retained object.
-    // The BOOL parameter `setScrollEnabled:` takes YES (1) to enable scrolling.
-    unsafe {
-        let cls = AnyClass::get(c"UIScrollView").unwrap();
-        let scroll: Retained<Object> = msg_send![cls, alloc];
-        let scroll: Retained<Object> = msg_send![scroll, initWithFrame: frame];
-        let yes: u8 = 1;
-        let _: () = msg_send![&*scroll, setScrollEnabled: yes];
-        // Set content size to frame size initially (no scrollable overflow).
-        let _: () = msg_send![&*scroll, setContentSize: frame.size];
-        scroll
-    }
+    let scroll = UIScrollView::initWithFrame(mtm.alloc(), frame);
+    scroll.setScrollEnabled(true);
+    scroll.setContentSize(frame.size);
+    scroll
 }
 
 /// Create a native UIAlertController (message box equivalent on iOS).
 ///
 /// Returns a prepared alert with a single "OK" action.
-pub(crate) fn create_ui_alert(_mtm: MainThreadMarker, title: &str, text: &str) -> Retained<Object> {
+pub(crate) fn create_ui_alert(
+    _mtm: MainThreadMarker,
+    title: &str,
+    text: &str,
+) -> Retained<AnyObject> {
     // SAFETY: UIAlertController and UIAlertAction are created via msg_send!.
     // `alertControllerWithTitle:message:preferredStyle:` returns a retained
     // UIAlertController. `UIAlertControllerStyleAlert` = 1.
@@ -440,19 +482,11 @@ pub(crate) fn create_ui_alert(_mtm: MainThreadMarker, title: &str, text: &str) -
         let cls = AnyClass::get(c"UIAlertController").unwrap();
         let title_str = NSString::from_str(title);
         let text_str = NSString::from_str(text);
-        let alert: Retained<Object> = msg_send![cls,
-            alertControllerWithTitle: &*title_str
-            message: &*text_str
-            preferredStyle: 1u64
-        ];
+        let alert: Retained<AnyObject> = msg_send![cls, alertControllerWithTitle: &*title_str, message: &*text_str, preferredStyle: 1u64];
 
         let action_cls = AnyClass::get(c"UIAlertAction").unwrap();
         let ok_str = NSString::from_str("OK");
-        let action: Retained<Object> = msg_send![action_cls,
-            actionWithTitle: &*ok_str
-            style: 0u64
-            handler: 0u64 as *mut Object
-        ];
+        let action: Retained<AnyObject> = msg_send![action_cls, actionWithTitle: &*ok_str, style: 0u64, handler: 0u64 as *mut AnyObject];
         let _: () = msg_send![&*alert, addAction: &*action];
 
         alert
@@ -466,21 +500,11 @@ pub(crate) fn create_ui_stack(
     y: i32,
     width: u32,
     height: u32,
-) -> Retained<Object> {
+) -> Retained<UIStackView> {
     let frame = make_rect(x, y, width, height);
-    // SAFETY: UIStackView is created via msg_send! on the main thread.
-    // alloc/initWithFrame returns a valid retained object.
-    // UILayoutConstraintAxisVertical = 1 (vertical stack).
-    unsafe {
-        let cls = AnyClass::get(c"UIStackView").unwrap();
-        let stack: Retained<Object> = msg_send![cls, alloc];
-        let stack: Retained<Object> = msg_send![stack, initWithFrame: frame];
-        let axis: u64 = 1; // UILayoutConstraintAxisVertical
-        let _: () = msg_send![&*stack, setAxis: axis];
-        let spacing: f64 = 8.0;
-        let _: () = msg_send![&*stack, setSpacing: spacing];
-        stack
-    }
+    let stack = UIStackView::initWithFrame(mtm.alloc(), frame);
+    stack.setSpacing(8.0);
+    stack
 }
 
 /// Create a native UIActivityIndicatorView (spinner equivalent on iOS).
@@ -490,20 +514,13 @@ pub(crate) fn create_ui_spinner(
     y: i32,
     width: u32,
     height: u32,
-) -> Retained<Object> {
+) -> Retained<UIActivityIndicatorView> {
     let frame = make_rect(x, y, width, height);
-    // SAFETY: UIActivityIndicatorView is created via msg_send! on the main thread.
-    // alloc/initWithActivityIndicatorStyle returns a valid retained object.
-    // UIActivityIndicatorViewStyleMedium = 100.
-    unsafe {
-        let cls = AnyClass::get(c"UIActivityIndicatorView").unwrap();
-        let spinner: Retained<Object> = msg_send![cls, alloc];
-        let style: u64 = 100; // UIActivityIndicatorViewStyleMedium
-        let spinner: Retained<Object> = msg_send![spinner, initWithActivityIndicatorStyle: style];
-        let _: () = msg_send![&*spinner, setFrame: frame];
-        // Start animating by default
-        let yes: u8 = 1;
-        let _: () = msg_send![&*spinner, startAnimating];
-        spinner
-    }
+    let spinner = UIActivityIndicatorView::initWithActivityIndicatorStyle(
+        mtm.alloc(),
+        UIActivityIndicatorViewStyle::Medium,
+    );
+    spinner.setFrame(frame);
+    spinner.startAnimating();
+    spinner
 }

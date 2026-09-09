@@ -4,7 +4,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::{BaseWidget, Draw, Image, SimpleRegistry, Widget, WidgetKind};
+#[cfg(feature = "image")]
+use crate::widget::Image;
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Tool box widget.
@@ -20,6 +22,7 @@ pub struct ToolBox {
 /// Tool box item.
 pub struct ToolBoxItem {
     text: String,
+    #[cfg(feature = "image")]
     icon: Option<Image>,
     tooltip: String,
     enabled: bool,
@@ -28,7 +31,14 @@ pub struct ToolBoxItem {
 impl ToolBoxItem {
     /// Creates a new tool box item.
     pub fn new(text: String) -> Self {
-        Self { text, icon: None, tooltip: String::new(), enabled: true, widget: None }
+        Self {
+            text,
+            #[cfg(feature = "image")]
+            icon: None,
+            tooltip: String::new(),
+            enabled: true,
+            widget: None,
+        }
     }
     /// Returns text.
     pub fn text(&self) -> &str {
@@ -38,10 +48,12 @@ impl ToolBoxItem {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
     }
+    #[cfg(feature = "image")]
     /// Returns icon.
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
+    #[cfg(feature = "image")]
     /// Sets icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;
@@ -357,14 +369,18 @@ impl Draw for ToolBox {
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
                     border_color,
                 );
-                // Draw icon if available
-                let icon_size = 16u32;
                 let padding = 5i32;
+                #[cfg(feature = "image")]
+                let icon_size = 16u32;
+                #[cfg(feature = "image")]
                 let text_x = if item.icon.is_some() {
                     item_rect.x + icon_size as i32 + padding + 4
                 } else {
                     item_rect.x + padding
                 };
+                #[cfg(not(feature = "image"))]
+                let text_x = item_rect.x + padding;
+                #[cfg(feature = "image")]
                 if item.icon.is_some() {
                     let icon_x = item_rect.x + padding;
                     let icon_y = item_rect.y + (item_rect.height as i32 - icon_size as i32) / 2;

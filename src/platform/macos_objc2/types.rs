@@ -18,7 +18,7 @@ pub(crate) struct ListData {
     /// Currently selected index, if any.
     pub(crate) current_index: Option<usize>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum MacObjc2HandleKind {
     /// Top-level native window surrogate.
     Window,
@@ -40,6 +40,12 @@ pub(crate) enum MacObjc2HandleKind {
     ComboBox,
     /// List selection control.
     ListBox,
+    /// Numeric stepper/edit control.
+    SpinBox,
+    /// List/table view control.
+    ListView,
+    /// Scrollable content region.
+    ScrollArea,
     /// Generic container panel.
     Panel,
     /// Root menu bar container.
@@ -67,6 +73,8 @@ pub(crate) struct MacObjc2MenuState {
     pub(crate) attached_menu_bar: HashMap<u64, u64>,
     /// Parent menu id -> direct child menu/menu-item ids.
     pub(crate) menu_children: HashMap<u64, Vec<u64>>,
+    /// Menu item id -> parsed `(keyEquivalent, modifierMask)`.
+    pub(crate) menu_item_shortcuts: HashMap<u64, (String, u64)>,
     /// FIFO queue for menu item trigger ids.
     pub(crate) pending_menu_events: VecDeque<u64>,
     /// FIFO queue for typed widget trigger events.
@@ -132,6 +140,45 @@ impl MacOSObjc2Platform {
         // Marker for objc2 migration preview backend
         0
     }
+
+    #[cfg(test)]
+    pub(crate) fn menu_shortcut_of(&self, item_id: u64) -> Option<(String, u64)> {
+        self.menus
+            .lock()
+            .expect("mac objc2 menu lock poisoned")
+            .menu_item_shortcuts
+            .get(&item_id)
+            .cloned()
+    }
+}
+
+const MOD_SHIFT: u64 = 1 << 17;
+const MOD_CONTROL: u64 = 1 << 18;
+const MOD_OPTION: u64 = 1 << 19;
+const MOD_COMMAND: u64 = 1 << 20;
+
+pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
+    let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return (String::new(), 0);
+    };
+    let mut modifiers = 0;
+    let mut key = String::new();
+    for part in raw.split('+') {
+        let token = part.trim().to_lowercase();
+        match token.as_str() {
+            "cmd" | "command" | "meta" => modifiers |= MOD_COMMAND,
+            "ctrl" | "control" => modifiers |= MOD_CONTROL,
+            "alt" | "option" => modifiers |= MOD_OPTION,
+            "shift" => modifiers |= MOD_SHIFT,
+            "cmdorctrl" => modifiers |= MOD_COMMAND,
+            _ if !token.is_empty() => key = token,
+            _ => {}
+        }
+    }
+    if !key.is_empty() && modifiers == 0 {
+        modifiers = MOD_COMMAND;
+    }
+    (key, modifiers)
 }
 
 impl Default for MacOSObjc2Platform {

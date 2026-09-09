@@ -1307,13 +1307,19 @@ impl Platform for MacOSPlatform {
         &self,
         _parent: ObjectId,
         title: &str,
-        _text: &str,
+        text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(HandleKind::MessageBox, title, x, y, width, height)
+        // Cocoa-legacy dialog routing: on the AppKit main thread we construct a
+        // real NSAlert and store its native pointer on the handle. On background
+        // threads (unit tests / dispatch queues) `create_native_dialog` returns
+        // nil and we keep a deterministic state-backed handle so the window
+        // server is never touched off-main.
+        let native = create_native_dialog(HandleKind::MessageBox, title, text);
+        self.register_handle(HandleKind::MessageBox, text, x, y, width, height, native as usize)
     }
     fn create_file_dialog(
         &self,
@@ -1323,7 +1329,16 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(HandleKind::FileDialog, "file_dialog", x, y, width, height)
+        let native = create_native_dialog(HandleKind::FileDialog, "", "");
+        self.register_handle(
+            HandleKind::FileDialog,
+            "file_dialog",
+            x,
+            y,
+            width,
+            height,
+            native as usize,
+        )
     }
     fn create_color_dialog(
         &self,
@@ -1333,7 +1348,16 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(HandleKind::ColorDialog, "color_dialog", x, y, width, height)
+        let native = create_native_dialog(HandleKind::ColorDialog, "", "");
+        self.register_handle(
+            HandleKind::ColorDialog,
+            "color_dialog",
+            x,
+            y,
+            width,
+            height,
+            native as usize,
+        )
     }
     fn create_font_dialog(
         &self,
@@ -1343,7 +1367,16 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.state.create_widget(HandleKind::FontDialog, "font_dialog", x, y, width, height)
+        let native = create_native_dialog(HandleKind::FontDialog, "", "");
+        self.register_handle(
+            HandleKind::FontDialog,
+            "font_dialog",
+            x,
+            y,
+            width,
+            height,
+            native as usize,
+        )
     }
     fn create_spin_box(
         &self,
@@ -1386,5 +1419,64 @@ impl Platform for MacOSPlatform {
 
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         Some(&self.a11y_bridge)
+    }
+}
+
+/// Create and retain a native AppKit dialog/panel for the given dialog kind.
+///
+/// Cocoa-legacy routing contract:
+/// - Must run on the AppKit main thread (dialog/panel objects need the window
+///   server). Returns `nil` on background threads so callers fall back to the
+///   state-backed handle and never touch AppKit off-main.
+/// - `MessageBox` → `NSAlert` configured with message text / informative text
+///   and an "OK" button.
+/// - `FileDialog` → `NSOpenPanel` (single-selection open panel).
+/// - `ColorDialog` / `FontDialog` → shared `NSColorPanel` / `NSFontPanel`.
+///
+/// Modal presentation (`runModal` / sheet) is intentionally not started here;
+/// callers present these objects from an interactive AppKit run loop.
+///
+/// # Safety
+/// All Objective-C messages target standard AppKit classes/selectors available
+/// at runtime on macOS; creation is gated on the main thread before any object
+/// is allocated.
+pub(crate) fn create_native_dialog(kind: HandleKind, title: &str, text: &str) -> id {
+    let is_main_thread: bool = unsafe { msg_send![class!(NSThread), isMainThread] };
+    if !is_main_thread {
+        return nil;
+    }
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let obj: id = match kind {
+            HandleKind::MessageBox => {
+                let alert: id = msg_send![class!(NSAlert), alloc];
+                let alert: id = msg_send![alert, init];
+                if alert != nil {
+                    let title_ns = NSString::alloc(nil).init_str(title);
+                    let _: () = msg_send![alert, setMessageText: title_ns];
+                    let text_ns = NSString::alloc(nil).init_str(text);
+                    let _: () = msg_send![alert, setInformativeText: text_ns];
+                    let ok_ns = NSString::alloc(nil).init_str("OK");
+                    let _: id = msg_send![alert, addButtonWithTitle: ok_ns];
+                }
+                alert
+            }
+            HandleKind::FileDialog => msg_send![class!(NSOpenPanel), openPanel],
+            HandleKind::ColorDialog => msg_send![class!(NSColorPanel), sharedColorPanel],
+            HandleKind::FontDialog => msg_send![class!(NSFontPanel), sharedFontPanel],
+            _ => nil,
+        };
+        if obj != nil {
+            // Owned instances (alert / open panel) must outlive this autorelease
+            // pool; the handle stores the raw pointer for the process lifetime
+            // (legacy backend has no release-on-destroy path). Shared color/font
+            // panels are AppKit singletons and need no extra ownership here.
+            let owned = matches!(kind, HandleKind::MessageBox | HandleKind::FileDialog);
+            if owned {
+                let _: () = msg_send![obj, retain];
+            }
+        }
+        pool.drain();
+        obj
     }
 }

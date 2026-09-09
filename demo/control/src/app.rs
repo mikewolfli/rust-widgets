@@ -188,7 +188,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 pub fn run() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     rust_widgets  —  Controls Demo v1.0.0             ║");
+    println!("║     rust_widgets  —  Controls Demo v1.1.0             ║");
     println!("║     App 框架 · 原生窗口 · 实时事件日志                  ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

@@ -8,7 +8,65 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TAG_INPUT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TagInputState {
+    tags: Vec<String>,
+    input_buffer: String,
+}
+
+struct TagInputStateCommand {
+    id: CommandId,
+    target: Rc<RefCell<TagInputState>>,
+    before: TagInputState,
+    after: TagInputState,
+}
+
+impl TagInputStateCommand {
+    fn new(
+        target: Rc<RefCell<TagInputState>>,
+        before: TagInputState,
+        after: TagInputState,
+    ) -> Self {
+        Self {
+            id: CommandId(NEXT_TAG_INPUT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for TagInputStateCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit tags".to_string(),
+            timestamp_ms: 0,
+            command_type: "tag_input_state",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after.clone();
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before.clone();
+        Ok(())
+    }
+}
 
 /// Horizontal padding between tag chip and container edge, or between chips.
 const TAG_PADDING: i32 = 6;
@@ -33,6 +91,8 @@ pub struct TagInput {
     focused: bool,
     /// Emitted when the tags list changes, providing the full list of tags.
     pub tags_changed: Signal1<Vec<String>>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<TagInputState>>,
 }
 
 impl TagInput {
@@ -44,6 +104,11 @@ impl TagInput {
             input_buffer: String::new(),
             focused: false,
             tags_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(TagInputState {
+                tags: Vec::new(),
+                input_buffer: String::new(),
+            })),
         }
     }
 
@@ -58,7 +123,9 @@ impl TagInput {
         if self.tags.iter().any(|t| t == trimmed) {
             return;
         }
+        let before = self.snapshot_state();
         self.tags.push(trimmed.to_string());
+        self.record_state_change(before);
         self.tags_changed.emit(self.tags.clone());
         self.base.request_redraw();
     }
@@ -67,7 +134,9 @@ impl TagInput {
     /// Emits `tags_changed` if a tag was actually removed.
     pub fn remove_tag(&mut self, index: usize) {
         if index < self.tags.len() {
+            let before = self.snapshot_state();
             self.tags.remove(index);
+            self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
             self.base.request_redraw();
         }
@@ -81,8 +150,10 @@ impl TagInput {
     /// Clears all tags. Emits `tags_changed` if the list was non-empty.
     pub fn clear_tags(&mut self) {
         if !self.tags.is_empty() {
+            let before = self.snapshot_state();
             self.tags.clear();
             self.input_buffer.clear();
+            self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
             self.base.request_redraw();
         }
@@ -108,15 +179,83 @@ impl TagInput {
 
     /// Commits the current input buffer as a tag and clears the buffer.
     fn commit_input(&mut self) {
+        let before = self.snapshot_state();
+        let old_tags = self.tags.clone();
         let text = self.input_buffer.trim().to_string();
-        if !text.is_empty() {
-            self.add_tag(&text);
+        if !text.is_empty() && !self.tags.iter().any(|tag| tag == &text) {
+            self.tags.push(text);
         }
         self.input_buffer.clear();
+        self.record_state_change(before);
+        if self.tags != old_tags {
+            self.tags_changed.emit(self.tags.clone());
+        }
         self.base.request_redraw();
     }
 
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_state();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_state();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
     // ── Private helpers ──
+
+    fn snapshot_state(&self) -> TagInputState {
+        TagInputState { tags: self.tags.clone(), input_buffer: self.input_buffer.clone() }
+    }
+
+    fn record_state_change(&mut self, before: TagInputState) {
+        let after = self.snapshot_state();
+        if before == after {
+            return;
+        }
+        *self.history_target.borrow_mut() = after.clone();
+        self.undo_stack.push(Box::new(TagInputStateCommand::new(
+            self.history_target.clone(),
+            before,
+            after,
+        )));
+    }
+
+    fn restore_history_state(&mut self) {
+        let previous_tags = self.tags.clone();
+        let state = self.history_target.borrow().clone();
+        self.tags = state.tags;
+        self.input_buffer = state.input_buffer;
+        if self.tags != previous_tags {
+            self.tags_changed.emit(self.tags.clone());
+        }
+        self.base.request_redraw();
+    }
+
+    fn push_input_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let before = self.snapshot_state();
+        self.input_buffer.push_str(text);
+        self.record_state_change(before);
+        self.base.request_redraw();
+    }
 
     /// Returns the close button center for a tag chip at the given pixel position.
     fn tag_close_center(&self, chip_x: i32, chip_width: i32, chip_y: i32) -> Point {
@@ -321,8 +460,16 @@ impl EventHandler for TagInput {
                 }
                 self.set_focused(false);
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
                 if !self.focused {
+                    return;
+                }
+                if *key == 90 && *modifiers == 2 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *key == 89 && *modifiers == 2 {
+                    let _ = self.redo();
                     return;
                 }
                 match *key {
@@ -330,10 +477,14 @@ impl EventHandler for TagInput {
                         // Backspace — remove last character from buffer
                         // If buffer is empty, remove the last tag
                         if !self.input_buffer.is_empty() {
+                            let before = self.snapshot_state();
                             self.input_buffer.pop();
+                            self.record_state_change(before);
                             self.base.request_redraw();
                         } else if !self.tags.is_empty() {
+                            let before = self.snapshot_state();
                             self.tags.pop();
+                            self.record_state_change(before);
                             self.tags_changed.emit(self.tags.clone());
                             self.base.request_redraw();
                         }
@@ -354,13 +505,18 @@ impl EventHandler for TagInput {
                         // Character input
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
-                                self.input_buffer.push(ch);
-                                self.base.request_redraw();
+                                self.push_input_text(&ch.to_string());
                             }
                         }
                     }
                 }
             }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.focused {
+                    self.push_input_text(text);
+                }
+            }
+            Event::ImePreedit { .. } => {}
             _ => {
                 self.base.handle_event(event);
             }
@@ -555,6 +711,47 @@ mod tests {
         // Backspace when buffer empty — removes last tag
         ti.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // Backspace
         assert!(ti.tags().is_empty());
+    }
+
+    #[test]
+    fn tag_input_undo_redo_restores_tags() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.add_tag("alpha");
+        ti.add_tag("beta");
+
+        assert!(ti.can_undo());
+        assert!(ti.undo());
+        assert_eq!(ti.tags(), &["alpha"]);
+        assert!(ti.can_redo());
+        assert!(ti.redo());
+        assert_eq!(ti.tags(), &["alpha", "beta"]);
+    }
+
+    #[test]
+    fn tag_input_undo_redo_restores_input_buffer() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+        ti.handle_event(&Event::text_input("你好"));
+        assert_eq!(ti.input_buffer, "你好");
+
+        ti.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(ti.input_buffer, "");
+        ti.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(ti.input_buffer, "你好");
+    }
+
+    #[test]
+    fn tag_input_commit_history_restores_complete_state() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+        ti.handle_event(&Event::text_input("rust"));
+        ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(ti.tags(), &["rust"]);
+        assert_eq!(ti.input_buffer, "");
+
+        assert!(ti.undo());
+        assert!(ti.tags().is_empty());
+        assert_eq!(ti.input_buffer, "rust");
     }
 
     #[test]

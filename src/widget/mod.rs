@@ -4,6 +4,7 @@ pub mod base;
 #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 pub mod capability;
 pub mod draw;
+#[cfg(feature = "image")]
 pub mod image;
 pub mod kind;
 pub mod widget_trait;
@@ -86,7 +87,9 @@ pub use capability::{
     WidgetFactory,
 };
 pub use draw::Draw;
+#[cfg(feature = "image")]
 pub use image::Image;
+#[cfg(feature = "image")]
 pub use image::ImageFormat;
 pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
@@ -162,6 +165,7 @@ pub use container_widgets::safe_area::{SafeArea, SafeAreaInsets};
 pub use container_widgets::stepper::Stepper;
 // Re-export display widgets
 pub use display_widgets::arc::Arc;
+#[cfg(feature = "image")]
 pub use display_widgets::image_view::ImageView;
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub use display_widgets::lcd_number::LCDNumber;

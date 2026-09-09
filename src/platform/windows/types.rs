@@ -209,6 +209,8 @@ pub struct WindowsPlatform {
     pub runtime_running: AtomicBool,
     #[cfg(target_os = "windows")]
     pub menu_state: Win32MenuState,
+    #[cfg(target_os = "windows")]
+    pub dialog_data: Mutex<HashMap<u64, Win32DialogData>>,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
     /// Platform IME bridge for text input method integration (Windows TSF).
     /// Uses `ime_windows::WindowsImeBridge` (real state machine, no fake COM vtables).
@@ -221,6 +223,17 @@ pub struct WindowsPlatform {
     #[cfg(not(target_os = "windows"))]
     pub a11y_bridge: (),
 }
+/// Win32 native dialog metadata — stored at create time, consumed when the
+/// dialog is presented via [`super::dialogs::present_native_dialog`].
+#[cfg(target_os = "windows")]
+pub struct Win32DialogData {
+    /// Owner window handle stored as `usize` so the platform struct stays
+    /// `Send`/`Sync` (raw `HWND` is not); cast back to `HWND` on the UI thread.
+    pub parent_hwnd: usize,
+    /// Dialog caption.
+    pub title: String,
+}
+
 /// Win32 menu state holder.
 /// Reserved for Windows platform menu integration — stores HWND handles and
 /// command-to-widget mappings. Only compiled on Windows targets.
@@ -259,6 +272,8 @@ impl WindowsPlatform {
             runtime_running: AtomicBool::new(false),
             #[cfg(target_os = "windows")]
             menu_state: Win32MenuState::new(),
+            #[cfg(target_os = "windows")]
+            dialog_data: Mutex::new(HashMap::new()),
             ime_bridge: crate::platform::ime_windows::WindowsImeBridge::new(),
             clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,
             #[cfg(target_os = "windows")]

@@ -135,7 +135,7 @@ fn main() {
 
 | | |
 |---|---|
-| **版本** | 1.0.0 |
+| **版本** | 1.1.0 |
 | **许可证** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **仓库** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **测试** | 3400+ |

@@ -3,7 +3,55 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_KEY_SEQUENCE_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct KeySequenceCommand {
+    id: CommandId,
+    target: Rc<RefCell<KeySequence>>,
+    before: KeySequence,
+    after: KeySequence,
+}
+
+impl KeySequenceCommand {
+    fn new(target: Rc<RefCell<KeySequence>>, before: KeySequence, after: KeySequence) -> Self {
+        Self {
+            id: CommandId(NEXT_KEY_SEQUENCE_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for KeySequenceCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit key sequence".to_string(),
+            timestamp_ms: 0,
+            command_type: "key_sequence_edit",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after.clone();
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before.clone();
+        Ok(())
+    }
+}
 /// Represents a key sequence (modifier + key name).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeySequence {
@@ -71,6 +119,9 @@ pub struct KeySequenceEdit {
     recording: bool,
     pub editing_finished: GenericSignal,
     pub key_sequence_changed: Signal1<KeySequence>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<KeySequence>>,
+    restoring_history: bool,
 }
 impl KeySequenceEdit {
     pub fn new(geometry: Rect) -> Self {
@@ -80,6 +131,9 @@ impl KeySequenceEdit {
             recording: false,
             editing_finished: GenericSignal::new(),
             key_sequence_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(KeySequence::empty())),
+            restoring_history: false,
         }
     }
     pub fn key_sequence(&self) -> &KeySequence {
@@ -89,7 +143,19 @@ impl KeySequenceEdit {
         self.recording
     }
     pub fn set_key_sequence(&mut self, seq: KeySequence) {
+        if self.key_sequence == seq {
+            return;
+        }
+        let before = self.key_sequence.clone();
         self.key_sequence = seq.clone();
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.key_sequence.clone();
+            self.undo_stack.push(Box::new(KeySequenceCommand::new(
+                self.history_target.clone(),
+                before,
+                self.key_sequence.clone(),
+            )));
+        }
         self.key_sequence_changed.emit(seq);
         self.base.request_redraw();
     }
@@ -104,6 +170,34 @@ impl KeySequenceEdit {
             self.recording = false;
             self.editing_finished.emit();
         }
+    }
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_sequence();
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_sequence();
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+    fn restore_history_sequence(&mut self) {
+        self.restoring_history = true;
+        let seq = self.history_target.borrow().clone();
+        self.key_sequence = seq.clone();
+        self.restoring_history = false;
+        self.key_sequence_changed.emit(seq);
+        self.base.request_redraw();
     }
 }
 impl Widget for KeySequenceEdit {
@@ -144,9 +238,14 @@ impl EventHandler for KeySequenceEdit {
                 } // Shift/Ctrl/Alt
                 let key_name = key_code_to_name(*key);
                 let seq = KeySequence::new(*modifiers, *key, key_name);
-                self.key_sequence = seq.clone();
-                self.key_sequence_changed.emit(seq);
+                self.set_key_sequence(seq);
                 self.stop_recording();
+            }
+            Event::KeyPress { key, modifiers } if *key == 90 && *modifiers == 2 => {
+                let _ = self.undo();
+            }
+            Event::KeyPress { key, modifiers } if *key == 89 && *modifiers == 2 => {
+                let _ = self.redo();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -286,6 +385,32 @@ mod tests {
         kse.clear();
         assert!(kse.key_sequence().is_empty());
         assert_eq!(kse.key_sequence().key_code(), 0);
+    }
+
+    #[test]
+    fn test_undo_redo_restores_key_sequence() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        kse.set_key_sequence(KeySequence::new(0x01, 65, "A"));
+        kse.set_key_sequence(KeySequence::new(0x01, 66, "B"));
+
+        assert!(kse.can_undo());
+        assert!(kse.undo());
+        assert_eq!(kse.key_sequence().key_name(), "A");
+        assert!(kse.can_redo());
+        assert!(kse.redo());
+        assert_eq!(kse.key_sequence().key_name(), "B");
+    }
+
+    #[test]
+    fn test_keyboard_shortcuts_drive_sequence_history() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        kse.set_key_sequence(KeySequence::new(0x01, 65, "A"));
+        kse.set_key_sequence(KeySequence::new(0x01, 66, "B"));
+
+        kse.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(kse.key_sequence().key_name(), "A");
+        kse.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(kse.key_sequence().key_name(), "B");
     }
 
     // ── 5. Signal accessor (sequence_changed) ──────────────────────

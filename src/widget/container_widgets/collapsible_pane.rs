@@ -115,6 +115,17 @@ impl CollapsiblePane {
         let height = rect.height.saturating_sub(self.header_height);
         Rect::new(rect.x, y_offset, rect.width, height)
     }
+
+    fn sync_content_geometry(&mut self) {
+        if self.collapsed {
+            return;
+        }
+        if let Some(content) = self.content_child {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(content, self.content_rect());
+            }
+        }
+    }
 }
 
 // Implement Widget trait
@@ -145,24 +156,65 @@ impl EventHandler for CollapsiblePane {
         if !self.base.is_enabled() {
             return;
         }
+
         match event {
             Event::MousePress { pos, button } if *button == 1 => {
-                // Check if click is within the header area.
                 let hdr = self.header_rect();
                 if hdr.contains(*pos) {
                     self.toggle();
+                    return;
                 }
             }
             Event::KeyPress { key, .. } if *key == 32 || *key == 13 => {
-                // Space (32) or Enter (13) to toggle
                 self.toggle();
+                return;
             }
             _ => {}
         }
-        // Forward events to content child
+
+        if self.collapsed {
+            return;
+        }
+
         if let Some(content) = self.content_child {
             if let Some(ref reg) = self.registry {
-                let _ = reg.borrow_mut().forward_event(content, event);
+                let content_rect = self.content_rect();
+                reg.borrow_mut().set_widget_geometry(content, content_rect);
+                match event {
+                    Event::MousePress { pos, .. }
+                    | Event::MouseRelease { pos, .. }
+                    | Event::MouseMove { pos }
+                    | Event::MouseDoubleClick { pos, .. } => {
+                        if content_rect.contains(*pos) {
+                            let _ = reg.borrow_mut().forward_event(content, event);
+                        }
+                    }
+                    Event::Wheel { .. } => {
+                        let fallback = Point::new(content_rect.x + 1, content_rect.y + 1);
+                        if content_rect.contains(fallback) {
+                            let _ = reg.borrow_mut().forward_event(content, event);
+                        }
+                    }
+                    #[cfg(feature = "touch")]
+                    Event::TouchBegin { pos, .. }
+                    | Event::TouchEnd { pos, .. }
+                    | Event::TouchMove { pos, .. }
+                    | Event::Tap { pos }
+                    | Event::DoubleTap { pos }
+                    | Event::LongPress { pos }
+                    | Event::Swipe { start: _, end: pos, .. }
+                    | Event::Drag { pos, .. }
+                    | Event::TwoFingerTap { pos }
+                    | Event::TwoFingerSwipe { centroid_start: _, centroid_end: pos, .. }
+                    | Event::Fling { pos, .. } => {
+                        if content_rect.contains(*pos) {
+                            let _ = reg.borrow_mut().forward_event(content, event);
+                        }
+                    }
+                    _ => {
+                        let _ = reg.borrow_mut().forward_event(content, event);
+                    }
+                }
             }
         }
     }
@@ -223,9 +275,8 @@ impl Draw for CollapsiblePane {
         // --- Draw content area (only when expanded) ---
         if !self.collapsed {
             let content_rect = self.content_rect();
-            // Draw a subtle inner background for the content area.
+            self.sync_content_geometry();
             context.fill_rect(content_rect, Color::rgb(248, 248, 248));
-            // Draw border around the content area (left, right, bottom).
             context.draw_line(
                 Point::from_f32(content_rect.x as f32, content_rect.y as f32),
                 Point::from_f32(
@@ -256,6 +307,19 @@ impl Draw for CollapsiblePane {
                 ),
                 border_color,
             );
+
+            if let Some(child_id) = self.content_child {
+                if let Some(ref reg) = self.registry {
+                    context.push_clip(
+                        content_rect.x,
+                        content_rect.y,
+                        content_rect.width,
+                        content_rect.height,
+                    );
+                    reg.borrow_mut().draw_widget(child_id, context);
+                    context.pop_clip();
+                }
+            }
         }
     }
 }

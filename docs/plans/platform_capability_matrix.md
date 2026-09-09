@@ -47,7 +47,7 @@
 | **CheckListBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Chip** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **CollapsiblePane** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **ColorDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **ColorDialog** | 🔶 | 🔶 | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
 | **ColorHistory** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **ColorWell** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **ColumnView** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
@@ -76,11 +76,11 @@
 | **EditableComboBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **EmptyState** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FAB** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **FileDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **FileDialog** | 🔶 | 🔶 | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FindReplaceDialog** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FloatingLabel** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FontComboBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
-| **FontDialog** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **FontDialog** | 🔶 | 🔶 | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FontPreview** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Frame** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **FreeformShape** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
@@ -112,7 +112,7 @@
 | **MenuBar** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
 | **MenuButton** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **MenuItem** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
-| **MessageBox** | ✅ | ✅ | ✅ | ✅ | 🔶 | 🔶 | 🔶 |
+| **MessageBox** | 🔶 | 🔶 | ✅ | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Meter** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **MiniCanvas** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **MiniChart** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
@@ -151,7 +151,7 @@
 | **SkeletonLoader** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Slider** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
 | **Sparkline** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
-| **SpinBox** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
+| **SpinBox** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Spinner** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
 | **Splitter** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔶 |
 | **StackedWidget** | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 | 🔶 |
@@ -227,3 +227,11 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
 - `WebView` is not a `WidgetKind` variant either — the `WebView`/`WebViewEnhanced`
   aliases live at the handle/render layer and map onto `WidgetKind::WebEngineView`.
   The matrix therefore lists only the WebEngine rows.
+- `MessageBox`/`FileDialog`/`ColorDialog`/`FontDialog` are marked 🔶 (state-backed)
+  on Windows/Linux/Wayland because those platform impls create a state/surrogate
+  handle (Windows: `Panel` surrogate; Linux/Wayland: state-only) rather than a
+  dedicated native dialog; only macOS (objc2 + cocoa-legacy) creates real
+  `NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` (✅).
+- `SpinBox` is 🔶 everywhere: the macOS objc2 backend creates a native `NSStepper`
+  under the `macos` feature, but the default cocoa-legacy path and the
+  Windows/Linux/Wayland/mobile backends are state-backed.

@@ -45,7 +45,7 @@ _build_cdylib()
 # ---------------------------------------------------------------------------
 setup(
     name="rust-widgets",
-    version="0.9.6",
+    version="1.1.0",
     description="Python bindings for the rust-widgets native GUI library",
     long_description=_long_description,
     long_description_content_type="text/markdown",

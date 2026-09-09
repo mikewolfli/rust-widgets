@@ -3,8 +3,56 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_DATE_TIME_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct DateTimeEditCommand {
+    id: CommandId,
+    target: Rc<RefCell<DateTime>>,
+    before: DateTime,
+    after: DateTime,
+}
+
+impl DateTimeEditCommand {
+    fn new(target: Rc<RefCell<DateTime>>, before: DateTime, after: DateTime) -> Self {
+        Self {
+            id: CommandId(NEXT_DATE_TIME_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for DateTimeEditCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit date-time".to_string(),
+            timestamp_ms: 0,
+            command_type: "date_time_edit",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after;
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before;
+        Ok(())
+    }
+}
 /// Combined date-time value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
@@ -33,6 +81,9 @@ pub struct DateTimeEdit {
     display_format: String,
     calendar_popup: bool,
     pub datetime_changed: Signal1<DateTime>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<DateTime>>,
+    restoring_history: bool,
 }
 impl DateTimeEdit {
     pub fn new(geometry: Rect) -> Self {
@@ -47,6 +98,9 @@ impl DateTimeEdit {
             display_format: "yyyy-MM-dd HH:mm:ss".to_string(),
             calendar_popup: false,
             datetime_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(now)),
+            restoring_history: false,
         }
     }
     pub fn datetime(&self) -> DateTime {
@@ -72,7 +126,16 @@ impl DateTimeEdit {
     }
     pub fn set_datetime(&mut self, dt: DateTime) {
         if dt.is_valid() && dt >= self.minimum && dt <= self.maximum && self.datetime != dt {
+            let before = self.datetime;
             self.datetime = dt;
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.datetime;
+                self.undo_stack.push(Box::new(DateTimeEditCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.datetime,
+                )));
+            }
             self.datetime_changed.emit(dt);
             self.base.request_redraw();
         }
@@ -170,6 +233,33 @@ impl DateTimeEdit {
         }
         self.set_time(t);
     }
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_datetime();
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_datetime();
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+    fn restore_history_datetime(&mut self) {
+        self.restoring_history = true;
+        self.datetime = *self.history_target.borrow();
+        self.restoring_history = false;
+        self.datetime_changed.emit(self.datetime);
+        self.base.request_redraw();
+    }
 }
 impl Widget for DateTimeEdit {
     fn base(&self) -> &BaseWidget {
@@ -190,8 +280,14 @@ impl EventHandler for DateTimeEdit {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
+        if let Event::KeyPress { key, modifiers } = event {
             match *key {
+                90 if *modifiers == 2 => {
+                    let _ = self.undo();
+                }
+                89 if *modifiers == 2 => {
+                    let _ = self.redo();
+                }
                 38 => self.step_up(),
                 40 => self.step_down(),
                 _ => { /* Other keys are not relevant */ }
@@ -494,6 +590,36 @@ mod tests {
         // Rolls to previous day 23:59:59
         assert_eq!(editor.time(), Time::new(23, 59, 59, 0));
         assert_eq!(editor.date(), Date::new(2026, 6, 7));
+    }
+
+    #[test]
+    fn date_time_edit_undo_redo_restores_datetime() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        let first = DateTime::new(Date::new(2026, 6, 8), Time::new(10, 0, 0, 0));
+        let second = DateTime::new(Date::new(2026, 6, 8), Time::new(10, 0, 1, 0));
+        editor.set_datetime(first);
+        editor.set_datetime(second);
+
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.datetime(), first);
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.datetime(), second);
+    }
+
+    #[test]
+    fn date_time_edit_keyboard_shortcuts_drive_history() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        let first = DateTime::new(Date::new(2026, 6, 8), Time::new(10, 0, 0, 0));
+        let second = DateTime::new(Date::new(2026, 6, 9), Time::new(11, 0, 0, 0));
+        editor.set_datetime(first);
+        editor.set_datetime(second);
+
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(editor.datetime(), first);
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(editor.datetime(), second);
     }
 
     #[test]

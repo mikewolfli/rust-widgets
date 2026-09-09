@@ -1,5 +1,6 @@
 use super::{Key, Modifiers, Shortcut, ShortcutEntry};
 use crate::compat::HashMap;
+use crate::event::Event;
 use crate::signal::Signal1;
 /// Global shortcut manager for registering and dispatching shortcuts.
 pub struct ShortcutManager {
@@ -87,6 +88,15 @@ impl ShortcutManager {
                     self.shortcut_triggered.emit(action_id.clone());
                     return true;
                 }
+            }
+        }
+        false
+    }
+    /// Handles a framework event and triggers a shortcut when it is a key press.
+    pub fn handle_event(&mut self, event: &Event) -> bool {
+        if let Event::KeyPress { key, modifiers } = event {
+            if let Some(key) = Key::from_key_code(*key) {
+                return self.handle_key_event(key, Modifiers::from_event_bits(*modifiers));
             }
         }
         false

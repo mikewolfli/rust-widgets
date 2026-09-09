@@ -4,6 +4,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+#[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -25,6 +26,7 @@ pub struct TabWidget {
 /// Tab information.
 pub struct Tab {
     title: String,
+    #[cfg(feature = "image")]
     icon: Option<Image>,
     tooltip: String,
     enabled: bool,
@@ -57,7 +59,14 @@ pub enum TabShape {
 impl Tab {
     /// Creates a new tab.
     pub fn new(title: String) -> Self {
-        Self { title, icon: None, tooltip: String::new(), enabled: true, widget: None }
+        Self {
+            title,
+            #[cfg(feature = "image")]
+            icon: None,
+            tooltip: String::new(),
+            enabled: true,
+            widget: None,
+        }
     }
     /// Returns title.
     pub fn title(&self) -> &str {
@@ -67,10 +76,12 @@ impl Tab {
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
+    #[cfg(feature = "image")]
     /// Returns icon.
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
     }
+    #[cfg(feature = "image")]
     /// Sets icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;

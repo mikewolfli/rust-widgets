@@ -800,19 +800,17 @@ let phone_style = WidgetStyle::default()
 
 ```rust
 impl MyButton {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MouseEnter { .. } => {
                 self.state = WidgetState::Hover;
                 self.hover_animation.start();  // 動畫至懸停顏色
-                true
             }
             Event::MouseLeave { .. } => {
                 self.state = WidgetState::Normal;
                 self.hover_animation.reverse(); // 動畫回原狀
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 

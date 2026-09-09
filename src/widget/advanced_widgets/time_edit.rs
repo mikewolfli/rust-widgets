@@ -3,8 +3,56 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TIME_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct TimeEditCommand {
+    id: CommandId,
+    target: Rc<RefCell<Time>>,
+    before: Time,
+    after: Time,
+}
+
+impl TimeEditCommand {
+    fn new(target: Rc<RefCell<Time>>, before: Time, after: Time) -> Self {
+        Self {
+            id: CommandId(NEXT_TIME_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for TimeEditCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit time".to_string(),
+            timestamp_ms: 0,
+            command_type: "time_edit",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after;
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before;
+        Ok(())
+    }
+}
 /// Time value (hour, minute, second, millisecond).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time {
@@ -67,6 +115,9 @@ pub struct TimeEdit {
     maximum: Time,
     display_format: String,
     pub time_changed: Signal1<Time>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<Time>>,
+    restoring_history: bool,
 }
 impl TimeEdit {
     pub fn new(geometry: Rect) -> Self {
@@ -77,6 +128,9 @@ impl TimeEdit {
             maximum: Time::new(23, 59, 59, 999),
             display_format: "HH:mm:ss".to_string(),
             time_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(Time::new(0, 0, 0, 0))),
+            restoring_history: false,
         }
     }
     pub fn time(&self) -> Time {
@@ -93,7 +147,16 @@ impl TimeEdit {
     }
     pub fn set_time(&mut self, time: Time) {
         if time.is_valid() && time >= self.minimum && time <= self.maximum && self.time != time {
+            let before = self.time;
             self.time = time;
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.time;
+                self.undo_stack.push(Box::new(TimeEditCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.time,
+                )));
+            }
             self.time_changed.emit(time);
             self.base.request_redraw();
         }
@@ -153,6 +216,33 @@ impl TimeEdit {
         }
         self.set_time(t);
     }
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_time();
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_time();
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+    fn restore_history_time(&mut self) {
+        self.restoring_history = true;
+        self.time = *self.history_target.borrow();
+        self.restoring_history = false;
+        self.time_changed.emit(self.time);
+        self.base.request_redraw();
+    }
 }
 impl Widget for TimeEdit {
     fn base(&self) -> &BaseWidget {
@@ -173,8 +263,14 @@ impl EventHandler for TimeEdit {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
+        if let Event::KeyPress { key, modifiers } = event {
             match *key {
+                90 if *modifiers == 2 => {
+                    let _ = self.undo();
+                }
+                89 if *modifiers == 2 => {
+                    let _ = self.redo();
+                }
                 38 => self.step_up(),
                 40 => self.step_down(),
                 _ => { /* Other keys are not relevant */ }
@@ -411,6 +507,32 @@ mod tests {
         // Actually wait: hour starts at 0, step_down: second is 0, so second=59, minute is 0 so minute=59,
         // hour is 0 so hour stays at 0. Result is 0:59:59 which is valid.
         assert_eq!(editor.time(), Time::new(0, 59, 59, 0));
+    }
+
+    #[test]
+    fn time_edit_undo_redo_restores_time() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_time(Time::new(10, 0, 0, 0));
+        editor.step_up();
+
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.time(), Time::new(10, 0, 0, 0));
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.time(), Time::new(10, 0, 1, 0));
+    }
+
+    #[test]
+    fn time_edit_keyboard_shortcuts_drive_history() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_time(Time::new(10, 0, 0, 0));
+        editor.set_time(Time::new(10, 0, 1, 0));
+
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(editor.time(), Time::new(10, 0, 0, 0));
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(editor.time(), Time::new(10, 0, 1, 0));
     }
 
     #[test]

@@ -107,6 +107,14 @@ impl PagerPageView {
     pub fn show_indicator(&self) -> bool {
         self.page_indicator_visible
     }
+
+    fn content_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let indicator_height =
+            if self.page_indicator_visible && self.pages.len() > 1 { 26u32 } else { 0u32 };
+        let height = rect.height.saturating_sub(indicator_height);
+        Rect::new(rect.x, rect.y, rect.width, height)
+    }
 }
 
 impl Widget for PagerPageView {
@@ -130,33 +138,31 @@ impl Widget for PagerPageView {
 impl Draw for PagerPageView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-
-        // ── Background ──
         context.fill_rect(rect, Color::rgba(245, 245, 245, 255));
 
         if self.pages.is_empty() {
             return;
         }
 
-        // ── Draw current page content ──
+        let page_rect = self.content_rect();
         let page = &mut self.pages[self.current_page];
-        page.set_geometry(rect);
+        page.set_geometry(page_rect);
+        context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
         page.draw_widget(context);
+        context.pop_clip();
 
-        // ── Dot indicators (bottom) ──
         if self.page_indicator_visible && self.pages.len() > 1 {
             let dot_count = self.pages.len();
             let dot_radius = 4u32;
             let dot_spacing = 20i32;
             let total_dots_width = (dot_count as i32) * dot_spacing;
             let start_x = rect.x + (rect.width as i32 - total_dots_width) / 2 + dot_spacing / 2;
-            let dots_y = rect.y + rect.height as i32 - 24;
+            let dots_y = rect.y + rect.height as i32 - 20;
 
             for i in 0..dot_count {
                 let cx = start_x + (i as i32) * dot_spacing;
-                let is_active = i == self.current_page;
-                let color = if is_active {
-                    Color::rgba(0, 122, 255, 255) // iOS blue
+                let color = if i == self.current_page {
+                    Color::rgba(0, 122, 255, 255)
                 } else {
                     Color::rgba(180, 180, 180, 200)
                 };
@@ -169,9 +175,10 @@ impl Draw for PagerPageView {
 impl EventHandler for PagerPageView {
     fn handle_event(&mut self, event: &Event) {
         if !self.pages.is_empty() && self.current_page < self.pages.len() {
-            let geometry = self.geometry();
+            let geometry = self.content_rect();
             self.pages[self.current_page].set_geometry(geometry);
         }
+
         match event {
             Event::KeyPress { key, .. } => {
                 let left_arrow = 37u32;
@@ -212,9 +219,43 @@ impl EventHandler for PagerPageView {
                 }
             }
             _ => {
-                // Delegate events to the current page
                 if !self.pages.is_empty() && self.current_page < self.pages.len() {
-                    self.pages[self.current_page].handle_event(event);
+                    let page_rect = self.content_rect();
+                    match event {
+                        Event::MousePress { pos, .. }
+                        | Event::MouseRelease { pos, .. }
+                        | Event::MouseMove { pos }
+                        | Event::MouseDoubleClick { pos, .. } => {
+                            if page_rect.contains(*pos) {
+                                self.pages[self.current_page].handle_event(event);
+                            }
+                        }
+                        Event::Wheel { .. } => {
+                            let fallback = Point::new(page_rect.x + 1, page_rect.y + 1);
+                            if page_rect.contains(fallback) {
+                                self.pages[self.current_page].handle_event(event);
+                            }
+                        }
+                        #[cfg(feature = "touch")]
+                        Event::TouchBegin { pos, .. }
+                        | Event::TouchEnd { pos, .. }
+                        | Event::TouchMove { pos, .. }
+                        | Event::Tap { pos }
+                        | Event::DoubleTap { pos }
+                        | Event::LongPress { pos }
+                        | Event::Swipe { start: _, end: pos, .. }
+                        | Event::Drag { pos, .. }
+                        | Event::TwoFingerTap { pos }
+                        | Event::TwoFingerSwipe { centroid_start: _, centroid_end: pos, .. }
+                        | Event::Fling { pos, .. } => {
+                            if page_rect.contains(*pos) {
+                                self.pages[self.current_page].handle_event(event);
+                            }
+                        }
+                        _ => {
+                            self.pages[self.current_page].handle_event(event);
+                        }
+                    }
                 } else {
                     self.base.handle_event(event);
                 }

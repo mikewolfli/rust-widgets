@@ -11,6 +11,7 @@ use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(target_os = "linux", not(feature = "mini"), not(feature = "embedded")))]
 use crate::platform::linux::LinuxPlatform;
 #[cfg(all(
+    not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
     any(feature = "macos", feature = "macos-legacy")

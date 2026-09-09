@@ -3,7 +3,55 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_DATE_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct DateEditCommand {
+    id: CommandId,
+    target: Rc<RefCell<Date>>,
+    before: Date,
+    after: Date,
+}
+
+impl DateEditCommand {
+    fn new(target: Rc<RefCell<Date>>, before: Date, after: Date) -> Self {
+        Self {
+            id: CommandId(NEXT_DATE_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for DateEditCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit date".to_string(),
+            timestamp_ms: 0,
+            command_type: "date_edit",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after;
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before;
+        Ok(())
+    }
+}
 /// Date value (year, month, day).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
@@ -71,6 +119,9 @@ pub struct DateEdit {
     display_format: String,
     calendar_popup: bool,
     pub date_changed: Signal1<Date>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<Date>>,
+    restoring_history: bool,
 }
 impl DateEdit {
     pub fn new(geometry: Rect) -> Self {
@@ -82,6 +133,9 @@ impl DateEdit {
             display_format: "yyyy-MM-dd".to_string(),
             calendar_popup: false,
             date_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(Date::today())),
+            restoring_history: false,
         }
     }
     pub fn date(&self) -> Date {
@@ -101,7 +155,16 @@ impl DateEdit {
     }
     pub fn set_date(&mut self, date: Date) {
         if date.is_valid() && date >= self.minimum && date <= self.maximum && self.date != date {
+            let before = self.date;
             self.date = date;
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.date;
+                self.undo_stack.push(Box::new(DateEditCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.date,
+                )));
+            }
             self.date_changed.emit(date);
             self.base.request_redraw();
         }
@@ -161,6 +224,33 @@ impl DateEdit {
         }
         self.set_date(d);
     }
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_date();
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_date();
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+    fn restore_history_date(&mut self) {
+        self.restoring_history = true;
+        self.date = *self.history_target.borrow();
+        self.restoring_history = false;
+        self.date_changed.emit(self.date);
+        self.base.request_redraw();
+    }
 }
 impl Widget for DateEdit {
     fn base(&self) -> &BaseWidget {
@@ -181,8 +271,14 @@ impl EventHandler for DateEdit {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
+        if let Event::KeyPress { key, modifiers } = event {
             match *key {
+                90 if *modifiers == 2 => {
+                    let _ = self.undo();
+                }
+                89 if *modifiers == 2 => {
+                    let _ = self.redo();
+                }
                 38 => self.step_up(),   // Up arrow
                 40 => self.step_down(), // Down arrow
                 _ => { /* Other keys are not relevant */ }
@@ -425,6 +521,32 @@ mod tests {
         editor.set_date(Date::new(2026, 1, 1));
         editor.step_down();
         assert_eq!(editor.date(), Date::new(2025, 12, 31));
+    }
+
+    #[test]
+    fn date_edit_undo_redo_restores_date() {
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.step_up();
+
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.date(), Date::new(2026, 6, 8));
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.date(), Date::new(2026, 6, 9));
+    }
+
+    #[test]
+    fn date_edit_keyboard_shortcuts_drive_history() {
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.set_date(Date::new(2026, 6, 9));
+
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(editor.date(), Date::new(2026, 6, 8));
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(editor.date(), Date::new(2026, 6, 9));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -144,7 +144,13 @@ macos = [
     "dep:objc2-core-graphics",
 ]
 macos-legacy = ["dep:cocoa", "dep:objc", "dep:objc-foundation"]
-ios = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-ui-kit"]
+ios = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-ui-kit",
+]
 windows = []
 linux-gtk = ["dep:gtk"]
 linux-wayland = [
@@ -368,6 +374,8 @@ cocoa = { version = "0.25", optional = true }
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-core-graphics = { version = "0.3", optional = true }
 objc2-ui-kit = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

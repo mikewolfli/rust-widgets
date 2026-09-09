@@ -3,10 +3,11 @@ use crate::data_binding::traits::*;
 
 /// A computed/derived value that auto-updates when its dependencies change.
 ///
-/// Uses a closure to derive the value. When a dependency is invalidated via
-/// [`invalidate`](Computed::invalidate), the cached value is marked dirty and
-/// will be recomputed on the next [`get`](Computed::get). Listeners are
-/// notified only when the recomputed value differs from the cached value.
+/// The dirty flag is a scheduling signal: invalidation only marks the value as
+/// stale; the actual recomputation runs on the next [`get`](Computed::get). A
+/// listener is notified only when the recomputed value differs from the cached
+/// value, so notification reflects real state transitions rather than the mere
+/// act of invalidating a dependency.
 pub struct Computed<T: Clone + Send + 'static> {
     compute_fn: Box<dyn Fn() -> T>,
     cached: T,
@@ -61,12 +62,11 @@ impl<T: Clone + Send + 'static> Computed<T> {
         self.cached.clone()
     }
 
-    /// Mark the computed value as dirty; listeners are notified after the next
-    /// recomputation when the derived value actually changes.
+    /// Mark the computed value as dirty and schedule a recomputation on the next
+    /// [`get`](Computed::get) call.
     ///
-    /// Call this when a dependency of the compute function changes. The next
-    /// call to [`get`](Computed::get) will recompute the value. Listeners are
-    /// notified right away so push-based reactive chains can propagate.
+    /// Invalidating a dependency does not imply the value changed; listeners are
+    /// notified only after a real recomputation produces a different output.
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }
@@ -168,29 +168,32 @@ mod tests {
             })),
         );
 
-        // First get returns the initial value (dirty=false), no notification
+        // Initial value is cached and clean; no notification yet.
         assert_eq!(c2.get(), 0);
         assert_eq!(notified_count.load(Ordering::SeqCst), 0);
 
-        // Invalidate to trigger computation on next get
+        // Invalidating a dependency does not notify listeners immediately.
         inner.store(10, Ordering::SeqCst);
         c2.invalidate();
-        // invalidate notifies listeners immediately
+        assert_eq!(notified_count.load(Ordering::SeqCst), 0);
+
+        // The next get() recomputes and emits only on real change.
+        assert_eq!(c2.get(), 10);
         assert_eq!(notified_count.load(Ordering::SeqCst), 1);
 
-        // Now get() recomputes, detects change 0→10, notifies again
+        // A second invalidation without a derived change does not notify.
+        inner.store(10, Ordering::SeqCst);
+        c2.invalidate();
+        assert_eq!(notified_count.load(Ordering::SeqCst), 1);
         assert_eq!(c2.get(), 10);
-        assert_eq!(notified_count.load(Ordering::SeqCst), 2);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 1);
 
-        // Change value and invalidate — invalidate notifies listeners immediately
+        // A true value change emits once after recomputation.
         inner.store(20, Ordering::SeqCst);
         c2.invalidate();
-        // 2 (from previous invalidate) + 1 = 3
-        assert_eq!(notified_count.load(Ordering::SeqCst), 3);
-
-        // Now get() recomputes from 10 to 20, notifies again because value changed
+        assert_eq!(notified_count.load(Ordering::SeqCst), 1);
         assert_eq!(c2.get(), 20);
-        assert_eq!(notified_count.load(Ordering::SeqCst), 4);
+        assert_eq!(notified_count.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0 (2026-09-09) — Version Contract Sync Release
+
+### Changed
+- Crate version bumped `1.0.0` → `1.1.0` (stable line; **not** an ABI break).
+
+### Bindings & docs
+- Version references aligned to `1.1.0` across code, demo banner, and documentation:
+  `Cargo.toml`, package metadata (Node.js `package.json`, Python `setup.py`), demo/control banner,
+  CoreConfig default version contract, and all cookbook/README version mentions.
+
+### Connectivity
+- `CoreConfig::desktop()/embedded()/mobile()` default version synced to `1.1.0`
+  (runtime `Version` contract mirrors the crate semantic version; existing `Version`-type API
+  examples and ABI contract `rw_bindings_api_version` = `8` are unchanged).
+
 ## 1.0.0 (2026-09-02) — Stable Release
 
 ### Stability & Quality

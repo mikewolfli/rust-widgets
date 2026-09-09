@@ -4,7 +4,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Diagnostic marker severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +36,9 @@ pub struct CodeEditor {
     pub text_changed: Signal1<String>,
     /// Emitted when cursor position changes `(line,column)`.
     pub cursor_moved: Signal1<(usize, usize)>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl CodeEditor {
@@ -46,6 +52,9 @@ impl CodeEditor {
             markers: Vec::new(),
             text_changed: Signal1::new(),
             cursor_moved: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -60,7 +69,17 @@ impl CodeEditor {
         if self.text == next {
             return;
         }
+        let before = self.text.clone();
         self.text = next.clone();
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "code_editor_text",
+            )));
+        }
         let max_line = self.line_count().saturating_sub(1);
         self.cursor_line = self.cursor_line.min(max_line);
         self.cursor_column = self.current_line_len().min(self.cursor_column);
@@ -71,13 +90,14 @@ impl CodeEditor {
 
     /// Appends one line.
     pub fn append_line(&mut self, line: impl AsRef<str>) {
-        if !self.text.is_empty() {
-            self.text.push('\n');
+        let mut next = self.text.clone();
+        if !next.is_empty() {
+            next.push('\n');
         }
-        self.text.push_str(line.as_ref());
+        next.push_str(line.as_ref());
+        self.set_text(next);
         self.cursor_line = self.line_count().saturating_sub(1);
         self.cursor_column = self.current_line_len();
-        self.text_changed.emit(self.text.clone());
         self.cursor_moved.emit((self.cursor_line, self.cursor_column));
         self.base.request_layout();
         self.base.request_redraw();
@@ -106,6 +126,43 @@ impl CodeEditor {
     /// Returns cursor location.
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor_line, self.cursor_column)
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        let max_line = self.line_count().saturating_sub(1);
+        self.cursor_line = self.cursor_line.min(max_line);
+        self.cursor_column = self.current_line_len().min(self.cursor_column);
+        self.text_changed.emit(self.text.clone());
+        self.cursor_moved.emit((self.cursor_line, self.cursor_column));
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     fn current_line_len(&self) -> usize {
@@ -163,6 +220,12 @@ impl EventHandler for CodeEditor {
 
         if let Event::KeyPress { key, modifiers: _ } = event {
             match *key {
+                90 if event_ctrl(event) => {
+                    let _ = self.undo();
+                }
+                89 if event_ctrl(event) => {
+                    let _ = self.redo();
+                }
                 37 => self.move_cursor_column(-1),
                 39 => self.move_cursor_column(1),
                 38 => self.move_cursor_line(-1),
@@ -171,6 +234,10 @@ impl EventHandler for CodeEditor {
             }
         }
     }
+}
+
+fn event_ctrl(event: &Event) -> bool {
+    matches!(event, Event::KeyPress { modifiers: 2, .. })
 }
 
 impl Draw for CodeEditor {
@@ -308,6 +375,32 @@ mod tests {
 
         editor.append_line("third");
         assert_eq!(editor.line_count(), 3);
+    }
+
+    #[test]
+    fn undo_redo_restores_code_text() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        editor.set_text("first");
+        editor.append_line("second");
+
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "first");
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "first\nsecond");
+    }
+
+    #[test]
+    fn keyboard_shortcuts_drive_code_history() {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 800, 600));
+        editor.set_text("one");
+        editor.set_text("two");
+
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        assert_eq!(editor.text(), "one");
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        assert_eq!(editor.text(), "two");
     }
 
     #[test]

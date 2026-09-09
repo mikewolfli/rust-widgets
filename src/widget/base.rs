@@ -236,17 +236,44 @@ impl EventHandler for BaseWidget {
             Event::MouseMove { pos } => {
                 self.hover.emit(*pos);
             }
+            Event::MousePress { pos, button } => {
+                self.mouse_down.emit((*pos, *button));
+            }
+            Event::MouseRelease { pos, button } => {
+                self.mouse_up.emit((*pos, *button));
+            }
             Event::MouseDown((pos, button)) => {
                 self.mouse_down.emit((*pos, *button));
             }
             Event::MouseUp((pos, button)) => {
                 self.mouse_up.emit((*pos, *button));
             }
+            Event::PointerMove { pos, .. } => {
+                self.hover.emit(*pos);
+            }
+            Event::PointerPress { pos, button, .. } => {
+                self.mouse_down.emit((*pos, *button));
+            }
+            Event::PointerRelease { pos, button, .. } => {
+                self.mouse_up.emit((*pos, *button));
+            }
+            Event::KeyPress { key, modifiers } => {
+                self.key_down.emit((*key, *modifiers));
+            }
+            Event::KeyRelease { key, modifiers } => {
+                self.key_up.emit((*key, *modifiers));
+            }
             Event::KeyDown((key, modifiers)) => {
                 self.key_down.emit((*key, *modifiers));
             }
             Event::KeyUp((key, modifiers)) => {
                 self.key_up.emit((*key, *modifiers));
+            }
+            Event::FocusGained => {
+                self.focus_gained.emit();
+            }
+            Event::FocusLost => {
+                self.focus_lost.emit();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -446,6 +473,64 @@ mod tests {
 
         bw.handle_event(&Event::KeyDown((65, 0)));
         assert!(emitted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn modern_mouse_and_key_events_emit_base_signals() {
+        let mut bw = make_base();
+        let mouse_down = std::sync::Arc::new(std::sync::Mutex::new(None::<(Point, u32)>));
+        let key_down = std::sync::Arc::new(std::sync::Mutex::new(None::<(u32, u32)>));
+        let mouse_sink = mouse_down.clone();
+        let key_sink = key_down.clone();
+        bw.mouse_down.connect(move |args| {
+            *mouse_sink.lock().unwrap() = Some(*args);
+        });
+        bw.key_down.connect(move |args| {
+            *key_sink.lock().unwrap() = Some(*args);
+        });
+
+        bw.handle_event(&Event::MousePress { pos: Point::new(12, 34), button: 1 });
+        bw.handle_event(&Event::KeyPress { key: 65, modifiers: 2 });
+
+        assert_eq!(*mouse_down.lock().unwrap(), Some((Point::new(12, 34), 1)));
+        assert_eq!(*key_down.lock().unwrap(), Some((65, 2)));
+    }
+
+    #[test]
+    fn pointer_and_focus_events_emit_base_signals() {
+        let mut bw = make_base();
+        let hover = std::sync::Arc::new(std::sync::Mutex::new(None::<Point>));
+        let released = std::sync::Arc::new(std::sync::Mutex::new(None::<(Point, u32)>));
+        let focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hover_sink = hover.clone();
+        let release_sink = released.clone();
+        let focus_sink = focused.clone();
+        bw.hover.connect(move |pos| {
+            *hover_sink.lock().unwrap() = Some(*pos);
+        });
+        bw.mouse_up.connect(move |args| {
+            *release_sink.lock().unwrap() = Some(*args);
+        });
+        bw.focus_gained.connect(move || {
+            focus_sink.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        bw.handle_event(&Event::PointerMove {
+            pos: Point::new(7, 9),
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+        });
+        bw.handle_event(&Event::PointerRelease {
+            pos: Point::new(8, 10),
+            button: 1,
+            pressure: 0.0,
+        });
+        bw.handle_event(&Event::FocusGained);
+
+        assert_eq!(*hover.lock().unwrap(), Some(Point::new(7, 9)));
+        assert_eq!(*released.lock().unwrap(), Some((Point::new(8, 10), 1)));
+        assert!(focused.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

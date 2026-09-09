@@ -372,21 +372,21 @@ signal emissions:
 impl EventHandler for BaseWidget {
     fn handle_event(&mut self, event: &Event) {
         match event {
-            Event::MouseDown { position, button, .. } => {
+            Event::MouseDown((position, button)) | Event::MousePress { pos: position, button } => {
                 self.mouse_pressed = true;
                 self.mouse_down.emit((*position, *button));
             }
-            Event::MouseUp { position, button, .. } => {
+            Event::MouseUp((position, button)) | Event::MouseRelease { pos: position, button } => {
                 self.mouse_pressed = false;
                 self.mouse_up.emit((*position, *button));
             }
-            Event::MouseMove { position, .. } => {
+            Event::MouseMove { pos: position } => {
                 self.hover.emit(*position);
             }
-            Event::KeyDown { key, modifiers, .. } => {
+            Event::KeyDown((key, modifiers)) | Event::KeyPress { key, modifiers } => {
                 self.key_down.emit((*key, *modifiers));
             }
-            Event::KeyUp { key, modifiers, .. } => {
+            Event::KeyUp((key, modifiers)) | Event::KeyRelease { key, modifiers } => {
                 self.key_up.emit((*key, *modifiers));
             }
             Event::FocusGained => {
@@ -394,18 +394,6 @@ impl EventHandler for BaseWidget {
             }
             Event::FocusLost => {
                 self.focus_lost.emit();
-            }
-            Event::Click => {
-                self.clicked.emit();
-            }
-            Event::Redraw => {
-                self.redraw_requested.emit();
-            }
-            Event::Layout => {
-                self.layout_requested.emit();
-            }
-            Event::ValueChanged => {
-                self.changed.emit();
             }
             _ => {}
         }
@@ -419,7 +407,7 @@ Custom widgets can add additional logic before or after delegating:
 impl EventHandler for MyWidget {
     fn handle_event(&mut self, event: &Event) {
         // Pre-processing:
-        if let Event::Click = event {
+        if let Event::MousePress { pos, button: 1 } = event {
             log::info!("MyWidget clicked at ({},{})", self.position().x, self.position().y);
         }
 
@@ -428,8 +416,8 @@ impl EventHandler for MyWidget {
 
         // Post-processing:
         if self.base.is_enabled() {
-            if let Event::MouseMove { position, .. } = event {
-                self.track_mouse_trail(*position);
+            if let Event::MouseMove { pos } = event {
+                self.track_mouse_trail(*pos);
             }
         }
     }
@@ -874,7 +862,7 @@ impl Widget for CounterWidget {
 impl EventHandler for CounterWidget {
     fn handle_event(&mut self, event: &Event) {
         // Pre-process clicks to increment the counter
-        if let Event::Click = event {
+        if let Event::MousePress { button: 1, .. } = event {
             self.increment();
         }
 
@@ -925,8 +913,8 @@ fn main() {
         println!("Counter was clicked!");
     });
 
-    // Simulate a click (in a real app, the event loop sends Click events):
-    counter.handle_event(&Event::Click);
+    // Simulate a click:
+    counter.handle_event(&Event::mouse_press(20, 20, 1));
     println!("Count is now: {}", counter.count());  // → 1
 }
 ```

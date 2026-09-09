@@ -1,6 +1,6 @@
 # 事件系统 (Event System)
 
-`rust-widgets` 事件系统提供了一套全面的分层通信管道：来自平台泵的输入事件、基于 `mpsc` 的解耦投递队列、用于调度的后台事件循环、焦点/指针/定时器管理，以及触控到鼠标的事件转换。该系统拥有 **54 种事件变体**，涵盖鼠标、键盘、触控、手势、绘图、定时器和游戏手柄输入。
+`rust-widgets` 事件系统提供了一套全面的分层通信管道：来自平台泵的输入事件、基于 `mpsc` 的解耦投递队列、用于调度的后台事件循环、焦点/指针/定时器管理、文本输入/IME 提交，以及触控到鼠标的事件转换。
 
 ---
 
@@ -16,20 +16,25 @@ Platform Pump → EventLoop (bg thread) → EventQueue (mpsc) → EventHandler::
 
 ---
 
-## `Event` 枚举 — 54 种变体
+## `Event` 枚举
 
 ```rust
 pub enum Event {
     // Mouse
-    MouseDown,                              MouseUp,
+    MouseDown((Point, u32)),                MouseUp((Point, u32)),
     MouseMove { pos: Point },               MousePress { pos: Point, button: u32 },
     MouseRelease { pos: Point, button: u32 }, MouseDoubleClick { pos: Point, button: u32 },
     MouseEnter { pos: Point },              MouseLeave { pos: Point },
-    Wheel { delta: (f32, f32), modifiers: u32 },
+    Wheel { delta: Point, modifiers: u32 },
 
     // Keyboard
-    KeyDown, KeyUp,
+    KeyDown((u32, u32)),                    KeyUp((u32, u32)),
     KeyPress { key: u32, modifiers: u32 },  KeyRelease { key: u32, modifiers: u32 },
+
+    // Text input and IME
+    TextInput { text: String },
+    ImePreedit { text: String, cursor: usize },
+    ImeCommit { text: String },
 
     // Focus
     FocusGained, FocusLost,
@@ -68,7 +73,7 @@ pub enum Event {
 
     // Orientation & Lifecycle
     OrientationChanged { orientation: ScreenOrientation },
-    Custom { name: String, payload: Box<dyn std::any::Any> },
+    Custom { name: String, payload: Vec<u8> },
     Quit,
 }
 ```
@@ -76,11 +81,10 @@ pub enum Event {
 **辅助构造函数**让事件创建更加简洁：
 
 ```rust
-let press = Event::mouse_press(Point::new(50, 50), 0);        // button 0 (left)
+let press = Event::mouse_press(50, 50, 0);                    // button 0 (left)
 let key   = Event::key_press(65, 0);                           // key 'A', no modifiers
-let tap   = Event::tap(Point::new(100, 200));
+let text  = Event::text_input("hello");
 let timer_event = Event::timer(42);                            // timer ID 42
-let pinch = Event::pinch(1.5);                                 // 150% zoom
 ```
 
 **手势分类：** `Event::gesture_class()` 返回 `Some(GestureClass::Single)`、`Some(GestureClass::Multi)` 或 `None`（非手势事件）。
@@ -95,27 +99,25 @@ let pinch = Event::pinch(1.5);                                 // 150% zoom
 
 ```rust
 pub trait EventHandler {
-    fn handle_event(&mut self, event: &Event) -> bool;
+    fn handle_event(&mut self, event: &Event);
 }
 ```
 
-返回 `true` 表示事件已被消费（停止传播），返回 `false` 则将其传递给下一个处理器。
+容器负责决定是否把事件继续转发给子控件；handler 本身不返回 consumed 标志。
 
 ```rust
 impl EventHandler for MyButton {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MousePress { pos, .. } if self.bounds.contains(*pos) => {
                 self.pressed = true;
                 self.request_repaint();
-                true  // consumed
             }
             Event::MouseRelease { pos, .. } if self.pressed => {
                 self.pressed = false;
                 self.on_click();
-                true
             }
-            _ => false,  // not handled — propagate
+            _ => {}
         }
     }
 }
@@ -412,31 +414,27 @@ while let Some(event) = queue.pop() {
 
 ```rust
 impl EventHandler for InteractiveButton {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MouseEnter { .. } => {
                 self.state = WidgetState::Hover;
                 self.request_repaint();
-                true
             }
             Event::MouseLeave { .. } => {
                 self.state = WidgetState::Normal;
                 self.request_repaint();
-                true
             }
             Event::MousePress { pos, button: 0 } if self.bounds.contains(*pos) => {
                 self.state = WidgetState::Pressed;
                 self.request_repaint();
-                true
             }
             Event::MouseRelease { pos, button: 0 } => {
                 if self.state == WidgetState::Pressed && self.bounds.contains(*pos) {
                     self.state = WidgetState::Hover;
                     self.on_click();  // fire the click action
                 }
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }
@@ -446,34 +444,31 @@ impl EventHandler for InteractiveButton {
 
 ```rust
 impl EventHandler for TextField {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::FocusGained => {
                 self.focused = true;
                 self.show_cursor = true;
-                true
             }
             Event::FocusLost => {
                 self.focused = false;
                 self.show_cursor = false;
-                true
             }
             Event::KeyPress { key, modifiers } if self.focused => {
                 if *key == 8 {  // Backspace
                     self.text.pop();
-                } else if let Some(c) = char::from_u32(*key) {
-                    self.text.push(c);
                 }
-                true
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } if self.focused => {
+                self.text.push_str(text);
             }
             Event::MousePress { pos, .. } => {
                 // Request focus when clicked
                 focus_manager.request_focus(self.id);
                 // Move cursor to click position
                 self.set_cursor_from_point(*pos);
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }
@@ -483,28 +478,25 @@ impl EventHandler for TextField {
 
 ```rust
 impl EventHandler for DraggableItem {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MousePress { pos, .. } if self.bounds.contains(*pos) => {
                 self.dragging = true;
                 self.drag_offset = Point::new(pos.x - self.rect.x, pos.y - self.rect.y);
                 capture_manager.capture(self.id);
-                true
             }
             Event::MouseMove { pos } if self.dragging => {
                 self.rect.x = pos.x - self.drag_offset.x;
                 self.rect.y = pos.y - self.drag_offset.y;
                 self.request_repaint();
-                true
             }
             Event::MouseRelease { .. } if self.dragging => {
                 self.dragging = false;
                 capture_manager.release();
                 // Check for drop target
                 self.check_drop();
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }
@@ -518,7 +510,7 @@ let timer_id = event_loop.start_timer(animation_widget, Duration::from_millis(16
 
 // In the widget's event handler:
 impl EventHandler for AnimatedWidget {
-    fn handle_event(&mut self, event: &Event) -> bool {
+    fn handle_event(&mut self, event: &Event) {
         match event {
             Event::Timer { id } if *id == ANIM_TIMER_ID => {
                 self.animation_progress += 0.016;  // advance by ~1 frame
@@ -526,9 +518,8 @@ impl EventHandler for AnimatedWidget {
                     self.animation_progress = 0.0;
                 }
                 self.request_repaint();
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 }

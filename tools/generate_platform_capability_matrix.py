@@ -39,10 +39,10 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     # === Dialogs & Windows ===
     "Window": ("Window", [NATIVE] * 4 + [STATE_BACKED] * 3),
     "Dialog": ("Dialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
-    "MessageBox": ("MessageBox", [NATIVE] * 4 + [STATE_BACKED] * 3),
-    "FileDialog": ("FileDialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
-    "ColorDialog": ("ColorDialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
-    "FontDialog": ("FontDialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
+    "MessageBox": ("MessageBox", [STATE_BACKED, STATE_BACKED, NATIVE, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED]),
+    "FileDialog": ("FileDialog", [STATE_BACKED, STATE_BACKED, NATIVE, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED]),
+    "ColorDialog": ("ColorDialog", [STATE_BACKED, STATE_BACKED, NATIVE, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED]),
+    "FontDialog": ("FontDialog", [STATE_BACKED, STATE_BACKED, NATIVE, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED]),
     "InputDialog": ("InputDialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
     "ProgressDialog": ("ProgressDialog", [NATIVE] * 4 + [STATE_BACKED] * 3),
     "PopupWindow": ("PopupWindow", [NATIVE] * 4 + [STATE_BACKED] * 3),
@@ -55,7 +55,7 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "TextEdit": ("TextEdit", [STATE_BACKED] * 7),
     "RichEdit": ("RichEdit", [NATIVE] * 3 + [STATE_BACKED] * 4),
     "ComboBox": ("ComboBox", [NATIVE] * 4 + [NATIVE] * 2 + [STATE_BACKED]),
-    "SpinBox": ("SpinBox", [NATIVE] * 4 + [NATIVE] * 2 + [STATE_BACKED]),
+    "SpinBox": ("SpinBox", [STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED, STATE_BACKED]),
     "ListBox": ("ListBox", [NATIVE] * 4 + [NATIVE] * 2 + [STATE_BACKED]),
     "ListView": ("ListView", [STATE_BACKED] * 7),
     "TreeView": ("TreeView", [STATE_BACKED] * 7),
@@ -274,7 +274,14 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
 - `WebView` is not a `WidgetKind` variant either — the `WebView`/`WebViewEnhanced`
   aliases live at the handle/render layer and map onto `WidgetKind::WebEngineView`.
   The matrix therefore lists only the WebEngine rows.
-"""
+- `MessageBox`/`FileDialog`/`ColorDialog`/`FontDialog` are marked 🔶 (state-backed)
+  on Windows/Linux/Wayland because those platform impls create a state/surrogate
+  handle (Windows: `Panel` surrogate; Linux/Wayland: state-only) rather than a
+  dedicated native dialog; only macOS (objc2 + cocoa-legacy) creates real
+  `NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` (✅).
+- `SpinBox` is 🔶 everywhere: the macOS objc2 backend creates a native `NSStepper`
+  under the `macos` feature, but the default cocoa-legacy path and the
+  Windows/Linux/Wayland/mobile backends are state-backed."""
 
 
 

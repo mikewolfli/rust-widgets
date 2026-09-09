@@ -191,6 +191,86 @@ pub enum Key {
     Backslash,
 }
 impl Key {
+    /// Converts the framework key-code convention used by `Event::KeyPress`.
+    pub fn from_key_code(code: u32) -> Option<Self> {
+        match code {
+            65 | 97 => Some(Key::A),
+            66 | 98 => Some(Key::B),
+            67 | 99 => Some(Key::C),
+            68 | 100 => Some(Key::D),
+            69 | 101 => Some(Key::E),
+            70 | 102 => Some(Key::F),
+            71 | 103 => Some(Key::G),
+            72 | 104 => Some(Key::H),
+            73 | 105 => Some(Key::I),
+            74 | 106 => Some(Key::J),
+            75 | 107 => Some(Key::K),
+            76 | 108 => Some(Key::L),
+            77 | 109 => Some(Key::M),
+            78 | 110 => Some(Key::N),
+            79 | 111 => Some(Key::O),
+            80 | 112 => Some(Key::P),
+            81 | 113 => Some(Key::Q),
+            82 | 114 => Some(Key::R),
+            83 | 115 => Some(Key::S),
+            84 | 116 => Some(Key::T),
+            85 | 117 => Some(Key::U),
+            86 | 118 => Some(Key::V),
+            87 | 119 => Some(Key::W),
+            88 | 120 => Some(Key::X),
+            89 | 121 => Some(Key::Y),
+            90 | 122 => Some(Key::Z),
+            48 => Some(Key::Num0),
+            49 => Some(Key::Num1),
+            50 => Some(Key::Num2),
+            51 => Some(Key::Num3),
+            52 => Some(Key::Num4),
+            53 => Some(Key::Num5),
+            54 => Some(Key::Num6),
+            55 => Some(Key::Num7),
+            56 => Some(Key::Num8),
+            57 => Some(Key::Num9),
+            27 => Some(Key::Escape),
+            9 => Some(Key::Tab),
+            10 | 13 => Some(Key::Enter),
+            32 => Some(Key::Space),
+            8 => Some(Key::Backspace),
+            46 | 127 => Some(Key::Delete),
+            45 => Some(Key::Insert),
+            36 => Some(Key::Home),
+            35 => Some(Key::End),
+            33 => Some(Key::PageUp),
+            34 => Some(Key::PageDown),
+            37 => Some(Key::Left),
+            39 => Some(Key::Right),
+            38 => Some(Key::Up),
+            40 => Some(Key::Down),
+            1120 => Some(Key::F1),
+            1121 => Some(Key::F2),
+            1122 => Some(Key::F3),
+            1123 => Some(Key::F4),
+            1124 => Some(Key::F5),
+            1125 => Some(Key::F6),
+            1126 => Some(Key::F7),
+            1127 => Some(Key::F8),
+            1128 => Some(Key::F9),
+            1129 => Some(Key::F10),
+            1130 => Some(Key::F11),
+            1131 => Some(Key::F12),
+            189 => Some(Key::Minus),
+            187 => Some(Key::Equals),
+            219 => Some(Key::LeftBracket),
+            221 => Some(Key::RightBracket),
+            186 => Some(Key::Semicolon),
+            222 => Some(Key::Quote),
+            188 => Some(Key::Comma),
+            190 => Some(Key::Period),
+            191 => Some(Key::Slash),
+            220 => Some(Key::Backslash),
+            _ => None,
+        }
+    }
+
     /// Parses a key from a string.
     pub fn from_string(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -375,6 +455,11 @@ impl Modifiers {
     /// Returns true if the given modifier is set.
     pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
+    }
+
+    /// Converts the framework modifier bitmask used by `Event::KeyPress`.
+    pub const fn from_event_bits(bits: u32) -> Self {
+        Self((bits as u8) & 0b1111)
     }
 }
 impl std::ops::BitOr for Modifiers {

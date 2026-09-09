@@ -4,13 +4,12 @@
 //! serving as a foundation for progressive UIKit/SwiftUI integration.
 
 use crate::platform::state::BackendState;
-use crate::platform::WidgetTriggerEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 /// iOS-specific widget handle type discriminator.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum IosHandleKind {
     /// Top-level window.
     Window,
@@ -32,6 +31,12 @@ pub(crate) enum IosHandleKind {
     ComboBox,
     /// List selection control (UI TableView on iOS).
     ListBox,
+    /// Numeric stepper/edit control.
+    SpinBox,
+    /// List/table view control.
+    ListView,
+    /// Scrollable content region.
+    ScrollArea,
     /// Generic container panel.
     Panel,
     /// Root menu bar container.
@@ -72,8 +77,6 @@ pub(crate) struct IosMenuState {
     pub(crate) menu_children: HashMap<u64, Vec<u64>>,
     /// FIFO queue for menu item trigger ids.
     pub(crate) pending_menu_events: VecDeque<u64>,
-    /// FIFO queue for typed widget trigger events.
-    pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
 /// iOS platform runtime state lifecycle markers.

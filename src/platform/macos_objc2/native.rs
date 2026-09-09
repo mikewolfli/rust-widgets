@@ -14,11 +14,13 @@
 #![allow(unused_imports)]
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
+use objc2::{msg_send, sel};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSMenu, NSMenuItem, NSPopUpButton,
-    NSProgressIndicator, NSScrollView, NSSlider, NSStepper, NSTableColumn, NSTableView,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSAlert, NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSColorPanel, NSFontPanel,
+    NSMenu, NSMenuItem, NSOpenPanel, NSPopUpButton, NSProgressIndicator, NSScrollView, NSSlider,
+    NSStepper, NSTableColumn, NSTableView, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -36,7 +38,18 @@ unsafe impl Sync for NativePtr {}
 static NATIVE_VIEWS: LazyLock<Mutex<HashMap<u64, NativePtr>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+static PARENT_MAP: LazyLock<Mutex<HashMap<u64, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub(crate) fn store_native_view(widget_id: u64, view: *mut std::ffi::c_void) {
+    if view.is_null() {
+        return;
+    }
+    remove_native_view(widget_id);
+    unsafe {
+        let object = view as *mut AnyObject;
+        let _: *mut AnyObject = msg_send![object, retain];
+    }
     NATIVE_VIEWS.lock().unwrap().insert(widget_id, NativePtr(view));
 }
 
@@ -45,7 +58,109 @@ pub(crate) fn get_native_view(widget_id: u64) -> Option<*mut std::ffi::c_void> {
 }
 
 pub(crate) fn remove_native_view(widget_id: u64) {
-    NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
+    if let Some(ptr) = NATIVE_VIEWS.lock().unwrap().remove(&widget_id) {
+        unsafe {
+            let object = ptr.0 as *mut AnyObject;
+            let _: () = msg_send![object, release];
+        }
+    }
+    PARENT_MAP.lock().unwrap().remove(&widget_id);
+}
+
+pub(crate) fn set_parent(widget_id: u64, parent_id: u64) {
+    PARENT_MAP.lock().unwrap().insert(widget_id, parent_id);
+}
+
+pub(crate) fn get_parent(widget_id: u64) -> Option<u64> {
+    PARENT_MAP.lock().unwrap().get(&widget_id).copied()
+}
+
+pub(crate) fn add_as_subview(widget_id: u64, parent_id: u64) {
+    let views = NATIVE_VIEWS.lock().unwrap();
+    let Some(parent_ptr) = views.get(&parent_id).map(|p| p.0) else {
+        return;
+    };
+    let Some(child_ptr) = views.get(&widget_id).map(|p| p.0) else {
+        return;
+    };
+    drop(views);
+
+    unsafe {
+        let parent = parent_ptr as *mut AnyObject;
+        let child = child_ptr as *mut AnyObject;
+        let content_view_selector = sel!(contentView);
+        let responds: bool = msg_send![parent, respondsToSelector: content_view_selector];
+        let container: *mut AnyObject =
+            if responds { msg_send![parent, contentView] } else { parent };
+        if !container.is_null() {
+            let _: () = msg_send![container, addSubview: child];
+            set_parent(widget_id, parent_id);
+        }
+    }
+}
+
+pub(crate) fn set_native_frame(widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let object = ptr as *mut AnyObject;
+        let _: () = msg_send![object, setFrame: make_rect(x, y, width, height)];
+    }
+}
+
+pub(crate) fn set_native_hidden(widget_id: u64, hidden: bool) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let object = ptr as *mut AnyObject;
+        let hidden: bool = hidden;
+        let _: () = msg_send![object, setHidden: hidden];
+    }
+}
+
+pub(crate) fn set_native_enabled(widget_id: u64, enabled: bool) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let object = ptr as *mut AnyObject;
+        let selector = sel!(setEnabled:);
+        let responds: bool = msg_send![object, respondsToSelector: selector];
+        if responds {
+            let _: () = msg_send![object, setEnabled: enabled];
+        }
+    }
+}
+
+pub(crate) fn set_native_text(widget_id: u64, text: &str) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let object = ptr as *mut AnyObject;
+        let value = NSString::from_str(text);
+        for selector in [sel!(setStringValue:), sel!(setTitle:), sel!(setAccessibilityLabel:)] {
+            let responds: bool = msg_send![object, respondsToSelector: selector];
+            if responds {
+                let _: () = msg_send![object, performSelector: selector, withObject: &*value];
+                return;
+            }
+        }
+    }
+}
+
+pub(crate) fn set_native_menu_shortcut(widget_id: u64, key: &str, modifier_mask: u64) {
+    let Some(ptr) = get_native_view(widget_id) else {
+        return;
+    };
+    unsafe {
+        let item = ptr as *mut AnyObject;
+        let key = NSString::from_str(key);
+        let _: () = msg_send![item, setKeyEquivalent: &*key];
+        let _: () = msg_send![item, setKeyEquivalentModifierMask: modifier_mask];
+    }
 }
 
 fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
@@ -321,4 +436,34 @@ pub(crate) fn create_ns_menu_item(
             &NSString::from_str(key_equivalent),
         )
     }
+}
+
+/// Create a native NSAlert configured with a title, message, and an OK button.
+///
+/// Modal presentation is intentionally not started here; callers present it
+/// from an interactive AppKit run loop (e.g. `beginSheetModalForWindow`).
+pub(crate) fn create_ns_alert(mtm: MainThreadMarker, title: &str, text: &str) -> Retained<NSAlert> {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(text));
+    alert.addButtonWithTitle(&NSString::from_str("OK"));
+    alert
+}
+
+/// Create a native NSOpenPanel for the file dialog. Selection is single-file by
+/// default; modal presentation is left to the interactive run loop.
+pub(crate) fn create_ns_open_panel(mtm: MainThreadMarker) -> Retained<NSOpenPanel> {
+    let panel = NSOpenPanel::new(mtm);
+    panel.setAllowsMultipleSelection(false);
+    panel
+}
+
+/// Create a native NSColorPanel instance.
+pub(crate) fn create_ns_color_panel(mtm: MainThreadMarker) -> Retained<NSColorPanel> {
+    NSColorPanel::new(mtm)
+}
+
+/// Create a native NSFontPanel instance.
+pub(crate) fn create_ns_font_panel(mtm: MainThreadMarker) -> Retained<NSFontPanel> {
+    NSFontPanel::new(mtm)
 }
