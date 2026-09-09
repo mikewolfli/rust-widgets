@@ -89,4 +89,33 @@ mod tests {
         assert_eq!(toolbar_bindings.len(), 1);
         assert_eq!(toolbar_bindings[0].kind, ActionHostKind::ToolBar);
     }
+
+    #[test]
+    fn action_router_connects_undo_redo_callbacks() {
+        use crate::shortcut::{Key, Modifiers, ShortcutManager};
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut shortcut_manager = ShortcutManager::new();
+        let mut action_manager = ActionManager::new();
+        let undo_count = Arc::new(AtomicUsize::new(0));
+        let redo_count = Arc::new(AtomicUsize::new(0));
+        let undo_ref = Arc::clone(&undo_count);
+        let redo_ref = Arc::clone(&redo_count);
+        let mut router = ActionRouter::new(&mut shortcut_manager, &mut action_manager);
+        assert!(router.connect_undo_redo(
+            move || {
+                undo_ref.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                redo_ref.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        assert!(action_manager.trigger_shortcut("Ctrl+Z"));
+        assert!(action_manager.trigger_shortcut("Ctrl+Y"));
+        assert_eq!(undo_count.load(Ordering::SeqCst), 1);
+        assert_eq!(redo_count.load(Ordering::SeqCst), 1);
+        assert!(shortcut_manager.handle_key_event(Key::Z, Modifiers::CTRL));
+        assert!(shortcut_manager.handle_key_event(Key::Y, Modifiers::CTRL));
+    }
 }

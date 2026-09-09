@@ -117,6 +117,10 @@ pub struct WindowsImeBridge {
     composition_start: Mutex<usize>,
     /// Cursor (insertion point) position inside the composition, in bytes.
     cursor_pos: Mutex<usize>,
+    /// Last insertion-point rectangle in screen coordinates.
+    cursor_rect: Mutex<(i32, i32, u32, u32)>,
+    /// Last requested candidate window position.
+    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native TSF handle ──
     /// Whether the TSF subsystem was successfully initialised.
@@ -152,6 +156,8 @@ impl WindowsImeBridge {
             marked_text: Mutex::new(String::new()),
             composition_start: Mutex::new(0),
             cursor_pos: Mutex::new(0),
+            cursor_rect: Mutex::new((0, 0, 0, 0)),
+            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             tsf_available: Mutex::new(tsf_avail),
             tsf_manager: Mutex::new(mgr),
         }
@@ -165,6 +171,7 @@ impl WindowsImeBridge {
     /// position.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[Windows IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
+        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
         // Real impl:  ITfContext::GetSelection → ITfContext::SetSelection
     }
 
@@ -324,6 +331,7 @@ impl ImeBridge for WindowsImeBridge {
             position.x,
             position.y,
         );
+        *self.candidate_position.lock().unwrap() = position;
         // Native TSF: ITfThreadMgr::GetGlobalCompartment → set candidate
         //             window position via ITfCandidateListUIElement.
     }
@@ -473,6 +481,10 @@ mod tests {
     fn test_set_candidate_window_position() {
         let bridge = WindowsImeBridge::new();
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 50, y: 75 });
+        assert_eq!(
+            *bridge.candidate_position.lock().unwrap(),
+            ImeCandidatePosition { x: 50, y: 75 }
+        );
     }
 
     #[test]
@@ -490,6 +502,7 @@ mod tests {
     fn test_set_cursor_rect() {
         let bridge = WindowsImeBridge::new();
         bridge.set_cursor_rect(0, 0, 200, 20);
+        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (0, 0, 200, 20));
     }
 
     #[test]

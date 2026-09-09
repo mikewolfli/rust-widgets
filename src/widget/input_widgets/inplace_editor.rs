@@ -7,7 +7,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A text editor that switches between display mode and edit mode in-place.
 ///
@@ -21,6 +24,9 @@ pub struct InplaceEditor {
     font_size: f32,
     padding: i32,
     cursor_position: usize,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
     /// Emitted when the edit is accepted (Enter/Tab). Carries the final text.
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
@@ -38,6 +44,9 @@ impl InplaceEditor {
             font_size: 14.0,
             padding: 4,
             cursor_position: text.len(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(text.to_string())),
+            restoring_history: false,
             edit_accepted: Signal1::new(),
             edit_cancelled: GenericSignal::new(),
         }
@@ -81,8 +90,49 @@ impl InplaceEditor {
 
     /// Sets the text content.
     pub fn set_text(&mut self, text: &str) {
+        let before = self.text.clone();
         self.text = text.to_string();
-        self.cursor_position = self.text.len();
+        if !self.restoring_history && before != self.text {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "inplace_editor_text",
+            )));
+        }
+        self.cursor_position = self.text.chars().count();
+        self.base.request_redraw();
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.cursor_position = self.text.chars().count();
+        self.restoring_history = false;
         self.base.request_redraw();
     }
 
@@ -115,8 +165,10 @@ impl InplaceEditor {
             if self.cursor_position > 0 {
                 let mut chars: Vec<char> = self.text.chars().collect();
                 chars.remove(self.cursor_position - 1);
-                self.text = chars.into_iter().collect();
-                self.cursor_position = self.cursor_position.saturating_sub(1);
+                let next = chars.into_iter().collect::<String>();
+                let next_cursor = self.cursor_position.saturating_sub(1);
+                self.set_text(&next);
+                self.cursor_position = next_cursor.min(self.text.chars().count());
                 self.base.request_redraw();
             }
         } else if c == '\u{ffff}' {
@@ -124,14 +176,17 @@ impl InplaceEditor {
             if self.cursor_position < self.text.chars().count() {
                 let mut chars: Vec<char> = self.text.chars().collect();
                 chars.remove(self.cursor_position);
-                self.text = chars.into_iter().collect();
+                let next = chars.into_iter().collect::<String>();
+                self.set_text(&next);
+                self.cursor_position = self.cursor_position.min(self.text.chars().count());
                 self.base.request_redraw();
             }
         } else {
             let mut chars: Vec<char> = self.text.chars().collect();
             chars.insert(self.cursor_position, c);
-            self.text = chars.into_iter().collect();
-            self.cursor_position += 1;
+            let next = chars.into_iter().collect::<String>();
+            self.set_text(&next);
+            self.cursor_position = self.text.chars().count();
             self.base.request_redraw();
         }
     }
@@ -222,12 +277,18 @@ impl EventHandler for InplaceEditor {
             Event::MouseDoubleClick { pos: _, button } if *button == 1 => {
                 self.start_edit();
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
                 if !self.is_editing {
                     self.base.handle_event(event);
                     return;
                 }
                 match *key {
+                    90 if *modifiers == 2 => {
+                        let _ = self.undo();
+                    }
+                    89 if *modifiers == 2 => {
+                        let _ = self.redo();
+                    }
                     0x1B => {
                         // Escape - cancel
                         self.finish_edit(false);

@@ -3,8 +3,11 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::undo::{TextSnapshotCommand, UndoStack};
 
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Single-line text edit widget.
 pub struct LineEdit {
     base: BaseWidget,
@@ -15,6 +18,9 @@ pub struct LineEdit {
     cursor_position: usize,
     selection_start: Option<usize>,
     read_only: bool,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
     pub text_changed: Signal1<String>,
     pub editing_finished: GenericSignal,
     pub return_pressed: GenericSignal,
@@ -44,6 +50,9 @@ impl LineEdit {
             cursor_position: 0,
             selection_start: None,
             read_only: false,
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -60,8 +69,57 @@ impl LineEdit {
             return;
         }
         self.text = text;
+        if !self.restoring_history {
+            let before = self.history_target.borrow().clone();
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "line_edit_text",
+            )));
+        }
         self.cursor_position = self.text.len();
         self.selection_start = None;
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
+    }
+
+    /// Undo the latest text mutation.
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    /// Redo the latest undone text mutation.
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    /// Returns whether a text mutation can be undone.
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    /// Returns whether a text mutation can be redone.
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        let text = self.history_target.borrow().clone();
+        self.restoring_history = true;
+        self.text = text;
+        self.cursor_position = self.text.len();
+        self.selection_start = None;
+        self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -388,6 +446,12 @@ impl EventHandler for LineEdit {
                             self.base.redraw_requested.emit();
                         }
                     }
+                    90 if modifiers & 2 != 0 => {
+                        let _ = self.undo();
+                    }
+                    89 if modifiers & 2 != 0 => {
+                        let _ = self.redo();
+                    }
                     _ => {
                         // Character input
                         if let Some(ch) = char::from_u32(*key) {
@@ -498,6 +562,30 @@ mod tests {
         le.set_text(String::new());
         assert!(le.text().is_empty());
         assert_eq!(le.cursor_position(), 0);
+    }
+
+    #[test]
+    fn lineedit_undo_redo_restores_text() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("one");
+        le.set_text("two");
+        assert!(le.can_undo());
+        assert!(le.undo());
+        assert_eq!(le.text(), "one");
+        assert!(le.can_redo());
+        assert!(le.redo());
+        assert_eq!(le.text(), "two");
+    }
+
+    #[test]
+    fn lineedit_control_z_and_control_y_drive_history() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("before");
+        le.set_text("after");
+        le.handle_event(&Event::key_press(90, 2));
+        assert_eq!(le.text(), "before");
+        le.handle_event(&Event::key_press(89, 2));
+        assert_eq!(le.text(), "after");
     }
 
     #[test]

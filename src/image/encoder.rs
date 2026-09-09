@@ -514,6 +514,16 @@ fn encode_jpeg(image: &DecodedImage) -> Result<Vec<u8>, String> {
 
 /// Encode a decoded image into bytes in the specified format.
 pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, String> {
+    if image.width == 0 || image.height == 0 {
+        return Err("Cannot encode an image with zero dimensions".into());
+    }
+    let expected_len = (image.width as usize)
+        .checked_mul(image.height as usize)
+        .and_then(|pixels| pixels.checked_mul(image.data.bytes_per_pixel()))
+        .ok_or("Image dimensions overflow")?;
+    if image.data.as_bytes().len() != expected_len {
+        return Err("Image data length does not match dimensions".into());
+    }
     match format {
         ImageFormat::Png => encode_png(image),
         ImageFormat::Bmp => encode_bmp(image),
@@ -1089,8 +1099,8 @@ fn encode_qoi(image: &DecodedImage) -> Result<Vec<u8>, String> {
         }
         prev = px;
     }
-    // 8-byte padding
-    out.extend_from_slice(&[0u8; 8]);
+    // QOI end marker
+    out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
     Ok(out)
 }
 
@@ -1182,6 +1192,13 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_mismatched_dimensions() {
+        let image = DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![0; 3]), 1, 1);
+        let error = encode(&image, ImageFormat::Png).unwrap_err();
+        assert!(error.contains("length does not match"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn encode_png_roundtrip() {
         let img = make_test_image();
         let encoded = encode_png(&img).unwrap();
@@ -1255,9 +1272,9 @@ mod tests {
 
     #[test]
     fn encode_gif_roundtrip() {
-        // The GIF encoder emits a real GIF89a + LZW stream. The decoder side
-        // is not implemented (decode_gif returns Err), so only the encoded
-        // structure is asserted here.
+        // The GIF encoder emits a real GIF89a + LZW stream.
+        // The decoder uses the optional image codec backend when image support
+        // is enabled, so this test checks the encoded bytes directly.
         let img = make_test_image();
         let encoded = encode_gif(&img).unwrap();
         assert!(encoded.starts_with(b"GIF89a"), "GIF must start with GIF89a");
@@ -1274,9 +1291,9 @@ mod tests {
 
     #[test]
     fn encode_tiff_roundtrip() {
-        // The TIFF encoder emits a real little-endian TIFF. The decoder side
-        // is not implemented (decode_tiff returns Err), so only the encoded
-        // structure is asserted here.
+        // The TIFF encoder emits a real little-endian TIFF.
+        // The decoder uses the optional image codec backend when image support
+        // is enabled, so this test checks the encoded bytes directly.
         let img = make_test_image();
         let encoded = encode_tiff(&img).unwrap();
         assert!(encoded.starts_with(b"II"), "TIFF must start with II");

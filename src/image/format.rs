@@ -5,12 +5,14 @@
 //! The [`ImageFormat`] enum is a format identifier list; it does **not** imply
 //! that this crate ships a codec for every variant. Actual codec status:
 //!
-//! - **Decoded & encoded**: PNG, JPEG, BMP, QOI, Farbfeld, PNM (P1-P6).
-//! - **Encoded only** (decoding returns `Err`): GIF, TIFF, SVG/SVGZ.
-//! - **Neither** (detected by magic bytes; `decode` returns
-//!   `Err("... not implemented ...")`): WebP, AVIF, ICO.
+//! - **Decoded**: PNG, JPEG, BMP, QOI, Farbfeld, PNM (P1-P6), GIF, WebP,
+//!   TIFF, AVIF, ICO and SVG/SVGZ when the `image` capability is enabled.
+//! - GIF and animated WebP are represented by the existing single-frame API,
+//!   so decoding returns the first frame and does not preserve animation timing.
 //!
 //! Decoders never return fabricated placeholder pixels.
+
+use std::time::Duration;
 
 /// Image format identifier.
 ///
@@ -51,6 +53,36 @@ pub enum ImageFormat {
     Svg,
     /// Compressed SVG (.svgz).
     Svgz,
+}
+
+/// Decoded animation frames with per-frame delays.
+#[derive(Debug, Clone)]
+pub struct DecodedAnimation {
+    /// Frames in display order.
+    pub frames: Vec<DecodedImage>,
+    /// Delay before each corresponding frame is shown.
+    pub delays: Vec<Duration>,
+    /// Number of repeats; `None` means infinite looping.
+    pub loop_count: Option<u32>,
+}
+
+impl DecodedAnimation {
+    /// Creates an animation after validating its frame metadata lengths.
+    pub fn new(
+        frames: Vec<DecodedImage>,
+        delays: Vec<Duration>,
+        loop_count: Option<u32>,
+    ) -> Result<Self, String> {
+        if frames.len() != delays.len() {
+            return Err("Animation frame and delay counts differ".into());
+        }
+        Ok(Self { frames, delays, loop_count })
+    }
+
+    /// Returns the number of decoded frames.
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
 }
 
 impl ImageFormat {

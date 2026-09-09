@@ -5,7 +5,7 @@
 //!
 //! This bridges the gap between the ObjectId-based child tracking and the
 //! trait-object-based rendering/event dispatch.
-use crate::core::ObjectId;
+use crate::core::{ObjectId, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use std::collections::HashMap;
@@ -16,11 +16,18 @@ use std::collections::HashMap;
 /// child widgets without requiring architectural changes to the event dispatch
 /// system.
 pub struct SimpleRegistry {
-    entries: HashMap<ObjectId, (DrawClosure, EventClosure)>,
+    entries: HashMap<ObjectId, RegistryEntry>,
 }
 
 type DrawClosure = Box<dyn FnMut(&mut RenderContext) + Send>;
 type EventClosure = Box<dyn FnMut(&Event) + Send>;
+type GeometryClosure = Box<dyn FnMut(Rect) + Send>;
+
+struct RegistryEntry {
+    draw: DrawClosure,
+    event: EventClosure,
+    geometry: Option<GeometryClosure>,
+}
 
 // SAFETY: All types contained within SimpleRegistry implement Send:
 //   - HashMap<ObjectId, (DrawClosure, EventClosure)> where:
@@ -60,7 +67,27 @@ impl SimpleRegistry {
         D: FnMut(&mut RenderContext) + Send + 'static,
         E: FnMut(&Event) + Send + 'static,
     {
-        self.entries.insert(id, (Box::new(draw), Box::new(event)));
+        self.entries.insert(
+            id,
+            RegistryEntry { draw: Box::new(draw), event: Box::new(event), geometry: None },
+        );
+    }
+
+    /// Register a widget with an optional geometry synchronization callback.
+    pub fn register_with_geometry<D, E, G>(&mut self, id: ObjectId, draw: D, event: E, geometry: G)
+    where
+        D: FnMut(&mut RenderContext) + Send + 'static,
+        E: FnMut(&Event) + Send + 'static,
+        G: FnMut(Rect) + Send + 'static,
+    {
+        self.entries.insert(
+            id,
+            RegistryEntry {
+                draw: Box::new(draw),
+                event: Box::new(event),
+                geometry: Some(Box::new(geometry)),
+            },
+        );
     }
 
     /// Remove a widget from the registry.
@@ -70,8 +97,8 @@ impl SimpleRegistry {
 
     /// Draw the widget identified by `id`. Returns true if found and drawn.
     pub fn draw_widget(&mut self, id: ObjectId, context: &mut RenderContext) -> bool {
-        if let Some((draw_fn, _)) = self.entries.get_mut(&id) {
-            (draw_fn)(context);
+        if let Some(entry) = self.entries.get_mut(&id) {
+            (entry.draw)(context);
             true
         } else {
             false
@@ -80,12 +107,23 @@ impl SimpleRegistry {
 
     /// Forward event to widget identified by `id`. Returns true if found.
     pub fn forward_event(&mut self, id: ObjectId, event: &Event) -> bool {
-        if let Some((_, event_fn)) = self.entries.get_mut(&id) {
-            (event_fn)(event);
+        if let Some(entry) = self.entries.get_mut(&id) {
+            (entry.event)(event);
             true
         } else {
             false
         }
+    }
+
+    /// Synchronize a registered child geometry when it provided a callback.
+    pub fn set_widget_geometry(&mut self, id: ObjectId, geometry: Rect) -> bool {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            if let Some(callback) = entry.geometry.as_mut() {
+                callback(geometry);
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if an id is registered.

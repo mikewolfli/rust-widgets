@@ -99,7 +99,7 @@ impl MacOSObjc2Platform {
     /// Serialize all widget state for parity/regression testing
     pub fn serialize_state(&self) -> Result<String, serde_json::Error> {
         // Only serializes the widget state, not runtime or menu events
-        serde_json::to_string(&self.state)
+        self.state.serialize_widget_snapshot()
     }
 }
 impl MacOSObjc2Platform {

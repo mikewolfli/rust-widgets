@@ -363,10 +363,19 @@ impl EventHandler for DockWidget {
             }
             _ => { /* Other events are not relevant */ }
         }
-        // Forward events to widget via registry
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().forward_event(widget_id, event);
+        let allow_child_event = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos } => self.content_rect().contains(*pos),
+            _ => true,
+        };
+        // Forward content events only to the docked widget.
+        if allow_child_event {
+            if let Some(widget_id) = self.widget {
+                if let Some(ref reg) = self.registry {
+                    reg.borrow_mut().set_widget_geometry(widget_id, self.content_rect());
+                    reg.borrow_mut().forward_event(widget_id, event);
+                }
             }
         }
     }
@@ -486,7 +495,10 @@ impl Draw for DockWidget {
         // Draw widget via registry
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, content);
+                context.push_clip(content.x, content.y, content.width, content.height);
                 reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
             }
         }
     }

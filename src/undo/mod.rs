@@ -3,8 +3,10 @@
 
 mod command;
 mod stack;
+mod text_command;
 mod types;
 
 pub use command::*;
 pub use stack::*;
+pub(crate) use text_command::TextSnapshotCommand;
 pub use types::*;

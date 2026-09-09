@@ -1,6 +1,6 @@
 //! Splitter widget.
 use crate::core::{Orientation, Rect};
-use crate::layout::splitter::SplitterLayout;
+use crate::layout::{splitter::SplitterLayout, Layout};
 use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -29,6 +29,7 @@ pub struct Splitter {
     pub orientation_changed: Signal1<Orientation>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     drag_state: Option<DragState>,
+    active_pane: Option<usize>,
 }
 impl Splitter {
     /// Creates an empty splitter with horizontal orientation.
@@ -40,6 +41,7 @@ impl Splitter {
             orientation_changed: Signal1::new(),
             registry: None,
             drag_state: None,
+            active_pane: None,
         }
     }
     /// Returns splitter orientation.
@@ -117,6 +119,12 @@ impl Splitter {
         self.registry = Some(registry);
         self.base.request_redraw();
     }
+
+    fn pane_rects(&self) -> Vec<(ObjectId, Rect)> {
+        let mut rects = Vec::new();
+        self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
+        rects
+    }
 }
 impl Widget for Splitter {
     fn base(&self) -> &BaseWidget {
@@ -132,8 +140,15 @@ impl Widget for Splitter {
 }
 impl Draw for Splitter {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw splitter handles between panes
         let rect = self.base.geometry();
+        if let Some(ref registry) = self.registry {
+            for (pane_id, pane_rect) in self.pane_rects() {
+                context.push_clip(pane_rect.x, pane_rect.y, pane_rect.width, pane_rect.height);
+                registry.borrow_mut().draw_widget(pane_id, context);
+                context.pop_clip();
+            }
+        }
+        // Draw splitter handles between panes
         let handle_width = 5;
         match self.orientation() {
             Orientation::Horizontal => {
@@ -192,6 +207,14 @@ impl crate::event::EventHandler for Splitter {
             crate::event::Event::MousePress { pos, button }
                 if *button == 1 && self.pane_count() > 1 =>
             {
+                if let Some(index) = self.pane_rects().iter().position(|(_, pane)| {
+                    pos.x >= pane.x
+                        && pos.x < pane.x + pane.width as i32
+                        && pos.y >= pane.y
+                        && pos.y < pane.y + pane.height as i32
+                }) {
+                    self.active_pane = Some(index);
+                }
                 let total = if self.orientation() == Orientation::Horizontal {
                     rect.width as f32
                 } else {
@@ -264,10 +287,22 @@ impl crate::event::EventHandler for Splitter {
             }
             _ => { /* Other events are not relevant */ }
         }
-        // Forward events to panes
-        if self.base.is_enabled() {
-            if let Some(ref reg) = self.registry {
-                for pane_id in self.pane_ids() {
+        if let Some(ref reg) = self.registry {
+            let target = match event {
+                crate::event::Event::MousePress { pos, .. }
+                | crate::event::Event::MouseRelease { pos, .. }
+                | crate::event::Event::MouseMove { pos } => {
+                    self.pane_rects().iter().position(|(_, pane)| {
+                        pos.x >= pane.x
+                            && pos.x < pane.x + pane.width as i32
+                            && pos.y >= pane.y
+                            && pos.y < pane.y + pane.height as i32
+                    })
+                }
+                _ => self.active_pane,
+            };
+            if let Some(index) = target {
+                if let Some(pane_id) = self.pane_ids().get(index) {
                     let _ = reg.borrow_mut().forward_event(*pane_id, event);
                 }
             }

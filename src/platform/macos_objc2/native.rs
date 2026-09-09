@@ -168,8 +168,7 @@ pub(crate) fn create_ns_slider(
     let rect = make_rect(x, y, width, height);
     // SAFETY: NSSlider::initWithFrame on main thread (mtm guard).
     // objc2 init methods reliably return a valid Retained<NSSlider>.
-    let slider = unsafe { NSSlider::initWithFrame(mtm.alloc(), rect) };
-    slider
+    unsafe { NSSlider::initWithFrame(mtm.alloc(), rect) }
 }
 
 pub(crate) fn create_ns_textfield(
@@ -263,8 +262,7 @@ pub(crate) fn create_ns_panel(
 ) -> Retained<NSView> {
     let rect = make_rect(x, y, width, height);
     // SAFETY: NSView::initWithFrame on main thread (mtm guard).
-    let view = unsafe { NSView::initWithFrame(mtm.alloc(), rect) };
-    view
+    unsafe { NSView::initWithFrame(mtm.alloc(), rect) }
 }
 
 pub(crate) fn create_ns_scroll_view(
@@ -315,13 +313,12 @@ pub(crate) fn create_ns_menu_item(
     key_equivalent: &str,
 ) -> Retained<NSMenuItem> {
     // SAFETY: NSMenuItem::initWithTitle_action_keyEquivalent on main thread via mtm.
-    let item = unsafe {
+    unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc(),
             &NSString::from_str(title),
             None,
             &NSString::from_str(key_equivalent),
         )
-    };
-    item
+    }
 }

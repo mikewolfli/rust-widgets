@@ -24,6 +24,8 @@ pub(crate) struct GlyphDrawConfig<'a> {
     pub canvas_height: u32,
     /// Canvas pixel buffer (RGBA8).
     pub canvas: &'a mut [u8],
+    /// Active render clip, if any.
+    pub clip: Option<(i32, i32, u32, u32)>,
 }
 
 pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
@@ -52,14 +54,16 @@ pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
             }
             for py in y0.max(0)..y1.min(config.canvas_height as i32) {
                 for px in x0.max(0)..x1.min(config.canvas_width as i32) {
-                    blend_pixel(
-                        config.canvas,
-                        config.canvas_width,
-                        px as u32,
-                        py as u32,
-                        config.color,
-                        1.0,
-                    );
+                    if pixel_visible(config.clip, px, py) {
+                        blend_pixel(
+                            config.canvas,
+                            config.canvas_width,
+                            px as u32,
+                            py as u32,
+                            config.color,
+                            1.0,
+                        );
+                    }
                 }
             }
         }
@@ -100,6 +104,17 @@ pub(crate) fn set_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Col
     frame[idx + 1] = color.g;
     frame[idx + 2] = color.b;
     frame[idx + 3] = color.a;
+}
+
+/// Returns whether a logical pixel lies inside the active render clip.
+pub(crate) fn pixel_visible(clip: Option<(i32, i32, u32, u32)>, x: i32, y: i32) -> bool {
+    let Some((clip_x, clip_y, clip_width, clip_height)) = clip else {
+        return true;
+    };
+    x >= clip_x
+        && y >= clip_y
+        && x < clip_x.saturating_add(clip_width as i32)
+        && y < clip_y.saturating_add(clip_height as i32)
 }
 pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
     if coverage <= 0.0 {

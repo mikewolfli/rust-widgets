@@ -396,8 +396,8 @@ pub mod windows {
 /// macOS clipboard backend using objc2 (NSPasteboard via objc2-app-kit).
 #[cfg(all(target_os = "macos", feature = "macos"))]
 pub mod objc2_macos {
-    //! macOS clipboard using objc2 NSPasteboard APIs.
-    //! Uses objc2 runtime messaging with NSPasteboard, NSPasteboardItem, and NSArray.
+    // macOS clipboard using objc2 NSPasteboard APIs.
+    // Uses objc2 runtime messaging with NSPasteboard, NSPasteboardItem, and NSArray.
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     use objc2::class;

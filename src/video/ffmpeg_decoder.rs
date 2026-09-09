@@ -466,9 +466,6 @@ fn codec_name_from_id(id: ffmpeg_next::codec::Id) -> String {
         ffmpeg_next::codec::Id::SMC => "smc".into(),
         ffmpeg_next::codec::Id::R210 => "r210".into(),
         ffmpeg_next::codec::Id::V210 => "v210".into(),
-        ffmpeg_next::codec::Id::V308 => "v308".into(),
-        ffmpeg_next::codec::Id::V408 => "v408".into(),
-        ffmpeg_next::codec::Id::V410 => "v410".into(),
         _ => {
             let s = format!("{:?}", id);
             s.to_lowercase()

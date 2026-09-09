@@ -650,6 +650,10 @@ fn modern_widgets_allocate_valid_ids() {
         backend.create_divider(parent, 0, 0, 200, 2),
         backend.create_icon(parent, 0, 0, 24, 24),
         backend.create_qr_code(parent, 0, 0, 120, 120),
+        backend.create_freeform_shape(parent, 0, 0, 120, 80),
+        backend.create_tab_bar(parent, 0, 0, 180, 32),
+        backend.create_pie_menu(parent, 0, 0, 120, 120),
+        backend.create_ribbon_bar(parent, 0, 0, 240, 64),
     ];
     for id in ids {
         assert_ne!(id, 0, "modern widget create methods must allocate non-zero IDs");
@@ -674,6 +678,10 @@ fn modern_widgets_store_correct_widget_kind() {
     let chip = backend.create_chip(parent, 0, 0, 80, 30);
     let tile_view = backend.create_tile_view(parent, 0, 0, 300, 200);
     let qr_code = backend.create_qr_code(parent, 0, 0, 120, 120);
+    let freeform_shape = backend.create_freeform_shape(parent, 0, 0, 120, 80);
+    let tab_bar = backend.create_tab_bar(parent, 0, 0, 180, 32);
+    let pie_menu = backend.create_pie_menu(parent, 0, 0, 120, 120);
+    let ribbon_bar = backend.create_ribbon_bar(parent, 0, 0, 240, 64);
 
     // The backend exposes no kind accessor; read the stored properties directly
     // (the same state the custom painter consumes).
@@ -692,6 +700,10 @@ fn modern_widgets_store_correct_widget_kind() {
     assert_eq!(stored_kind(chip), Some(WidgetKind::Chip));
     assert_eq!(stored_kind(tile_view), Some(WidgetKind::TileView));
     assert_eq!(stored_kind(qr_code), Some(WidgetKind::QRCode));
+    assert_eq!(stored_kind(freeform_shape), Some(WidgetKind::FreeformShape));
+    assert_eq!(stored_kind(tab_bar), Some(WidgetKind::TabBar));
+    assert_eq!(stored_kind(pie_menu), Some(WidgetKind::PieMenu));
+    assert_eq!(stored_kind(ribbon_bar), Some(WidgetKind::RibbonBar));
 }
 
 #[cfg(not(feature = "mini"))]

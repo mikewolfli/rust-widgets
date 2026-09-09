@@ -6,16 +6,33 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
     blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, draw_bitmap_glyph,
-    inset_rect, is_combining_mark, is_variation_selector, line_stroke_coverage_grid,
+    inset_rect, is_combining_mark, is_variation_selector, line_stroke_coverage_grid, pixel_visible,
     rounded_rect_coverage, rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel,
     GlyphDrawConfig,
 };
 use crate::render::SoftwareSurface;
 
+macro_rules! set_pixel_clipped {
+    ($clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr) => {
+        if pixel_visible($clip, $x as i32, $y as i32) {
+            set_pixel($frame, $width, $x as u32, $y as u32, $color);
+        }
+    };
+}
+
+macro_rules! blend_pixel_clipped {
+    ($clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr, $coverage:expr) => {
+        if pixel_visible($clip, $x as i32, $y as i32) {
+            blend_pixel($frame, $width, $x as u32, $y as u32, $color, $coverage);
+        }
+    };
+}
+
 impl SoftwareSurface {
     /// Fills a rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let size = self.buffer.size();
+        let clip = self.current_clip();
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;
         let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
@@ -25,7 +42,7 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         for y in y0..y1 {
             for x in x0..x1 {
-                set_pixel(frame, size.width, x, y, color);
+                set_pixel_clipped!(clip, frame, size.width, x, y, color);
             }
         }
     }
@@ -78,6 +95,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
@@ -88,7 +106,7 @@ impl SoftwareSurface {
             for px in x0..=x1 {
                 let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
                 if coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
                 }
             }
         }
@@ -102,6 +120,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
@@ -113,7 +132,7 @@ impl SoftwareSurface {
                 let coverage =
                     rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
                 }
             }
         }
@@ -132,6 +151,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
@@ -154,7 +174,7 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
                 }
             }
         }
@@ -174,6 +194,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
@@ -197,7 +218,7 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
                 }
             }
         }
@@ -220,6 +241,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width;
         let height = size.height;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let brush_start = -(stroke_width as i32 / 2);
         let brush_end = brush_start + stroke_width as i32 - 1;
@@ -238,7 +260,7 @@ impl SoftwareSurface {
                     let px = x0 + ox;
                     let py = y0 + oy;
                     if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-                        set_pixel(frame, width, px as u32, py as u32, color);
+                        set_pixel_clipped!(clip, frame, width, px, py, color);
                     }
                 }
             }
@@ -275,6 +297,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let half = stroke_width as f32 / 2.0;
         let pad = half.ceil() as i32 + 1;
@@ -290,7 +313,7 @@ impl SoftwareSurface {
             for px in min_x..=max_x {
                 let coverage = line_stroke_coverage_grid(px, py, ax, ay, bx, by, half, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
                 }
             }
         }
@@ -303,6 +326,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let r = radius as i32;
         for y in -r..=r {
@@ -320,7 +344,7 @@ impl SoftwareSurface {
                 if px < 0 || px >= width {
                     continue;
                 }
-                set_pixel(frame, size.width, px as u32, py as u32, color);
+                set_pixel_clipped!(clip, frame, size.width, px, py, color);
             }
         }
     }
@@ -333,6 +357,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let r = radius as f32;
         let x0 = (center.x - radius as i32 - 1).max(0);
@@ -343,7 +368,7 @@ impl SoftwareSurface {
             for px in x0..=x1 {
                 let coverage = circle_fill_coverage_grid(px, py, center, r, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
                 }
             }
         }
@@ -370,6 +395,7 @@ impl SoftwareSurface {
         let size = self.buffer.size();
         let width = size.width as i32;
         let height = size.height as i32;
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let ring_radius = radius as f32;
         let x0 = (center.x - radius as i32 - 1).max(0);
@@ -387,7 +413,7 @@ impl SoftwareSurface {
                     sample_grid,
                 );
                 if stroke_coverage > 0.0 {
-                    blend_pixel(frame, size.width, px as u32, py as u32, color, stroke_coverage);
+                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
                 }
             }
         }
@@ -485,6 +511,7 @@ impl SoftwareSurface {
     /// Fills a polygon using a scanline algorithm.
     fn fill_polygon(&mut self, points: &[Point], color: Color) {
         let size = self.buffer.size();
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let n = points.len();
         if n < 3 {
@@ -517,7 +544,7 @@ impl SoftwareSurface {
                 let x_start = x_start.max(0);
                 let x_end = x_end.min(size.width as i32 - 1);
                 for x in x_start..=x_end {
-                    set_pixel(frame, size.width, x as u32, y as u32, color);
+                    set_pixel_clipped!(clip, frame, size.width, x, y, color);
                 }
                 i += 2;
             }
@@ -529,6 +556,7 @@ impl SoftwareSurface {
         vs.sort_by_key(|v| v.y);
         let [a, b, c] = vs;
         let size = self.buffer.size();
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
 
         if a.y == c.y {
@@ -536,7 +564,7 @@ impl SoftwareSurface {
             let max_x = a.x.max(b.x).max(c.x);
             if max_x > min_x {
                 for x in min_x.max(0)..=max_x.min(size.width as i32 - 1) {
-                    set_pixel(frame, size.width, x as u32, a.y as u32, color);
+                    set_pixel_clipped!(clip, frame, size.width, x, a.y, color);
                 }
             }
             return;
@@ -576,7 +604,7 @@ impl SoftwareSurface {
                 let x_start = x_start.max(0);
                 let x_end = x_end.min(size.width as i32 - 1);
                 for x in x_start..=x_end {
-                    set_pixel(frame, size.width, x as u32, y as u32, color);
+                    set_pixel_clipped!(clip, frame, size.width, x, y, color);
                 }
             }
         }
@@ -603,6 +631,7 @@ impl SoftwareSurface {
         let mut pen_x = adjusted_origin_x as f32;
         let glyph_height = metrics.height.max(1) as i32;
         let size = self.buffer.size();
+        let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         for cluster in shaped.clusters() {
             let glyph_width = cluster.advance.max(1.0).round() as i32;
@@ -621,6 +650,7 @@ impl SoftwareSurface {
                     w: glyph_width as u32,
                     h: glyph_height as u32,
                     color,
+                    clip,
                 };
                 draw_bitmap_glyph(&mut config);
             }
@@ -631,6 +661,7 @@ impl SoftwareSurface {
     /// Pixels are copied directly from the source data, performing alpha blending.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let size = self.buffer.size();
+        let clip = self.current_clip();
         if width == 0 || height == 0 {
             return;
         }
@@ -649,6 +680,9 @@ impl SoftwareSurface {
             for col in 0..width {
                 let sx = x + col as i32;
                 if sx < 0 || sx as u32 >= screen_width {
+                    continue;
+                }
+                if !pixel_visible(clip, sx, sy) {
                     continue;
                 }
                 let src_idx = ((row as usize) * (width as usize) + (col as usize)) * 4;

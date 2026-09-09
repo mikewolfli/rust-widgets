@@ -1,6 +1,4 @@
 use crate::signal::Signal;
-#[cfg(not(feature = "video-codecs"))]
-use crate::video::decoder::FrameBufferDecoder;
 use crate::video::decoder::{MjpegDecoder, VideoDecoder};
 use crate::video::format::{self, ContainerFormat};
 use crate::video::frame::VideoFrame;
@@ -26,8 +24,8 @@ impl VideoEngine {
     /// Open a video file from raw bytes. Detects container format automatically.
     ///
     /// When the `video-codecs` feature is enabled, non-MJPEG formats are
-    /// decoded via FFmpeg (real decoding).  With the feature disabled, the
-    /// synthetic `FrameBufferDecoder` fallback is used.
+    /// decoded via FFmpeg. Without the feature, non-MJPEG input returns an
+    /// explicit error instead of producing synthetic frames.
     pub fn open(data: Vec<u8>) -> Result<Self, String> {
         let format = format::detect_container_format(&data);
         let decoder: Box<dyn VideoDecoder + Send> = match format {
@@ -38,7 +36,9 @@ impl VideoEngine {
             #[cfg(feature = "video-codecs")]
             _ => Box::new(FfmpegDecoder::new(data)?),
             #[cfg(not(feature = "video-codecs"))]
-            _ => Box::new(FrameBufferDecoder::new(data, format)),
+            _ => {
+                return Err(format!("decoding {:?} requires the `video-codecs` feature", format));
+            }
         };
         let metadata = decoder.metadata().clone();
         Ok(Self {

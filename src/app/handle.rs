@@ -7,7 +7,7 @@
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
-use crate::core::{ObjectId, Orientation};
+use crate::core::{ObjectId, Orientation, Rect};
 use crate::platform::WidgetTriggerKind;
 
 // ═══════════════════════════════════════════════════════════════
@@ -266,6 +266,7 @@ impl WidgetHandle for WindowHandle {
             state.h = h;
         });
         crate::set_widget_geometry(self.raw_id(), x, y, w, h);
+        apply_window_layout(self.id);
     }
 
     fn on_click<F: FnMut() + 'static>(&self, f: F) {
@@ -338,7 +339,11 @@ impl WindowHandle {
     }
 
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
-        PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
+        let panel = PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h));
+        PANEL_STATES.with(|map| {
+            map.borrow_mut().insert(panel.raw_id(), PanelState::with_geometry(x, y, w, h));
+        });
+        panel
     }
 
     /// Create a new frame (group box).
@@ -398,11 +403,47 @@ impl WindowHandle {
         LAYOUTS.with(|map| {
             map.borrow_mut().insert(self.id, Box::new(layout));
         });
+        apply_window_layout(self.id);
     }
 }
 
 thread_local! {
     static LAYOUTS: RefCell<HashMap<ObjectId, Box<dyn crate::layout::Layout>>> = RefCell::new(HashMap::new());
+}
+
+/// Apply a window's current layout to all child widget geometries.
+///
+/// Layouts use the window client area as their coordinate space. Geometry
+/// updates happen after the layout borrow is released so a backend callback
+/// cannot re-enter the layout map while it is borrowed.
+fn apply_window_layout(window_id: ObjectId) {
+    let Some((width, height)) =
+        WINDOW_STATES.with(|map| map.borrow().get(&window_id).map(|state| (state.w, state.h)))
+    else {
+        return;
+    };
+
+    let child_geometries = LAYOUTS.with(|map| {
+        let map = map.borrow();
+        let Some(layout) = map.get(&window_id) else {
+            return Vec::new();
+        };
+        let mut geometries = Vec::new();
+        layout.update(Rect::new(0, 0, width, height), &mut |widget_id, geometry| {
+            geometries.push((widget_id, geometry));
+        });
+        geometries
+    });
+
+    for (widget_id, geometry) in child_geometries {
+        crate::set_widget_geometry(
+            widget_id,
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1203,6 +1244,16 @@ impl SpinBoxHandle {
 #[derive(Debug, Clone, Default)]
 struct PanelState {
     title: String,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+}
+
+impl PanelState {
+    fn with_geometry(x: i32, y: i32, w: u32, h: u32) -> Self {
+        Self { title: String::new(), x, y, w, h }
+    }
 }
 
 thread_local! {
@@ -1212,6 +1263,20 @@ thread_local! {
 
 /// # Panel-specific operations
 impl PanelHandle {
+    /// Set panel geometry and reapply the active child layout.
+    pub fn set_geometry(&self, x: i32, y: i32, w: u32, h: u32) {
+        PANEL_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(self.raw_id()).or_default();
+            state.x = x;
+            state.y = y;
+            state.w = w;
+            state.h = h;
+        });
+        crate::set_widget_geometry(self.raw_id(), x, y, w, h);
+        apply_panel_layout(self.raw_id());
+    }
+
     /// Set the layout manager for this panel.
     ///
     /// The layout is stored internally and used to reposition children.
@@ -1220,6 +1285,7 @@ impl PanelHandle {
         PANEL_LAYOUTS.with(|map| {
             map.borrow_mut().insert(self.raw_id(), layout);
         });
+        apply_panel_layout(self.raw_id());
     }
 
     /// Set the panel title text.
@@ -1229,6 +1295,36 @@ impl PanelHandle {
                 title.to_owned();
         });
         crate::set_widget_text(self.raw_id(), title);
+    }
+}
+
+fn apply_panel_layout(panel_id: ObjectId) {
+    let Some(rect) = PANEL_STATES.with(|map| {
+        map.borrow().get(&panel_id).map(|state| Rect::new(state.x, state.y, state.w, state.h))
+    }) else {
+        return;
+    };
+
+    let child_geometries = PANEL_LAYOUTS.with(|map| {
+        let map = map.borrow();
+        let Some(layout) = map.get(&panel_id) else {
+            return Vec::new();
+        };
+        let mut geometries = Vec::new();
+        layout.update(rect, &mut |widget_id, geometry| {
+            geometries.push((widget_id, geometry));
+        });
+        geometries
+    });
+
+    for (widget_id, geometry) in child_geometries {
+        crate::set_widget_geometry(
+            widget_id,
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+        );
     }
 }
 

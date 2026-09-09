@@ -3,7 +3,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Multi-line text edit widget.
 pub struct TextEdit {
     base: BaseWidget,
@@ -12,6 +15,9 @@ pub struct TextEdit {
     max_length: Option<usize>,
     read_only: bool,
     line_wrap: bool,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
     pub text_changed: Signal1<String>,
     pub cursor_position_changed: Signal1<usize>,
 }
@@ -40,6 +46,9 @@ impl TextEdit {
             max_length: None,
             read_only: false,
             line_wrap: true,
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
             text_changed: Signal1::new(),
             cursor_position_changed: Signal1::new(),
         }
@@ -54,7 +63,17 @@ impl TextEdit {
         if self.text == text {
             return;
         }
+        let before = self.text.clone();
         self.text = text;
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "text_edit_text",
+            )));
+        }
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -78,8 +97,8 @@ impl TextEdit {
         if let Some(max) = max_length {
             if self.text.len() > max {
                 let boundary = floor_char_boundary(&self.text, max);
-                self.text.truncate(boundary);
-                self.text_changed.emit(self.text.clone());
+                let truncated = self.text[..boundary].to_string();
+                self.set_text(truncated);
             }
         }
     }
@@ -130,8 +149,12 @@ impl TextEdit {
     }
     /// Appends text to the end.
     pub fn append(&mut self, text: &str) {
-        self.text.push_str(text);
-        self.text_changed.emit(self.text.clone());
+        if text.is_empty() {
+            return;
+        }
+        let mut next = self.text.clone();
+        next.push_str(text);
+        self.set_text(next);
     }
     /// Clears all text.
     pub fn clear(&mut self) {
@@ -140,6 +163,41 @@ impl TextEdit {
     /// Returns whether the text edit is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    /// Undo the latest text mutation.
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    /// Redo the latest undone text mutation.
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        let text = self.history_target.borrow().clone();
+        self.restoring_history = true;
+        self.text = text;
+        self.restoring_history = false;
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 }
 // Implement Widget trait
@@ -160,26 +218,35 @@ impl EventHandler for TextEdit {
         if !self.base.is_enabled() || self.read_only {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
+        if let Event::KeyPress { key, modifiers } = event {
             match *key {
                 8 => {
                     // Backspace
                     if !self.text.is_empty() {
-                        self.text.pop();
-                        self.text_changed.emit(self.text.clone());
+                        let mut next = self.text.clone();
+                        next.pop();
+                        self.set_text(next);
                     }
                 }
                 13 => {
                     // Enter
-                    self.text.push('\n');
-                    self.text_changed.emit(self.text.clone());
+                    let mut next = self.text.clone();
+                    next.push('\n');
+                    self.set_text(next);
+                }
+                90 if modifiers & 2 != 0 => {
+                    let _ = self.undo();
+                }
+                89 if modifiers & 2 != 0 => {
+                    let _ = self.redo();
                 }
                 _ => {
                     // Character input
                     if let Some(ch) = char::from_u32(*key) {
                         if ch.is_ascii_graphic() || ch == ' ' || ch == '\t' {
-                            self.text.push(ch);
-                            self.text_changed.emit(self.text.clone());
+                            let mut next = self.text.clone();
+                            next.push(ch);
+                            self.set_text(next);
                         }
                     }
                 }
@@ -324,6 +391,28 @@ mod tests {
         assert_eq!(te.text(), "Hello");
         te.append(" World");
         assert_eq!(te.text(), "Hello World");
+    }
+
+    #[test]
+    fn textedit_undo_redo_restores_text() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("one");
+        te.set_text("two");
+        assert!(te.undo());
+        assert_eq!(te.text(), "one");
+        assert!(te.redo());
+        assert_eq!(te.text(), "two");
+    }
+
+    #[test]
+    fn textedit_control_z_and_control_y_drive_history() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("before");
+        te.set_text("after");
+        te.handle_event(&Event::key_press(90, 2));
+        assert_eq!(te.text(), "before");
+        te.handle_event(&Event::key_press(89, 2));
+        assert_eq!(te.text(), "after");
     }
 
     #[test]

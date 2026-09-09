@@ -95,13 +95,14 @@ impl ToolBox {
     }
     /// Inserts an item at position.
     pub fn insert_item(&mut self, index: usize, text: String, widget: Option<ObjectId>) {
+        let was_empty = self.items.is_empty();
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child(widget_id);
         }
         self.items.insert(index, item);
-        if self.current_index >= index {
+        if !was_empty && self.current_index >= index {
             self.current_index += 1;
         }
     }
@@ -294,10 +295,19 @@ impl EventHandler for ToolBox {
             }
             _ => {}
         }
-        // Forward events to current widget via registry
-        if let Some(widget_id) = self.current_widget() {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().forward_event(widget_id, event);
+        let allow_child_event = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos } => self.content_rect().contains(*pos),
+            _ => true,
+        };
+        // Forward content events only to the current widget.
+        if allow_child_event {
+            if let Some(widget_id) = self.current_widget() {
+                if let Some(ref reg) = self.registry {
+                    reg.borrow_mut().set_widget_geometry(widget_id, self.content_rect());
+                    reg.borrow_mut().forward_event(widget_id, event);
+                }
             }
         }
     }
@@ -396,7 +406,15 @@ impl Draw for ToolBox {
         // Draw current widget via registry
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                context.push_clip(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
                 reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
             }
         }
     }

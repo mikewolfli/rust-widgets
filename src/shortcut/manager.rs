@@ -73,6 +73,11 @@ impl ShortcutManager {
             false
         }
     }
+
+    /// Returns whether an action ID is already registered.
+    pub fn contains_action(&self, action_id: &str) -> bool {
+        self.entries.contains_key(action_id)
+    }
     /// Handles a key event and triggers the associated action if a shortcut matches.
     pub fn handle_key_event(&mut self, key: Key, modifiers: Modifiers) -> bool {
         let shortcut = Shortcut::new(key, modifiers);

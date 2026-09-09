@@ -3,7 +3,10 @@ use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn floor_char_boundary(s: &str, index: usize) -> usize {
     let len = s.len();
@@ -27,6 +30,9 @@ pub struct RichEdit {
     pub selection_changed: Signal1<Option<(usize, usize)>>,
     pub read_only_changed: Signal1<bool>,
     pub cursor_position_changed: Signal1<usize>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 impl RichEdit {
     /// Creates an empty rich editor.
@@ -40,6 +46,9 @@ impl RichEdit {
             selection_changed: Signal1::new(),
             read_only_changed: Signal1::new(),
             cursor_position_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
     /// Returns current editor text.
@@ -51,8 +60,52 @@ impl RichEdit {
         if self.read_only || self.text == text {
             return;
         }
+        let before = self.text.clone();
         self.text = text;
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "rich_edit_text",
+            )));
+        }
         self.selection = None;
+        self.text_changed.emit(self.text.clone());
+        self.cursor_position_changed.emit(self.text.len());
+        self.base.request_redraw();
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        let text = self.history_target.borrow().clone();
+        self.restoring_history = true;
+        self.text = text;
+        self.selection = Some((self.text.len(), self.text.len()));
+        self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
         self.base.request_redraw();
@@ -216,7 +269,18 @@ impl Draw for RichEdit {
 impl crate::event::EventHandler for RichEdit {
     fn handle_event(&mut self, event: &crate::event::Event) {
         self.base.handle_event(event);
-        if !self.base.is_enabled() || self.read_only {
+        if !self.base.is_enabled() {
+            return;
+        }
+        if let crate::event::Event::KeyPress { key: 90, modifiers: 2 } = event {
+            let _ = self.undo();
+            return;
+        }
+        if let crate::event::Event::KeyPress { key: 89, modifiers: 2 } = event {
+            let _ = self.redo();
+            return;
+        }
+        if self.read_only {
             return;
         }
         match event {
@@ -233,10 +297,11 @@ impl crate::event::EventHandler for RichEdit {
                         // Backspace — delete char before cursor
                         if cursor > 0 {
                             let boundary = floor_char_boundary(&self.text, cursor - 1);
-                            self.text.drain(boundary..cursor);
+                            let mut next = self.text.clone();
+                            next.drain(boundary..cursor);
                             let new_cursor = boundary;
+                            self.set_text(next);
                             self.selection = Some((new_cursor, new_cursor));
-                            self.text_changed.emit(self.text.clone());
                             self.cursor_position_changed.emit(new_cursor);
                         }
                     }
@@ -246,15 +311,18 @@ impl crate::event::EventHandler for RichEdit {
                             let end = floor_char_boundary(&self.text, cursor + 1);
                             // Ensure we advance at least one char
                             let end = if end == cursor { cursor + 1 } else { end };
-                            self.text.drain(cursor..end.min(self.text.len()));
+                            let mut next = self.text.clone();
+                            next.drain(cursor..end.min(self.text.len()));
+                            self.set_text(next);
                             self.selection = Some((cursor, cursor));
-                            self.text_changed.emit(self.text.clone());
                             self.cursor_position_changed.emit(cursor);
                         }
                     }
                     13 => {
                         // Enter — insert newline at cursor
-                        self.text.insert(cursor, '\n');
+                        let mut next = self.text.clone();
+                        next.insert(cursor, '\n');
+                        self.set_text(next);
                         let new_cursor = cursor + 1;
                         self.selection = Some((new_cursor, new_cursor));
                         self.text_changed.emit(self.text.clone());
@@ -353,6 +421,7 @@ impl crate::event::EventHandler for RichEdit {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::event::EventHandler;
 
     #[test]
     fn richedit_creation_defaults() {
@@ -368,6 +437,30 @@ mod tests {
         let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
         re.set_text("Hello RichEdit".to_string());
         assert_eq!(re.text(), "Hello RichEdit");
+    }
+
+    #[test]
+    fn richedit_undo_redo_restores_text() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("one".to_string());
+        re.set_text("two".to_string());
+        assert!(re.can_undo());
+        assert!(re.undo());
+        assert_eq!(re.text(), "one");
+        assert!(re.can_redo());
+        assert!(re.redo());
+        assert_eq!(re.text(), "two");
+    }
+
+    #[test]
+    fn richedit_control_z_and_control_y_drive_history() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        re.set_text("before".to_string());
+        re.set_text("after".to_string());
+        re.handle_event(&crate::event::Event::key_press(90, 2));
+        assert_eq!(re.text(), "before");
+        re.handle_event(&crate::event::Event::key_press(89, 2));
+        assert_eq!(re.text(), "after");
     }
 
     #[test]

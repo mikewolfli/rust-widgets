@@ -43,9 +43,10 @@ impl StackedWidget {
     }
     /// Inserts a widget at position.
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
+        let was_empty = self.widgets.is_empty();
         self.base.add_child(widget);
         self.widgets.insert(index, widget);
-        if self.current_index >= index {
+        if !was_empty && self.current_index >= index {
             self.current_index += 1;
         }
     }
@@ -120,9 +121,9 @@ impl Widget for StackedWidget {
 impl EventHandler for StackedWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        // Forward events to current widget via registry
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, self.geometry());
                 reg.borrow_mut().forward_event(widget_id, event);
             }
         }
@@ -134,10 +135,12 @@ impl Draw for StackedWidget {
         let rect = self.geometry();
         // Draw background
         context.fill_rect(rect, Color::rgb(255, 255, 255));
-        // Draw current widget via registry
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, rect);
+                context.push_clip(rect.x, rect.y, rect.width, rect.height);
                 reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
             }
         }
     }
@@ -251,6 +254,14 @@ mod tests {
         sw.add_widget(widget_id_1());
         sw.set_current_index(5); // out of bounds
         assert_eq!(sw.current_index(), 0);
+    }
+
+    #[test]
+    fn stacked_widget_insert_into_empty_selects_first_widget() {
+        let mut widget = StackedWidget::new(Rect::new(0, 0, 100, 100));
+        widget.insert_widget(0, widget_id_1());
+        assert_eq!(widget.current_index(), 0);
+        assert_eq!(widget.current_widget(), Some(widget_id_1()));
     }
 
     #[test]

@@ -9,7 +9,10 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// SearchBox widget with search icon, placeholder, and clear button.
 pub struct SearchBox {
@@ -19,6 +22,9 @@ pub struct SearchBox {
     focused: bool,
     /// Emitted when the text changes, providing the new text value.
     pub text_changed: Signal1<String>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl SearchBox {
@@ -31,6 +37,9 @@ impl SearchBox {
             placeholder: "Search\u{2026}".to_string(),
             focused: false,
             text_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -48,7 +57,17 @@ impl SearchBox {
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         if self.text != text {
+            let before = self.text.clone();
             self.text = text.clone();
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.text.clone(),
+                    "search_box_text",
+                )));
+            }
             self.text_changed.emit(text);
             self.base.request_redraw();
         }
@@ -86,10 +105,39 @@ impl SearchBox {
     /// Clears the text content. Emits `text_changed` if the text was non-empty.
     pub fn clear(&mut self) {
         if !self.text.is_empty() {
-            self.text.clear();
-            self.text_changed.emit(self.text.clone());
-            self.base.request_redraw();
+            self.set_text(String::new());
         }
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 }
 
@@ -242,25 +290,33 @@ impl EventHandler for SearchBox {
             Event::FocusLost => {
                 self.set_focused(false);
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
                 if !self.focused {
+                    return;
+                }
+                if *modifiers == 2 && *key == 90 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *modifiers == 2 && *key == 89 {
+                    let _ = self.redo();
                     return;
                 }
                 match *key {
                     8 => {
                         // Backspace — remove last character
                         if !self.text.is_empty() {
-                            self.text.pop();
-                            self.text_changed.emit(self.text.clone());
-                            self.base.request_redraw();
+                            let mut next = self.text.clone();
+                            next.pop();
+                            self.set_text(next);
                         }
                     }
                     127 => {
                         // Delete — remove last character
                         if !self.text.is_empty() {
-                            self.text.pop();
-                            self.text_changed.emit(self.text.clone());
-                            self.base.request_redraw();
+                            let mut next = self.text.clone();
+                            next.pop();
+                            self.set_text(next);
                         }
                     }
                     13 | 27 => {
@@ -271,9 +327,9 @@ impl EventHandler for SearchBox {
                         // Character input
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
-                                self.text.push(ch);
-                                self.text_changed.emit(self.text.clone());
-                                self.base.request_redraw();
+                                let mut next = self.text.clone();
+                                next.push(ch);
+                                self.set_text(next);
                             }
                         }
                     }

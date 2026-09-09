@@ -32,6 +32,16 @@ impl ActionManager {
         self.actions.insert(id.clone(), Action::new(id, text));
         true
     }
+
+    /// Removes an action and all of its shortcut/host bindings.
+    pub fn unregister_action(&mut self, id: &str) -> bool {
+        let removed = self.actions.remove(id).is_some();
+        if removed {
+            self.shortcut_to_action.retain(|_, action_id| action_id != id);
+            self.bindings.retain(|binding| binding.action_id != id);
+        }
+        removed
+    }
     /// Returns an immutable action reference by id.
     pub fn action(&self, id: &str) -> Option<&Action> {
         self.actions.get(id)

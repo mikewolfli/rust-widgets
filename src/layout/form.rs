@@ -116,7 +116,11 @@ impl Layout for FormLayout {
         }
         let spacing_total =
             if total_entries > 1 { (total_entries as u32 - 1) * self.spacing } else { 0 };
-        let entry_height = available_height.saturating_sub(spacing_total) / total_entries as u32;
+        // Keep every entry addressable when the form is smaller than the
+        // minimum spacing budget; the parent clip/scroll container owns the
+        // visual overflow rather than receiving zero-height child rects.
+        let entry_height =
+            (available_height.saturating_sub(spacing_total) / total_entries as u32).max(1);
 
         // Layout rows: each row has a label (1/3 width) and a field (2/3 width).
         let label_width = rect.width / 3;
@@ -155,5 +159,31 @@ impl Layout for FormLayout {
             );
             index += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn form_layout_preserves_nonzero_height_when_entries_overflow() {
+        let mut layout = FormLayout::new(8, 0);
+        layout.add_row_pair(1, 2);
+        layout.add_row_pair(3, 4);
+
+        let mut geometries = Vec::new();
+        layout.update(Rect::new(0, 0, 200, 4), &mut |id, rect| geometries.push((id, rect)));
+
+        assert_eq!(geometries.len(), 4);
+        assert!(geometries.iter().all(|(_, rect)| rect.height >= 1));
+    }
+
+    #[test]
+    fn form_layout_empty_form_emits_no_children() {
+        let layout = FormLayout::new(8, 4);
+        let mut count = 0;
+        layout.update(Rect::new(0, 0, 200, 100), &mut |_, _| count += 1);
+        assert_eq!(count, 0);
     }
 }

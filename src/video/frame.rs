@@ -11,10 +11,9 @@ pub enum FrameType {
     PFrame,
     /// Bidirectionally predicted frame.
     BFrame,
-    /// Synthetic placeholder frame produced when decoding of the original
-    /// frame data failed. Lets callers distinguish a real decode from a
-    /// generated stand-in instead of silently treating the stand-in as a
-    /// successfully decoded frame.
+    /// Legacy marker for generated frames from external/custom decoders.
+    /// Production decoders in this crate return an error instead of using it.
+    #[deprecated(note = "production decoders must return an error for failed frames")]
     Synthetic,
     /// Unknown frame type.
     #[default]

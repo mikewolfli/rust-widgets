@@ -61,6 +61,9 @@ pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
         AudioFormat::Wav => decode_wav(data),
         AudioFormat::Pcm => {
             // Assume 44100 Hz, mono, F32
+            if !data.len().is_multiple_of(4) {
+                return Err("Raw PCM data is not aligned to 32-bit samples".into());
+            }
             let samples: Vec<f32> = data
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -94,7 +97,16 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         let chunk_size =
             u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
                 as usize;
-        let chunk_data = &data[pos + 8..(pos + 8 + chunk_size).min(data.len())];
+        let chunk_start = pos + 8;
+        let chunk_end = chunk_start.checked_add(chunk_size).ok_or("WAV chunk size overflow")?;
+        if chunk_end > data.len() {
+            return Err(format!(
+                "WAV chunk {:?} truncated: need {chunk_size} bytes, got {}",
+                chunk_id,
+                data.len().saturating_sub(chunk_start)
+            ));
+        }
+        let chunk_data = &data[chunk_start..chunk_end];
 
         if chunk_id == b"fmt " && chunk_data.len() >= 16 {
             let _audio_format = u16::from_le_bytes([chunk_data[0], chunk_data[1]]);
@@ -106,13 +118,16 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
             data_chunk = Some(chunk_data);
         }
 
-        let step = 8 + chunk_size;
-        if step == 0 {
-            break;
-        }
-        pos += step;
+        let step = 8usize
+            .checked_add(chunk_size)
+            .and_then(|size| size.checked_add(chunk_size % 2))
+            .ok_or("WAV chunk offset overflow")?;
+        pos = pos.checked_add(step).ok_or("WAV chunk offset overflow")?;
     }
 
+    if sample_rate == 0 || channels == 0 {
+        return Err("WAV fmt chunk is missing or invalid".into());
+    }
     let raw_samples = data_chunk.ok_or("No data chunk in WAV")?;
     let fmt = match bits_per_sample {
         8 => SampleFormat::U8,
@@ -121,6 +136,9 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         32 => SampleFormat::I32,
         _ => return Err(format!("Unsupported bits per sample: {bits_per_sample}")),
     };
+    if raw_samples.len() % fmt.bytes_per_sample() != 0 {
+        return Err(format!("WAV data chunk is not aligned to {bits_per_sample}-bit samples"));
+    }
     let samples = fmt.to_f32(raw_samples);
     let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels.max(1));
     buf.original_format = fmt;
@@ -422,7 +440,7 @@ mod tests {
     #[test]
     fn test_decode_wav_valid() {
         // Build minimal valid WAV
-        let data_size = 44100 * 2;
+        let data_size = 100;
         let file_size = 36 + data_size;
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
@@ -445,6 +463,25 @@ mod tests {
         let buf = result.unwrap();
         assert_eq!(buf.sample_rate, 44100);
         assert_eq!(buf.channels, 1);
+    }
+
+    #[test]
+    fn test_decode_wav_rejects_truncated_chunk() {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&42u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&44100u32.to_le_bytes());
+        wav.extend_from_slice(&88200u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&100u32.to_le_bytes());
+        wav.extend_from_slice(&[0u8; 2]);
+        let error = decode_wav(&wav).unwrap_err();
+        assert!(error.contains("truncated"), "unexpected error: {error}");
     }
 
     #[test]

@@ -12,22 +12,23 @@
 //! | PNM    | Real decoder for ASCII P1-P3 and binary P4-P6. |
 //! | QOI    | Real decoder. |
 //! | Farbfeld | Real decoder. |
-//! | GIF    | Not implemented: `decode` returns `Err`. |
-//! | WebP   | Not implemented: `decode` returns `Err`. |
-//! | TIFF   | Not implemented: `decode` returns `Err`. |
-//! | AVIF   | Not implemented: `decode` returns `Err`. |
-//! | ICO    | Not implemented: `decode` returns `Err`. |
-//! | SVG/SVGZ | Not implemented (no rasterizer): `decode` returns `Err`. |
+//! | GIF    | Real static decoder via `image`; `decode` returns the first frame. |
+//! | WebP   | Real static decoder via `image`; animated inputs return the first frame. |
+//! | TIFF   | Real decoder via `image`. |
+//! | AVIF   | Real decoder via `image`/dav1d. |
+//! | ICO    | Real decoder via `image`; `decode` selects the decoder's image. |
+//! | SVG/SVGZ | Real rasterizer via `resvg`, using the SVG intrinsic size. |
 //!
 //! Decoders never fabricate placeholder pixels: formats without a real codec
 //! return `Err` instead of silently producing an empty or grey image.
 
-use crate::image::format::{ColorSpace, DecodedImage, ImageData, ImageFormat};
+use crate::image::format::{ColorSpace, DecodedAnimation, DecodedImage, ImageData, ImageFormat};
 
 /// Error message used for formats whose decode codec is not implemented.
 ///
 /// These formats are still detected from their magic bytes, but returning
 /// fabricated pixels would silently corrupt user data, so decoding refuses.
+#[cfg(not(any(feature = "image-codecs", feature = "svg-rasterizer")))]
 fn not_implemented(format: &str) -> String {
     format!("decoding {format} is not implemented (no codec); refusing to return fabricated pixels")
 }
@@ -142,6 +143,70 @@ pub fn decode_to_rgba8(data: &[u8]) -> Result<DecodedImage, String> {
     img.data = img.data.to_rgba8(img.width, img.height);
     img.format = ImageFormat::Rgba8;
     Ok(img)
+}
+
+/// Decode all GIF or WebP animation frames with timing metadata.
+///
+/// Static inputs are returned as one-frame animations. Formats other than GIF
+/// and WebP are rejected because their animation semantics are undefined.
+pub fn decode_animation(data: &[u8]) -> Result<DecodedAnimation, String> {
+    match detect_format(data) {
+        ImageFormat::Gif | ImageFormat::WebP => decode_animation_codec(data),
+        format => Err(format!("Animation is not supported for {format:?}")),
+    }
+}
+
+#[cfg(feature = "image-codecs")]
+fn decode_animation_codec(data: &[u8]) -> Result<DecodedAnimation, String> {
+    use image_codecs::AnimationDecoder;
+    use std::io::Cursor;
+
+    let format = detect_format(data);
+    let (frames, loop_count) = match format {
+        ImageFormat::Gif => {
+            let decoder = image_codecs::codecs::gif::GifDecoder::new(Cursor::new(data))
+                .map_err(|error| format!("GIF animation decoder error: {error}"))?;
+            let loop_count = match decoder.loop_count() {
+                image_codecs::metadata::LoopCount::Infinite => None,
+                image_codecs::metadata::LoopCount::Finite(count) => Some(count.get()),
+            };
+            (decoder.into_frames().collect_frames(), loop_count)
+        }
+        ImageFormat::WebP => {
+            let decoder = image_codecs::codecs::webp::WebPDecoder::new(Cursor::new(data))
+                .map_err(|error| format!("WebP animation decoder error: {error}"))?;
+            let loop_count = match decoder.loop_count() {
+                image_codecs::metadata::LoopCount::Infinite => None,
+                image_codecs::metadata::LoopCount::Finite(count) => Some(count.get()),
+            };
+            (decoder.into_frames().collect_frames(), loop_count)
+        }
+        _ => unreachable!("decode_animation validates the format before dispatch"),
+    };
+    let frames = frames.map_err(|error| format!("{format:?} frame decode error: {error}"))?;
+    let mut decoded_frames = Vec::with_capacity(frames.len());
+    let mut delays = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let nanoseconds =
+            (u128::from(numerator) * 1_000_000 / u128::from(denominator)).min(u128::from(u64::MAX));
+        let buffer = frame.into_buffer();
+        let width = buffer.width();
+        let height = buffer.height();
+        decoded_frames.push(DecodedImage::new(
+            format,
+            ImageData::Rgba8(buffer.into_raw()),
+            width,
+            height,
+        ));
+        delays.push(std::time::Duration::from_nanos(nanoseconds as u64));
+    }
+    DecodedAnimation::new(decoded_frames, delays, loop_count)
+}
+
+#[cfg(not(feature = "image-codecs"))]
+fn decode_animation_codec(_data: &[u8]) -> Result<DecodedAnimation, String> {
+    Err("GIF/WebP animation decoding requires the `image-codecs` feature".into())
 }
 
 // ── PNG Decoder ──────────────────────────────────────────────────────────────
@@ -402,7 +467,10 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
                         let shift = 8 - bit_depth as usize - (x % pbb) * bit_depth as usize;
                         ((row[x / pbb] >> shift) & ((1u8 << bit_depth) - 1)) as usize
                     };
-                    let p = palette.get(idx).copied().unwrap_or([0, 0, 0, 255]);
+                    let p = palette
+                        .get(idx)
+                        .copied()
+                        .ok_or_else(|| format!("PNG palette index {idx} is out of range"))?;
                     pixels.extend_from_slice(&p);
                 }
             }
@@ -664,12 +732,15 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             for (ci, comp) in components.iter().enumerate() {
                 let qt = quant_tables[comp.quant_table as usize]
                     .ok_or_else(|| format!("Missing quantization table {}", comp.quant_table))?;
-                let dc_table = dc_huff[sos_components.get(ci).map(|s| s.1 as usize).unwrap_or(0)]
-                    .as_ref()
-                    .ok_or("Missing DC Huffman table")?;
-                let ac_table = ac_huff[sos_components.get(ci).map(|s| s.2 as usize).unwrap_or(0)]
-                    .as_ref()
-                    .ok_or("Missing AC Huffman table")?;
+                let sos =
+                    *sos_components.get(ci).ok_or("JPEG scan is missing a component selector")?;
+                if sos.1 >= 4 || sos.2 >= 4 {
+                    return Err("JPEG Huffman table selector is out of range".into());
+                }
+                let dc_table =
+                    dc_huff[sos.1 as usize].as_ref().ok_or("Missing DC Huffman table")?;
+                let ac_table =
+                    ac_huff[sos.2 as usize].as_ref().ok_or("Missing AC Huffman table")?;
 
                 let dbw = ((comp.h_sampling as u32) * 8) as usize;
                 let dbh = ((comp.v_sampling as u32) * 8) as usize;
@@ -680,40 +751,39 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                         let mut block = [0i32; 64];
 
                         // DC coefficient
-                        if let Some((cat, _extra_bits)) =
+                        let (cat, _extra_bits) =
                             decode_huff_symbol(scan_data, &mut bit_pos, dc_table)
-                        {
-                            if cat > 0 {
-                                let mag = receive_extended(scan_data, &mut bit_pos, cat as usize);
-                                dc_pred[ci] += mag;
-                            }
-                            block[0] = dc_pred[ci];
+                                .ok_or("JPEG entropy data truncated in DC coefficient")?;
+                        if cat > 0 {
+                            let mag = receive_extended(scan_data, &mut bit_pos, cat as usize)?;
+                            dc_pred[ci] += mag;
                         }
+                        block[0] = dc_pred[ci];
 
                         // AC coefficients
                         let mut k = 1;
                         while k < 64 {
-                            if let Some((symbol, _extra_bits)) =
+                            let (symbol, _extra_bits) =
                                 decode_huff_symbol(scan_data, &mut bit_pos, ac_table)
-                            {
-                                if symbol == 0 {
-                                    // EOB
-                                    break;
-                                }
-                                let run = (symbol >> 4) as usize;
-                                let cat = (symbol & 0x0F) as usize;
-                                if cat > 0 {
-                                    k += run;
-                                    if k >= 64 {
-                                        break;
-                                    }
-                                    let mag = receive_extended(scan_data, &mut bit_pos, cat);
-                                    block[ZIGZAG[k]] = mag;
-                                }
-                                k += 1;
-                            } else {
+                                    .ok_or("JPEG entropy data truncated in AC coefficient")?;
+                            if symbol == 0 {
+                                // EOB
                                 break;
                             }
+                            let run = (symbol >> 4) as usize;
+                            let cat = (symbol & 0x0F) as usize;
+                            if cat == 0 && run != 15 {
+                                return Err("Invalid JPEG AC run-length symbol".into());
+                            }
+                            k += run;
+                            if k >= 64 {
+                                return Err("JPEG AC run exceeds block boundary".into());
+                            }
+                            if cat > 0 {
+                                let mag = receive_extended(scan_data, &mut bit_pos, cat)?;
+                                block[ZIGZAG[k]] = mag;
+                            }
+                            k += 1;
                         }
 
                         // Dequantize
@@ -762,17 +832,24 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 .and_then(|b| b.first())
                 .and_then(|row| row.get(bidx))
                 .copied()
-                .unwrap_or(128) as i32;
-            let cb_val = comp_bufs
-                .get(1)
-                .and_then(|b| b.first())
-                .and_then(|row| if bidx < row.len() { Some(row[bidx]) } else { None })
-                .unwrap_or(128) as i32;
-            let cr_val = comp_bufs
-                .get(2)
-                .and_then(|b| b.first())
-                .and_then(|row| if bidx < row.len() { Some(row[bidx]) } else { None })
-                .unwrap_or(128) as i32;
+                .ok_or("JPEG decoded luma component is incomplete")? as i32;
+            let (cb_val, cr_val) = if components.len() >= 3 {
+                let cb = comp_bufs
+                    .get(1)
+                    .and_then(|b| b.first())
+                    .and_then(|row| row.get(bidx))
+                    .copied()
+                    .ok_or("JPEG decoded Cb component is incomplete")?;
+                let cr = comp_bufs
+                    .get(2)
+                    .and_then(|b| b.first())
+                    .and_then(|row| row.get(bidx))
+                    .copied()
+                    .ok_or("JPEG decoded Cr component is incomplete")?;
+                (cb as i32, cr as i32)
+            } else {
+                (128, 128)
+            };
 
             // YCbCr to RGB conversion (ITU-R BT.601)
             let r = (y_val + (359 * (cr_val - 128)) / 256).clamp(0, 255) as u8;
@@ -849,14 +926,14 @@ fn decode_huff_symbol(data: &[u8], bit_pos: &mut usize, table: &HuffTable) -> Op
 }
 
 /// Receive and sign-extend a value of `cat` bits.
-fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> i32 {
+fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32, String> {
     if cat == 0 {
-        return 0;
+        return Ok(0);
     }
     let mut value = 0i32;
     for _ in 0..cat {
         if *bit_pos >= data.len() * 8 {
-            break;
+            return Err("JPEG entropy data truncated in coefficient magnitude".into());
         }
         let byte_idx = *bit_pos / 8;
         let bit_idx = *bit_pos % 8;
@@ -869,7 +946,7 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> i32 {
     if value < sv_range {
         value -= (1 << cat) - 1;
     }
-    value
+    Ok(value)
 }
 
 /// 2D IDCT (8x8). Simplified separable implementation.
@@ -938,13 +1015,22 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
     let height = raw_height_signed.unsigned_abs();
     let _top_down = raw_height_signed < 0;
     let bit_count = u16::from_le_bytes([data[28], data[29]]);
-    let row_size = (width * bit_count as u32).div_ceil(32) as usize * 4;
+    let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
+    if width == 0 || height == 0 || !matches!(bit_count, 24 | 32) {
+        return Err("Unsupported BMP dimensions or bit depth".into());
+    }
+    if compression != 0 {
+        return Err("Compressed BMP images are not supported".into());
+    }
+    let row_size = (width as usize)
+        .checked_mul(bit_count as usize)
+        .and_then(|bits| bits.checked_add(31))
+        .map(|bits| bits / 32 * 4)
+        .ok_or("BMP row size overflow")?;
+    let pixel_bytes = row_size.checked_mul(height as usize).ok_or("BMP dimensions overflow")?;
+    let pixel_end = pixel_offset.checked_add(pixel_bytes).ok_or("BMP pixel offset overflow")?;
 
-    let pixel_data = if pixel_offset + row_size * height as usize <= data.len() {
-        &data[pixel_offset..]
-    } else {
-        return Err("BMP data truncated".into());
-    };
+    let pixel_data = data.get(pixel_offset..pixel_end).ok_or("BMP data truncated")?;
 
     let bytes_per_pixel = (bit_count / 8) as usize;
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
@@ -958,19 +1044,10 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
         let row_start = row * row_size;
         for x in 0..width as usize {
             let off = row_start + x * bytes_per_pixel;
-            let (b, g, r, a) = if off + 2 < pixel_data.len() {
-                (
-                    pixel_data[off],
-                    pixel_data[off + 1],
-                    pixel_data[off + 2],
-                    if bytes_per_pixel >= 4 {
-                        pixel_data.get(off + 3).copied().unwrap_or(255)
-                    } else {
-                        255
-                    },
-                )
+            let (b, g, r, a) = if bytes_per_pixel == 4 {
+                (pixel_data[off], pixel_data[off + 1], pixel_data[off + 2], pixel_data[off + 3])
             } else {
-                (0, 0, 0, 255)
+                (pixel_data[off], pixel_data[off + 1], pixel_data[off + 2], 255)
             };
             pixels.push(r);
             pixels.push(g);
@@ -987,57 +1064,64 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
 // ── GIF Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_gif(data: &[u8]) -> Result<DecodedImage, String> {
-    // GIF decoding needs LZW decompression plus frame/extension parsing. That
-    // codec is not implemented, so refuse instead of fabricating pixels.
     if data.len() < 6 || !(data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) {
         return Err("Invalid GIF signature".into());
     }
-    Err(not_implemented("GIF"))
+    decode_with_image_codecs(data, ImageFormat::Gif)
 }
 
 // ── WebP Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_webp(data: &[u8]) -> Result<DecodedImage, String> {
-    // Real WebP decoding needs a VP8/VP8L entropy decoder, which is not
-    // implemented. Refuse instead of returning grey placeholder pixels.
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
         return Err("Invalid WebP signature".into());
     }
-    Err(not_implemented("WebP"))
+    decode_with_image_codecs(data, ImageFormat::WebP)
 }
 
 // ── TIFF Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_tiff(data: &[u8]) -> Result<DecodedImage, String> {
-    // Only the header is validated; a real TIFF decoder (IFD strip/byte
-    // unpacking, compression schemes) is not implemented.
     let valid_le = data.len() >= 4 && &data[0..4] == b"II\x2a\x00";
     let valid_be = data.len() >= 4 && &data[0..4] == b"MM\x00\x2a";
     if !valid_le && !valid_be {
         return Err("Invalid TIFF signature".into());
     }
-    Err(not_implemented("TIFF"))
+    decode_with_image_codecs(data, ImageFormat::Tiff)
 }
 
 // ── AVIF Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_avif(data: &[u8]) -> Result<DecodedImage, String> {
-    // AVIF decoding requires an AV1 decoder (e.g. dav1d); not implemented.
     if data.len() < 12 || &data[4..8] != b"ftyp" {
         return Err("Invalid AVIF data".into());
     }
-    Err(not_implemented("AVIF"))
+    decode_with_image_codecs(data, ImageFormat::Avif)
 }
 
 // ── ICO Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_ico(data: &[u8]) -> Result<DecodedImage, String> {
-    // ICO files embed PNG or BMP-encoded images per directory entry; the
-    // embedded-image codec is not implemented.
     if data.len() < 6 || data[0] != 0 || data[1] != 0 || data[2] != 1 || data[3] != 0 {
         return Err("Invalid ICO signature".into());
     }
-    Err(not_implemented("ICO"))
+    decode_with_image_codecs(data, ImageFormat::Ico)
+}
+
+#[cfg(feature = "image-codecs")]
+fn decode_with_image_codecs(data: &[u8], format: ImageFormat) -> Result<DecodedImage, String> {
+    let image = image_codecs::load_from_memory(data)
+        .map_err(|error| format!("{format:?} decode error: {error}"))?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut decoded = DecodedImage::new(format, ImageData::Rgba8(rgba.into_raw()), width, height);
+    decoded.color_space = ColorSpace::Srgb;
+    Ok(decoded)
+}
+
+#[cfg(not(feature = "image-codecs"))]
+fn decode_with_image_codecs(_data: &[u8], format: ImageFormat) -> Result<DecodedImage, String> {
+    Err(not_implemented(format.extension()))
 }
 
 // ── PNM Decoder ──────────────────────────────────────────────────────────────
@@ -1265,21 +1349,21 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
         pos += 1;
         if byte == 0xFE {
             // QOI_OP_RGB
-            if pos + 2 < data.len() {
-                r = data[pos];
-                g = data[pos + 1];
-                b = data[pos + 2];
-                pos += 3;
-            }
+            let end = pos.checked_add(3).ok_or("QOI RGB opcode overflow")?;
+            let rgb = data.get(pos..end).ok_or("QOI RGB opcode truncated")?;
+            r = rgb[0];
+            g = rgb[1];
+            b = rgb[2];
+            pos = end;
         } else if byte == 0xFF {
             // QOI_OP_RGBA
-            if pos + 3 < data.len() {
-                r = data[pos];
-                g = data[pos + 1];
-                b = data[pos + 2];
-                a = data[pos + 3];
-                pos += 4;
-            }
+            let end = pos.checked_add(4).ok_or("QOI RGBA opcode overflow")?;
+            let rgba = data.get(pos..end).ok_or("QOI RGBA opcode truncated")?;
+            r = rgba[0];
+            g = rgba[1];
+            b = rgba[2];
+            a = rgba[3];
+            pos = end;
         } else if byte >> 6 == 0b00 {
             // QOI_OP_INDEX
             let idx = (byte & 0x3F) as usize;
@@ -1298,16 +1382,14 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
             b = b.wrapping_add(db);
         } else if byte >> 6 == 0b10 {
             // QOI_OP_LUMA
-            if pos < data.len() {
-                let byte2 = data[pos];
-                pos += 1;
-                let dg = (byte & 0x3F).wrapping_sub(32);
-                let dr = ((byte2 >> 4) & 0x0F).wrapping_sub(8).wrapping_add(dg);
-                let db = (byte2 & 0x0F).wrapping_sub(8).wrapping_add(dg);
-                r = r.wrapping_add(dr);
-                g = g.wrapping_add(dg);
-                b = b.wrapping_add(db);
-            }
+            let byte2 = *data.get(pos).ok_or("QOI luma opcode truncated")?;
+            pos += 1;
+            let dg = (byte & 0x3F).wrapping_sub(32);
+            let dr = ((byte2 >> 4) & 0x0F).wrapping_sub(8).wrapping_add(dg);
+            let db = (byte2 & 0x0F).wrapping_sub(8).wrapping_add(dg);
+            r = r.wrapping_add(dr);
+            g = g.wrapping_add(dg);
+            b = b.wrapping_add(db);
         } else if byte >> 6 == 0b11 {
             // QOI_OP_RUN
             let run = (byte & 0x3F) as usize + 1;
@@ -1337,8 +1419,15 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
             total * 4
         ));
     }
-    // Truncate in case a malicious QOI_OP_RUN overran the declared size.
-    pixels.truncate(total * 4);
+    if pixels.len() > total * 4 {
+        return Err("QOI run exceeds declared image dimensions".into());
+    }
+    let end_marker = [0, 0, 0, 0, 0, 0, 0, 1];
+    if data.len().saturating_sub(pos) < end_marker.len()
+        || data[data.len() - end_marker.len()..] != end_marker
+    {
+        return Err("QOI end marker is missing or invalid".into());
+    }
     let mut img = DecodedImage::new(ImageFormat::Qoi, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
     Ok(img)
@@ -1380,20 +1469,58 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 // ── SVG Decoder ──────────────────────────────────────────────────────────────
 
 fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
-    // This crate has no SVG rasterizer. Returning a transparent placeholder
-    // would silently lose every shape in the document, so decoding refuses.
-    std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in SVG".to_string())?;
-    Err(not_implemented("SVG"))
+    #[cfg(feature = "svg-rasterizer")]
+    {
+        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default())
+            .map_err(|error| format!("SVG parse error: {error}"))?;
+        let size = tree.size().to_int_size();
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+            .ok_or("SVG raster dimensions are invalid")?;
+        resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+        let mut decoded = DecodedImage::new(
+            ImageFormat::Svg,
+            ImageData::Rgba8(pixmap.take()),
+            size.width(),
+            size.height(),
+        );
+        decoded.color_space = ColorSpace::Srgb;
+        Ok(decoded)
+    }
+    #[cfg(not(feature = "svg-rasterizer"))]
+    {
+        std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in SVG".to_string())?;
+        Err(not_implemented("SVG"))
+    }
 }
 
 // ── SVGZ Decoder ─────────────────────────────────────────────────────────────
 
 fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
-    // Decompress gzip, then delegate to the SVG decoder (which refuses to
-    // rasterize).
-    let decompressed = miniz_oxide::inflate::decompress_to_vec(data)
-        .map_err(|_| "SVGZ decompression failed".to_string())?;
-    decode_svg(&decompressed)
+    #[cfg(feature = "svg-rasterizer")]
+    {
+        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default())
+            .map_err(|error| format!("SVGZ parse error: {error}"))?;
+        let size = tree.size().to_int_size();
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+            .ok_or("SVGZ raster dimensions are invalid")?;
+        resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+        let mut decoded = DecodedImage::new(
+            ImageFormat::Svgz,
+            ImageData::Rgba8(pixmap.take()),
+            size.width(),
+            size.height(),
+        );
+        decoded.color_space = ColorSpace::Srgb;
+        Ok(decoded)
+    }
+    #[cfg(not(feature = "svg-rasterizer"))]
+    {
+        // Decompress gzip, then delegate to the SVG decoder (which refuses to
+        // rasterize).
+        let decompressed = miniz_oxide::inflate::decompress_to_vec(data)
+            .map_err(|_| "SVGZ decompression failed".to_string())?;
+        decode_svg(&decompressed)
+    }
 }
 
 #[cfg(test)]
@@ -1494,7 +1621,7 @@ mod tests {
         qoi_data.push(255); // G
         qoi_data.push(255); // B
         qoi_data.push(255); // A
-        qoi_data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // padding
+        qoi_data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]); // QOI end marker
 
         let result = decode_qoi(&qoi_data);
         assert!(result.is_ok());
@@ -1502,6 +1629,22 @@ mod tests {
         assert_eq!(img.width, 1);
         assert_eq!(img.height, 1);
         assert_eq!(img.format, ImageFormat::Qoi);
+    }
+
+    #[test]
+    fn decode_qoi_rejects_truncated_opcode_and_bad_end_marker() {
+        let mut truncated = b"qoif".to_vec();
+        truncated.extend_from_slice(&1u32.to_be_bytes());
+        truncated.extend_from_slice(&1u32.to_be_bytes());
+        truncated.extend_from_slice(&[4, 0, 0xFF, 255]);
+        assert!(decode_qoi(&truncated).is_err());
+
+        let mut bad_end = b"qoif".to_vec();
+        bad_end.extend_from_slice(&1u32.to_be_bytes());
+        bad_end.extend_from_slice(&1u32.to_be_bytes());
+        bad_end.extend_from_slice(&[4, 0, 0xFF, 255, 255, 255, 255, 255]);
+        bad_end.extend_from_slice(&[0; 8]);
+        assert!(decode_qoi(&bad_end).is_err());
     }
 
     #[test]
@@ -1552,6 +1695,26 @@ mod tests {
         let img = result.unwrap();
         assert_eq!(img.width, 2);
         assert_eq!(img.height, 2);
+    }
+
+    #[test]
+    fn decode_bmp_rejects_truncated_pixels_and_compression() {
+        let mut truncated = b"BM".to_vec();
+        truncated.extend_from_slice(&58u32.to_le_bytes());
+        truncated.extend_from_slice(&[0u8; 4]);
+        truncated.extend_from_slice(&54u32.to_le_bytes());
+        truncated.extend_from_slice(&40u32.to_le_bytes());
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.extend_from_slice(&2i32.to_le_bytes());
+        truncated.extend_from_slice(&1u16.to_le_bytes());
+        truncated.extend_from_slice(&24u16.to_le_bytes());
+        truncated.extend_from_slice(&[0u8; 24]);
+        truncated.extend_from_slice(&[0u8; 4]);
+        assert!(decode_bmp(&truncated).unwrap_err().contains("truncated"));
+
+        let mut compressed = truncated;
+        compressed[30..34].copy_from_slice(&1u32.to_le_bytes());
+        assert!(decode_bmp(&compressed).unwrap_err().contains("Compressed"));
     }
 
     /// Build a well-formed PNG file around raw (already filtered) scanlines.
@@ -1609,6 +1772,7 @@ mod tests {
         assert_eq!(img.height, 1);
     }
 
+    #[cfg(not(feature = "svg-rasterizer"))]
     #[test]
     fn decode_svg_returns_not_implemented() {
         let svg = b"<svg width=\"100\" height=\"50\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
@@ -1616,6 +1780,7 @@ mod tests {
         assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
+    #[cfg(not(feature = "svg-rasterizer"))]
     #[test]
     fn decode_svgz_returns_not_implemented() {
         // GZIP of the SVG above: decompression succeeds, rasterization refuses.
@@ -1658,6 +1823,7 @@ mod tests {
         assert!(result.is_err(), "JPEG decoder should return error for incomplete data");
     }
 
+    #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_tiff_returns_not_implemented() {
         // Well-formed minimal little-endian TIFF header.
@@ -1666,6 +1832,7 @@ mod tests {
         assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
+    #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_webp_returns_not_implemented() {
         // Minimal WebP RIFF header with a VP8 chunk.
@@ -1678,6 +1845,7 @@ mod tests {
         assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
+    #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_ico_returns_not_implemented() {
         let mut ico = vec![0x00, 0x00, 0x01, 0x00, 0x01, 0x00]; // header, 1 entry
@@ -1763,6 +1931,7 @@ mod tests {
         assert!(err.contains("exceeds maxval"), "unexpected error: {err}");
     }
 
+    #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_avif_returns_not_implemented() {
         let avif = b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00";
@@ -1770,6 +1939,7 @@ mod tests {
         assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 
+    #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_gif_returns_not_implemented() {
         // Minimal well-formed GIF89a header (no image data needed: decoding is
@@ -1791,6 +1961,44 @@ mod tests {
 
         let err = decode_gif(&gif).unwrap_err();
         assert!(err.contains("not implemented"), "unexpected error: {err}");
+    }
+
+    #[cfg(feature = "image-codecs")]
+    #[test]
+    fn decode_extended_image_codecs_from_library_outputs() {
+        let image =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![255, 0, 0, 255]), 1, 1);
+        for format in [ImageFormat::Gif, ImageFormat::Tiff] {
+            let encoded = crate::image::encoder::encode(&image, format).unwrap();
+            let decoded = decode(&encoded).unwrap();
+            assert_eq!(decoded.width, 1);
+            assert_eq!(decoded.height, 1);
+            assert_eq!(decoded.as_rgba8().as_bytes().len(), 4);
+        }
+    }
+
+    #[cfg(feature = "image-codecs")]
+    #[test]
+    fn decode_gif_animation_preserves_frame_metadata() {
+        let image =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![255, 0, 0, 255]), 1, 1);
+        let encoded = crate::image::encoder::encode(&image, ImageFormat::Gif).unwrap();
+        let animation = decode_animation(&encoded).unwrap();
+        assert_eq!(animation.frame_count(), 1);
+        assert_eq!(animation.delays.len(), 1);
+        assert_eq!(animation.frames[0].width, 1);
+    }
+
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn decode_svg_with_rasterizer_from_library_output() {
+        let image =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![255, 0, 0, 255]), 1, 1);
+        let encoded = crate::image::encoder::encode(&image, ImageFormat::Svg).unwrap();
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.as_rgba8().as_bytes().len(), 4);
     }
 
     // ── PNG real-decode tests ────────────────────────────────────────────────

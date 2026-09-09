@@ -61,14 +61,14 @@ impl<T: Clone + Send + 'static> Computed<T> {
         self.cached.clone()
     }
 
-    /// Mark the computed value as dirty and notify listeners immediately.
+    /// Mark the computed value as dirty; listeners are notified after the next
+    /// recomputation when the derived value actually changes.
     ///
     /// Call this when a dependency of the compute function changes. The next
     /// call to [`get`](Computed::get) will recompute the value. Listeners are
     /// notified right away so push-based reactive chains can propagate.
     pub fn invalidate(&mut self) {
         self.dirty = true;
-        self.notify_listeners();
     }
 
     /// Check whether the computed value has been invalidated.

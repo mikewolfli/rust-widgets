@@ -18,7 +18,14 @@
 macro_rules! impl_modern_widgets {
     () => {
         #[cfg(not(feature = "mini"))]
-        fn create_adaptive_scaffold(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_adaptive_scaffold(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -40,7 +47,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_animated_image(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_animated_image(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -62,7 +76,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_app_bar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_app_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -83,7 +104,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_arc(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_arc(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -105,7 +133,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_audio_visualizer(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_audio_visualizer(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -127,7 +162,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_auto_complete_edit(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_auto_complete_edit(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -149,7 +191,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_avatar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_avatar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -171,7 +220,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_badge(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_badge(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -193,7 +249,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_bar_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_bar_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -215,7 +278,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_barcode_scanner(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_barcode_scanner(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -237,7 +307,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_bezier_curve_editor(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_bezier_curve_editor(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -259,7 +336,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_bottom_navigation_bar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_bottom_navigation_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -281,7 +365,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_bottom_sheet(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_bottom_sheet(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -303,7 +394,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_camera_preview(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_camera_preview(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -325,7 +423,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_carousel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_carousel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -347,7 +452,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_chip(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_chip(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -369,7 +481,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_color_history(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_color_history(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -391,7 +510,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_color_well(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_color_well(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -413,7 +539,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_alert_dialog(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_alert_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -435,7 +568,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_date_picker(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_date_picker(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -457,7 +597,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_navigation_bar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_navigation_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -479,7 +626,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_segmented_control(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_segmented_control(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -501,7 +655,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_slider(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -523,7 +684,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_cupertino_switch(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_cupertino_switch(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -545,7 +713,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_date_range_picker(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_date_range_picker(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -567,7 +742,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_divider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_divider(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -588,7 +770,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_dropdown(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_dropdown(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -610,7 +799,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_dropdown_menu(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_dropdown_menu(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -632,7 +828,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_editable_combo_box(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_editable_combo_box(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -654,7 +857,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_empty_state(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_empty_state(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -676,7 +886,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_fab(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_fab(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -698,7 +915,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_find_replace_dialog(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_find_replace_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -720,7 +944,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_floating_label(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_floating_label(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -742,7 +973,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_font_preview(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_font_preview(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -763,7 +1001,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_frame(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -785,7 +1030,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_grid_table(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_grid_table(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -807,7 +1059,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_hero_animation(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_hero_animation(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -829,7 +1088,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_icon(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_icon(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -851,7 +1117,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_image_gallery(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_image_gallery(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -872,7 +1145,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_image_view(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_image_view(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -894,7 +1174,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_ime_preedit(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_ime_preedit(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -916,7 +1203,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_inplace_editor(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_inplace_editor(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -937,7 +1231,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_keyboard(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_keyboard(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -958,7 +1259,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_line(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_line(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -980,7 +1288,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_line_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_line_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1002,7 +1317,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_lottie_widget(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_lottie_widget(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1024,7 +1346,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_masked_edit(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_masked_edit(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1046,7 +1375,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_masonry_layout(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_masonry_layout(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1068,7 +1404,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_material_navigation_rail(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_material_navigation_rail(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1090,7 +1433,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_material_snackbar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_material_snackbar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1112,7 +1462,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_menu_button(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_menu_button(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1133,7 +1490,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_meter(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_meter(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1154,7 +1518,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_mini_canvas(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_mini_canvas(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1175,7 +1546,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_mini_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_mini_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1197,7 +1575,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_mobile_date_picker(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_mobile_date_picker(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1219,7 +1604,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_modal_bottom_sheet(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_modal_bottom_sheet(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1241,7 +1633,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_multi_select_combo_box(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_multi_select_combo_box(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1263,7 +1662,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_navigation_drawer(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_navigation_drawer(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1285,7 +1691,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_navigation_stack(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_navigation_stack(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1307,7 +1720,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_pager_page_view(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_pager_page_view(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1329,7 +1749,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_pie_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_pie_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1351,7 +1778,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_popover(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_popover(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1373,7 +1807,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_progress_circle(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_progress_circle(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1395,7 +1836,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_properties_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_properties_panel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1417,7 +1865,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_qr_code(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_qr_code(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1439,7 +1894,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_range_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_range_slider(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1461,7 +1923,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_rating(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_rating(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1483,7 +1952,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_refresh_control(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_refresh_control(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1505,7 +1981,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_rive_widget(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_rive_widget(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1526,7 +2009,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_roller(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_roller(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1548,7 +2038,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_safe_area(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_safe_area(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1570,7 +2067,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_search_bar(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_search_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1592,7 +2096,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_search_box(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_search_box(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1614,7 +2125,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_segmented_button(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_segmented_button(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1636,7 +2154,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_shortcut_editor(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_shortcut_editor(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1658,7 +2183,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_skeleton_loader(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_skeleton_loader(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1680,7 +2212,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_sparkline(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_sparkline(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1701,7 +2240,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_spinner(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_spinner(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1723,7 +2269,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_stepper(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_stepper(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1745,7 +2298,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_swipe_to_dismiss(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_swipe_to_dismiss(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1766,7 +2326,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_switch(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_switch(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1788,7 +2355,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_tab_view(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_tab_view(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1810,7 +2384,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_tag_input(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_tag_input(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1831,7 +2412,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_text_area(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_text_area(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1852,7 +2440,14 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        fn create_tile_view(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_tile_view(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1874,7 +2469,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_tooltip(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_tooltip(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1896,7 +2498,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_video_player(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_video_player(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1918,7 +2527,14 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(feature = "mini"))]
-        fn create_wizard_dialog(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        fn create_wizard_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.enabled.insert(widget_id, true);
@@ -1939,5 +2555,120 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
+        #[cfg(not(feature = "mini"))]
+        fn create_freeform_shape(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            let widget_id = self.alloc_widget_id();
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.enabled.insert(widget_id, true);
+            state.visible.insert(widget_id, true);
+            state.ime_enabled.insert(widget_id, false);
+            state.accessibility_names.insert(widget_id, "FreeformShape".to_string());
+            state.widget_properties.insert(
+                widget_id,
+                CustomWidgetProperties {
+                    parent: Some(parent),
+                    x,
+                    y,
+                    width,
+                    height,
+                    widget_kind: WidgetKind::FreeformShape,
+                },
+            );
+            widget_id
+        }
+
+        #[cfg(not(feature = "mini"))]
+        fn create_tab_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            let widget_id = self.alloc_widget_id();
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.enabled.insert(widget_id, true);
+            state.visible.insert(widget_id, true);
+            state.ime_enabled.insert(widget_id, false);
+            state.accessibility_names.insert(widget_id, "TabBar".to_string());
+            state.widget_properties.insert(
+                widget_id,
+                CustomWidgetProperties {
+                    parent: Some(parent),
+                    x,
+                    y,
+                    width,
+                    height,
+                    widget_kind: WidgetKind::TabBar,
+                },
+            );
+            widget_id
+        }
+
+        #[cfg(not(feature = "mini"))]
+        fn create_pie_menu(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            let widget_id = self.alloc_widget_id();
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.enabled.insert(widget_id, true);
+            state.visible.insert(widget_id, true);
+            state.ime_enabled.insert(widget_id, false);
+            state.accessibility_names.insert(widget_id, "PieMenu".to_string());
+            state.widget_properties.insert(
+                widget_id,
+                CustomWidgetProperties {
+                    parent: Some(parent),
+                    x,
+                    y,
+                    width,
+                    height,
+                    widget_kind: WidgetKind::PieMenu,
+                },
+            );
+            widget_id
+        }
+
+        #[cfg(not(feature = "mini"))]
+        fn create_ribbon_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            let widget_id = self.alloc_widget_id();
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.enabled.insert(widget_id, true);
+            state.visible.insert(widget_id, true);
+            state.ime_enabled.insert(widget_id, false);
+            state.accessibility_names.insert(widget_id, "RibbonBar".to_string());
+            state.widget_properties.insert(
+                widget_id,
+                CustomWidgetProperties {
+                    parent: Some(parent),
+                    x,
+                    y,
+                    width,
+                    height,
+                    widget_kind: WidgetKind::RibbonBar,
+                },
+            );
+            widget_id
+        }
     };
 }

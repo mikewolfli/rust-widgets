@@ -276,12 +276,7 @@ mod tests {
 
     #[cfg(not(feature = "mini"))]
     fn make_image() -> Image {
-        Image {
-            data: vec![0u8; 64],
-            format: crate::widget::ImageFormat::Rgba8,
-            width: 8,
-            height: 8,
-        }
+        Image::from_rgba(vec![0u8; 8 * 8 * 4], 8, 8)
     }
 
     fn rect() -> Rect {

@@ -130,9 +130,6 @@ impl FlowLayout {
                 current_y += row_height + self.config.spacing;
                 row_height = 0;
             }
-            if current_y + child_height > content_rect.y + content_rect.height as i32 {
-                continue;
-            }
             positions.push(Rect::new(
                 current_x,
                 current_y,
@@ -160,9 +157,6 @@ impl FlowLayout {
                 current_y = content_rect.y;
                 current_x += column_width + self.config.spacing;
                 column_width = 0;
-            }
-            if current_x + child_width > content_rect.x + content_rect.width as i32 {
-                continue;
             }
             positions.push(Rect::new(
                 current_x,
@@ -475,33 +469,34 @@ mod tests {
     }
 
     #[test]
-    fn test_horizontal_clips_child_taller_than_container() {
+    fn test_horizontal_preserves_child_taller_than_container() {
         let mut layout = FlowLayout::new();
         layout.config.direction = FlowDirection::Horizontal;
         layout.config.spacing = 0;
         layout.config.padding = 0;
 
-        // A child taller than the available content height is clipped (break).
+        // Layout preserves the child; the parent renderer owns clipping.
         layout.add_child(Box::new(TestWidget::new(1, 50, 30)));
 
         let positions = layout.layout(Rect::new(0, 0, 200, 20));
-        assert!(positions.is_empty());
+        assert_eq!(positions, vec![Rect::new(0, 0, 50, 30)]);
     }
 
     #[test]
-    fn test_horizontal_clips_after_first_child_when_second_exceeds_height() {
+    fn test_horizontal_preserves_children_after_height_overflow() {
         let mut layout = FlowLayout::new();
         layout.config.direction = FlowDirection::Horizontal;
         layout.config.spacing = 0;
         layout.config.padding = 0;
 
-        // Two children: first fits height (20), second exceeds it (30).
+        // Two children: the second exceeds height but remains addressable.
         layout.add_child(Box::new(TestWidget::new(1, 50, 20)));
         layout.add_child(Box::new(TestWidget::new(2, 50, 30)));
 
         let positions = layout.layout(Rect::new(0, 0, 200, 25));
-        assert_eq!(positions.len(), 1);
+        assert_eq!(positions.len(), 2);
         assert_eq!(positions[0], Rect::new(0, 0, 50, 20));
+        assert_eq!(positions[1], Rect::new(50, 0, 50, 30));
     }
 
     #[test]

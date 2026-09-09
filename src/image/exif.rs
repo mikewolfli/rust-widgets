@@ -28,8 +28,12 @@ pub fn extract_exif(data: &[u8]) -> ExifData {
                 if pos + 10 < data.len() && &data[pos + 4..pos + 10] == b"Exif\x00\x00" {
                     // Parse TIFF structure inside APP1
                     let tiff_start = pos + 10;
-                    let tiff_data = &data[tiff_start..(tiff_start + seg_len - 6).min(data.len())];
-                    parse_tiff_exif(tiff_data, &mut exif);
+                    let tiff_len = seg_len - 8;
+                    if let Some(tiff_end) = tiff_start.checked_add(tiff_len) {
+                        if tiff_end <= data.len() {
+                            parse_tiff_exif(&data[tiff_start..tiff_end], &mut exif);
+                        }
+                    }
                     break;
                 }
             }
@@ -47,7 +51,7 @@ pub fn extract_exif(data: &[u8]) -> ExifData {
                 && marker != 0xD7
                 && marker != 0xD8
             {
-                pos += seg_len;
+                pos += 2 + seg_len;
             } else {
                 pos += 2;
             }
@@ -151,7 +155,7 @@ fn parse_tiff_exif(data: &[u8], exif: &mut ExifData) {
                 // Make
                 let off = value_offset(entry_off);
                 if off + 32 <= data.len() {
-                    let end = data[off..].iter().position(|&b| b == 0).unwrap_or(0).min(32);
+                    let end = data[off..off + 32].iter().position(|&b| b == 0).unwrap_or(32);
                     exif.make = String::from_utf8_lossy(&data[off..off + end]).to_string();
                 }
             }
@@ -159,7 +163,7 @@ fn parse_tiff_exif(data: &[u8], exif: &mut ExifData) {
                 // Model
                 let off = value_offset(entry_off);
                 if off + 32 <= data.len() {
-                    let end = data[off..].iter().position(|&b| b == 0).unwrap_or(0).min(32);
+                    let end = data[off..off + 32].iter().position(|&b| b == 0).unwrap_or(32);
                     exif.model = String::from_utf8_lossy(&data[off..off + end]).to_string();
                 }
             }
@@ -168,7 +172,7 @@ fn parse_tiff_exif(data: &[u8], exif: &mut ExifData) {
                 // DateTime
                 let off = value_offset(entry_off);
                 if off + 20 <= data.len() {
-                    let end = data[off..].iter().position(|&b| b == 0).unwrap_or(0).min(20);
+                    let end = data[off..off + 20].iter().position(|&b| b == 0).unwrap_or(20);
                     exif.date_time =
                         Some(String::from_utf8_lossy(&data[off..off + end]).to_string());
                 }
@@ -229,5 +233,30 @@ mod tests {
         let exif = extract_exif(&jpeg);
         // Should not crash, should return empty or parsed
         assert!(exif.make.is_empty());
+    }
+
+    #[test]
+    fn test_extract_exif_string_without_nul_uses_bounded_field() {
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II\x2a\x00");
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&271u16.to_le_bytes());
+        tiff.extend_from_slice(&2u16.to_le_bytes());
+        tiff.extend_from_slice(&32u32.to_le_bytes());
+        tiff.extend_from_slice(&26u32.to_le_bytes());
+        tiff.extend_from_slice(&[0u8; 4]);
+        tiff.extend_from_slice(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+        let exif = extract_exif(&tiff);
+        assert_eq!(exif.make, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    }
+
+    #[test]
+    fn test_extract_exif_rejects_truncated_app1_without_panicking() {
+        let jpeg = b"\xFF\xD8\xFF\xE1\x00\x20Exif\x00\x00II\x2a\x00\x08\x00";
+        let exif = extract_exif(jpeg);
+        assert!(exif.make.is_empty());
+        assert!(exif.model.is_empty());
     }
 }

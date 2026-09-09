@@ -9,7 +9,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A combo box that allows both typing custom values and selecting from a list.
 ///
@@ -25,6 +28,9 @@ pub struct EditableComboBox {
     pub text_changed: Signal1<String>,
     /// Emitted when a dropdown item is selected (by index).
     pub item_selected: Signal1<usize>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl EditableComboBox {
@@ -38,6 +44,9 @@ impl EditableComboBox {
             selected_index: None,
             text_changed: Signal1::new(),
             item_selected: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -50,7 +59,17 @@ impl EditableComboBox {
     pub fn set_text(&mut self, text: impl Into<String>) {
         let t = text.into();
         if self.text != t {
+            let before = self.text.clone();
             self.text = t.clone();
+            if !self.restoring_history {
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.text.clone(),
+                    "editable_combo_text",
+                )));
+            }
             self.text_changed.emit(self.text.clone());
             self.base.request_redraw();
         }
@@ -128,6 +147,33 @@ impl EditableComboBox {
     /// Returns the currently selected item index, if any.
     pub fn selected_index(&self) -> Option<usize> {
         self.selected_index
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restoring_history = true;
+        let text = self.history_target.borrow().clone();
+        self.set_text(&text);
+        self.restoring_history = false;
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restoring_history = true;
+        let text = self.history_target.borrow().clone();
+        self.set_text(&text);
+        self.restoring_history = false;
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
     }
 
     /// Selects the item at the given index and sets the text field to its value.
@@ -266,7 +312,15 @@ impl EventHandler for EditableComboBox {
         }
 
         match event {
-            Event::KeyPress { key, .. } => {
+            Event::KeyPress { key, modifiers } => {
+                if *modifiers == 2 && *key == 90 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *modifiers == 2 && *key == 89 {
+                    let _ = self.redo();
+                    return;
+                }
                 match *key {
                     8 => {
                         // Backspace

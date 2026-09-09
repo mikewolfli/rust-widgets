@@ -8,7 +8,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A text input field with auto-completion dropdown support.
 ///
@@ -27,6 +30,9 @@ pub struct AutoCompleteEdit {
     pub text_changed: Signal1<String>,
     /// Emitted when a suggestion is selected from the dropdown.
     pub suggestion_selected: Signal1<String>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl AutoCompleteEdit {
@@ -42,6 +48,9 @@ impl AutoCompleteEdit {
             max_visible: 5,
             text_changed: Signal1::new(),
             suggestion_selected: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -54,7 +63,17 @@ impl AutoCompleteEdit {
     /// and emits the `text_changed` signal.
     pub fn set_text(&mut self, text: String) {
         let cloned = text.clone();
+        let before = self.text.clone();
         self.text = text;
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "auto_complete_text",
+            )));
+        }
         self.filter_suggestions();
         self.text_changed.emit(cloned);
         self.base.request_redraw();
@@ -97,6 +116,38 @@ impl AutoCompleteEdit {
         self.filtered_suggestions.clear();
         self.show_dropdown = false;
         self.selected_suggestion = None;
+        self.base.request_redraw();
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        self.filter_suggestions();
+        self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
 
@@ -159,7 +210,7 @@ impl AutoCompleteEdit {
         if let Some(idx) = self.selected_suggestion {
             if let Some(suggestion) = self.filtered_suggestions.get(idx) {
                 let selected = suggestion.clone();
-                self.text = selected.clone();
+                self.set_text(selected.clone());
                 self.suggestion_selected.emit(selected);
                 self.hide_dropdown();
                 self.base.request_redraw();
@@ -329,6 +380,10 @@ impl EventHandler for AutoCompleteEdit {
                 } else if *key == 40 && *modifiers == 0 && self.show_dropdown {
                     // Down arrow
                     self.select_next();
+                } else if *modifiers == 2 && *key == 90 {
+                    let _ = self.undo();
+                } else if *modifiers == 2 && *key == 89 {
+                    let _ = self.redo();
                 } else if *key >= 32 && *key <= 126 {
                     // Printable ASCII — append to text
                     let c = char::from_u32(*key).unwrap_or(' ');

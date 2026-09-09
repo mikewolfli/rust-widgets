@@ -96,10 +96,15 @@ pub fn default_software_render_config() -> SoftwareRenderConfig {
 /// Render context for custom widget drawing.
 pub struct RenderContext<'a> {
     backend: &'a mut dyn PaintBackend,
+    /// Current translation applied to all subsequent draw primitives.
+    offset_x: i32,
+    offset_y: i32,
+    /// Stack of previous offsets, restored by [`RenderContext::pop_offset`].
+    offset_stack: Vec<(i32, i32)>,
 }
 impl<'a> RenderContext<'a> {
     pub fn new(backend: &'a mut dyn PaintBackend) -> Self {
-        Self { backend }
+        Self { backend, offset_x: 0, offset_y: 0, offset_stack: Vec::new() }
     }
     pub fn backend(&mut self) -> &mut dyn PaintBackend {
         self.backend
@@ -110,22 +115,63 @@ impl<'a> RenderContext<'a> {
     pub fn dpi_scale(&self) -> f32 {
         self.backend.dpi_scale()
     }
+    /// Returns the currently active translation offset `(dx, dy)`.
+    pub fn offset(&self) -> (i32, i32) {
+        (self.offset_x, self.offset_y)
+    }
+    /// Pushes a translation offset that is applied to every draw primitive
+    /// (including nested clips) until the matching [`RenderContext::pop_offset`]
+    /// restores the previous offset. Offsets may be nested.
+    ///
+    /// Used by viewport containers such as `ScrollArea` to translate child
+    /// content by the negative scroll position.
+    pub fn push_offset(&mut self, dx: i32, dy: i32) {
+        self.offset_stack.push((self.offset_x, self.offset_y));
+        self.offset_x += dx;
+        self.offset_y += dy;
+    }
+    /// Restores the translation offset in effect before the matching
+    /// [`RenderContext::push_offset`]. No-op when no offset is pushed.
+    pub fn pop_offset(&mut self) {
+        if let Some(previous) = self.offset_stack.pop() {
+            self.offset_x = previous.0;
+            self.offset_y = previous.1;
+        }
+    }
+    fn offset_rect(&self, rect: Rect) -> Rect {
+        let mut translated = rect;
+        translated.x += self.offset_x;
+        translated.y += self.offset_y;
+        translated
+    }
+    fn offset_point(&self, point: Point) -> Point {
+        Point::new(point.x + self.offset_x, point.y + self.offset_y)
+    }
+    fn offset_points(&self, points: &[Point]) -> Vec<Point> {
+        points.iter().map(|point| self.offset_point(*point)).collect()
+    }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRect { rect, color });
     }
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
     }
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
     }
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
     }
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
     }
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke {
             rect,
             radius,
@@ -140,6 +186,7 @@ impl<'a> RenderContext<'a> {
         color: Color,
         width: u32,
     ) {
+        let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRoundedRectStrokeAA {
             rect,
             radius,
@@ -148,27 +195,39 @@ impl<'a> RenderContext<'a> {
         });
     }
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
+        let from = self.offset_point(from);
+        let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
     }
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
+        let from = self.offset_point(from);
+        let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
     }
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
+        let from = self.offset_point(from);
+        let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
     }
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
+        let from = self.offset_point(from);
+        let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
     }
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
+        let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
     }
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
+        let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
     }
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
+        let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
     }
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
+        let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::DrawCircleStroke {
             center,
             radius,
@@ -190,8 +249,9 @@ impl<'a> RenderContext<'a> {
         filled: bool,
         width: u32,
     ) {
+        let points = self.offset_points(points);
         self.backend.execute_command(&RenderCommand::DrawPath {
-            points: points.to_vec(),
+            points,
             closed,
             color,
             filled,
@@ -206,6 +266,7 @@ impl<'a> RenderContext<'a> {
         color: Color,
         alignment: HorizontalAlignment,
     ) {
+        let origin = self.offset_point(origin);
         self.backend.execute_command(&RenderCommand::DrawText {
             origin,
             text: text.to_string(),
@@ -221,6 +282,8 @@ impl<'a> RenderContext<'a> {
         self.backend.shape_text(text, font)
     }
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        let x = x + self.offset_x;
+        let y = y + self.offset_y;
         self.backend.execute_command(&RenderCommand::PushClip { x, y, width, height });
     }
     pub fn pop_clip(&mut self) {
@@ -228,6 +291,8 @@ impl<'a> RenderContext<'a> {
     }
 
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
+        let x = x + self.offset_x;
+        let y = y + self.offset_y;
         self.backend.execute_command(&RenderCommand::DrawImage {
             x,
             y,
@@ -250,8 +315,8 @@ impl<'a> RenderContext<'a> {
 mod tests {
     use super::*;
     use crate::core::{Color, Font, Point, Rect, Size};
-    use crate::render::RenderCommand;
     use crate::render::SoftwarePaintBackend;
+    use crate::render::{PaintBackend, RenderCommand};
 
     struct SoftwareRenderConfigTestGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -502,6 +567,71 @@ mod tests {
     }
 
     #[test]
+    fn render_context_push_offset_translates_primitives() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let offset_after;
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            // Draw at (2, 2) then translate by (6, 8): fill must land at (8, 10).
+            ctx.fill_rect(Rect::new(2, 2, 4, 4), Color::RED);
+            ctx.push_offset(6, 8);
+            ctx.fill_rect(Rect::new(2, 2, 4, 4), Color::BLUE);
+            ctx.pop_offset();
+            offset_after = ctx.offset();
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 16 * 4;
+        let pixel = |x: usize, y: usize| {
+            let idx = y * stride + x * 4;
+            (rgba[idx], rgba[idx + 1], rgba[idx + 2])
+        };
+        // (2,2) contains only the red fill.
+        assert_eq!(pixel(3, 3), (255, 0, 0));
+        // (8,10) region contains the translated blue fill.
+        assert_eq!(pixel(9, 11), (0, 0, 255));
+        // Offset is fully restored after pop.
+        assert_eq!(offset_after, (0, 0));
+    }
+
+    #[test]
+    fn render_context_offset_nesting_restores_previous() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.push_offset(1, 2);
+        ctx.push_offset(3, 4);
+        assert_eq!(ctx.offset(), (4, 6));
+        ctx.pop_offset();
+        assert_eq!(ctx.offset(), (1, 2));
+        ctx.pop_offset();
+        assert_eq!(ctx.offset(), (0, 0));
+        // Popping an empty stack is a safe no-op.
+        ctx.pop_offset();
+        assert_eq!(ctx.offset(), (0, 0));
+    }
+
+    #[test]
+    fn render_context_push_offset_translates_points_lines_and_text() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.push_offset(3, 4);
+            // Line from (0,0) to (4,4) shifted to (3,4)-(7,8): pixel (5,6) is red.
+            ctx.draw_line(Point::new(0, 0), Point::new(8, 8), Color::RED);
+            ctx.pop_offset();
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 16 * 4;
+        let idx = 6 * stride + 5 * 4;
+        assert_eq!(rgba[idx], 255); // R on the translated diagonal
+    }
+
+    #[test]
     fn render_context_fill_rect() {
         let mut backend = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
         let mut ctx = RenderContext::new(&mut backend);
@@ -739,6 +869,31 @@ mod tests {
         let stride = 10 * 4;
         let idx = 2 * stride + 2 * 4;
         assert_eq!(rgba[idx], 255); // R inside clip region
+    }
+
+    #[test]
+    fn render_context_clip_applies_to_non_rect_primitives() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        ctx.push_clip(0, 0, 8, 8);
+        ctx.fill_circle(Point::new(6, 6), 6, Color::BLUE);
+        ctx.draw_line(Point::new(0, 0), Point::new(19, 19), Color::RED);
+        let image = (0..16).flat_map(|_| [0, 255, 0, 255]).collect::<Vec<_>>();
+        ctx.draw_image(5, 5, 4, 4, &image);
+        ctx.pop_clip();
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 20 * 4;
+        let pixel = |x: usize, y: usize| {
+            let index = y * stride + x * 4;
+            (rgba[index], rgba[index + 1], rgba[index + 2])
+        };
+        assert_eq!(pixel(6, 6), (0, 255, 0));
+        assert_eq!(pixel(7, 7), (0, 255, 0));
+        assert_eq!(pixel(15, 15), (255, 255, 255));
+        assert_eq!(pixel(10, 10), (255, 255, 255));
     }
 
     #[test]

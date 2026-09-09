@@ -62,6 +62,19 @@ impl<K> BackendState<K>
 where
     K: Copy + Eq + Hash,
 {
+    #[cfg(feature = "serde_json")]
+    /// Serialize widget text snapshots without exposing synchronization primitives or id counters.
+    pub fn serialize_widget_snapshot(&self) -> Result<String, serde_json::Error> {
+        let texts: Vec<String> = self
+            .widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .values()
+            .map(|record| record.text.clone())
+            .collect();
+        serde_json::to_string(&texts)
+    }
+
     /// Create empty backend state.
     pub fn new() -> Self {
         Self {

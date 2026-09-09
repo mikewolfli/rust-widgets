@@ -8,7 +8,7 @@ use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{
     cluster_ends_with_zwj, estimate_cluster_advance, fill_pixels, is_combining_mark,
-    is_variation_selector, set_pixel,
+    is_variation_selector, pixel_visible, set_pixel,
 };
 use crate::render::{
     BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextCluster, TextMetrics,
@@ -113,6 +113,7 @@ impl SoftwareSurface {
     /// Fills a rectangle with a gradient.
     pub fn fill_rect_gradient(&mut self, rect: Rect, gradient: &Gradient) {
         let size = self.buffer.size();
+        let clip = self.current_clip();
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;
         let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
@@ -154,7 +155,9 @@ impl SoftwareSurface {
                     }
                 };
                 let color = gradient.interpolate(pos);
-                set_pixel(frame, size.width, x, y, color);
+                if pixel_visible(clip, x as i32, y as i32) {
+                    set_pixel(frame, size.width, x, y, color);
+                }
             }
         }
     }

@@ -86,6 +86,10 @@ pub struct LinuxImeBridge {
     marked_text: Mutex<String>,
     /// Cursor position within the composition (byte offset).
     cursor_pos: Mutex<usize>,
+    /// Last insertion-point rectangle in screen coordinates.
+    cursor_rect: Mutex<(i32, i32, u32, u32)>,
+    /// Last requested candidate window position.
+    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native IBus handle ──
     /// Whether an IBus connection was successfully established (probe result).
@@ -139,6 +143,8 @@ impl LinuxImeBridge {
             active: Mutex::new(false),
             marked_text: Mutex::new(String::new()),
             cursor_pos: Mutex::new(0),
+            cursor_rect: Mutex::new((0, 0, 0, 0)),
+            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             ibus_available: Mutex::new(ibus_avail),
             #[cfg(feature = "linux-a11y")]
             ibus_connection: Mutex::new(ibus_connection),
@@ -157,6 +163,7 @@ impl LinuxImeBridge {
     /// SetCursorLocation call is part of the unwired engine protocol.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}");
+        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
     }
 
     /// Process a raw key event through the IBus IME subsystem.
@@ -284,6 +291,7 @@ impl ImeBridge for LinuxImeBridge {
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[Linux IME] set_candidate_window_position: ({}, {})", position.x, position.y);
+        *self.candidate_position.lock().unwrap() = position;
     }
 
     fn is_active(&self) -> bool {
@@ -422,6 +430,10 @@ mod tests {
     fn test_set_candidate_window_position() {
         let bridge = LinuxImeBridge::new();
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 100, y: 200 });
+        assert_eq!(
+            *bridge.candidate_position.lock().unwrap(),
+            ImeCandidatePosition { x: 100, y: 200 }
+        );
     }
 
     #[test]
@@ -439,6 +451,7 @@ mod tests {
     fn test_set_cursor_rect() {
         let bridge = LinuxImeBridge::new();
         bridge.set_cursor_rect(10, 20, 100, 30);
+        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (10, 20, 100, 30));
     }
 
     #[test]

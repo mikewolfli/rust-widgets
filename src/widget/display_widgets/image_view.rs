@@ -1,8 +1,8 @@
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::image::{Image, ImageFormat};
 use crate::render::RenderContext;
-use crate::widget::image::{Image, ImageFormat};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Widget that displays an Image.
@@ -56,8 +56,8 @@ impl Widget for ImageView {
     }
 
     fn size_hint(&self) -> Size {
-        if self.image.width > 0 && self.image.height > 0 {
-            Size::new(self.image.width, self.image.height)
+        if self.image.width() > 0 && self.image.height() > 0 {
+            Size::new(self.image.width(), self.image.height())
         } else {
             Size::new(100, 100)
         }
@@ -77,17 +77,23 @@ impl Draw for ImageView {
             return;
         }
 
-        if self.image.format == ImageFormat::Rgba8
-            && self.image.width > 0
-            && self.image.height > 0
-            && !self.image.data.is_empty()
+        if self.image.format() == ImageFormat::Rgba8
+            && self.image.width() > 0
+            && self.image.height() > 0
+            && self.image.rgba8_data().is_some_and(|data| !data.is_empty())
         {
             let (draw_w, draw_h) = if self.scaled {
                 (rect.width, rect.height)
             } else {
-                (self.image.width.min(rect.width), self.image.height.min(rect.height))
+                (self.image.width().min(rect.width), self.image.height().min(rect.height))
             };
-            context.draw_image(rect.x, rect.y, draw_w, draw_h, &self.image.data);
+            context.draw_image(
+                rect.x,
+                rect.y,
+                draw_w,
+                draw_h,
+                self.image.rgba8_data().unwrap_or(&[]),
+            );
         } else {
             // Draw placeholder rectangle with "?" text.
             let bg = self
@@ -134,9 +140,9 @@ mod tests {
 
         let rgba = Image::from_rgba(vec![255; 16 * 4], 4, 4);
         view.set_image(rgba.clone());
-        assert_eq!(view.image().width, 4);
-        assert_eq!(view.image().height, 4);
-        assert_eq!(view.image().format, ImageFormat::Rgba8);
+        assert_eq!(view.image().width(), 4);
+        assert_eq!(view.image().height(), 4);
+        assert_eq!(view.image().format(), ImageFormat::Rgba8);
     }
 
     #[test]

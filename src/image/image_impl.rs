@@ -11,6 +11,26 @@ pub struct Image {
 }
 
 impl Image {
+    /// Creates an empty image for widgets that have no source yet.
+    pub fn new() -> Self {
+        Self::from_raw(ImageData::Rgba8(Vec::new()), 0, 0)
+    }
+
+    /// Creates an image from validated raw RGBA8 pixels.
+    ///
+    /// This compatibility constructor preserves the historical widget-image
+    /// API while storing pixels in the canonical `ImageData` representation.
+    pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
+        let expected = width as usize * height as usize * 4;
+        assert_eq!(
+            data.len(),
+            expected,
+            "Image::from_rgba: data length {} does not match {width}x{height} RGBA (expected {expected})",
+            data.len()
+        );
+        Self::from_raw(ImageData::Rgba8(data), width, height)
+    }
+
     /// Decode an image from raw bytes. Auto-detects format.
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
         let decoded = decoder::decode(data)?;
@@ -53,6 +73,26 @@ impl Image {
     /// Reference to pixel data.
     pub fn data(&self) -> &ImageData {
         &self.inner.data
+    }
+
+    /// Returns RGBA8 bytes when the underlying image is already RGBA8.
+    pub fn rgba8_data(&self) -> Option<&[u8]> {
+        match &self.inner.data {
+            ImageData::Rgba8(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the image has no pixels.
+    pub fn is_empty(&self) -> bool {
+        self.inner.data.as_bytes().is_empty()
+    }
+
+    /// Loads an image from a file path.
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let data = std::fs::read(path)
+            .map_err(|error| format!("Failed to read image file '{path}': {error}"))?;
+        Self::from_bytes(&data)
     }
 
     /// Returns RGBA8 pixel data, converting if needed.
@@ -103,6 +143,12 @@ impl Image {
     }
 }
 
+impl Default for Image {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +166,14 @@ mod tests {
         let img = test_image();
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
+    }
+
+    #[test]
+    fn compatibility_rgba_constructor_exposes_canonical_pixels() {
+        let img = Image::from_rgba(vec![255, 0, 0, 255], 1, 1);
+        assert_eq!(img.format(), crate::image::format::ImageFormat::Rgba8);
+        assert_eq!(img.rgba8_data(), Some(&[255, 0, 0, 255][..]));
+        assert!(!img.is_empty());
     }
 
     #[test]

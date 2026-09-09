@@ -317,8 +317,9 @@ impl MdiArea {
         let spacing = 10;
         let cols = ((area_rect.width as f32 - spacing as f32)
             / (icon_width as f32 + spacing as f32))
-            .floor() as usize;
-        let _rows = (count as f32 / cols as f32).ceil() as usize;
+            .floor()
+            .max(1.0) as usize;
+        let _rows = count.div_ceil(cols);
         for (i, subwindow) in minimized.iter_mut().enumerate() {
             let col = i % cols;
             let row = i / cols;
@@ -379,17 +380,22 @@ impl Widget for MdiArea {
 impl EventHandler for MdiArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        let mut hit_subwindow = false;
         if let Event::MousePress { pos, button } = event {
             if *button == 1 {
                 if let Some(index) = self.sub_window_at_position(*pos) {
+                    hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
                 }
             }
         }
-        // Forward events to active sub-window via registry
-        if let Some(widget_id) = self.active_sub_window() {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().forward_event(widget_id, event);
+        let should_forward = !matches!(event, Event::MousePress { .. }) || hit_subwindow;
+        // Forward background-independent events, or pointer events that hit a subwindow.
+        if should_forward {
+            if let Some(widget_id) = self.active_sub_window() {
+                if let Some(ref reg) = self.registry {
+                    reg.borrow_mut().forward_event(widget_id, event);
+                }
             }
         }
     }
@@ -506,9 +512,16 @@ impl Draw for MdiArea {
                 frame_rect.height.saturating_sub(title_bar_height as u32),
             );
             if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(subwindow.widget, content_rect);
+                context.push_clip(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
                 reg.borrow_mut().draw_widget(subwindow.widget, context);
+                context.pop_clip();
             }
-            let _content_rect = content_rect;
         }
     }
 }
@@ -1091,5 +1104,14 @@ mod tests {
         let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
         area.arrange_icons(); // should not panic
         assert_eq!(area.sub_window_count(), 0);
+    }
+
+    #[test]
+    fn mdiarea_arrange_icons_handles_narrow_area() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 50, 40));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 20, 20));
+        area.sub_window_mut(0).expect("subwindow exists").set_minimized(true);
+        area.arrange_icons();
+        assert_eq!(area.sub_window(0).map(|window| window.geometry().width), Some(100));
     }
 }

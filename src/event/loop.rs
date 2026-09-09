@@ -250,6 +250,26 @@ impl EventLoop {
         *self.running.lock().unwrap_or_else(|p| p.into_inner()) = true;
     }
 
+    /// Processes one queued event and pumps timers in the mini profile.
+    ///
+    /// Mini builds do not spawn a background thread, so hosts must call this
+    /// from their own frame/input loop to make `post_event` and timers live.
+    #[cfg(feature = "mini")]
+    pub fn pump_once(&mut self) -> bool {
+        if !self.is_running() {
+            return false;
+        }
+        self.timer_manager.pump();
+        let next = self.queue.lock().unwrap_or_else(|p| p.into_inner()).dequeue();
+        let Some((target, event, _priority)) = next else {
+            return false;
+        };
+        if let Some(dispatch) = &self.dispatch_fn {
+            dispatch(target, &event);
+        }
+        true
+    }
+
     /// Stops the event loop.
     #[cfg(not(feature = "mini"))]
     pub fn stop(&mut self) {

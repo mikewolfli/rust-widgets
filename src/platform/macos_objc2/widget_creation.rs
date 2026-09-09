@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "macos")]
 #![cfg(feature = "objc2-macos")]
+#![allow(dead_code)] // Migration-preview helpers are activated incrementally by platform_impl.
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;

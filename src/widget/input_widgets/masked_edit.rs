@@ -16,7 +16,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A parsed segment in the mask — either a literal character or an input placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +69,9 @@ pub struct MaskedEdit {
     focused: bool,
     /// Emitted when the text changes, providing the raw text.
     pub text_changed: Signal1<String>,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl MaskedEdit {
@@ -82,6 +88,9 @@ impl MaskedEdit {
             cursor_pos: 0,
             focused: false,
             text_changed: Signal1::new(),
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -109,6 +118,7 @@ impl MaskedEdit {
     /// Sets the raw text. The text is validated against the mask, and only
     /// characters that match the mask positions are accepted.
     pub fn set_text(&mut self, text: &str) {
+        let before = self.raw_text.clone();
         self.raw_text = String::new();
         let mut chars = text.chars();
         for seg in &self.segments {
@@ -123,6 +133,15 @@ impl MaskedEdit {
         }
         self.update_display_text();
         self.cursor_pos = self.display_text.len();
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.raw_text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.raw_text.clone(),
+                "masked_edit_text",
+            )));
+        }
         self.text_changed.emit(self.raw_text.clone());
         self.base.request_redraw();
     }
@@ -130,6 +149,33 @@ impl MaskedEdit {
     /// Returns the display text (with mask literals inserted).
     pub fn text(&self) -> &str {
         &self.display_text
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+    fn restore_history_text(&mut self) {
+        let text = self.history_target.borrow().clone();
+        self.restoring_history = true;
+        self.set_text(&text);
+        self.restoring_history = false;
     }
 
     /// Returns whether all required mask positions are filled.

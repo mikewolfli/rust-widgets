@@ -3,7 +3,10 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Multi-line text input widget.
 ///
@@ -26,6 +29,9 @@ pub struct TextArea {
     focused: bool,
     /// Signal emitted when text changes.
     pub changed: GenericSignal,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 fn floor_char_boundary(s: &str, index: usize) -> usize {
@@ -46,6 +52,7 @@ impl TextArea {
     /// Creates a new `TextArea` with the given initial text and geometry.
     pub fn new(text: String, rect: Rect) -> Self {
         let cursor_pos = text.len();
+        let history_target = Rc::new(RefCell::new(text.clone()));
         Self {
             base: BaseWidget::new(WidgetKind::TextArea, rect, "TextArea"),
             text,
@@ -55,6 +62,9 @@ impl TextArea {
             placeholder: String::new(),
             focused: false,
             changed: GenericSignal::new(),
+            undo_stack: UndoStack::new(),
+            history_target,
+            restoring_history: false,
         }
     }
 
@@ -77,13 +87,24 @@ impl TextArea {
             return;
         }
         let max = self.max_length;
-        self.text = if max > 0 && text.len() > max {
+        let next = if max > 0 && text.len() > max {
             // Use floor_char_boundary to avoid splitting a multi-byte UTF-8 char
             let boundary = floor_char_boundary(&text, max);
             text[..boundary].to_string()
         } else {
             text
         };
+        let before = self.text.clone();
+        self.text = next;
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "text_area_text",
+            )));
+        }
         self.cursor_pos = self.text.len();
         self.changed.emit();
         self.base.request_redraw();
@@ -102,9 +123,11 @@ impl TextArea {
         }
         let boundary = floor_char_boundary(&self.text, self.cursor_pos);
         self.cursor_pos = boundary;
-        self.text.insert(self.cursor_pos, ch);
-        self.cursor_pos += ch.len_utf8();
-        self.changed.emit();
+        let mut next = self.text.clone();
+        next.insert(self.cursor_pos, ch);
+        let new_cursor_pos = self.cursor_pos + ch.len_utf8();
+        self.set_text(next);
+        self.cursor_pos = new_cursor_pos.min(self.text.len());
     }
 
     /// Deletes the character immediately before the cursor.
@@ -122,9 +145,10 @@ impl TextArea {
             }
         });
         if let Some((start, len)) = prev {
-            self.text.replace_range(start..start + len, "");
+            let mut next = self.text.clone();
+            next.replace_range(start..start + len, "");
+            self.set_text(next);
             self.cursor_pos = start;
-            self.changed.emit();
         }
     }
 
@@ -184,6 +208,38 @@ impl TextArea {
             self.base.request_redraw();
         }
     }
+
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.cursor_pos = self.cursor_pos.min(self.text.len());
+        self.restoring_history = false;
+        self.changed.emit();
+        self.base.request_redraw();
+    }
 }
 
 impl Widget for TextArea {
@@ -223,7 +279,15 @@ impl EventHandler for TextArea {
                 self.focused = false;
                 self.request_redraw();
             }
-            Event::KeyPress { key, .. } => {
+            Event::KeyPress { key, modifiers } => {
+                if *modifiers == 2 && *key == 90 {
+                    let _ = self.undo();
+                    return;
+                }
+                if *modifiers == 2 && *key == 89 {
+                    let _ = self.redo();
+                    return;
+                }
                 if self.read_only {
                     return;
                 }

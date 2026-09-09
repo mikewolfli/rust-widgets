@@ -46,11 +46,11 @@ fn try_activate_nstextinputcontext(
 
     unsafe {
         use objc2::msg_send;
-        use objc2::runtime::Object;
+        use objc2::runtime::AnyObject;
 
         // Get the NSTextInputContext from the view via [view inputContext].
-        let view: *mut Object = view_ptr as *mut Object;
-        let ctx: *mut Object = msg_send![view, inputContext];
+        let view: *mut AnyObject = view_ptr as *mut AnyObject;
+        let ctx: *mut AnyObject = msg_send![view, inputContext];
         if ctx.is_null() {
             log::warn!("[macOS IME] View has no NSTextInputContext");
             return None;
@@ -63,7 +63,7 @@ fn try_activate_nstextinputcontext(
 
         // Opaque wrapper to carry the raw pointer through Box<dyn Any + Send>.
         #[repr(C)]
-        struct ImeCtx(*mut Object);
+        struct ImeCtx(*mut AnyObject);
         unsafe impl Send for ImeCtx {}
 
         Some(Box::new(ImeCtx(ctx)) as Box<dyn std::any::Any + Send>)
@@ -84,10 +84,10 @@ fn sync_nstextinputcontext(
 ) {
     unsafe {
         use objc2::msg_send;
-        use objc2::runtime::Object;
+        use objc2::runtime::AnyObject;
 
         #[repr(C)]
-        struct ImeCtx(*mut Object);
+        struct ImeCtx(*mut AnyObject);
 
         // SAFETY: The token was created by try_activate_nstextinputcontext,
         // so the repr(C) layout guarantees downcast_ref works.
@@ -95,7 +95,7 @@ fn sync_nstextinputcontext(
             return;
         };
 
-        let ctx: *mut Object = ime_ctx.0;
+        let ctx: *mut AnyObject = ime_ctx.0;
         if ctx.is_null() {
             return;
         }
@@ -128,6 +128,10 @@ pub struct MacOsImeBridge {
     marked_range: Mutex<(usize, usize)>,
     /// UTF-16-based selection range inside the marked text.
     selected_range: Mutex<(usize, usize)>,
+    /// Last insertion-point rectangle in screen coordinates.
+    cursor_rect: Mutex<(i32, i32, u32, u32)>,
+    /// Last requested candidate window position.
+    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native platform token ──
     /// Opaque handle to the `NSTextInputContext` (only used on macOS with
@@ -151,6 +155,8 @@ impl MacOsImeBridge {
             marked_text: Mutex::new(String::new()),
             marked_range: Mutex::new((0, 0)),
             selected_range: Mutex::new((0, 0)),
+            cursor_rect: Mutex::new((0, 0, 0, 0)),
+            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             native_token: Mutex::new(None),
         }
     }
@@ -175,12 +181,13 @@ impl MacOsImeBridge {
     /// This tells the IME where to position the candidate window.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[macOS IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
+        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
 
         #[cfg(feature = "objc2-macos")]
         {
             unsafe {
                 use objc2::msg_send;
-                use objc2::runtime::{AnyClass, Object};
+                use objc2::runtime::{AnyClass, AnyObject};
                 use objc2::sel;
 
                 if let Some(cls) = AnyClass::get(c"NSTextInputContext") {
@@ -188,7 +195,7 @@ impl MacOsImeBridge {
                     // fully initialised (e.g. in test environments).
                     let responds: bool = msg_send![cls, respondsToSelector: sel!(activeContext)];
                     if responds {
-                        let ctx: *mut Object = msg_send![cls, activeContext];
+                        let ctx: *mut AnyObject = msg_send![cls, activeContext];
                         if !ctx.is_null() {
                             let _: () = msg_send![ctx, invalidateCharacterCoordinates];
                         }
@@ -356,13 +363,13 @@ impl ImeBridge for MacOsImeBridge {
             if let Some(ref token) = *guard {
                 unsafe {
                     use objc2::msg_send;
-                    use objc2::runtime::Object;
+                    use objc2::runtime::AnyObject;
 
                     #[repr(C)]
-                    struct ImeCtx(*mut Object);
+                    struct ImeCtx(*mut AnyObject);
 
                     if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
-                        let ctx: *mut Object = ime_ctx.0;
+                        let ctx: *mut AnyObject = ime_ctx.0;
                         if !ctx.is_null() {
                             let _: () = msg_send![ctx, activate];
                             log::info!(
@@ -391,13 +398,13 @@ impl ImeBridge for MacOsImeBridge {
             if let Some(ref token) = *guard {
                 unsafe {
                     use objc2::msg_send;
-                    use objc2::runtime::Object;
+                    use objc2::runtime::AnyObject;
 
                     #[repr(C)]
-                    struct ImeCtx(*mut Object);
+                    struct ImeCtx(*mut AnyObject);
 
                     if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
-                        let ctx: *mut Object = ime_ctx.0;
+                        let ctx: *mut AnyObject = ime_ctx.0;
                         if !ctx.is_null() {
                             let _: () = msg_send![ctx, deactivate];
                             log::info!(
@@ -450,19 +457,20 @@ impl ImeBridge for MacOsImeBridge {
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[macOS IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
+        *self.candidate_position.lock().unwrap() = position;
 
         #[cfg(feature = "objc2-macos")]
         {
             unsafe {
                 use objc2::msg_send;
-                use objc2::runtime::{AnyClass, Object};
+                use objc2::runtime::{AnyClass, AnyObject};
                 use objc2::sel;
 
                 if let Some(cls) = AnyClass::get(c"NSTextInputContext") {
                     // Guard against uninitialised AppKit (e.g. test env).
                     let responds: bool = msg_send![cls, respondsToSelector: sel!(activeContext)];
                     if responds {
-                        let ctx: *mut Object = msg_send![cls, activeContext];
+                        let ctx: *mut AnyObject = msg_send![cls, activeContext];
                         if !ctx.is_null() {
                             // Invalidate character coordinates so the system
                             // re-queries the cursor rect, updating the candidate
@@ -677,8 +685,18 @@ mod tests {
     #[test]
     fn test_set_cursor_rect() {
         let bridge = MacOsImeBridge::new();
-        // Should not panic.
         bridge.set_cursor_rect(10, 20, 100, 30);
+        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (10, 20, 100, 30));
+    }
+
+    #[test]
+    fn test_candidate_position_is_retained() {
+        let bridge = MacOsImeBridge::new();
+        bridge.set_candidate_window_position(ImeCandidatePosition { x: 42, y: 84 });
+        assert_eq!(
+            *bridge.candidate_position.lock().unwrap(),
+            ImeCandidatePosition { x: 42, y: 84 }
+        );
     }
 
     #[test]

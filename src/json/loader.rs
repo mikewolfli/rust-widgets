@@ -24,8 +24,8 @@ use serde_json::Value;
 
 use crate::app::{ButtonHandle, WidgetHandle};
 use crate::json::{
-    add_spacer_to_layout, add_widget_to_layout, create_layout_from_kind, parse_layout_kind,
-    store_layout, BoundJsonLayout, ChildLayoutAttrs,
+    add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
+    parse_layout_kind, store_layout, BoundJsonLayout, ChildLayoutAttrs,
 };
 use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
@@ -162,6 +162,7 @@ impl JsonLoader {
             }
 
             store_layout(layout_parent, layout);
+            apply_layout(layout_parent, json_geometry(obj));
             return Ok(layout_parent);
         }
 
@@ -386,6 +387,7 @@ impl JsonLoader {
             }
 
             store_layout(widget_id, layout);
+            apply_layout(widget_id, json_geometry(obj));
         }
 
         Ok(widget_id)
@@ -1018,6 +1020,15 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
             widget.set_style(style);
         }
     }
+}
+
+fn json_geometry(obj: &serde_json::Map<String, Value>) -> Rect {
+    Rect::from_i64(
+        obj.get("x").and_then(|value| value.as_i64()).unwrap_or(0),
+        obj.get("y").and_then(|value| value.as_i64()).unwrap_or(0),
+        obj.get("width").and_then(|value| value.as_i64()).unwrap_or(100),
+        obj.get("height").and_then(|value| value.as_i64()).unwrap_or(100),
+    )
 }
 
 /// Apply min/max size constraints from JSON object.

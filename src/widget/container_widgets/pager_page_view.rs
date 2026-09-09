@@ -168,6 +168,10 @@ impl Draw for PagerPageView {
 
 impl EventHandler for PagerPageView {
     fn handle_event(&mut self, event: &Event) {
+        if !self.pages.is_empty() && self.current_page < self.pages.len() {
+            let geometry = self.geometry();
+            self.pages[self.current_page].set_geometry(geometry);
+        }
         match event {
             Event::KeyPress { key, .. } => {
                 let left_arrow = 37u32;

@@ -109,6 +109,18 @@ impl GroupBox {
             checkbox_size as u32,
         ))
     }
+
+    fn content_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let top = 14u32;
+        let inset = 4u32;
+        Rect::new(
+            rect.x + inset as i32,
+            rect.y + top as i32,
+            rect.width.saturating_sub(inset * 2),
+            rect.height.saturating_sub(top + inset),
+        )
+    }
 }
 // Implement Widget trait
 impl Widget for GroupBox {
@@ -142,10 +154,18 @@ impl EventHandler for GroupBox {
                 }
             }
         }
-        // Forward events to children
+        let content = self.content_rect();
         if let Some(ref reg) = self.registry {
-            for child_id in &self.base.children {
-                let _ = reg.borrow_mut().forward_event(*child_id, event);
+            let target = match event {
+                Event::MousePress { pos, .. }
+                | Event::MouseRelease { pos, .. }
+                | Event::MouseMove { pos } => {
+                    content.contains(*pos).then(|| self.base.children.first().copied()).flatten()
+                }
+                _ => self.base.children.first().copied(),
+            };
+            if let Some(child_id) = target {
+                let _ = reg.borrow_mut().forward_event(child_id, event);
             }
         }
     }
@@ -159,6 +179,7 @@ impl Draw for GroupBox {
         }
         // Draw base widget
         let rect = self.geometry();
+        let content = self.content_rect();
         let title_rect = self.title_rect();
         let style = self.style();
         // Draw border
@@ -216,6 +237,13 @@ impl Draw for GroupBox {
                 text_color,
                 HorizontalAlignment::Left,
             );
+        }
+        if let Some(ref reg) = self.registry {
+            context.push_clip(content.x, content.y, content.width, content.height);
+            for child_id in &self.base.children {
+                reg.borrow_mut().draw_widget(*child_id, context);
+            }
+            context.pop_clip();
         }
     }
 }

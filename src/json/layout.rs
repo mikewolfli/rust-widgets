@@ -7,7 +7,7 @@ use core::cell::RefCell;
 
 use serde_json::Value;
 
-use crate::core::Orientation;
+use crate::core::{Orientation, Rect};
 use crate::layout::{BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout, StackLayout};
 
 // ── Layout kind enum ─────────────────────────────────────────
@@ -70,6 +70,33 @@ pub fn add_spacer_to_layout(_stretch: u32, _parent_id: u64) {
             layout_box.add_widget(u64::MAX, _stretch);
         }
     });
+}
+
+/// Apply a stored declarative layout to its child widget geometries.
+pub fn apply_layout(parent_id: u64, rect: Rect) {
+    let geometries = LAYOUT_MAP.with(|map| {
+        let map = map.borrow();
+        let Some(layout) = map.get(&parent_id) else {
+            return Vec::new();
+        };
+        let mut geometries = Vec::new();
+        layout.update(rect, &mut |child_id, child_rect| {
+            if child_id != u64::MAX {
+                geometries.push((child_id, child_rect));
+            }
+        });
+        geometries
+    });
+
+    for (child_id, child_rect) in geometries {
+        crate::set_widget_geometry(
+            child_id,
+            child_rect.x,
+            child_rect.y,
+            child_rect.width,
+            child_rect.height,
+        );
+    }
 }
 
 // ── Parsing ─────────────────────────────────────────────────

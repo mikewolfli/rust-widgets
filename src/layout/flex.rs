@@ -384,6 +384,10 @@ impl FlexLayout {
 
         let gap = scaled_gap.unwrap_or(self.gap);
 
+        if !matches!(self.wrap, FlexWrap::NoWrap) {
+            return self.compute_wrapped_rects(content_rect, gap);
+        }
+
         let (available_main, start_main, available_cross, cross_origin) = if self.is_row() {
             (content_rect.width as i32, content_rect.x, content_rect.height as i32, content_rect.y)
         } else {
@@ -418,6 +422,138 @@ impl FlexLayout {
             results.push((item.widget_id, rect));
         }
 
+        results
+    }
+
+    fn compute_wrapped_rects(&self, content_rect: Rect, gap: i32) -> Vec<(Option<ObjectId>, Rect)> {
+        let is_row = self.is_row();
+        let available_main =
+            if is_row { content_rect.width as i32 } else { content_rect.height as i32 };
+        let available_cross =
+            if is_row { content_rect.height as i32 } else { content_rect.width as i32 };
+        if available_main <= 0 || available_cross <= 0 {
+            return Vec::new();
+        }
+
+        let item_main = |index: usize| {
+            let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+            let intrinsic = if is_row { size.width } else { size.height };
+            let minimum = if is_row {
+                self.items[index].min_size.width
+            } else {
+                self.items[index].min_size.height
+            };
+            intrinsic.max(minimum) as i32
+        };
+        let item_cross = |index: usize| {
+            let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+            let intrinsic = if is_row { size.height } else { size.width };
+            let minimum = if is_row {
+                self.items[index].min_size.height
+            } else {
+                self.items[index].min_size.width
+            };
+            intrinsic.max(minimum) as i32
+        };
+
+        let mut lines: Vec<Vec<usize>> = Vec::new();
+        for index in 0..self.items.len() {
+            let candidate = item_main(index);
+            let needs_wrap = lines.last().is_some_and(|line| {
+                let used = line.iter().map(|&item| item_main(item)).sum::<i32>()
+                    + gap * line.len().saturating_sub(1) as i32;
+                used > 0 && used + gap + candidate > available_main
+            });
+            if needs_wrap {
+                lines.push(Vec::new());
+            }
+            if lines.is_empty() {
+                lines.push(Vec::new());
+            }
+            lines.last_mut().expect("line exists").push(index);
+        }
+
+        let mut line_cross_sizes = Vec::with_capacity(lines.len());
+        for line in &lines {
+            line_cross_sizes.push(line.iter().map(|&index| item_cross(index)).max().unwrap_or(0));
+        }
+        let cross_origin = if is_row { content_rect.y } else { content_rect.x };
+        let mut results = Vec::with_capacity(self.items.len());
+        let mut cross_cursor = if self.wrap == FlexWrap::WrapReverse {
+            cross_origin + available_cross
+        } else {
+            cross_origin
+        };
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let intrinsic_total = line.iter().map(|&index| item_main(index)).sum::<i32>();
+            let gaps = gap * line.len().saturating_sub(1) as i32;
+            let remaining = available_main - intrinsic_total - gaps;
+            let total_grow =
+                line.iter().map(|&index| self.items[index].flex_grow.max(0.0)).sum::<f32>();
+            let mut sizes: Vec<i32> = line.iter().map(|&index| item_main(index)).collect();
+            if remaining > 0 && total_grow > 0.0 {
+                for (slot, &index) in line.iter().enumerate() {
+                    let extra = (remaining as f32 * self.items[index].flex_grow / total_grow)
+                        .round() as i32;
+                    let max_main = if is_row {
+                        self.items[index].max_size.width
+                    } else {
+                        self.items[index].max_size.height
+                    };
+                    sizes[slot] = if max_main > 0 {
+                        (sizes[slot] + extra).min(max_main as i32)
+                    } else {
+                        sizes[slot] + extra
+                    };
+                }
+            }
+            let used = sizes.iter().sum::<i32>() + gaps;
+            let positions = self.justify_positions(
+                &sizes,
+                used,
+                available_main,
+                if is_row { content_rect.x } else { content_rect.y },
+                gap,
+            );
+            let line_cross = line_cross_sizes[line_index];
+            if self.wrap == FlexWrap::WrapReverse {
+                cross_cursor -= line_cross;
+            }
+            for (slot, &index) in line.iter().enumerate() {
+                let align = self.items[index].align_self.unwrap_or(self.align_items);
+                let child_cross = item_cross(index);
+                let (cross_offset, cross_len) = match align {
+                    AlignItems::Stretch => (0, line_cross),
+                    AlignItems::FlexStart | AlignItems::Baseline => (0, child_cross),
+                    AlignItems::FlexEnd => (line_cross - child_cross, child_cross),
+                    AlignItems::Center => ((line_cross - child_cross) / 2, child_cross),
+                };
+                let main_pos = positions[slot];
+                let cross_pos = cross_cursor + cross_offset;
+                let child_rect = if is_row {
+                    Rect::new(
+                        main_pos,
+                        cross_pos,
+                        sizes[slot].max(0) as u32,
+                        cross_len.max(0) as u32,
+                    )
+                } else {
+                    Rect::new(
+                        cross_pos,
+                        main_pos,
+                        cross_len.max(0) as u32,
+                        sizes[slot].max(0) as u32,
+                    )
+                };
+                results.push((self.items[index].widget_id, child_rect));
+            }
+            if self.wrap == FlexWrap::WrapReverse {
+                cross_cursor -= gap;
+            } else {
+                cross_cursor += line_cross + gap;
+            }
+        }
         results
     }
 }
@@ -726,6 +862,81 @@ mod tests {
         // Item1 at 0, item2 at 30+10=40
         assert_eq!(rects.get(&1).map(|r| r.x), Some(0));
         assert_eq!(rects.get(&2).map(|r| r.x), Some(40));
+    }
+
+    #[test]
+    fn flex_layout_wraps_rows_when_main_axis_overflows() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            5,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.add_widget(3, 0);
+        layout.set_child_sizes(vec![Size::new(60, 20), Size::new(60, 30), Size::new(40, 10)]);
+
+        let mut rects = std::collections::HashMap::new();
+        layout.update(Rect::new(0, 0, 125, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1), Some(&Rect::new(0, 0, 60, 20)));
+        assert_eq!(rects.get(&2), Some(&Rect::new(65, 0, 60, 30)));
+        assert_eq!(rects.get(&3), Some(&Rect::new(0, 35, 40, 10)));
+    }
+
+    #[test]
+    fn flex_layout_wrap_reverse_starts_lines_at_cross_end() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::WrapReverse,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            5,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.add_widget(3, 0);
+        layout.set_child_sizes(vec![Size::new(60, 20), Size::new(60, 20), Size::new(40, 10)]);
+
+        let mut rects = std::collections::HashMap::new();
+        layout.update(Rect::new(0, 0, 125, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1).map(|rect| rect.y), Some(80));
+        assert_eq!(rects.get(&2).map(|rect| rect.y), Some(80));
+        assert_eq!(rects.get(&3).map(|rect| rect.y), Some(65));
+    }
+
+    #[test]
+    fn flex_layout_wraps_columns_for_column_direction() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Column,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            5,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.add_widget(3, 0);
+        layout.set_child_sizes(vec![Size::new(20, 60), Size::new(30, 60), Size::new(10, 40)]);
+
+        let mut rects = std::collections::HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 125), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1), Some(&Rect::new(0, 0, 20, 60)));
+        assert_eq!(rects.get(&2), Some(&Rect::new(0, 65, 30, 60)));
+        assert_eq!(rects.get(&3), Some(&Rect::new(35, 0, 10, 40)));
     }
 
     #[test]

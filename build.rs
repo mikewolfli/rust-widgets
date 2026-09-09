@@ -43,7 +43,7 @@ fn check_linux() {
 
 fn check_macos() {
     if feature_enabled("video-codecs") {
-        warn("'video-codecs' feature requires FFmpeg. Install: brew install ffmpeg");
+        check_ffmpeg();
     }
 }
 
@@ -61,13 +61,8 @@ fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {
         .unwrap_or(false);
 
     if ok {
-        let ver = std::process::Command::new("pkg-config")
-            .args(["--modversion", name])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default();
-        println!("cargo:warning=  ✓ {} found ({})", name, ver.trim());
+        // Keep successful dependency probes silent; Cargo warnings are for
+        // actionable missing dependencies only.
     } else {
         warn(&format!("Missing system library: {name} ({dev_pkg})"));
         warn(&format!("  Install: {install_cmd}"));
@@ -75,7 +70,7 @@ fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {
 }
 
 fn check_ffmpeg() {
-    let libs = [
+    let mut libs = vec![
         "libavcodec",
         "libavformat",
         "libavutil",
@@ -85,6 +80,11 @@ fn check_ffmpeg() {
         "libswresample",
         "libpostproc",
     ];
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // Homebrew's FFmpeg formula does not ship libpostproc; ffmpeg-next's
+        // video path does not require it.
+        libs.retain(|lib| *lib != "libpostproc");
+    }
     let mut all_ok = true;
     for lib in &libs {
         let ok = std::process::Command::new("pkg-config")
@@ -93,13 +93,8 @@ fn check_ffmpeg() {
             .map(|o| o.status.success())
             .unwrap_or(false);
         if ok {
-            let ver = std::process::Command::new("pkg-config")
-                .args(["--modversion", lib])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
-            println!("cargo:warning=  ✓ {} found ({})", lib, ver.trim());
+            // Keep successful dependency probes silent; missing libraries are
+            // reported below with an actionable installation command.
         } else {
             println!("cargo:warning=  ❌ Missing: {lib}");
             all_ok = false;
