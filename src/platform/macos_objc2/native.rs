@@ -4,7 +4,7 @@
 //! `objc2-macos` feature flag.
 
 #![cfg(target_os = "macos")]
-#![cfg(feature = "objc2-macos")]
+#![cfg(feature = "macos")]
 // Functions are wired from platform_impl.rs for production use.
 // Allow dead_code since they're called via conditional compilation paths.
 #![allow(dead_code)]
@@ -18,9 +18,10 @@ use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2::{msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSColorPanel, NSFontPanel,
-    NSMenu, NSMenuItem, NSOpenPanel, NSPopUpButton, NSProgressIndicator, NSScrollView, NSSlider,
-    NSStepper, NSTableColumn, NSTableView, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSAlert, NSApplication, NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSColorPanel,
+    NSFontPanel, NSMenu, NSMenuItem, NSOpenPanel, NSPopUpButton, NSProgressIndicator, NSScrollView,
+    NSSlider, NSStepper, NSTableColumn, NSTableView, NSTextField, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -141,12 +142,23 @@ pub(crate) fn set_native_text(widget_id: u64, text: &str) {
     unsafe {
         let object = ptr as *mut AnyObject;
         let value = NSString::from_str(text);
+        // Dispatch with typed messages instead of `performSelector:withObject:`:
+        // the latter returns `id`, and objc2 validates the declared return type,
+        // so declaring `()` made every call panic at runtime with
+        // "expected return to have type code '@', but found 'v'".
         for selector in [sel!(setStringValue:), sel!(setTitle:), sel!(setAccessibilityLabel:)] {
             let responds: bool = msg_send![object, respondsToSelector: selector];
-            if responds {
-                let _: () = msg_send![object, performSelector: selector, withObject: &*value];
-                return;
+            if !responds {
+                continue;
             }
+            if selector == sel!(setStringValue:) {
+                let _: () = msg_send![object, setStringValue: &*value];
+            } else if selector == sel!(setTitle:) {
+                let _: () = msg_send![object, setTitle: &*value];
+            } else {
+                let _: () = msg_send![object, setAccessibilityLabel: &*value];
+            }
+            return;
         }
     }
 }
@@ -456,6 +468,73 @@ pub(crate) fn create_ns_open_panel(mtm: MainThreadMarker) -> Retained<NSOpenPane
     let panel = NSOpenPanel::new(mtm);
     panel.setAllowsMultipleSelection(false);
     panel
+}
+
+/// Attach a child item to an existing native `NSMenu`.
+pub(crate) fn menu_add_child_to_menu(
+    parent_menu: *mut std::ffi::c_void,
+    child: *mut std::ffi::c_void,
+) {
+    if parent_menu.is_null() || child.is_null() {
+        return;
+    }
+    // SAFETY: Both pointers were stored by `store_native_view` (which retains)
+    // and are only created on the main thread. `addItem:` takes an NSMenuItem.
+    unsafe {
+        let menu = parent_menu as *mut NSMenu;
+        let item = child as *mut NSMenuItem;
+        (*menu).addItem(&*item);
+    }
+}
+
+/// Attach a submenu to an item that lives inside a parent menu.
+pub(crate) fn menu_set_submenu_on_item(
+    item: *mut std::ffi::c_void,
+    submenu: *mut std::ffi::c_void,
+) {
+    if item.is_null() || submenu.is_null() {
+        return;
+    }
+    // SAFETY: Pointers originate from the retained native view registry and are
+    // only touched on the main thread.
+    unsafe {
+        let item = item as *mut NSMenuItem;
+        let submenu = submenu as *mut NSMenu;
+        (*item).setSubmenu(Some(&*submenu));
+    }
+}
+
+/// Install a native `NSMenu` as the application's main menu.
+///
+/// Returns `false` when not on the AppKit main thread, so callers can fall back
+/// to the state-only menu bookkeeping instead of aborting the process.
+pub(crate) fn install_main_menu(menu_bar: *mut std::ffi::c_void) -> bool {
+    if menu_bar.is_null() {
+        return false;
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    // SAFETY: `NSApplication::sharedApplication` is only valid on the main
+    // thread, which is guaranteed by the `MainThreadMarker` acquired above.
+    let app = NSApplication::sharedApplication(mtm);
+    let menu = menu_bar as *mut NSMenu;
+    app.setMainMenu(Some(unsafe { &*menu }));
+    true
+}
+
+/// Bootstrap the shared `NSApplication` (create + `finishLaunching`).
+///
+/// Mirrors the cocoa-legacy backend's `init()` so the objc2 backend is a real
+/// AppKit application rather than only a state machine. Returns `false` when
+/// called off the main thread (nothing is touched in that case).
+pub(crate) fn bootstrap_ns_application() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    app.finishLaunching();
+    true
 }
 
 /// Create a native NSColorPanel instance.

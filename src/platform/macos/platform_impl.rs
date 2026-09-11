@@ -31,6 +31,13 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
     fn init(&self) {
+        // AppKit's `NSApplication` singleton may only be created/activated on the
+        // main thread. Off-main we skip the native bootstrap entirely and leave
+        // the backend in state mode (mirrors the `macos_objc2` preview backend).
+        if !super::types::is_main_thread() {
+            log::debug!("[macos] init skipped: not on the AppKit main thread (state-only mode)");
+            return;
+        }
         // SAFETY: NSAutoreleasePool::new(nil) is safe per Apple's documentation
         // (nil argument is allowed). NSApplication sharedApplication and messaging
         // are called on the main thread, which is required by Cocoa. All Objective-C
@@ -48,6 +55,13 @@ impl Platform for MacOSPlatform {
         }
     }
     fn run(&self) {
+        // `-[NSApplication run]` must only be entered from the main thread; from
+        // any other thread it would raise a foreign exception. Off-main callers
+        // get a deterministic state-mode polling loop instead.
+        if !super::types::is_main_thread() {
+            log::debug!("[macos] run skipped: not on the AppKit main thread (state-only loop)");
+            return;
+        }
         // SAFETY: NSApp() returns the shared application instance initialized in init().
         // run() must be called on the main thread, which is guaranteed by the platform
         // contract (init is called before run on the same thread).
@@ -56,6 +70,11 @@ impl Platform for MacOSPlatform {
         }
     }
     fn quit(&self) {
+        // Stopping the shared application is also main-thread-only.
+        if !super::types::is_main_thread() {
+            log::debug!("[macos] quit skipped: not on the AppKit main thread");
+            return;
+        }
         // SAFETY: NSApp().stop_(nil) is safe to call on the main thread after the
         // application has been initialized. The nil argument tells the app to stop
         // without a specific sender.
@@ -64,6 +83,13 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main (e.g. the C ABI called from a worker thread or unit tests),
+        // never construct `NSWindow`: AppKit raises a foreign exception that
+        // aborts the process. Register a state-only handle instead so every
+        // caller still receives a valid, text/geometry-consistent widget id.
+        if !super::types::is_main_thread() {
+            return self.register_state_only_handle(HandleKind::Window, title, x, y, width, height);
+        }
         // SAFETY: Cocoa APIs require the main thread, guaranteed by the platform contract.
         // NSAutoreleasePool::new(nil) is safe with nil argument. All Objective-C messages
         // use valid selectors from the cocoa crate. Self::register_handle() stores the
@@ -136,6 +162,16 @@ impl Platform for MacOSPlatform {
             parent,
             text
         );
+        if !super::types::is_main_thread() {
+            // Preserve the parent-validation contract even off-main: an unknown
+            // parent must still be rejected with 0 rather than silently
+            // producing a state-only child handle.
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_button: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(HandleKind::Button, text, x, y, width, height);
+        }
         // SAFETY: All Objective-C messages in this block use valid selectors from the
         // cocoa/objc crates, called on the main thread. NSButton::alloc(nil) and
         // NSString::alloc(nil) are checked for nil returns before use. The parent
@@ -223,6 +259,23 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // Off-main the AppKit allocation below would raise an uncatchable foreign
+        // exception; hand back a state-only handle with identical text/geometry.
+        // The parent is still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_checkbox: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::CheckBox,
+                text,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: All Objective-C messages use valid selectors from the cocoa crate.
         // NSButton::alloc(nil) returns a valid instance. The parent handle is validated
         // before dereference. The token NSNumber is retained to prevent premature release.
@@ -269,6 +322,26 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // Off-main the AppKit allocation below would raise an uncatchable foreign
+        // exception; hand back a state-only handle with identical text/geometry.
+        // The parent is still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!(
+                    "[macos] create_radio_button: unknown parent {} rejected off-main",
+                    parent
+                );
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::RadioButton,
+                text,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: Same pattern as create_checkbox - valid ObjC selectors,
         // validated parent handle, retained token for widget ID mapping.
         unsafe {
@@ -309,6 +382,26 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // Off-main the NSScrollView/NSTextView allocation below would raise an
+        // uncatchable foreign exception; keep a state-only handle instead. The
+        // parent is still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!(
+                    "[macos] create_line_edit: unknown parent {} rejected off-main",
+                    parent
+                );
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::LineEdit,
+                text,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: ObjC messages for NSScrollView and NSTextView use valid class
         // names and selectors from the Cocoa runtime. alloc/init pairs are balanced.
         // The parent handle is validated before adding the scroll view as subview.
@@ -357,6 +450,23 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSSlider allocation below would raise an uncatchable foreign
+        // exception; keep a state-only handle instead. The parent is still
+        // validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_slider: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::Slider,
+                "Slider",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSSlider class exists in the Cocoa runtime. alloc/init/frame
         // messages use valid selectors. Parent handle is validated by add_to_parent_window.
         unsafe {
@@ -378,6 +488,26 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSProgressIndicator allocation below would raise an
+        // uncatchable foreign exception; keep a state-only handle instead. The
+        // parent is still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!(
+                    "[macos] create_progress_bar: unknown parent {} rejected off-main",
+                    parent
+                );
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::ProgressBar,
+                "ProgressBar",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSProgressIndicator is a standard Cocoa class. All selectors used
         // (setIndeterminate:, setMinValue:, etc.) are valid. Parent validated by
         // add_to_parent_window.
@@ -413,6 +543,16 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // Off-main the NSTextField allocation below would raise an uncatchable
+        // foreign exception; keep a state-only handle instead. The parent is
+        // still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_label: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(HandleKind::Label, text, x, y, width, height);
+        }
         // SAFETY: NSTextField alloc/init and configuration messages use valid
         // selectors. Parent handle is validated before adding subview.
         unsafe {
@@ -439,6 +579,23 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSMenu/NSApp() work below would raise an uncatchable foreign
+        // exception; keep a state-only handle instead. The parent is still
+        // validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_menu_bar: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::MenuBar,
+                "MenuBar",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSMenu and NSMenuItem are standard Cocoa classes. App's main menu
         // is set via NSApp(), which is initialized. alloc/init pairs are balanced.
         unsafe {
@@ -482,6 +639,16 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSMenuItem/NSMenu allocation below would raise an
+        // uncatchable foreign exception; keep a state-only handle instead. The
+        // parent is still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_menu: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(HandleKind::Menu, text, x, y, width, height);
+        }
         // SAFETY: NSMenuItem/NSMenu alloc/init messages use valid selectors.
         // Parent handle is matched against known HandleKind variants, ensuring
         // only valid native pointers are dereferenced.
@@ -536,6 +703,23 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSView allocation below would raise an uncatchable foreign
+        // exception; keep a state-only handle instead. The parent is still
+        // validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_tool_bar: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::ToolBar,
+                "ToolBar",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSView alloc/init/frame messages use valid selectors.
         // Parent handle is validated by kind matching before adding subview.
         unsafe {
@@ -570,6 +754,26 @@ impl Platform for MacOSPlatform {
         width: u32,
         height: u32,
     ) -> u64 {
+        // Off-main the NSTextField allocation below would raise an uncatchable
+        // foreign exception; keep a state-only handle instead. The parent is
+        // still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!(
+                    "[macos] create_status_bar: unknown parent {} rejected off-main",
+                    parent
+                );
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::StatusBar,
+                text,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSTextField messages use valid selectors (setEditable:, setBordered:, etc.).
         // Parent handle is validated before adding to window content view.
         unsafe {
@@ -601,6 +805,26 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSPopUpButton allocation below would raise an uncatchable
+        // foreign exception; keep a state-only handle instead. The parent is
+        // still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!(
+                    "[macos] create_combo_box: unknown parent {} rejected off-main",
+                    parent
+                );
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::ComboBox,
+                "ComboBox",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSPopUpButton is a standard Cocoa class. alloc/init messages use
         // valid selectors. Parent handle is validated before adding subview.
         unsafe {
@@ -636,6 +860,23 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSTextField allocation below would raise an uncatchable
+        // foreign exception; keep a state-only handle instead. The parent is
+        // still validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_list_box: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::ListBox,
+                "ListBox",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSTextField configuration messages use valid selectors.
         // Parent handle is validated before adding subview.
         unsafe {
@@ -786,6 +1027,23 @@ impl Platform for MacOSPlatform {
         }
     }
     fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // Off-main the NSView allocation below would raise an uncatchable foreign
+        // exception; keep a state-only handle instead. The parent is still
+        // validated first so unknown parents keep returning 0.
+        if !super::types::is_main_thread() {
+            if self.get_handle(parent).is_none() {
+                log::error!("[macos] create_panel: unknown parent {} rejected off-main", parent);
+                return 0;
+            }
+            return self.register_state_only_handle(
+                HandleKind::Panel,
+                "Panel",
+                x,
+                y,
+                width,
+                height,
+            );
+        }
         // SAFETY: NSView alloc/init/frame messages use valid selectors.
         // Parent handle is validated by add_to_parent_window.
         unsafe {
@@ -813,12 +1071,16 @@ impl Platform for MacOSPlatform {
         if !matches!(handle.kind, HandleKind::ComboBox) {
             return false;
         }
-        // SAFETY: handle has been validated by the matches! check above.
-        // Self::as_id(handle) converts the stored usize back to a valid ObjC id.
-        // addItemWithTitle: is a valid selector on NSPopUpButton.
-        unsafe {
-            let title = NSString::alloc(nil).init_str(text);
-            let _: () = msg_send![Self::as_id(handle), addItemWithTitle: title];
+        // Off-main or state-only handle: skip the native `addItemWithTitle:` but
+        // still record the item so combo-box state stays consistent.
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: handle has been validated by the matches! check above.
+            // Self::as_id(handle) converts the stored usize back to a valid ObjC id.
+            // addItemWithTitle: is a valid selector on NSPopUpButton.
+            unsafe {
+                let title = NSString::alloc(nil).init_str(text);
+                let _: () = msg_send![Self::as_id(handle), addItemWithTitle: title];
+            }
         }
         if let Ok(mut items) = self.combo_box_items.lock() {
             items.entry(combo_box).or_default().push(text.to_string());
@@ -834,10 +1096,14 @@ impl Platform for MacOSPlatform {
         if !matches!(handle.kind, HandleKind::ComboBox) {
             return false;
         }
-        // SAFETY: handle validated by kind match; Self::as_id converts stored
-        // usize to valid ObjC id. removeAllItems is a valid selector on NSPopUpButton.
-        unsafe {
-            let _: () = msg_send![Self::as_id(handle), removeAllItems];
+        // Off-main or state-only handle: skip `removeAllItems` and only clear the
+        // mirrored item/selection state below.
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: handle validated by kind match; Self::as_id converts stored
+            // usize to valid ObjC id. removeAllItems is a valid selector on NSPopUpButton.
+            unsafe {
+                let _: () = msg_send![Self::as_id(handle), removeAllItems];
+            }
         }
         if let Ok(mut items) = self.combo_box_items.lock() {
             items.insert(combo_box, Vec::new());
@@ -862,10 +1128,14 @@ impl Platform for MacOSPlatform {
         if index >= count {
             return false;
         }
-        // SAFETY: handle validated by kind match. index is checked against item count.
-        // selectItemAtIndex: is a valid selector on NSPopUpButton.
-        unsafe {
-            let _: () = msg_send![Self::as_id(handle), selectItemAtIndex: index as isize];
+        // Off-main or state-only handle: skip `selectItemAtIndex:` and only record
+        // the selection in state.
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: handle validated by kind match. index is checked against item count.
+            // selectItemAtIndex: is a valid selector on NSPopUpButton.
+            unsafe {
+                let _: () = msg_send![Self::as_id(handle), selectItemAtIndex: index as isize];
+            }
         }
         if let Ok(mut selection) = self.combo_box_selection.lock() {
             selection.insert(combo_box, Some(index));
@@ -904,28 +1174,45 @@ impl Platform for MacOSPlatform {
         }
     }
     fn attach_menu_bar_to_window(&self, _window: u64, menu_bar: u64) -> bool {
+        let Some(handle) = self.get_handle(menu_bar) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::MenuBar) {
+            return false;
+        }
+        // Setting the app's main menu touches NSApp() and is main-thread-only; a
+        // state-only handle has no native menu either. Skip the work but report
+        // success so callers keep the logical attach semantics.
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            log::debug!(
+                "[macos] attach_menu_bar_to_window skipped: state-only handle or not on the AppKit main thread"
+            );
+            return true;
+        }
         // SAFETY: handle validated by kind match. NSApp() is initialized.
         // setMainMenu: is a valid selector on NSApplication.
         unsafe {
-            let Some(handle) = self.get_handle(menu_bar) else {
-                return false;
-            };
-            if !matches!(handle.kind, HandleKind::MenuBar) {
-                return false;
-            }
             let app = NSApp();
             let _: () = msg_send![app, setMainMenu: Self::as_id(handle)];
             true
         }
     }
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
+        let Some(parent_handle) = self.get_handle(parent_menu) else {
+            return 0;
+        };
+        // Off-main or state-only parent: build only the logical menu item so the
+        // caller still gets a usable id without touching AppKit.
+        if parent_handle.ptr == 0 || !super::types::is_main_thread() {
+            log::debug!(
+                "[macos] menu_add_item: state-only parent or not on the AppKit main thread; registering state-only item"
+            );
+            return self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
+        }
         // SAFETY: Parent handle validated by kind match. NSMenuItem/NSMenu alloc/init
         // and configuration messages use valid selectors. Token NSNumber is retained.
         // sel!(onMenuItem:) is registered by the ObjC runtime initialization.
         unsafe {
-            let Some(parent_handle) = self.get_handle(parent_menu) else {
-                return 0;
-            };
             let container: id = match parent_handle.kind {
                 HandleKind::MenuBar => Self::as_id(parent_handle),
                 HandleKind::Menu => {
@@ -978,6 +1265,11 @@ impl Platform for MacOSPlatform {
         // selectors on their respective Cocoa classes.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
+                // Off-main or state-only handle: the visibility change above is the
+                // whole effect; no native view to reveal.
+                if handle.ptr == 0 || !super::types::is_main_thread() {
+                    return;
+                }
                 let native = Self::as_id(handle);
                 match handle.kind {
                     HandleKind::Window => NSWindow::makeKeyAndOrderFront_(native, nil),
@@ -995,6 +1287,11 @@ impl Platform for MacOSPlatform {
         // correct ObjC message. orderOut: and setHidden: are valid selectors.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
+                // Off-main or state-only handle: the visibility change above is the
+                // whole effect; no native view to hide.
+                if handle.ptr == 0 || !super::types::is_main_thread() {
+                    return;
+                }
                 let native = Self::as_id(handle);
                 match handle.kind {
                     HandleKind::Window => NSWindow::orderOut_(native, nil),
@@ -1012,6 +1309,11 @@ impl Platform for MacOSPlatform {
         // correct ObjC message (setFrame:display: for windows, setFrame: for views).
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
+                // Off-main or state-only handle: geometry is already recorded in
+                // state, so skip the native frame update.
+                if handle.ptr == 0 || !super::types::is_main_thread() {
+                    return;
+                }
                 let native = Self::as_id(handle);
                 match handle.kind {
                     HandleKind::Window => {
@@ -1035,74 +1337,50 @@ impl Platform for MacOSPlatform {
         // SAFETY: handle validated by get_handle; kind is matched to dispatch to
         // the correct ObjC selector (setTitle:, setStringValue:, setDoubleValue:).
         // NSString::alloc(nil).init_str(text) produces a valid NSString that is
-        // autoreleased. Main thread dispatch uses performSelectorOnMainThread:withObject:
-        // which is safe when the NSString is retained before dispatch.
+        // autoreleased, and it is only created on the AppKit main thread.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
+                // Off-main or state-only handle: the state text above is already
+                // authoritative; constructing an NSString or messaging the view
+                // off-main would abort the process.
+                if handle.ptr == 0 || !super::types::is_main_thread() {
+                    log::debug!(
+                        "[rust_widgets] set_widget_text: state-only handle or not on the AppKit main thread; text kept in state"
+                    );
+                    return;
+                }
                 let ns_text = NSString::alloc(nil).init_str(text);
                 let native = Self::as_id(handle);
-                // Check if we're on the main thread
-                let is_main_thread: bool = msg_send![class!(NSThread), isMainThread];
-                if !is_main_thread {
-                    // For non-main thread, we need to dispatch to main thread
-                    // Use performSelectorOnMainThread with the control itself
-                    let _: () = msg_send![ns_text, retain];
-                    log::error!("[rust_widgets] set_widget_text: dispatching to main thread, native={:?}, ns_text={:?}", native, ns_text);
-                    // For NSTextField, use setStringValue: selector
-                    let selector = sel!(setStringValue:);
-                    let result: bool = msg_send![native, respondsToSelector:selector];
-                    log::debug!(
-                        "[rust_widgets] set_widget_text: native responds to setStringValue: ? {}",
-                        result
-                    );
-                    if result {
-                        let _: () = msg_send![native, performSelectorOnMainThread:selector withObject:ns_text waitUntilDone:YES];
-                        log::error!("[rust_widgets] set_widget_text: dispatched to main thread with setStringValue:");
-                    } else {
-                        // Fallback: try setString: selector (NSTextView)
-                        let selector2 = sel!(setString:);
-                        let result2: bool = msg_send![native, respondsToSelector:selector2];
-                        log::debug!(
-                            "[rust_widgets] set_widget_text: native responds to setString: ? {}",
-                            result2
-                        );
-                        if result2 {
-                            let _: () = msg_send![native, performSelectorOnMainThread:selector2 withObject:ns_text waitUntilDone:YES];
-                            log::error!("[rust_widgets] set_widget_text: dispatched to main thread with setString:");
+                match handle.kind {
+                    HandleKind::Window => NSWindow::setTitle_(native, ns_text),
+                    HandleKind::LineEdit => {
+                        // NSTextField uses setStringValue: selector
+                        let _: () = msg_send![native, setStringValue: ns_text];
+                    }
+                    HandleKind::Label | HandleKind::StatusBar => {
+                        NSTextField::setStringValue_(native, ns_text)
+                    }
+                    HandleKind::ComboBox => {
+                        let _: () = msg_send![native, setTitle: ns_text];
+                    }
+                    HandleKind::ListBox => {
+                        let _: () = msg_send![native, setStringValue: ns_text];
+                    }
+                    HandleKind::Slider | HandleKind::ProgressBar => {
+                        if let Ok(value) = text.parse::<f64>() {
+                            let _: () = msg_send![native, setDoubleValue: value];
                         }
                     }
-                } else {
-                    match handle.kind {
-                        HandleKind::Window => NSWindow::setTitle_(native, ns_text),
-                        HandleKind::LineEdit => {
-                            // NSTextField uses setStringValue: selector
-                            let _: () = msg_send![native, setStringValue: ns_text];
-                        }
-                        HandleKind::Label | HandleKind::StatusBar => {
-                            NSTextField::setStringValue_(native, ns_text)
-                        }
-                        HandleKind::ComboBox => {
-                            let _: () = msg_send![native, setTitle: ns_text];
-                        }
-                        HandleKind::ListBox => {
-                            let _: () = msg_send![native, setStringValue: ns_text];
-                        }
-                        HandleKind::Slider | HandleKind::ProgressBar => {
-                            if let Ok(value) = text.parse::<f64>() {
-                                let _: () = msg_send![native, setDoubleValue: value];
-                            }
-                        }
-                        HandleKind::MenuBar => {
-                            let _: () = msg_send![native, setTitle: ns_text];
-                        }
-                        HandleKind::ToolBar | HandleKind::Panel => {
-                            let _: () = msg_send![native, setAccessibilityLabel: ns_text];
-                        }
-                        HandleKind::Menu | HandleKind::MenuItem => {
-                            let _: () = msg_send![native, setTitle: ns_text];
-                        }
-                        _ => NSButton::setTitle_(native, ns_text),
+                    HandleKind::MenuBar => {
+                        let _: () = msg_send![native, setTitle: ns_text];
                     }
+                    HandleKind::ToolBar | HandleKind::Panel => {
+                        let _: () = msg_send![native, setAccessibilityLabel: ns_text];
+                    }
+                    HandleKind::Menu | HandleKind::MenuItem => {
+                        let _: () = msg_send![native, setTitle: ns_text];
+                    }
+                    _ => NSButton::setTitle_(native, ns_text),
                 }
             }
         }
@@ -1117,6 +1395,11 @@ impl Platform for MacOSPlatform {
         // and NSMenuItem. Self::as_id(handle) restores the valid ObjC pointer.
         unsafe {
             if let Some(handle) = self.get_handle(widget_id) {
+                // Off-main or state-only handle: `set_enabled` above already applied
+                // the change; there is no native control to update.
+                if handle.ptr == 0 || !super::types::is_main_thread() {
+                    return;
+                }
                 match handle.kind {
                     HandleKind::Button
                     | HandleKind::CheckBox
@@ -1160,12 +1443,16 @@ impl Platform for MacOSPlatform {
     }
     fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
         // If no native handle, fall back to state immediately.
-        if self.get_handle(widget_id).is_none() {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return self.state.set_accessibility_name(widget_id, name);
+        };
+        // Off-main or state-only handle: AppKit messages off the main thread abort
+        // the process, so record the label in state only.
+        if handle.ptr == 0 || !super::types::is_main_thread() {
             return self.state.set_accessibility_name(widget_id, name);
         }
         // Try native ObjC setAccessibilityLabel: on the NSView/NSControl
         let result = std::panic::catch_unwind(|| unsafe {
-            let handle = self.get_handle(widget_id).unwrap();
             let ns_str = NSString::alloc(nil).init_str(name);
             let _: () = msg_send![Self::as_id(handle), setAccessibilityLabel: ns_str];
             true
@@ -1175,12 +1462,16 @@ impl Platform for MacOSPlatform {
     }
     fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
         // If no native handle, fall back to state immediately.
-        if self.get_handle(widget_id).is_none() {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return self.state.accessibility_name(widget_id);
+        };
+        // Off-main or state-only handle: querying the native label would message
+        // AppKit off the main thread, so use the state value instead.
+        if handle.ptr == 0 || !super::types::is_main_thread() {
             return self.state.accessibility_name(widget_id);
         }
         // Try native ObjC accessibilityLabel on the NSView/NSControl
         let result = std::panic::catch_unwind(|| unsafe {
-            let handle = self.get_handle(widget_id).unwrap();
             let label: id = msg_send![Self::as_id(handle), accessibilityLabel];
             if label != nil {
                 let c_str: *const c_char = msg_send![label, UTF8String];
@@ -1194,6 +1485,11 @@ impl Platform for MacOSPlatform {
         result.unwrap_or(None).unwrap_or_else(|| self.state.accessibility_name(widget_id))
     }
     fn set_clipboard_text(&self, text: &str) -> bool {
+        // `NSPasteboard` is a window-server singleton and may only be touched on
+        // the AppKit main thread; off-main we go straight to state.
+        if !super::types::is_main_thread() {
+            return self.state.set_clipboard_text(text);
+        }
         // Try real NSPasteboard integration first
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
@@ -1210,6 +1506,10 @@ impl Platform for MacOSPlatform {
         result.unwrap_or_else(|_| self.state.set_clipboard_text(text))
     }
     fn get_clipboard_text(&self) -> String {
+        // `NSPasteboard` is main-thread-only; state is the off-main source.
+        if !super::types::is_main_thread() {
+            return self.state.clipboard_text();
+        }
         // Try real NSPasteboard integration first
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
@@ -1232,12 +1532,16 @@ impl Platform for MacOSPlatform {
     }
     fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
         // If no native handle exists, fall back to state immediately.
-        if self.get_handle(source_widget_id).is_none() {
+        let Some(handle) = self.get_handle(source_widget_id) else {
+            return self.state.begin_drag(source_widget_id, mime, payload);
+        };
+        // Off-main or state-only handle: a dragging session needs a live view and
+        // the main thread, so recorded state is the only safe fallback.
+        if handle.ptr == 0 || !super::types::is_main_thread() {
             return self.state.begin_drag(source_widget_id, mime, payload);
         }
         // Try real NSPasteboardItem drag session first
         let result = std::panic::catch_unwind(|| unsafe {
-            let handle = self.get_handle(source_widget_id).unwrap();
             let view = Self::as_id(handle);
             let item: id = msg_send![class!(NSPasteboardItem), alloc];
             let item: id = msg_send![item, init];

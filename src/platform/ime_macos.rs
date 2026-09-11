@@ -22,7 +22,7 @@
 //! This module is compiled on **every** host, not just macOS: the composition
 //! state machine is platform-independent, and keeping it in the build makes its
 //! unit tests executable. All AppKit (objc2 `msg_send!`) touch points are gated
-//! on `feature = "objc2-macos"` **and** `target_os = "macos"`; elsewhere the
+//! on `feature = "macos"` **and** `target_os = "macos"`; elsewhere the
 //! bridge runs in pure state-machine mode. See BLUE14 D-1 for the precedent
 //! (`ime_windows`).
 
@@ -38,7 +38,7 @@ use std::sync::Mutex;
 /// pointer, returning a boxed opaque token if successful.
 ///
 /// Uses real `msg_send!` calls to interact with AppKit at runtime.
-#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+#[cfg(all(target_os = "macos", feature = "macos"))]
 fn try_activate_nstextinputcontext(
     view_ptr: *mut std::ffi::c_void,
 ) -> Option<Box<dyn std::any::Any + Send>> {
@@ -82,7 +82,7 @@ fn try_activate_nstextinputcontext(
 /// Calls `invalidateCharacterCoordinates` on the stored context so the
 /// IME system re-queries the composition state from the `NSTextInputClient`
 /// (the backing view).
-#[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+#[cfg(all(target_os = "macos", feature = "macos"))]
 fn sync_nstextinputcontext(
     token: &dyn std::any::Any,
     _marked_text: &str,
@@ -175,7 +175,7 @@ impl MacOsImeBridge {
     ///
     /// On builds **without** `objc2-macos` this is a no-op.
     pub fn attach_to_view(&self, view_ptr: *mut std::ffi::c_void) {
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             if let Some(token) = try_activate_nstextinputcontext(view_ptr) {
                 *self.native_token.lock().unwrap() = Some(token);
@@ -190,7 +190,7 @@ impl MacOsImeBridge {
         log::debug!("[macOS IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
         *self.cursor_rect.lock().unwrap() = (x, y, w, h);
 
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             unsafe {
                 use objc2::msg_send;
@@ -310,7 +310,7 @@ impl MacOsImeBridge {
         *self.selected_range.lock().unwrap() = (sel_offset, sel_length);
 
         // Sync with native NSTextInputContext if available.
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
@@ -364,7 +364,7 @@ impl ImeBridge for MacOsImeBridge {
         log::info!("[macOS IME] focus_in: widget={}", widget_id);
 
         // On native macOS, activate NSTextInputContext for the view.
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
@@ -399,7 +399,7 @@ impl ImeBridge for MacOsImeBridge {
         *self.selected_range.lock().unwrap() = (0, 0);
         log::info!("[macOS IME] focus_out: widget={}", widget_id);
 
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
@@ -448,7 +448,7 @@ impl ImeBridge for MacOsImeBridge {
         *self.marked_range.lock().unwrap() = (0, utf16_len);
         *self.selected_range.lock().unwrap() = (cursor_utf16, sel_length_utf16);
 
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             let guard = self.native_token.lock().unwrap();
             if let Some(ref token) = *guard {
@@ -466,7 +466,7 @@ impl ImeBridge for MacOsImeBridge {
         log::debug!("[macOS IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
         *self.candidate_position.lock().unwrap() = position;
 
-        #[cfg(all(target_os = "macos", feature = "objc2-macos"))]
+        #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             unsafe {
                 use objc2::msg_send;

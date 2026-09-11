@@ -853,7 +853,7 @@ impl Platform for IosMobilePlatform {
                     let root_vc: *mut objc2::runtime::AnyObject =
                         msg_send![parent_obj, rootViewController];
                     if !root_vc.is_null() {
-                        let _: () = msg_send![root_vc, presentViewController: &*alert, animated: 1u8, completion: 0u64 as *mut objc2::runtime::AnyObject];
+                        let _: () = msg_send![root_vc, presentViewController: &*alert, animated: 1u8, completion: std::ptr::null_mut::<objc2::runtime::AnyObject>()];
                     }
                 }
             }

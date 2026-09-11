@@ -88,11 +88,17 @@ fn create_native_platform() -> Box<dyn Platform> {
 
 /// Select macOS backend via the bridge (BLUE11 R1.5).
 /// The bridge dispatches to objc2 or cocoa based on feature flags.
+///
+/// The `harmony` feature excludes this arm (as it already does for the Linux
+/// arms): enabling the Harmony preview backend must select `HarmonyPlatform`,
+/// otherwise `--features full` (which turns on every OS feature) would define
+/// `create_native_platform` twice on a macOS host.
 #[cfg(all(
     not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
-    any(feature = "macos", feature = "macos-legacy")
+    any(feature = "macos", feature = "macos-legacy"),
+    not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(SelectedMacOSPlatform::new())
@@ -103,7 +109,8 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
-    not(any(feature = "macos", feature = "macos-legacy"))
+    not(any(feature = "macos", feature = "macos-legacy")),
+    not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(crate::platform::stub::StubPlatform::new(
@@ -165,7 +172,12 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// iOS state-backed platform backend.
-#[cfg(all(not(feature = "mini"), target_os = "ios", not(feature = "embedded")))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "ios",
+    not(feature = "embedded"),
+    not(feature = "harmony")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(IosMobilePlatform::new())
 }

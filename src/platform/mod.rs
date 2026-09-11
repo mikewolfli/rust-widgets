@@ -30,9 +30,9 @@ pub mod macos;
 /// The widget state machine is platform-independent, so the module is compiled
 /// on every host to keep its unit tests executable. The real AppKit FFI lives
 /// in the `native` sub-module, which is `#[cfg(all(target_os = "macos",
-/// feature = "objc2-macos"))]`-gated; elsewhere the backend runs in pure state
+/// feature = "macos"))]`-gated; elsewhere the backend runs in pure state
 /// mode. See BLUE14 D-1 for the precedent (`ime_windows`).
-#[cfg(any(feature = "macos", feature = "objc2-macos"))]
+#[cfg(any(feature = "macos", feature = "macos"))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
@@ -69,7 +69,7 @@ pub mod ime_linux;
 /// The composition/marked-text state machine is platform-independent, so the
 /// module is compiled on every host to keep its unit tests executable. All
 /// AppKit (`objc2` `msg_send!`) touch points are `#[cfg(all(target_os =
-/// "macos", feature = "objc2-macos"))]`-gated internally; on other hosts the
+/// "macos", feature = "macos"))]`-gated internally; on other hosts the
 /// bridge runs in pure state-machine mode.
 pub mod ime_macos;
 /// Platform-specific IME stubs (macOS, Windows).

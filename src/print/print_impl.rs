@@ -8,6 +8,9 @@ use crate::core::{Rect, Size};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+// `Command` is only used by the macOS/Linux and Windows print backends; other
+// targets (e.g. iOS) would otherwise see an unused-import warning.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Page ordering for multi-copy print jobs.

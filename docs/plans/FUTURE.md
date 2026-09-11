@@ -62,15 +62,71 @@ This file tracks items that are currently not feasible to complete in the presen
   - Follow-up 2026-09-11: `tools/check_jni_signatures.py` comment-stripping was fixed — a naive `/* */` regex mis-parsed the MIME wildcard string `"*/*"`, swallowing 16 KB of source and hiding 9 exports. It now uses a string-aware Rust comment scanner.
   - CI 2026-09-11: `.github/workflows/android.yml` packages the local scripts into two jobs — a per-ABI `jni-bindings` gate (APK build + sign + JNI signature/export gate + artifact upload) and an `emulator-e2e` job that boots the API 34 x86_64 image with KVM and runs the same runner to assert `RESULT: PASS`. Android now has an unblocked CI lane (BLUE14 item #10).
 
-- [ ] ITEM 4: iOS mobile backend implementation
-  - Constraint: iOS backend is reserved in architecture but not implemented here.
-  - Blocker: requires UIKit/AppKit mobile lifecycle bridge and CI/build lane for Apple mobile targets.
-  - Target completion signal: operational iOS backend with native widget host and lifecycle wiring.
+- [x] ITEM 4: iOS mobile backend implementation
+  - Completed 2026-09-11 (Simulator-verified; physical-device run not yet performed)
+  - Constraint was: no Apple runtime environment, so the UIKit FFI path could never be exercised.
+  - Resolution: the verification host is a real Mac (macOS 15.7.3, arm64, Xcode 26.2).
+    `tools/build_ios_testapp.sh` builds a real `.app` (Rust staticlib + an
+    Objective-C host, no Xcode project) and `tools/run_ios_testapp.sh` boots an
+    iOS 26.2 Simulator, installs, launches, and asserts the probe's `RESULT: PASS`.
+  - Target completion signal met: the probe asserts a live `UIApplication`, a real
+    `UIWindow` created through the Rust C ABI, real `UIButton`/`UILabel`/
+    `UITextField` subviews, a text round-trip, visibility round-trip, and that a
+    geometry change reaches the live `UIButton.frame` (`{{20, 60}, {140, 44}}`).
+  - Evidence: `docs/log/log-20260911-2.md`; status in `src/platform/ios/status.md`.
+  - Remaining: physical-device (signing/provisioning) run; a `UIWindowScene`-based
+    `initWithWindowScene:` path (the library has no scene instance today).
 
 - [ ] ITEM 5: macOS objc2 preview backend graduation
   - Constraint: current `macos-objc2` path is intentionally preview/poll-loop mode.
-  - Blocker: requires full objc2 native event-loop parity and migration sign-off from Cocoa backend.
+  - Progress 2026-09-11 (native path proven on a real Mac):
+    - Fixed a feature-gate bug: the `macos_objc2` native FFI was gated on the
+      alias `feature = "objc2-macos"`, so `--features macos` (the documented OS
+      backend axis) silently ran state-only. All gates now use `feature = "macos"`.
+    - Fixed `native::set_native_text`: it used `performSelector:withObject:` but
+      declared a `()` return while the selector returns `id`; objc2 validates the
+      declared signature and aborted at runtime. Now dispatches typed messages.
+    - `init()` now bootstraps `NSApplication` (`sharedApplication` + `finishLaunching`).
+    - `create_menu_bar`/`create_menu`/`menu_add_item`/`attach_menu_bar_to_window`
+      now build real `NSMenu`/`NSMenuItem` objects and install the bar via
+      `NSApplication.setMainMenu` (previously pure state).
+  - Verified: `cargo run --example apple_appkit_probe --features macos` reports
+    `RESULT: PASS`, including `NSApplication.windows.count >= 1` and a non-null
+    `NSApplication.mainMenu`.
+  - Remaining blocker (unchanged): a real `NSApplication` event-loop bridge
+    (`run()` graduating from the polling loop to `-[NSApplication run]`), plus
+    migration sign-off from the cocoa backend.
   - Target completion signal: `NativeInteractive` parity and replacement-readiness.
+
+- [ ] ITEM 5b: cocoa-legacy macOS backend off-main-thread crash
+  - Fixed 2026-09-11 (real bug found only on a macOS host).
+  - Constraint was: no macOS host, so `cargo test --lib --features desktop` was
+    never executed *on macOS*; on Linux the whole `MacOSPlatform` was compiled
+    out entirely.
+  - Symptom on macOS: the very first test that reached the C ABI
+    (`bindings::binding_impl::tests::c_abi_widget_lifecycle_roundtrip`) aborted the
+    whole test process with `fatal runtime error: Rust cannot catch foreign
+    exceptions, aborting` (SIGABRT), because `MacOSPlatform` called AppKit
+    (`NSWindow::alloc`, `NSApplication`, `NSPasteboard`, …) unconditionally, and
+    the test harness runs tests on worker threads.
+  - Resolution: every AppKit-touching method now consults a main-thread guard
+    (`is_main_thread()`) and falls back to a state-only handle (`ptr == 0`) when
+    off-main, mirroring the `objc2` backend and the pre-existing
+    `create_native_dialog` guard. `add_to_parent_window` / `sync_list_box_native`
+    also skip nil (`ptr == 0`) receivers, which the cocoa crate aborts on.
+  - Evidence: `cargo test --lib --features desktop` → 3836 passed / 0 failed
+    (previously the process aborted). See `docs/log/log-20260911-2.md`.
+
+- [x] ITEM 6b: `full` profile duplicate `create_native_platform` (macOS host)
+  - Fixed 2026-09-11.
+  - Constraint was: `--features full` / `--all-features` were only ever compiled
+    on Linux CI (where the macOS arm is cfg'd out), so the collision was invisible.
+  - On macOS, `full` enables `harmony` *and* `macos`, so both the macOS arm and the
+    Harmony arm of `create_native_platform` were active → `E0428: the name
+    create_native_platform is defined multiple times`.
+  - Resolution: the macOS (and iOS) arms now carry `not(feature = "harmony")`,
+    matching the exclusion the Linux arms already had.
+  - Evidence: `cargo test --lib --all-features` now compiles and runs 1853 tests.
 
 - [ ] ITEM 6: Cross-platform full widget parity matrix closure
   - Constraint: some widgets still rely on default trait-level fallback semantics on at least one backend.

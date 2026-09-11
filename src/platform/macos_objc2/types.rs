@@ -176,6 +176,21 @@ const MOD_CONTROL: u64 = 1 << 18;
 const MOD_OPTION: u64 = 1 << 19;
 const MOD_COMMAND: u64 = 1 << 20;
 
+/// Derives the native-view registry id used to store the `NSMenu` submenu that
+/// backs a `Menu` widget.
+///
+/// Each `Menu` widget owns both an `NSMenuItem` (stored under the widget id) and
+/// an `NSMenu` submenu (stored under this derived id), mirroring the AppKit
+/// item/submenu pair the cocoa-legacy backend builds. The offset is far above
+/// the monotonically increasing widget ids, so the two namespaces cannot
+/// collide for realistic widget counts.
+pub(crate) const SUBMENU_ID_OFFSET: u64 = 1 << 60;
+
+/// Returns the native-view registry id for the `NSMenu` submenu of a widget.
+pub(crate) fn submenu_id(widget_id: u64) -> u64 {
+    widget_id.wrapping_add(SUBMENU_ID_OFFSET)
+}
+
 pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
     let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         return (String::new(), 0);

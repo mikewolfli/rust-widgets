@@ -327,3 +327,59 @@ jobs:
           chmod +x tools/run_wayland_compositor_tests.sh
           # In auto mode the script prefers the system weston installed above.
           WESTON_MODE=system ./tools/run_wayland_compositor_tests.sh
+
+  # ── Apple native verification (macOS host) ──
+  # The developer/macOS host is the only place where AppKit and UIKit can be
+  # exercised for real. GitHub's `macos-14`/`macos-latest` runners are Apple
+  # Silicon, so both the main-thread AppKit probe and the iOS Simulator probe
+  # run here — closing blue14 §二 A 类 #4/#5 continuously rather than once.
+  apple-native:
+    name: Apple native (AppKit + iOS Simulator)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,aarch64-apple-ios
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # 1. macOS AppKit: main-thread probe must create real NSWindow/NSMenu and
+      #    assert the live AppKit objects, for both backends.
+      - name: AppKit probe (cocoa-legacy backend)
+        run: cargo run --example apple_appkit_probe --features desktop
+
+      - name: AppKit probe (objc2 backend)
+        run: cargo run --example apple_appkit_probe --features macos
+
+      # 2. macOS-lib regression with both Apple backends selected.
+      - name: Cargo test (macos backend)
+        run: cargo test --lib --features macos
+
+      - name: Cargo test (cocoa-legacy backend)
+        run: cargo test --lib --features desktop
+
+      # 3. iOS Simulator: build a real .app and run it on a booted simulator,
+      #    asserting the UIKit FFI produced live UIView objects.
+      - name: Boot iOS Simulator
+        run: |
+          RUNTIME="$(xcrun simctl list runtimes | awk '/^iOS/ {print $NF}' | tail -1)"
+          DEVICE_ID="$(xcrun simctl create rw-ios-probe "iPhone 16" "$RUNTIME")"
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          echo "RW_IOS_UDID=$DEVICE_ID" >> "$GITHUB_ENV"
+
+      - name: Build iOS Simulator test app
+        run: bash tools/build_ios_testapp.sh
+
+      - name: Run iOS Simulator probe
+        run: |
+          SKIP_BUILD=1 IOS_SIM_DEVICE="$(xcrun simctl list devices | sed -nE 's/^[[:space:]]*(iPhone[^(]*) \([0-9A-F-]+\).*/\1/p' | head -1)" \
+            bash tools/run_ios_testapp.sh
+
+      - name: iOS device-target compile check
+        run: cargo check --target aarch64-apple-ios --features "desktop,ios-uikit-ffi"

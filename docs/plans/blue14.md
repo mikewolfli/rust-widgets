@@ -1,10 +1,10 @@
-# BLUE14 — 平台相关未完成项清单（Linux / Android / Harmony / WASM / Wayland）
+# BLUE14 — 平台相关未完成项清单（Linux / Android / Harmony / WASM / Wayland / Apple）
 
 > 版本: v0.14.0
 > 基线: 继承 BLUE13 全部核心规则 + Rust 原生设计原则
 > 编制日期: 2026-09-11
 > 文档性质: `docs/log/log-20260909-1.md` 平台相关部分的**未完成项单一事实清单**
-> 关联记录: `docs/log/log-20260909-1.md`（已完成证据）、`docs/plans/FUTURE.md`（长期受限项）
+> 关联记录: `docs/log/log-20260909-1.md`（已完成证据）、`docs/log/log-20260911-1.md`（第 7/8 轮）、`docs/log/log-20260911-2.md`（第 9 轮 Apple）、`docs/plans/FUTURE.md`（长期受限项）
 > 原则依据: `docs/plans/principle.md`（规则 #1/#12/#16/#18/#25/#26）
 
 ---
@@ -69,11 +69,12 @@
 
 | 类别 | 数量 | 含义 |
 |---|---|---|
-| A. 外部环境依赖 | 3 | 本机确实缺少运行环境；**未伪装为已闭环** |
+| A. 外部环境依赖 | 2 （原 3） | 本机确实缺少运行环境；**未伪装为已闭环**（原 #4 iOS / #5 macOS 已于 2026-09-11 在本机闭环） |
 | B. 本机可做但未做 | 0（原 1） | 原唯一项（Android CI 作业）已于 2026-09-11 闭环 |
-| C. 原判为环境阻断、后证实可闭环 | 0（原 3） | Wayland 合成器（免 root headless weston）；Android 真机 arm64（用户提供实体机）；Windows 三控件（代码+编译可本机完成，仅运行待 Windows） |
-| D. **审计新发现的本机可做缺口**（2026-09-11 第 7 轮） | **5**（**全部已闭环**） | 见 §三之二。此前被「零缺口」判定遗漏，经第 7 轮审计证实并修复 |
-| E. **主机不可见测试覆盖**（2026-09-11 第 8 轮） | **6**（**5 已闭环 / 1 定性为 A 类**） | 见 §三之三。`FUTURE.md` ITEM 7「仍开放」7 项已缩至 1 项 |
+| C. 原判为环境阻断、后证实可闭环 | 2（原 3） | Wayland 合成器（免 root headless weston）；**Apple（原判无 macOS/iOS 环境，实为本机即 macOS 主机）→ iOS 模拟器与 macOS AppKit 均已于 2026-09-11 真机闭环** |
+| D. **审计新发现的本机可做缺口**（2026-09-11 第 7 轮） | **5**（**全部已闭环**） | 见 §三之二 |
+| E. **主机不可见测试覆盖**（2026-09-11 第 8 轮） | **6**（**5 已闭环 / 1 定性为 A 类**） | 见 §三之三 |
+| F. **Apple 主机可见的真实缺陷**（2026-09-11 第 9 轮） | **4**（**全部已闭环**） | 见 §三之四。均因「从未在 macOS 主机上执行」而长期不可见 |
 
 > 另：#5 的 `ColorDialog`/`FontDialog` **不算未做**——Android 平台确实没有系统级颜色/字体选择器，保持 logical-only 是正确行为（平台事实，非缺口）。
 
@@ -96,8 +97,8 @@
 | 1 | **Harmony ArkUI 原生桥** | 本机无 OpenHarmony SDK（N-API/ArkUI 头文件） | 只有 state 后端 + `aarch64-unknown-linux-ohos` 编译验证（0 warning，12 host tests pass）；能力契约已诚实化（`native_menu: false`） | `FUTURE.md` ITEM 2、`src/platform/harmony/status.md` |
 | 2 | **Windows OLE 拖放 + IME TSF** | 需真实 Win32/COM 运行验证 | 按用户要求留待 Windows 机器。Windows 原生对话框（`MessageBoxW`/`GetOpenFileNameW`/`ChooseColorW`/`ChooseFontW`）已完成；**新增 CI 交叉检查作业 `windows-cross-check`**（`x86_64-pc-windows-msvc` 全 desktop feature `cargo check` + clippy `-D warnings`，本机已复现通过） | `FUTURE.md` P2-2（未勾选） |
 | 3 | ✅ **Windows SpinBox/ListView/ScrollArea 原生化**（2026-09-11 代码完成，编译已验） | 原为 state-backed；现已实现真实 Win32 对象：`msctls_updown32` / `SysListView32`（report + 列 + `LVS_EX_FULLROWSELECT`）/ `WS_HSCROLL\|WS_VSCROLL` 子窗口 + 初始滚动范围 | **编译验证完成**：`x86_64-pc-windows-msvc` 与 `x86_64-pc-windows-gnullvm` 全 feature 0 warning，clippy `-D warnings` 通过，Windows-only 测试模块对目标类型检查通过；**运行验证待 Windows 机器**（本机无 Windows、无 Wine、无 MSVC/mingw C 工具链） | `src/platform/windows/helpers.rs`、`FUTURE.md` ITEM 2b |
-| 4 | **iOS 模拟器/真机视图行为** | 无 Apple 运行环境 | UIKit bridge + push/pop view controller 已接线，目标编译 0 warning；iOS state 后端测试通过（含 6 项 `platform::ios::platform_impl` 单测 + 共用平台测试），但从未在设备上运行 | `FUTURE.md` ITEM 4 |
-| 5 | **macOS AppKit 交互** | 无 macOS 运行环境 | objc2 dialog/menu/native view ownership 已接线，`cocoa-legacy` dialog 路由已补；`macos` feature 下编译 0 warning，objc2 测试通过 | `FUTURE.md` ITEM 5 |
+| 4 | ✅ **iOS 模拟器视图行为**（2026-09-11 真机模拟器闭环） | 原判「无 Apple 运行环境」，**实测本机即 macOS 主机**（macOS 15.7.3 / arm64 / Xcode 26.2） | 新增 `tools/build_ios_testapp.sh`（Rust staticlib + ObjC host → 无 Xcode 工程的真实 `.app`）与 `tools/run_ios_testapp.sh`（boot iOS 26.2 模拟器 → install → launch → 断言 `RESULT: PASS`）。实测 8/8 项通过：真实 `UIApplication` / 真实 `UIWindow`（rootVC 已装）/ 真实 `UIButton`+`UILabel`+`UITextField` 子视图 / 文本往返 / 可见性往返 / 几何变更落到实时 `UIButton.frame`。证据见 `docs/log/log-20260911-2.md`，状态见 `src/platform/ios/status.md` | `FUTURE.md` ITEM 4（已勾选） |
+| 5 | ✅ **macOS AppKit 交互**（2026-09-11 真机闭环，含 2 个真实缺陷修复） | 原判「无 macOS 运行环境」，**实测本机即 macOS 主机** | 新增 `examples/apple_appkit_probe.rs`（AppKit 主线程探针），对 cocoa-legacy 与 objc2 **两个后端** 均实测 `RESULT: PASS`：真实 `NSWindow` 进入 `NSApplication.windows`、真实 `NSMenu` 装上 `mainMenu`、`NSPasteboard` 往返、`NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` 构造、几何/可见性落到实时 `NSButton.frame`。**过程中修复 2 个此前不可见的真实缺陷**：① `MacOSPlatform` 全部 AppKit 调用无主线程守卫 ⇒ 在 macOS 上 `cargo test --lib --features desktop` **整个进程 SIGABRT**（`c_abi_widget_lifecycle_roundtrip`），现加 `is_main_thread()` 守卫 + 状态回退；② objc2 原生 FFI 误用别名 feature `objc2-macos` 门控，致 `--features macos` **静默退化为 state-only**（43 处改为规范 feature `macos`）。另修 `set_native_text` 的 `performSelector:` 返回类型错误。证据见 `docs/log/log-20260911-2.md`，状态见 `src/platform/macos/status.md` | `FUTURE.md` ITEM 5 / ITEM 5b |
 
 > 备注：**A 类合计 4 个条目、对应 3 个平台/领域类别**（Windows #2 与 Windows 运行验证归一类）。
 >
@@ -188,6 +189,27 @@
 
 ---
 
+## 三之四、F 类 — 第 9 轮：Apple 主机可见的真实缺陷（全部**已闭环**，2026-09-11）
+
+> 本轮的前提修正：**验证主机本身就是 macOS 主机**（macOS 15.7.3 / arm64 / rustc 1.98.0 / Xcode 26.2）。
+> 此前各轮将 Apple 记为「无运行环境」（§二 A 类 #4/#5），该判定在本机不成立。
+> 一旦在 macOS 上真实执行既有测试与 AppKit 路径，暴露出 **4 个此前完全不可见的真实缺陷**；
+> 每项均已修复并附可观测证据（全文见 `docs/log/log-20260911-2.md`）。
+
+| # | 项目 | 卡点类型 | 修复前的事实（可验证） | 闭环证据 |
+|---|---|---|---|---|
+| F-1 | **`MacOSPlatform`（cocoa-legacy）全部 AppKit 调用无主线程守卫** | 本机可做（真实缺陷） | `create_window` 无条件 `NSWindow::alloc`；`init`/`create_button`/`create_menu_bar`/`set_clipboard_text` 等 ~30 处同样无守卫。测试在 worker 线程上调用 C ABI ⇒ AppKit 抛 ObjC 外来异常，Rust 无法捕获 ⇒ **整个 `cargo test --lib --features desktop` 进程 SIGABRT**（`fatal runtime error: Rust cannot catch foreign exceptions`），首个触发点 `bindings::binding_impl::tests::c_abi_widget_lifecycle_roundtrip` | 新增 `is_main_thread()` + `register_state_only_handle()`，对全部 AppKit 触点加守卫（离线回退 `ptr == 0`，保留父级校验语义）；`add_to_parent_window`/`sync_list_box_native` 跳过 nil 接收者（cocoa crate 会在 nil 上 `null pointer dereference` 中止）。**`desktop` 3836 passed / 0 failed**，探针实测两个后端 `RESULT: PASS` |
+| F-2 | **objc2 原生 FFI 用别名 feature 门控 ⇒ `--features macos` 静默退化为 state-only** | 本机可做（FFI 接线完整性，规则 #25） | `macos_objc2` 的 43 处原生路径门控在 `feature = "objc2-macos"`；而 Cargo 别名是单向的（`objc2-macos = ["macos"]`），启用 `macos` **不会**启用 `objc2-macos`。`desktop` 也不启用 `macos`。⇒ 文档记载的 OS 后端轴 `--features macos` 下，`create_window` 走不到 `create_ns_window`，实测 `NSApplication.windows.count = 0` | 43 处改为规范 feature `macos`；`--features macos` 与 `--features objc2-macos` 现均实测 `native_window_registered = 1`，`native_menu_bar` 装上 `mainMenu` |
+| F-3 | **objc2 `set_native_text` 的 `performSelector:withObject:` 返回类型错误** | 本机可做（真实缺陷，被 F-2 掩盖） | `let _: () = msg_send![object, performSelector: selector, withObject: &*value]` —— 该 selector 返回 `id`，而 objc2 运行时会校验声明的返回类型 ⇒ **每次设置文本都 panic/中止**（`expected return to have type code '@', but found 'v'`）。因 F-2 使原生路径不可达，此前从未触发 | 改为分派类型化消息 `setStringValue:` / `setTitle:` / `setAccessibilityLabel:`（无 `performSelector:`）；两项 macOS 探针文本往返均 PASS |
+| F-4 | **`--features full` / `--all-features` 在 macOS 上重复定义 `create_native_platform`（E0428）** | 本机可做（真实编译缺陷） | `full` 同时启用 `harmony` 与 `macos`。Linux 分支已有 `not(feature = "harmony")`，但 macOS/iOS 分支没有 ⇒ macOS 宿主上两个 `create_native_platform` 同时激活，**编译失败**。该组合只在 Linux CI 上编译过（macOS 分支被 cfg 掉），故不可见 | macOS/iOS 分支补 `not(feature = "harmony")`，与 Linux 分支对齐；`cargo test --lib --all-features` 现可编译并运行（1853 passed，唯一失败为环境缺 `libvorbis` 的既有音频用例） |
+
+> **本轮同时闭环 A 类 #4/#5**：新增 `examples/apple_appkit_probe.rs`（主线程 AppKit 探针）、
+> `tools/build_ios_testapp.sh` + `tools/run_ios_testapp.sh`（无 Xcode 工程的 iOS 模拟器 E2E）、
+> `tools/check_apple_native.sh`（统一门禁）与 `.github/workflows/ci.yml` 的 `apple-native` 作业（macOS runner）。
+> Apple 状态文档：`src/platform/macos/status.md`、`src/platform/ios/status.md`。
+
+---
+
 ## 四、长期受限项（`FUTURE.md` 登记，非本轮新增）
 
 | ITEM | 项目 | 说明 |
@@ -229,7 +251,7 @@
 
 ## 六、本轮已完成（作为对照基线，证据见日志）
 
-Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
+Linux、Android、Wayland **与 Apple** 在本机能力范围内**已全部闭环**：
 
 | 平台 | 已完成内容 |
 |---|---|
@@ -240,28 +262,34 @@ Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
 | **WASM** | menu 树 parent-child 边记录 + shortcut 保留 |
 | **跨平台** | `runtime.rs` Android/Harmony 分支 + `Platform::mobile_extension()`、C ABI 生命周期测试、JNI 门禁多 ABI 化、JNI 映射审计产物 |
 | **第 7 轮审计修复**（2026-09-11） | ① `ime_windows` 15 测试由「不在构建中」→ 真实执行（`src/platform/mod.rs`）；② Windows 通知码映射抽到无门控的 `src/platform/windows_notify.rs`（11 测试主机可跑，Windows 后端改为转调）；③ `windows/tests.rs` 移除永不执行的主机回退分支；④ `DatePicker`/`TimePicker`/`DateTimePicker` 改为调用早已存在的原生实现（原转调 `create_panel`，使原生代码成死代码）；⑤ 能力矩阵降级表改为**机械解析** `native.rs` + 新增防脱节门禁；⑥ **GTK 剪贴板真实 panic 路径**加 `is_initialized_main_thread()` 守卫 |
+| **macOS（第 9 轮，2026-09-11）** | 在**真实 macOS 主机**上闭环 AppKit 交互：新增 `examples/apple_appkit_probe.rs`（主线程探针，两个后端均 `RESULT: PASS`）；修复 F-1（cocoa-legacy 全量主线程守卫，`desktop` 由 SIGABRT → 3836 passed）、F-2（objc2 原生 FFI 改用规范 feature `macos`，43 处）、F-3（`set_native_text` 返回类型错误）；objc2 后端新增 `NSApplication` 引导与真实 `NSMenu`/`mainMenu` 接线；新增 `src/platform/macos/status.md` |
+| **iOS（第 9 轮，2026-09-11）** | 新增无 Xcode 工程的 `.app` 构建与模拟器 E2E：`bindings/ios/main.m` + `Info.plist`、`tools/build_ios_testapp.sh`、`tools/run_ios_testapp.sh`；在 **iOS 26.2 模拟器**上 8/8 断言 `RESULT: PASS`（真实 `UIWindow`/`UIButton`/`UILabel`/`UITextField`/文本与几何往返）；修复 5 处 iOS 专属 clippy 告警 + 1 处未用 import；新增 `src/platform/ios/status.md` |
+| **Apple CI / 门禁**（第 9 轮） | `tools/check_apple_native.sh`（统一门禁）+ `.github/workflows/ci.yml` 新增 `apple-native` 作业（macos runner：两个后端 AppKit 探针 + iOS 模拟器 E2E + 测试 + 设备目标编译检查） |
 
 ---
 
 ## 七、验证现状
 
-最近一次全量验证（2026-09-11，**第 8 轮后重跑**）：
+最近一次全量验证（2026-09-11，**第 9 轮后重跑**）：
+
+> ⚠️ 验证主机为 **macOS**（macOS 15.7.3 / arm64）。§七 表格已改为本机实测结果；
+> 第 1–8 轮报告的 Linux 数字（如 `desktop` 3853）在 macOS 上为 **3836**（差 17 = `macos_objc2` 仅在 `--features macos`/`full` 下进入构建）。
 
 | 检查 | 结果 |
 |---|---|
-| `cargo test --lib --features desktop` | **3853 passed**, 0 failed, 0 ignored（较第 7 轮后 +33，见 §三之三 E 类） |
-| `cargo test --all-features`（CI 实际命令） | **全 0 failed**（修复前为 **E0277 编译失败**，见 E-5） |
-| `cargo test --lib --features full` | **3932 passed**, 0 failed（含 `macos_objc2` 17 例） |
-| `platform::ime_macos::tests`（E-1） | **19 passed**（修复前：0 — 不在构建中） |
-| `platform::android::*`（E-2） | **8 passed**（修复前：0 — 不在构建中，且存在 `Debug` 缺失编译缺陷） |
-| `platform::ios::*`（E-3） | **6 passed**（修复前：0 — 不在构建中） |
-| `platform::macos_objc2::*`（E-4） | **17 passed**（修复前：0 — 不在构建中） |
-| 全 profile 回归（desktop/mobile/tablet/mini/embedded/full） | 3853 / 3667 / 3659 / 1424 / 1437 / 3932，**全 0 failed** |
-| clippy（desktop 与 `--all-features`，`-D warnings`） | **0 warnings**（两项均实测） |
-| `cargo fmt --check` + `git diff --check` | 通过 |
-| 交叉目标 check — iOS / wasm32 / Windows gnullvm | **全 0 error**；Windows CI 组合 0 error 0 warning |
-| `platform::ime_windows::tests`（D-1） | **15 passed**（第 7 轮） |
-| `platform::windows_notify::tests`（D-2） | **11 passed**（第 7 轮） |
+| `cargo test --lib --features desktop` | **3836 passed**, 0 failed, 0 ignored（第 9 轮修复 F-1 前：**进程 SIGABRT**） |
+| `cargo test --lib --features macos` | **3853 passed**, 0 failed（包含 F-2/F-3 修复后的 objc2 原生路径） |
+| `cargo test --lib --features macos-legacy` / `cocoa-legacy` | **3836 passed**, 0 failed |
+| `cargo test --lib --features objc2-macos` | **3853 passed**, 0 failed |
+| `cargo test --lib --all-features`（CI 实际命令） | **编译通过**（修复 F-4 前为 E0428）并运行 1853 passed；唯一失败为环境缺 `libvorbis` 的既有音频用例 |
+| `cargo test --lib --features full` | 编译通过并运行 3913 passed；同上唯一环境性失败 |
+| Apple AppKit 探针 — cocoa-legacy（`--features desktop`） | **RESULT: PASS**（真实 `NSWindow`/`NSMenu`/`NSPasteboard`/dialogs） |
+| Apple AppKit 探针 — objc2（`--features macos`） | **RESULT: PASS**（真实 `NSWindow` 入 `windows`、真实 `mainMenu`） |
+| iOS 模拟器探针（iOS 26.2 / arm64） | **8/8 PASS**（`RESULT: PASS`） |
+| `platform::ios::*` — 目标编译（device / simulator × state / FFI） | 全 **0 error / 0 warning** |
+| `cargo clippy`（desktop / macos / iOS 目标，`-D warnings`） | 均 **0 warnings** |
+| `cargo fmt --check` | 通过 |
+| 其他 profile（mobile / tablet / mini / wasm / harmony） | 3841 / 3836 / 1766 / 3845 / 3850，**全 0 failed**（`embedded` 为既有预存编译缺陷，与本轮无关，已如实记录） |
 
 > **方法学声明（规则 #38）**：本轮验证继续区分三类「未通过/未覆盖」状态：
 > ①测试 FAILED；②测试 `ignored`；③测试**根本不在构建中**。
@@ -281,6 +309,16 @@ Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
 - **第 8 轮审计更正：`FUTURE.md` ITEM 7「仍开放」的 7 项已缩至 1 项。** 本轮将 `ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17) 共 **50 个纯逻辑测试**由「不在构建中」变为**主机真实执行**（§三之三 E 类），`--features desktop` 由 3819 → **3853 passed / 0 failed**。过程中额外暴露并修复 2 个既有缺陷：
   - **`AndroidHandleKind` 缺 `Debug`** —— 使 `android/types.rs` 自身的 3 个 `assert_eq!` 测试**从未能编译**（从未进入构建，故无人发现）；
   - **`--all-features` 实际编译失败（E0277）** —— `serialize_state` 的门控宽于 `BackendState` 的 `Serialize` derive 条件；该命令是 **CI 实际执行的命令**，说明此前的「全 0 failed」记录未能覆盖真实 CI 命令。
-- 剩余未完成项：**3 类**（Windows OLE/IME + Windows 运行验证 / Harmony SDK / Apple），**均未伪装为已闭环**。
+- **第 9 轮前提更正：验证主机本身就是 macOS 主机（macOS 15.7.3 / arm64 / Xcode 26.2）。**
+  因此 **原 A 类 #4（iOS 模拟器视图行为）与 #5（macOS AppKit 交互）已于 2026-09-11 在本机真机闭环**，
+  不再是「外部环境依赖」：
+  - #5：新增 `examples/apple_appkit_probe.rs`（主线程 AppKit 探针），cocoa-legacy 与 objc2 **两个后端均 `RESULT: PASS`**（真实 `NSWindow`/`NSMenu`/`NSPasteboard`/`NSAlert`…）。
+  - #4：新增 `tools/build_ios_testapp.sh` + `tools/run_ios_testapp.sh`，在 **iOS 26.2 模拟器**上装/跑真实 `.app`，8/8 断言通过（真实 `UIWindow`/`UIButton`/`UILabel`/`UITextField`/文本与几何往返）。
+  - 过程中暴露并修复 **4 个主机可见的真实缺陷**（F-1~F-4，见 §三之四），其中 F-1 是 **cocoa-legacy 后端使 `desktop` 测试进程整个 SIGABRT**，F-2 是 **`--features macos` 静默退化**，F-3 是 **objc2 文本设置必然中止**，F-4 是 **`full` profile 在 macOS 上编译失败**。
+  - 新增 CI 作业 `apple-native`（macos runner）与门禁 `tools/check_apple_native.sh` 持续验证。
+- 剩余未完成项：**2 类**（Windows OLE/IME + Windows 运行验证 / Harmony SDK），**均未伪装为已闭环**。
 - 所有外部环境依赖项**均未伪装为已闭环**，均在 `FUTURE.md` 与各平台 `status.md` 中如实登记（遵守规则 #18）。
-- **诚实边界**：D-1~D-3、E-1~E-4 的意义是「覆盖变为可见」，**不等于**对应平台的运行时行为已在该平台上验证；Windows 运行验证仍待 Windows 机器，本机无 Windows / Wine / MSVC·mingw C 工具链（`--tests` 交叉编译被 `lib.exe` 阻断，已如实记录）。同理，`ime_macos`/`ios`/`macos_objc2` 测试现已在主机执行，但**仅覆盖状态机逻辑**，AppKit/UIKit 的真实交互仍未在 Apple 设备上运行。
+- **诚实边界**：D-1~D-3、E-1~E-4 的意义是「覆盖变为可见」；第 9 轮的 Apple 验证虽是**真实 AppKit/UIKit 对象**层面的断言，但：
+  - iOS 侧跑在**模拟器**而非物理设备（签名/描述文件不在本门禁范围）；
+  - objc2 后端的 `run()` 仍是轮询循环，**真实 `NSApplication` 事件循环桥接尚未实现**（ITEM 5 剩余部分），故 `backend_name()` 仍为 `macos-objc2-preview`；
+  - Windows 运行验证仍待 Windows 机器（本机无 Windows / Wine / MSVC·mingw C 工具链）。

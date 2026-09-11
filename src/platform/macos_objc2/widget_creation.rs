@@ -5,7 +5,7 @@
 //! These are called from `platform_impl.rs` methods.
 
 #![cfg(target_os = "macos")]
-#![cfg(feature = "objc2-macos")]
+#![cfg(feature = "macos")]
 #![allow(dead_code)] // Migration-preview helpers are activated incrementally by platform_impl.
 
 use objc2::rc::Retained;

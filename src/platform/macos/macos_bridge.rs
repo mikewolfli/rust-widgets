@@ -9,9 +9,9 @@
 //! - Legacy: cocoa 0.24 backend (via `cocoa-legacy` feature)
 
 /// Default: objc2 backend (activated by `macos` feature or `objc2-macos` alias).
-#[cfg(any(feature = "macos", feature = "objc2-macos"))]
+#[cfg(any(feature = "macos", feature = "macos"))]
 pub use crate::platform::macos_objc2::MacOSObjc2Platform as SelectedMacOSPlatform;
 
 /// Legacy fallback: cocoa 0.24 backend.
-#[cfg(all(not(any(feature = "macos", feature = "objc2-macos")), feature = "cocoa-legacy"))]
+#[cfg(all(not(any(feature = "macos", feature = "macos")), feature = "cocoa-legacy"))]
 pub use crate::platform::macos::MacOSPlatform as SelectedMacOSPlatform;

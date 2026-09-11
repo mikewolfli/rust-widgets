@@ -399,8 +399,7 @@ pub(crate) fn create_ui_progress_bar(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIProgressView::initWithFrame on main thread (mtm).
     // objc2 Retained<UIProgressView> is guaranteed valid.
-    let progress = UIProgressView::initWithFrame(mtm.alloc(), frame);
-    progress
+    UIProgressView::initWithFrame(mtm.alloc(), frame)
 }
 
 /// Create a native UIPickerView (ComboBox equivalent on iOS).
@@ -414,8 +413,7 @@ pub(crate) fn create_ui_combo_box(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UIPickerView::initWithFrame on main thread (mtm).
     // objc2 Retained<UIPickerView> is always valid after init.
-    let picker = UIPickerView::initWithFrame(mtm.alloc(), frame);
-    picker
+    UIPickerView::initWithFrame(mtm.alloc(), frame)
 }
 
 /// Create a native UITableView (ListBox equivalent on iOS).
@@ -429,8 +427,7 @@ pub(crate) fn create_ui_list_box(
     let frame = make_rect(x, y, width, height);
     // SAFETY: UITableView::initWithFrame_style on main thread (mtm).
     // objc2 init reliably returns a valid Retained<UITableView>.
-    let table = UITableView::initWithFrame_style(mtm.alloc(), frame, UITableViewStyle::Plain);
-    table
+    UITableView::initWithFrame_style(mtm.alloc(), frame, UITableViewStyle::Plain)
 }
 
 /// Create a native UIView (generic panel container).
@@ -486,7 +483,7 @@ pub(crate) fn create_ui_alert(
 
         let action_cls = AnyClass::get(c"UIAlertAction").unwrap();
         let ok_str = NSString::from_str("OK");
-        let action: Retained<AnyObject> = msg_send![action_cls, actionWithTitle: &*ok_str, style: 0u64, handler: 0u64 as *mut AnyObject];
+        let action: Retained<AnyObject> = msg_send![action_cls, actionWithTitle: &*ok_str, style: 0u64, handler: std::ptr::null_mut::<AnyObject>()];
         let _: () = msg_send![&*alert, addAction: &*action];
 
         alert

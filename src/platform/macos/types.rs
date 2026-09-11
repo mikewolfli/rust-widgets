@@ -260,6 +260,24 @@ pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
     (key, modifiers)
 }
 
+/// Returns `true` when the caller is running on the AppKit main thread.
+///
+/// AppKit objects (`NSWindow`, `NSView`, `NSApplication`, panels, pasteboard
+/// singletons, ...) may only be created or mutated from the main thread; doing
+/// otherwise raises an Objective-C exception that Rust cannot catch, which
+/// aborts the whole process with
+/// `fatal runtime error: Rust cannot catch foreign exceptions`.
+///
+/// Every native entry point in this legacy backend therefore consults this
+/// guard first and falls back to a state-only handle when it returns `false`.
+/// This mirrors the `objc2::MainThreadMarker::new()` gating already used by the
+/// `macos_objc2` backend and by `create_native_dialog` here.
+pub(crate) fn is_main_thread() -> bool {
+    // SAFETY: `+[NSThread isMainThread]` is a thread-safe class method that is
+    // safe to call from any thread and never raises.
+    unsafe { msg_send![class!(NSThread), isMainThread] }
+}
+
 impl MacOSPlatform {
     /// Creates a new macOS platform adapter.
     pub fn new() -> Self {
@@ -335,9 +353,30 @@ impl MacOSPlatform {
     pub(crate) fn as_id(handle: CocoaHandle) -> id {
         handle.ptr as id
     }
+    /// Registers a state-only handle (`ptr == 0`) for the off-main-thread
+    /// fallback path, keeping widget ids, text and geometry semantics intact
+    /// without ever touching AppKit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn register_state_only_handle(
+        &self,
+        kind: HandleKind,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.register_handle(kind, text, x, y, width, height, 0)
+    }
     pub(crate) fn add_to_parent_window(&self, parent: ObjectId, view: id) {
         if let Some(parent_handle) = self.get_handle(parent) {
             if let HandleKind::Window = parent_handle.kind {
+                // A state-only parent handle (ptr == 0, created off the main
+                // thread) has no native window to attach to; skip rather than
+                // messaging a nil receiver, which the cocoa crate aborts on.
+                if parent_handle.ptr == 0 || view == nil {
+                    return;
+                }
                 // SAFETY: parent_handle is validated by get_handle() and confirmed to be a
                 // Window kind before entering this block. Self::as_id() converts the stored
                 // usize back to a valid ObjC id that was registered by register_handle().
@@ -357,6 +396,11 @@ impl MacOSPlatform {
             return;
         };
         if !matches!(handle.kind, HandleKind::ListBox) {
+            return;
+        }
+        // Off-main (or a state-only) handle has no native NSTextField to sync;
+        // the StringValue update would message a nil receiver.
+        if handle.ptr == 0 || !is_main_thread() {
             return;
         }
         let items = match self.list_box_items.lock() {
