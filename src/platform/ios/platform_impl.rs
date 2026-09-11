@@ -27,7 +27,7 @@
 //!    alongside the state handle.
 //! 3. State operations (`set_widget_text`, `set_widget_geometry`, etc.) should
 //!    first perform the Rust-side mutation, then forward the call to UIKit.
-//! 4. All real FFI code should be feature-gated (`#[cfg(feature = "ios-uikit-ffi")]`)
+//! 4. All real FFI code should be feature-gated (`#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`)
 //!    so the state-only backend remains the default for testing and CI.
 
 use super::types::{IosHandleKind, IosMobilePlatform};
@@ -35,7 +35,7 @@ use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::{
     DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
-#[cfg(feature = "ios-uikit-ffi")]
+#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
 use objc2::msg_send;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -92,7 +92,7 @@ impl Platform for IosMobilePlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(IosHandleKind::Window, title, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let window = super::native::create_ui_window(mtm, title, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(window) as *mut std::ffi::c_void;
@@ -117,7 +117,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::Button, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let button = super::native::create_ui_button(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(button) as *mut std::ffi::c_void;
@@ -144,7 +144,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::CheckBox, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let checkbox = super::native::create_ui_checkbox(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(checkbox) as *mut std::ffi::c_void;
@@ -170,7 +170,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::LineEdit, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let line_edit = super::native::create_ui_line_edit(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(line_edit) as *mut std::ffi::c_void;
@@ -196,7 +196,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::Label, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let label = super::native::create_ui_label(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(label) as *mut std::ffi::c_void;
@@ -222,7 +222,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::RadioButton, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let radio = super::native::create_ui_radio_button(mtm, text, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(radio) as *mut std::ffi::c_void;
@@ -240,7 +240,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::Slider, "Slider", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let slider = super::native::create_ui_slider(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(slider) as *mut std::ffi::c_void;
@@ -258,7 +258,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::ProgressBar, "ProgressBar", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let progress = super::native::create_ui_progress_bar(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(progress) as *mut std::ffi::c_void;
@@ -276,7 +276,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::ComboBox, "ComboBox", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let combo = super::native::create_ui_combo_box(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(combo) as *mut std::ffi::c_void;
@@ -294,7 +294,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::ListBox, "ListBox", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let list_box = super::native::create_ui_list_box(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(list_box) as *mut std::ffi::c_void;
@@ -359,13 +359,13 @@ impl Platform for IosMobilePlatform {
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
         let _ = self.state.set_text(widget_id, text);
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         super::native::set_native_text(widget_id, text);
     }
 
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
         self.state.set_geometry(widget_id, x, y, width, height);
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         super::native::set_native_frame(widget_id, x, y, width, height);
     }
 
@@ -413,7 +413,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::Panel, "Panel", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let panel = super::native::create_ui_panel(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(panel) as *mut std::ffi::c_void;
@@ -433,7 +433,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::ScrollArea, "ScrollArea", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let scroll = super::native::create_ui_scroll(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(scroll) as *mut std::ffi::c_void;
@@ -778,7 +778,7 @@ impl Platform for IosMobilePlatform {
     }
 
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         {
             for widget_id in super::native::drain_button_events() {
                 self.state.push_widget_event(WidgetTriggerEvent {
@@ -837,11 +837,13 @@ impl Platform for IosMobilePlatform {
         if self.kind_of(parent).is_none() {
             return 0;
         }
-        #[cfg(not(feature = "ios-uikit-ffi"))]
+        // `title` is consumed by the UIKit alert on the FFI path only; the pure
+        // state path records `text` and ignores it.
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
         let _ = title;
         let id = self.insert_widget(IosHandleKind::MessageBox, text, x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let alert = super::native::create_ui_alert(mtm, title, text);
             // Present the alert on the parent window's root view controller.
@@ -902,7 +904,7 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::ListView, "ListView", x, y, width, height);
 
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let list_view = super::native::create_ui_list_box(mtm, x, y, width, height);
             let ptr = objc2::rc::Retained::into_raw(list_view) as *mut std::ffi::c_void;
@@ -918,13 +920,13 @@ impl Platform for IosMobilePlatform {
 
     fn show_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, true);
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         super::native::set_native_hidden(widget_id, false);
     }
 
     fn hide_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, false);
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         super::native::set_native_hidden(widget_id, true);
     }
 
@@ -932,7 +934,7 @@ impl Platform for IosMobilePlatform {
 
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
         self.state.set_enabled(widget_id, enabled);
-        #[cfg(feature = "ios-uikit-ffi")]
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         super::native::set_native_enabled(widget_id, enabled);
     }
 
@@ -1088,6 +1090,11 @@ mod tests {
         assert!(platform.list_box_clear_items(list_box_id));
     }
 
+    #[cfg(all(
+        feature = "serde_json",
+        feature = "serde",
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     #[test]
     fn ios_platform_state_serialization() {
         let platform = IosMobilePlatform::new();

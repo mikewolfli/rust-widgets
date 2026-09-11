@@ -1,21 +1,38 @@
 //! Platform abstraction for desktop/embedded/mobile families.
 
 // Platform backend implementations (one per target)
-/// Android platform backend (state-driven).
-#[cfg(target_os = "android")]
+/// Android platform backend (state-driven, JNI bridge behind `android-jni`).
+///
+/// The widget state machine is platform-independent, so the module is compiled
+/// on every host to keep its unit tests executable. All JNI touch points are
+/// `#[cfg(feature = "android-jni")]`-gated internally; on other hosts the
+/// backend runs in pure state mode.
 pub mod android;
 /// Android JNI bridge (native view creation via JNI, feature-gated).
 #[cfg(feature = "android-jni")]
 pub mod android_jni;
 #[cfg(any(target_os = "ohos", feature = "harmony"))]
 pub mod harmony;
-#[cfg(target_os = "ios")]
+/// iOS mobile backend (state-driven, UIKit bridge behind `ios-uikit-ffi`).
+///
+/// The widget state machine is platform-independent, so the module is compiled
+/// on every host to keep its unit tests executable. All UIKit (`objc2`) touch
+/// points are `#[cfg(feature = "ios-uikit-ffi")]`-gated internally, and that
+/// feature transitively requires the iOS target (`ios = ["dep:objc2", ...]`);
+/// on other hosts the backend runs in pure state mode.
 pub mod ios;
 #[cfg(any(target_os = "linux", doc))]
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
-#[cfg(all(target_os = "macos", any(feature = "macos", feature = "objc2-macos")))]
+/// macOS objc2 migration preview backend (state-driven).
+///
+/// The widget state machine is platform-independent, so the module is compiled
+/// on every host to keep its unit tests executable. The real AppKit FFI lives
+/// in the `native` sub-module, which is `#[cfg(all(target_os = "macos",
+/// feature = "objc2-macos"))]`-gated; elsewhere the backend runs in pure state
+/// mode. See BLUE14 D-1 for the precedent (`ime_windows`).
+#[cfg(any(feature = "macos", feature = "objc2-macos"))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
@@ -48,7 +65,12 @@ pub mod ime;
 #[cfg(target_os = "linux")]
 pub mod ime_linux;
 /// Real macOS IME bridge (NSTextInputContext integration).
-#[cfg(target_os = "macos")]
+///
+/// The composition/marked-text state machine is platform-independent, so the
+/// module is compiled on every host to keep its unit tests executable. All
+/// AppKit (`objc2` `msg_send!`) touch points are `#[cfg(all(target_os =
+/// "macos", feature = "objc2-macos"))]`-gated internally; on other hosts the
+/// bridge runs in pure state-machine mode.
 pub mod ime_macos;
 /// Platform-specific IME stubs (macOS, Windows).
 pub mod ime_stubs;

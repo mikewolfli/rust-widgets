@@ -167,7 +167,15 @@ impl IosMobilePlatform {
     }
 
     /// Serialize all widget state for parity/regression testing.
-    #[cfg(feature = "serde_json")]
+    ///
+    /// Mirrors the `BackendState` serde gate exactly: the state type only derives
+    /// `Serialize` under `serde` and outside the alloc-free `mini`/`embedded`
+    /// profiles, so the method must not exist where the bound cannot hold.
+    #[cfg(all(
+        feature = "serde_json",
+        feature = "serde",
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     pub fn serialize_state(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.state)
     }
@@ -195,7 +203,7 @@ impl IosMobilePlatform {
 
     /// Returns `true` when `ios-uikit-ffi` feature is enabled
     /// and real UIKit views are being created.
-    #[cfg(feature = "ios-uikit-ffi")]
+    #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
     pub fn ui_kit_available(&self) -> bool {
         true
     }
@@ -215,7 +223,7 @@ impl IosMobilePlatform {
     ///    - `UIWindow` for `Window`
     ///    - etc.
     /// 3. Use `objc_id::Id<Object>` or `*mut Object` as the handle value.
-    /// 4. Gate the real FFI code behind `#[cfg(feature = "ios-uikit-ffi")]`.
+    /// 4. Gate the real FFI code behind `#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`.
     #[cfg(not(feature = "ios-uikit-ffi"))]
     pub fn ui_kit_available(&self) -> bool {
         false

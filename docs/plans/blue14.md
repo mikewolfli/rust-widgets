@@ -73,12 +73,19 @@
 | B. 本机可做但未做 | 0（原 1） | 原唯一项（Android CI 作业）已于 2026-09-11 闭环 |
 | C. 原判为环境阻断、后证实可闭环 | 0（原 3） | Wayland 合成器（免 root headless weston）；Android 真机 arm64（用户提供实体机）；Windows 三控件（代码+编译可本机完成，仅运行待 Windows） |
 | D. **审计新发现的本机可做缺口**（2026-09-11 第 7 轮） | **5**（**全部已闭环**） | 见 §三之二。此前被「零缺口」判定遗漏，经第 7 轮审计证实并修复 |
+| E. **主机不可见测试覆盖**（2026-09-11 第 8 轮） | **6**（**5 已闭环 / 1 定性为 A 类**） | 见 §三之三。`FUTURE.md` ITEM 7「仍开放」7 项已缩至 1 项 |
 
 > 另：#5 的 `ColorDialog`/`FontDialog` **不算未做**——Android 平台确实没有系统级颜色/字体选择器，保持 logical-only 是正确行为（平台事实，非缺口）。
 
 > **第 7 轮审计更正（2026-09-11）**：§一 此前的「本机可做项已全部归零」结论**不完整**。
 > 经全项目审计（不采信文档标注，一律 grep + 读源码 + 编译取证），发现 **5 个本机可做的真实缺口**
 > （其中 1 个是 GTK 真实 panic 路径），**均已在本轮闭环**。详见 §三之二。
+
+> **第 8 轮审计更正（2026-09-11）**：第 7 轮的「B 类已归零」同样**不完整**。
+> `FUTURE.md` ITEM 7 自述的「仍开放」7 项中，有 **4 项（`ime_macos` 19 / `android` 8 / `ios` 6 /
+> `macos_objc2` 17，共 50 个纯逻辑测试）实为本机可闭环**，已在本轮全部解除门控并实跑取证。
+> 仅 `accessibility/windows`(2) 经取证确认为 **A 类真实环境阻断**（无条件引用 `winapi::um::winuser::EVENT_*`），
+> 且其唯一可解除方式会造成空断言假覆盖，故**有意不修**。详见 §三之三。
 
 ---
 
@@ -109,8 +116,9 @@
 | # | 项目 | 说明 | 优先级 |
 |---|---|---|---|
 | 10 | ✅ **Android CI 作业**（2026-09-11 完成） | 已交付 `.github/workflows/android.yml`：`jni-bindings`（双 ABI 构建+签名+JNI 签名/导出符号门禁+产物上传）与 `emulator-e2e`（API 34 x86_64 + KVM + `RESULT: PASS`）。CI 复用本机已验证脚本，并已按 CI 相同命令在本机逐条实跑取证（见 `docs/log/log-20260911-1.md`） | P1 |
+| 11 | ✅ **主机不可见测试覆盖（`FUTURE.md` ITEM 7 的主体）**（2026-09-11 第 8 轮完成） | 见 §三之三 E 类：`ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17) 共 **50 个纯逻辑测试**由「不在构建中」变为**主机真实执行** | P1 |
 
-> B 类已归零。剔除外部环境依赖后的本机可做项完成率：1/1 = 100%。
+> B 类已归零。剔除外部环境依赖后的本机可做项完成率：2/2 = 100%。
 
 ---
 
@@ -145,6 +153,41 @@
 
 ---
 
+## 三之三、E 类 — 第 8 轮：主机不可见测试覆盖（全部**已闭环**，2026-09-11）
+
+> 承接 D-1/D-2 的同类模式（规则 #38「覆盖必须可见」）。本轮把 `FUTURE.md` ITEM 7 中
+> 「仍开放」的条目逐项取证并解除门控。每一项的判据是：**该测试只使用平台无关的状态机，
+> 不触碰任何 OS API**（逐块机械扫描确认，非人工阅读）。
+
+| # | 项目 | 修复前的事实（可验证） | 闭环证据 |
+|---|---|---|---|
+| E-1 | **`ime_macos` 19 个测试从未编译、从未运行** | 文件首行 `#![cfg(target_os = "macos")]` 使整个模块（含 `#[cfg(test)] mod tests`）不在主机构建中。测试**纯状态机**（含 UTF-16 range 跟踪），零 AppKit 调用 | 移除文件级门控；9 处内部 AppKit 门控由 `feature = "objc2-macos"` 收紧为 `all(target_os = "macos", feature = "objc2-macos")`（`objc2` 仅 macOS/iOS 目标依赖，必须同时约束目标）；`cargo test platform::ime_macos` → **19 passed** |
+| E-2 | **`android/platform_impl` 测试不可见，且该文件既有测试存在编译期缺陷** | 模块声明 `#[cfg(target_os = "android")]` + `android/types.rs` 的 `AndroidHandleKind` **缺少 `Debug`** ⇒ 其 `assert_eq!(..., Some(AndroidHandleKind::Button))` **根本无法编译**。该缺陷在同一文件既有测试中一直存在，只是从未进入构建 | 解除模块门控；补 `Debug` derive（`IosHandleKind` 早已有，属漏配）；`cargo test platform::android` → **8 passed**（注意：实测为 8，此前文档记为 7） |
+| E-3 | **`ios/platform_impl` 6 个测试不在构建中** | 模块声明 `#[cfg(target_os = "ios")]`。UI 侧本已 `#[cfg(feature = "ios-uikit-ffi")]` 门控，测试只驱动 `IosMobilePlatform` 状态机 | 解除模块门控；22 处 `ios-uikit-ffi` 门控收紧为 `all(target_os = "ios", feature = "ios-uikit-ffi")`（`--all-features` 会在 Linux 上开启该 feature，而 `objc2-ui-kit` 仅 iOS 目标存在）；`cargo test platform::ios` → **6 passed** |
+| E-4 | **`macos_objc2/tests.rs` 17 个测试不在构建中** | 模块声明 `#[cfg(all(target_os = "macos", ...))]`。`native` 子模块本已 `#![cfg]` 自门控，测试只用状态后端 `MacOSObjc2Platform` | 解除模块门控（改为按 feature），并给 `native` 子模块补显式目标门控；`cargo test --features macos platform::macos_objc2` → **17 passed** |
+| E-5 | **`--all-features` 实际编译失败（CI 命令）** | E-2/E-3 的门控放宽后暴露：`mini`+`serde` 组合下 `BackendState` 不派生 `Serialize`，而 `serialize_state` 仅以 `#[cfg(feature = "serde_json")]` 门控 ⇒ `E0277` 编译错误 | 三处（`android`/`ios` 方法 + ios 测试）门控与 `BackendState` 的 derive 条件对齐（`serde_json` ∧ `serde` ∧ ¬(`mini`∨`embedded`)）；`cargo test --all-features` → **0 failed** |
+| E-6 | **`accessibility/windows.rs` 的 2 个测试含「主机空断言」** | 该模块**确实**依赖 Windows 目标（`notify_*_changed` 无条件引用 `winapi::um::winuser::EVENT_*`），故属 **A 类（真实环境阻断）**；但 `test_uia_control_type_mapping` 在非 Windows 上**函数体为空**，构成 D-3 式假覆盖 | 本轮**不解除门控**（解除会引入假覆盖）；已在本表登记为「应保持门控」的负向结论，避免后续轮次误判为 B 类缺口 |
+
+> **方法学（规则 #19/#38）**：E-6 是本轮唯一**主动判定为「不应修」**的条目——
+> 「能让测试在主机上跑」不等于「应该让它跑」：条件编译掉整个断言体会制造 D-3 式假覆盖，
+> 比保持门控更糟。这与 D-1/E-1~E-4（测试本身是纯逻辑）形成明确分界。
+
+### E 类闭环后的测试增量归因
+
+`cargo test --lib --features desktop`：**3820 → 3853**（+33）。
+
+| 来源 | 增量 | 性质 |
+|---|---|---|
+| `platform::ime_macos::tests`（E-1） | +19 | 原「不在构建中」→ 现主机执行 |
+| `platform::android::*`（E-2） | +8 | 同上（含修复 `Debug` 后新可编译的测试） |
+| `platform::ios::*`（E-3） | +6 | 同上 |
+| 新增断言 | 0 | **未**通过灌水断言数量凑数 |
+
+> `macos_objc2`(17) 仅在 `--features macos` 下进入构建，故不计入默认 `desktop` 增量；
+> 在 `--features full` 下可见（`full` 套件 3932 passed）。
+
+---
+
 ## 四、长期受限项（`FUTURE.md` 登记，非本轮新增）
 
 | ITEM | 项目 | 说明 |
@@ -155,7 +198,7 @@
 | ITEM 4 | iOS mobile backend 实现 | 同 A 类 #8 |
 | ITEM 5 | macOS objc2 preview backend 毕业 | 同 A 类 #9 |
 | ITEM 6 | 跨平台全控件对等矩阵闭合 | 部分控件在至少一个后端仍走 trait 默认兜底语义，需逐后端补齐 `create_*` 或显式声明「不支持」。**2026-09-11 第 7 轮更新**：`DatePicker`/`TimePicker`/`DateTimePicker` 已不再转调 `create_panel`（改为调用早已存在的原生实现）；矩阵降级表已改为机械派生 + 防脱节门禁 |
-| ITEM 7 | **主机不可见测试覆盖**（被 `#[cfg(target_os)]` 挡在构建外） | **2026-09-11 第 7 轮新增**。已修 `ime_windows`(15) 与 `windows_notify`(11)；**仍开放**：`ime_macos`(19)、`macos_objc2`(17)、`ios`(6)、`android`(10)、`macos`(4)、`accessibility/windows`(2)、`control_backend/routing`(2) |
+| ITEM 7 | **主机不可见测试覆盖**（被 `#[cfg(target_os)]` 挡在构建外） | **2026-09-11 第 7 轮新增，第 8 轮大部分闭环**。已修：`ime_windows`(15)、`windows_notify`(11)（第 7 轮）；`ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17)（第 8 轮，见 §三之三）。**仍开放（已定性为 A 类，非缺口）**：`accessibility/windows`(2) —— 该模块无条件引用 `winapi::um::winuser::EVENT_*`，本就无法离 Windows 编译；解除门控只会制造空断言假覆盖。另：`control_backend/routing` 的 2 个 Windows-only 测试是**按 OS 分支的有意不对称**（Windows 侧结论与其余平台相反），不属本 ITEM 范围 |
 
 ---
 
@@ -202,32 +245,28 @@ Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
 
 ## 七、验证现状
 
-最近一次全量验证（2026-09-11，**第 7 轮后重跑**）：
+最近一次全量验证（2026-09-11，**第 8 轮后重跑**）：
 
 | 检查 | 结果 |
 |---|---|
-| `cargo test --lib --features desktop` | **3819 passed**, 0 failed, 0 ignored（较第 7 轮前 +26，见 §三之二） |
-| `cargo test --all-features`（CI 实际命令） | **全 0 failed** |
-| 全平台 feature（含 `gtk-native` + `image`） | **2478 passed**, 0 failed, 0 ignored（修复前为 1 failed — 见 D-6） |
-| `platform::ime_windows::tests`（D-1） | **15 passed**（修复前：0 — 不在构建中） |
-| `platform::windows_notify::tests`（D-2） | **11 passed**（修复前：0 — 不在构建中） |
-| harmony / wayland-native 特性套件 | 各 **2246 passed**, 0 failed |
-| GTK / a11y / IBus / harmony / wayland / android_jni / bindings | 1 / 17 / 15 / 12 / 12 / 10 / 4 — 全通过 |
-| Wayland（有真实 headless 合成器） | **14 passed, 0 failed**（含“必须真绑定”与“无合成器必须降级”双向断言） |
-| Wayland（无合成器，反向对照） | 1 passed（`native_session` 必为空） |
-| Wayland CI 作业（`ci.yml::wayland-compositor`，system 模式） | 本机模拟实跑：14 passed + 负向对照 1 passed |
-| clippy（desktop；Windows 目标全 feature `-D warnings`） | 0 warnings |
-| target check — msvc / gnullvm / OHOS / wasm32 / Android / iOS（6 目标） | **全部 err=0 warn=0** |
-| Android 模拟器 E2E（双 ABI 已构建） | `RESULT: PASS` |
-| **Android 真机 E2E（arm64：Xiaomi M2102J2SC / Android 13）** | **`RESULT: PASS`**，零 `AndroidRuntime` 错误 |
-| **Android FileDialog 真机** | 真实启动 `com.android.documentsui` 选择器（`Displayed … +258ms`） |
-| JNI 签名门禁（含新增 FileDialog 导出） | 56/56 + 17/17；两 ABI 各 73 个导出符号 |
-| 5 道 QA 门禁（含**新增的矩阵防脱节检查**，负向验证过） + `cargo fmt --check` + `git diff --check` | 全部通过 |
-| Windows 三控件原生化 + Date/Time/DateTimePicker 接线 | 编译验证通过；**运行验证待 Windows 机器**（本机无 Windows/Wine） |
+| `cargo test --lib --features desktop` | **3853 passed**, 0 failed, 0 ignored（较第 7 轮后 +33，见 §三之三 E 类） |
+| `cargo test --all-features`（CI 实际命令） | **全 0 failed**（修复前为 **E0277 编译失败**，见 E-5） |
+| `cargo test --lib --features full` | **3932 passed**, 0 failed（含 `macos_objc2` 17 例） |
+| `platform::ime_macos::tests`（E-1） | **19 passed**（修复前：0 — 不在构建中） |
+| `platform::android::*`（E-2） | **8 passed**（修复前：0 — 不在构建中，且存在 `Debug` 缺失编译缺陷） |
+| `platform::ios::*`（E-3） | **6 passed**（修复前：0 — 不在构建中） |
+| `platform::macos_objc2::*`（E-4） | **17 passed**（修复前：0 — 不在构建中） |
+| 全 profile 回归（desktop/mobile/tablet/mini/embedded/full） | 3853 / 3667 / 3659 / 1424 / 1437 / 3932，**全 0 failed** |
+| clippy（desktop 与 `--all-features`，`-D warnings`） | **0 warnings**（两项均实测） |
+| `cargo fmt --check` + `git diff --check` | 通过 |
+| 交叉目标 check — iOS / wasm32 / Windows gnullvm | **全 0 error**；Windows CI 组合 0 error 0 warning |
+| `platform::ime_windows::tests`（D-1） | **15 passed**（第 7 轮） |
+| `platform::windows_notify::tests`（D-2） | **11 passed**（第 7 轮） |
 
-> **方法学声明（规则 #38）**：本轮验证额外区分了三类「未通过/未覆盖」状态——
-> ①测试 FAILED；②测试 `ignored`；③测试**根本不在构建中**（`#[cfg(target_os)]` 挡在外的零覆盖）。
-> D-1/D-2 属③，此前无任何机制提示，现已修复为可执行。（本仓库无 `ignore`，① 已归零。）
+> **方法学声明（规则 #38）**：本轮验证继续区分三类「未通过/未覆盖」状态：
+> ①测试 FAILED；②测试 `ignored`；③测试**根本不在构建中**。
+> 第 8 轮将第 ③ 类从 7 项缩至 **1 项**（`accessibility/windows`，已定性为 A 类真实环境阻断，且其修法会造成假覆盖）。
+> 本仓库无 `ignore`，① 已归零。
 
 ---
 
@@ -239,7 +278,9 @@ Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
 - **原 A 类 #4/#5/#6（Android）已于 2026-09-11 闭环/定性**：用户提供实体 arm64 真机后，#4 真机 `RESULT: PASS`；#5 FileDialog 真实启动系统选择器；#6 Toolbar 由推测升级为真机实测的确定性约束。
 - **原 A 类 #3（Windows 三控件原生化）已于 2026-09-11 完成代码 + 编译验证**（真实 `msctls_updown32` / `SysListView32` / 滚动子窗口），并纳入 CI 交叉检查；**运行验证待 Windows 机器**。
 - **第 7 轮审计更正：原「本机可做项已全部归零」结论不完整。** 全项目审计后发现 **5 个本机可做的真实缺口**（D-1~D-6，见 §三之二）——包括 **26 个被 `#[cfg(target_os)]` 挡在构建之外、从未执行的测试**，一个**已接线但从不被调用**的原生实现（Date/Time/DateTimePicker），以及一条 **GTK 剪贴板的真实 panic 路径**。**均已在本轮闭环**，`--features desktop` 由 3793 → **3819 passed / 0 failed**。
-- **新增规则 #38（覆盖必须可见）与 #39（生成文档不得手写镜像代码事实）**由本轮事实推出，并已加入 §核心规则。
+- **第 8 轮审计更正：`FUTURE.md` ITEM 7「仍开放」的 7 项已缩至 1 项。** 本轮将 `ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17) 共 **50 个纯逻辑测试**由「不在构建中」变为**主机真实执行**（§三之三 E 类），`--features desktop` 由 3819 → **3853 passed / 0 failed**。过程中额外暴露并修复 2 个既有缺陷：
+  - **`AndroidHandleKind` 缺 `Debug`** —— 使 `android/types.rs` 自身的 3 个 `assert_eq!` 测试**从未能编译**（从未进入构建，故无人发现）；
+  - **`--all-features` 实际编译失败（E0277）** —— `serialize_state` 的门控宽于 `BackendState` 的 `Serialize` derive 条件；该命令是 **CI 实际执行的命令**，说明此前的「全 0 failed」记录未能覆盖真实 CI 命令。
 - 剩余未完成项：**3 类**（Windows OLE/IME + Windows 运行验证 / Harmony SDK / Apple），**均未伪装为已闭环**。
 - 所有外部环境依赖项**均未伪装为已闭环**，均在 `FUTURE.md` 与各平台 `status.md` 中如实登记（遵守规则 #18）。
-- **诚实边界**：D-1~D-3 的意义是「覆盖变为可见」，**不等于** Windows 运行时行为已在 Windows 上验证；Windows 运行验证仍待 Windows 机器，本机无 Windows / Wine / MSVC·mingw C 工具链（`--tests` 交叉编译被 `lib.exe` 阻断，已如实记录）。
+- **诚实边界**：D-1~D-3、E-1~E-4 的意义是「覆盖变为可见」，**不等于**对应平台的运行时行为已在该平台上验证；Windows 运行验证仍待 Windows 机器，本机无 Windows / Wine / MSVC·mingw C 工具链（`--tests` 交叉编译被 `lib.exe` 阻断，已如实记录）。同理，`ime_macos`/`ios`/`macos_objc2` 测试现已在主机执行，但**仅覆盖状态机逻辑**，AppKit/UIKit 的真实交互仍未在 Apple 设备上运行。

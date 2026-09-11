@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 /// Android-specific widget handle type discriminator.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
     all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
     derive(Serialize, Deserialize)
@@ -244,7 +244,15 @@ impl AndroidPlatform {
     }
 
     /// Serialize all widget state for parity/regression testing.
-    #[cfg(feature = "serde_json")]
+    ///
+    /// Mirrors the `BackendState` serde gate exactly: the state type only derives
+    /// `Serialize` under `serde` and outside the alloc-free `mini`/`embedded`
+    /// profiles, so the method must not exist where the bound cannot hold.
+    #[cfg(all(
+        feature = "serde_json",
+        feature = "serde",
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
     pub fn serialize_state(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.state)
     }
