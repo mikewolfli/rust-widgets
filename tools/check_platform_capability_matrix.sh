@@ -107,7 +107,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- [3] Validating matrix cell values ---"
 
-VALID_CODES=("✅" "🔶" "⬜" "➖")
+VALID_CODES=("✅" "🟦" "🔶" "⬜" "➖")
 VALID_COLS=("Windows" "Linux/X11" "macOS" "Wayland" "Mobile" "Harmony" "Embedded/Stub")
 
 LINE_NUM=0
@@ -165,6 +165,21 @@ while IFS= read -r line; do
     done
   fi
 done < "$MATRIX_FILE"
+
+# ---------------------------------------------------------------------------
+# 4. Generated document is up to date (no drift from the generator)
+# ---------------------------------------------------------------------------
+echo "--- [4] Checking generated document is up to date ---"
+GENERATED="$(mktemp)"
+trap 'rm -f "$GENERATED"' EXIT
+if ! python3 tools/generate_platform_capability_matrix.py --output "$GENERATED" >/dev/null 2>&1; then
+  error "Generator tools/generate_platform_capability_matrix.py failed to run"
+elif ! diff -q "$GENERATED" "$MATRIX_FILE" >/dev/null 2>&1; then
+  error "$MATRIX_FILE is stale — regenerate with: python3 tools/generate_platform_capability_matrix.py --output $MATRIX_FILE"
+  diff "$GENERATED" "$MATRIX_FILE" | head -20 >&2 || true
+else
+  echo "  ✅ Matrix matches generator output"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

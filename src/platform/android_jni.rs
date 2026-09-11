@@ -36,6 +36,78 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
+// Android logcat logger
+// ---------------------------------------------------------------------------
+
+/// Install a `log` backend that forwards to Android's logcat.
+///
+/// Without this the bridge's `log::info!` / `log::error!` diagnostics go
+/// nowhere on-device, because no global logger is set. `__android_log_write`
+/// comes from liblog, which every Android process already links, so this adds
+/// no dependency. Installed once from `nativeInit`; safe to call repeatedly.
+pub fn init_logging() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        // Ignore the error: if the host already installed a logger we keep it.
+        let _ = log::set_logger(&LOGCAT_LOGGER);
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+struct LogcatLogger;
+
+static LOGCAT_LOGGER: LogcatLogger = LogcatLogger;
+
+/// Map a `log` level to the logcat priority constants from `<android/log.h>`.
+fn logcat_priority(level: log::Level) -> i32 {
+    // ANDROID_LOG_VERBOSE=2, DEBUG=3, INFO=4, WARN=5, ERROR=6
+    match level {
+        log::Level::Trace => 2,
+        log::Level::Debug => 3,
+        log::Level::Info => 4,
+        log::Level::Warn => 5,
+        log::Level::Error => 6,
+    }
+}
+
+impl log::Log for LogcatLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let tag = std::ffi::CString::new("rust_widgets").unwrap_or_default();
+        // `log::Record::args()` formatting allocates; acceptable for a
+        // diagnostic path that only runs when logging is enabled.
+        let message = std::ffi::CString::new(format!("{}", record.args()))
+            .unwrap_or_else(|_| std::ffi::CString::new("(message contained NUL)").unwrap());
+        unsafe {
+            android_log_write(logcat_priority(record.level()), tag.as_ptr(), message.as_ptr());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+// ---------------------------------------------------------------------------
+// liblog FFI
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    /// `int __android_log_write(int prio, const char* tag, const char* text)`
+    /// from `<android/log.h>`; provided by liblog on every Android device.
+    #[link_name = "__android_log_write"]
+    fn android_log_write(
+        prio: i32,
+        tag: *const std::os::raw::c_char,
+        text: *const std::os::raw::c_char,
+    ) -> i32;
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -50,6 +122,58 @@ static VIEW_REGISTRY: OnceLock<Mutex<HashMap<ObjectId, jni::objects::GlobalRef>>
 
 fn view_registry() -> &'static Mutex<HashMap<ObjectId, jni::objects::GlobalRef>> {
     VIEW_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// GlobalRef to the Android `Context` (usually the hosting `Activity`).
+///
+/// Set once from Java via [`set_activity_context`]. Without it the Rust-callable
+/// view factory helpers cannot construct Android widgets, so
+/// [`create_native_view`] returns `None` and the caller keeps the state-only
+/// path.
+static ACTIVITY_CONTEXT: OnceLock<Mutex<Option<jni::objects::GlobalRef>>> = OnceLock::new();
+
+fn activity_context_slot() -> &'static Mutex<Option<jni::objects::GlobalRef>> {
+    ACTIVITY_CONTEXT.get_or_init(|| Mutex::new(None))
+}
+
+/// Store the Android `Context` used by [`create_native_view`].
+///
+/// Called from the Java side (or `attach_to_native_view`) with a JNI local
+/// reference; a `GlobalRef` is created internally so the Context outlives the
+/// calling frame.
+///
+/// Returns `true` when the reference was stored.
+pub fn set_activity_context(
+    env: &mut jni::JNIEnv<'_>,
+    context: &jni::objects::JObject<'_>,
+) -> bool {
+    let global = match env.new_global_ref(context) {
+        Ok(g) => g,
+        Err(e) => {
+            log::error!("[android-jni] set_activity_context: failed to create GlobalRef: {e}");
+            return false;
+        }
+    };
+    let mut slot = activity_context_slot().lock().expect("activity context lock poisoned");
+    *slot = Some(global);
+    log::info!("[android-jni] activity Context stored");
+    true
+}
+
+/// Returns `true` when a Context has been stored and native view creation can
+/// proceed.
+pub fn has_activity_context() -> bool {
+    activity_context_slot().lock().map(|slot| slot.is_some()).unwrap_or(false)
+}
+
+/// Canonical readiness predicate for native view creation.
+///
+/// Native views require **both** the `JavaVM` (from `nativeInit`) and an
+/// Activity `Context` (from [`set_activity_context`]). This is the single source
+/// of truth used by `AndroidPlatform::jni_available` and the Rust-callable view
+/// factory, so the two can never disagree about whether the bridge is usable.
+pub fn native_view_creation_ready() -> bool {
+    is_initialized() && has_activity_context()
 }
 
 /// Internal helper to generate fresh ObjectId values.
@@ -119,6 +243,523 @@ pub fn unregister_view(id: ObjectId) {
 }
 
 // ---------------------------------------------------------------------------
+// Rust-callable view factory (used by AndroidPlatform::create_* when the
+// `android-jni` feature is on). The `#[no_mangle] Java_*` entry points below
+// are the inverse direction (Java → Rust); these helpers are Rust → Java so
+// `platform_impl` actually constructs native views instead of only recording
+// logical state.
+// ---------------------------------------------------------------------------
+
+/// Android widget class selected by [`create_native_view`].
+///
+/// Mirrors the view types the `Java_*` entry points construct, so both
+/// directions create the same widget for a given logical kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidViewClass {
+    /// `android.widget.Button`.
+    Button,
+    /// `android.widget.TextView` (labels and status text).
+    TextView,
+    /// `android.widget.EditText`.
+    EditText,
+    /// `android.widget.CheckBox`.
+    CheckBox,
+    /// `android.widget.RadioButton`.
+    RadioButton,
+    /// `android.widget.SeekBar`.
+    SeekBar,
+    /// `android.widget.ProgressBar`.
+    ProgressBar,
+    /// `android.widget.Spinner`.
+    Spinner,
+    /// `android.widget.ListView`.
+    ListView,
+    /// `android.widget.ScrollView`.
+    ScrollView,
+    /// `android.widget.NumberPicker`.
+    NumberPicker,
+    /// `android.widget.FrameLayout` (generic container / panel).
+    FrameLayout,
+}
+
+/// Logical widget kind → native Android view class mapping.
+///
+/// This is the single source of truth for which logical kinds get a real
+/// Android `View`. Kinds without a standalone View (menus, dialogs, toolbars)
+/// deliberately return `None` so callers keep the logical handle instead of
+/// pretending a native object exists. Kept here (rather than in the
+/// `target_os = "android"` module) so the mapping is unit-testable on any host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidLogicalKind {
+    Window,
+    Button,
+    CheckBox,
+    LineEdit,
+    Label,
+    RadioButton,
+    Slider,
+    ProgressBar,
+    ComboBox,
+    ListBox,
+    Panel,
+    MenuBar,
+    Menu,
+    MenuItem,
+    ToolBar,
+    StatusBar,
+    MessageBox,
+    FileDialog,
+    ColorDialog,
+    FontDialog,
+    SpinBox,
+    ListView,
+    ScrollArea,
+}
+
+/// Resolve the native view class for a logical kind, or `None` when the kind
+/// has no standalone Android View equivalent.
+pub fn view_class_for(kind: AndroidLogicalKind) -> Option<AndroidViewClass> {
+    use AndroidLogicalKind::*;
+    Some(match kind {
+        Button => AndroidViewClass::Button,
+        Label | StatusBar => AndroidViewClass::TextView,
+        LineEdit => AndroidViewClass::EditText,
+        CheckBox => AndroidViewClass::CheckBox,
+        RadioButton => AndroidViewClass::RadioButton,
+        Slider => AndroidViewClass::SeekBar,
+        ProgressBar => AndroidViewClass::ProgressBar,
+        ComboBox => AndroidViewClass::Spinner,
+        ListBox | ListView => AndroidViewClass::ListView,
+        ScrollArea => AndroidViewClass::ScrollView,
+        SpinBox => AndroidViewClass::NumberPicker,
+        Panel | Window => AndroidViewClass::FrameLayout,
+        MenuBar | Menu | MenuItem | ToolBar | MessageBox | FileDialog | ColorDialog
+        | FontDialog => return None,
+    })
+}
+
+impl AndroidViewClass {
+    /// JNI class path passed to `JNIEnv::find_class`.
+    fn jni_class_path(self) -> &'static str {
+        match self {
+            AndroidViewClass::Button => "android/widget/Button",
+            AndroidViewClass::TextView => "android/widget/TextView",
+            AndroidViewClass::EditText => "android/widget/EditText",
+            AndroidViewClass::CheckBox => "android/widget/CheckBox",
+            AndroidViewClass::RadioButton => "android/widget/RadioButton",
+            AndroidViewClass::SeekBar => "android/widget/SeekBar",
+            AndroidViewClass::ProgressBar => "android/widget/ProgressBar",
+            AndroidViewClass::Spinner => "android/widget/Spinner",
+            AndroidViewClass::ListView => "android/widget/ListView",
+            AndroidViewClass::ScrollView => "android/widget/ScrollView",
+            AndroidViewClass::NumberPicker => "android/widget/NumberPicker",
+            AndroidViewClass::FrameLayout => "android/widget/FrameLayout",
+        }
+    }
+
+    /// Whether the widget implements `setText(CharSequence)`.
+    fn supports_text(self) -> bool {
+        matches!(
+            self,
+            AndroidViewClass::Button
+                | AndroidViewClass::TextView
+                | AndroidViewClass::EditText
+                | AndroidViewClass::CheckBox
+                | AndroidViewClass::RadioButton
+        )
+    }
+}
+
+/// Create a native Android view, apply its layout, and register a GlobalRef.
+///
+/// Returns the JNI registry id (a fresh [`ObjectId`]) on success, or `None`
+/// when the bridge is not initialized, no Activity Context has been stored, or
+/// the JVM rejects the construction. `None` means the caller should keep the
+/// logical state handle without a native counterpart.
+pub fn create_native_view(
+    class: AndroidViewClass,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Option<ObjectId> {
+    if !is_initialized() {
+        return None;
+    }
+    with_jni_env(|env| create_view_with_env(env, class, text, x, y, width, height)).flatten()
+}
+
+fn create_view_with_env(
+    env: &mut jni::JNIEnv<'_>,
+    class: AndroidViewClass,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Option<ObjectId> {
+    // Hold the Context lock only while cloning the reference; the actual JNI
+    // calls below must not run under the registry lock to avoid re-entrancy.
+    let context = {
+        let slot = activity_context_slot().lock().expect("activity context lock poisoned");
+        slot.as_ref()?.clone()
+    };
+    let context_obj = context.as_obj();
+
+    let class_path = class.jni_class_path();
+    let view_class = env.find_class(class_path).ok()?;
+    let view = env
+        .new_object(
+            &view_class,
+            "(Landroid/content/Context;)V",
+            &[jni::objects::JValue::Object(context_obj)],
+        )
+        .ok()?;
+
+    if class.supports_text() && !text.is_empty() {
+        if let Ok(java_text) = env.new_string(text) {
+            if let Err(e) = env.call_method(
+                &view,
+                "setText",
+                "(Ljava/lang/CharSequence;)V",
+                &[jni::objects::JValue::Object(&java_text)],
+            ) {
+                log::warn!("[android-jni] create_native_view({class_path}): setText failed: {e}");
+            }
+        }
+    }
+
+    apply_view_layout(env, &view, x, y, width as i32, height as i32);
+
+    let id = allocate_id();
+    let global = env.new_global_ref(&view).ok()?;
+    register_view(id, global);
+    log::info!("[android-jni] create_native_view({class_path}) -> id={id}");
+    Some(id)
+}
+
+/// Destroy a native view previously created by [`create_native_view`].
+///
+/// Returns `true` when a registered view was found and released.
+pub fn destroy_native_view(id: ObjectId) -> bool {
+    if lookup_view(id).is_none() {
+        return false;
+    }
+    unregister_view(id);
+    true
+}
+
+/// Set the text of a native view created by [`create_native_view`].
+pub fn set_native_view_text(id: ObjectId, text: &str) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let java_text = match env.new_string(text) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("[android-jni] set_native_view_text({id}): new_string failed: {e}");
+                return false;
+            }
+        };
+        env.call_method(
+            global.as_obj(),
+            "setText",
+            "(Ljava/lang/CharSequence;)V",
+            &[jni::objects::JValue::Object(&java_text)],
+        )
+        .is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// Update the bounds of a native view created by [`create_native_view`].
+pub fn set_native_view_bounds(id: ObjectId, x: i32, y: i32, width: u32, height: u32) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        apply_view_layout(env, global.as_obj(), x, y, width as i32, height as i32);
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Set the visibility of a native view. `View.VISIBLE` = 0, `View.GONE` = 8.
+pub fn set_native_view_visibility(id: ObjectId, visible: bool) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let visibility = if visible { 0 } else { 8 };
+        env.call_method(
+            global.as_obj(),
+            "setVisibility",
+            "(I)V",
+            &[jni::objects::JValue::Int(visibility)],
+        )
+        .is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// Set the enabled state of a native view.
+pub fn set_native_view_enabled(id: ObjectId, enabled: bool) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        env.call_method(
+            global.as_obj(),
+            "setEnabled",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(if enabled {
+                jni::sys::JNI_TRUE
+            } else {
+                jni::sys::JNI_FALSE
+            })],
+        )
+        .is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// Append an item to a native `Spinner` adapter.
+///
+/// `Spinner` is backed by an `ArrayAdapter<String>`; the adapter is created on
+/// the first item and reused afterwards so selecting an index keeps working.
+/// `set_selection` is applied only for the first item so later appends do not
+/// reset an existing user selection.
+pub fn append_spinner_item(id: ObjectId, text: &str, set_selection: bool) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let spinner = global.as_obj();
+        let java_text = match env.new_string(text) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("[android-jni] append_spinner_item({id}): new_string failed: {e}");
+                return false;
+            }
+        };
+
+        // Reuse the ArrayAdapter attached to the Spinner when one exists;
+        // otherwise create a simple spinner-item layout adapter.
+        let adapter = match env.call_method(spinner, "getAdapter", "()Landroid/widget/SpinnerAdapter;", &[])
+        {
+            Ok(v) => v.l().ok().filter(|o| !o.is_null()),
+            Err(e) => {
+                log::error!("[android-jni] append_spinner_item({id}): getAdapter failed: {e}");
+                return false;
+            }
+        };
+
+        let added = match adapter {
+            Some(adapter_obj) => env
+                .call_method(
+                    &adapter_obj,
+                    "add",
+                    "(Ljava/lang/Object;)V",
+                    &[jni::objects::JValue::Object(&java_text)],
+                )
+                .is_ok(),
+            None => {
+                // No adapter yet: build an ArrayAdapter<String> over the
+                // standard Android spinner item layout.
+                let array_adapter_class = match env.find_class("android/widget/ArrayAdapter") {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!("[android-jni] append_spinner_item({id}): ArrayAdapter class missing: {e}");
+                        return false;
+                    }
+                };
+                let context = match spinner_context(env, spinner) {
+                    Some(c) => c,
+                    None => return false,
+                };
+                let layout = match env.get_static_field(
+                    "android/R$layout",
+                    "simple_spinner_item",
+                    "I",
+                ) {
+                    Ok(v) => v.i().unwrap_or(0),
+                    Err(_) => 0,
+                };
+                let adapter = match env.new_object(
+                    &array_adapter_class,
+                    "(Landroid/content/Context;I)V",
+                    &[
+                        jni::objects::JValue::Object(&context),
+                        jni::objects::JValue::Int(layout),
+                    ],
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::error!("[android-jni] append_spinner_item({id}): ArrayAdapter creation failed: {e}");
+                        return false;
+                    }
+                };
+                if env
+                    .call_method(
+                        &adapter,
+                        "add",
+                        "(Ljava/lang/Object;)V",
+                        &[jni::objects::JValue::Object(&java_text)],
+                    )
+                    .is_err()
+                {
+                    log::error!("[android-jni] append_spinner_item({id}): adapter.add failed");
+                    return false;
+                }
+                env.call_method(
+                    spinner,
+                    "setAdapter",
+                    "(Landroid/widget/SpinnerAdapter;)V",
+                    &[jni::objects::JValue::Object(&adapter)],
+                )
+                .is_ok()
+            }
+        };
+        if !added {
+            return false;
+        }
+        if set_selection {
+            let _ = env.call_method(
+                spinner,
+                "setSelection",
+                "(I)V",
+                &[jni::objects::JValue::Int(0)],
+            );
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Fetch the `Context` a view was constructed with, for adapter creation.
+fn spinner_context<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    view: &jni::objects::JObject<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    env.call_method(view, "getContext", "()Landroid/content/Context;", &[])
+        .ok()
+        .and_then(|v| v.l().ok())
+        .filter(|o| !o.is_null())
+}
+
+/// Append items to a native `ListView` adapter (or install a new adapter that
+/// contains exactly `texts` when none is attached yet).
+///
+/// Uses the standard `android.R.layout.simple_list_item_1` row layout so the
+/// list is usable without application-provided resources.
+pub fn append_list_item(id: ObjectId, texts: &[&str]) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let list_view = global.as_obj();
+
+        let existing = env
+            .call_method(list_view, "getAdapter", "()Landroid/widget/ListAdapter;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .filter(|o| !o.is_null());
+
+        if let Some(adapter) = existing {
+            for text in texts {
+                let java_text = match env.new_string(*text) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!("[android-jni] append_list_item({id}): new_string failed: {e}");
+                        return false;
+                    }
+                };
+                if let Err(e) = env.call_method(
+                    &adapter,
+                    "add",
+                    "(Ljava/lang/Object;)V",
+                    &[jni::objects::JValue::Object(&java_text)],
+                ) {
+                    log::error!("[android-jni] append_list_item({id}): adapter.add failed: {e}");
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // No adapter yet: build an ArrayAdapter<String> seeded with all items.
+        let array_adapter_class = match env.find_class("android/widget/ArrayAdapter") {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!(
+                    "[android-jni] append_list_item({id}): ArrayAdapter class missing: {e}"
+                );
+                return false;
+            }
+        };
+        let context = match spinner_context(env, list_view) {
+            Some(c) => c,
+            None => return false,
+        };
+        let layout = env
+            .get_static_field("android/R$layout", "simple_list_item_1", "I")
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0);
+        let adapter = match env.new_object(
+            &array_adapter_class,
+            "(Landroid/content/Context;I)V",
+            &[jni::objects::JValue::Object(&context), jni::objects::JValue::Int(layout)],
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                log::error!(
+                    "[android-jni] append_list_item({id}): ArrayAdapter creation failed: {e}"
+                );
+                return false;
+            }
+        };
+        for text in texts {
+            let java_text = match env.new_string(*text) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("[android-jni] append_list_item({id}): new_string failed: {e}");
+                    return false;
+                }
+            };
+            if let Err(e) = env.call_method(
+                &adapter,
+                "add",
+                "(Ljava/lang/Object;)V",
+                &[jni::objects::JValue::Object(&java_text)],
+            ) {
+                log::error!("[android-jni] append_list_item({id}): adapter.add failed: {e}");
+                return false;
+            }
+        }
+        if let Err(e) = env.call_method(
+            list_view,
+            "setAdapter",
+            "(Landroid/widget/ListAdapter;)V",
+            &[jni::objects::JValue::Object(&adapter)],
+        ) {
+            log::error!("[android-jni] append_list_item({id}): setAdapter failed: {e}");
+            return false;
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
 // JNI entry points — called from Java side
 // ---------------------------------------------------------------------------
 
@@ -133,6 +774,8 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeInit(
     env: jni::JNIEnv,
     _class: jni::objects::JClass,
 ) {
+    // Install the logcat backend first so the messages below are visible.
+    init_logging();
     match env.get_java_vm() {
         Ok(vm) => {
             if JAVA_VM.set(vm).is_ok() {
@@ -617,6 +1260,287 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeCreateSeekBar<'local
 // View manipulation helpers & JNI methods
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Dialog factory (AlertDialog)
+// ---------------------------------------------------------------------------
+
+/// Register a dialog object in the same registry as views.
+///
+/// Dialogs and views share the `ObjectId` space so `lookup_view` resolves both;
+/// a dialog is simply an object that implements `show()` / `dismiss()` rather
+/// than a `View`.
+fn register_dialog(
+    id: ObjectId,
+    env: &mut jni::JNIEnv<'_>,
+    dialog: &jni::objects::JObject<'_>,
+) -> bool {
+    match env.new_global_ref(dialog) {
+        Ok(global) => {
+            register_view(id, global);
+            true
+        }
+        Err(e) => {
+            log::error!("[android-jni] register_dialog: failed to create GlobalRef: {e}");
+            false
+        }
+    }
+}
+
+/// Build an `AlertDialog` on the stored Activity Context.
+///
+/// Returns the registry id on success. Requires the Activity Context
+/// ([`set_activity_context`]) because `AlertDialog.Builder` needs a Context, and
+/// `show()` needs an Activity-backed window. `title`/`message` are optional in
+/// the sense that an empty string simply yields an empty field.
+pub fn create_native_dialog(title: &str, message: &str) -> Option<ObjectId> {
+    if !is_initialized() {
+        return None;
+    }
+    with_jni_env(|env| create_dialog_with_env(env, title, message)).flatten()
+}
+
+fn create_dialog_with_env(
+    env: &mut jni::JNIEnv<'_>,
+    title: &str,
+    message: &str,
+) -> Option<ObjectId> {
+    let context = {
+        let slot = activity_context_slot().lock().expect("activity context lock poisoned");
+        slot.as_ref()?.clone()
+    };
+    let context_obj = context.as_obj();
+
+    let builder_class = env.find_class("android/app/AlertDialog$Builder").ok()?;
+    let builder = env
+        .new_object(
+            &builder_class,
+            "(Landroid/content/Context;)V",
+            &[jni::objects::JValue::Object(context_obj)],
+        )
+        .ok()?;
+
+    if !title.is_empty() {
+        let java_title = env.new_string(title).ok()?;
+        if let Err(e) = env.call_method(
+            &builder,
+            "setTitle",
+            "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;",
+            &[jni::objects::JValue::Object(&java_title)],
+        ) {
+            log::warn!("[android-jni] create_native_dialog: setTitle failed: {e}");
+        }
+    }
+    if !message.is_empty() {
+        let java_message = env.new_string(message).ok()?;
+        if let Err(e) = env.call_method(
+            &builder,
+            "setMessage",
+            "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;",
+            &[jni::objects::JValue::Object(&java_message)],
+        ) {
+            log::warn!("[android-jni] create_native_dialog: setMessage failed: {e}");
+        }
+    }
+
+    let dialog = env
+        .call_method(&builder, "create", "()Landroid/app/AlertDialog;", &[])
+        .ok()
+        .and_then(|v| v.l().ok())?;
+
+    // Show it. `AlertDialog.show()` must run on a thread with a Looper; the
+    // Java-side entry points are called from the UI thread, and the Rust-driven
+    // path is documented to require the same.
+    if let Err(e) = env.call_method(&dialog, "show", "()V", &[]) {
+        log::warn!("[android-jni] create_native_dialog: show() failed: {e}");
+    }
+
+    let id = allocate_id();
+    if !register_dialog(id, env, &dialog) {
+        return None;
+    }
+    log::info!("[android-jni] create_native_dialog -> id={id}");
+    Some(id)
+}
+
+/// Request code used for the `ACTION_OPEN_DOCUMENT` result.
+///
+/// The host Activity receives this in `onActivityResult` / its result
+/// launcher; it is chosen to be unlikely to collide with app-defined codes.
+pub const FILE_DIALOG_REQUEST_CODE: i32 = 0x5257; // "RW"
+
+/// Launch the system document picker (`ACTION_OPEN_DOCUMENT`) for a file dialog.
+///
+/// Android has no `FileDialog` View: file selection is an *Activity* operation.
+/// The bridge stores only a `Context` `GlobalRef`, so the Activity is recovered
+/// by reflection: the stored object is first checked with `instanceof Activity`,
+/// then `Activity.startActivityForResult(Intent, int)` is invoked on it. This is
+/// the same mechanism (and the same constraint) documented for the backend — a
+/// non-Activity Context cannot service a result launcher, and in that case this
+/// returns `false` after logging an explicit diagnostic rather than silently
+/// doing nothing.
+///
+/// Verified on a physical device (Xiaomi M2102J2SC, Android 13): the stored
+/// Context is the Activity, the method resolves reflectively, and the picker
+/// launches.
+///
+/// The result is delivered to the host Activity's own callback; the bridge does
+/// not intercept it. Returns `true` when the picker was launched.
+pub fn launch_file_dialog(mime_type: &str) -> bool {
+    if !is_initialized() {
+        log::info!("[android-jni] launch_file_dialog: bridge not initialized");
+        return false;
+    }
+    with_jni_env(|env| launch_file_dialog_with_env(env, mime_type)).flatten().unwrap_or(false)
+}
+
+fn launch_file_dialog_with_env(env: &mut jni::JNIEnv<'_>, mime_type: &str) -> Option<bool> {
+    let context = {
+        let slot = activity_context_slot().lock().expect("activity context lock poisoned");
+        slot.as_ref()?.clone()
+    };
+    let context_obj = context.as_obj();
+
+    // A Context that is not an Activity cannot start a result launcher. Report
+    // this precisely instead of pretending the request was serviced.
+    let activity_class = match env.find_class("android/app/Activity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("[android-jni] launch_file_dialog: Activity class missing: {e}");
+            return Some(false);
+        }
+    };
+    match env.is_instance_of(context_obj, &activity_class) {
+        Ok(true) => {}
+        Ok(false) => {
+            log::warn!(
+                "[android-jni] launch_file_dialog: stored Context is not an Activity, \
+                 cannot launch a result launcher; pass the Activity to nativeAttachContext"
+            );
+            return Some(false);
+        }
+        Err(e) => {
+            log::error!("[android-jni] launch_file_dialog: is_instance_of failed: {e}");
+            return Some(false);
+        }
+    }
+
+    // Intent(ACTION_OPEN_DOCUMENT) + CATEGORY_OPENABLE + setType(mime).
+    let intent_class = match env.find_class("android/content/Intent") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("[android-jni] launch_file_dialog: Intent class missing: {e}");
+            return Some(false);
+        }
+    };
+    let action = env.new_string("android.intent.action.OPEN_DOCUMENT").ok()?;
+    let intent = match env.new_object(
+        &intent_class,
+        "(Ljava/lang/String;)V",
+        &[jni::objects::JValue::Object(&action)],
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            log::error!("[android-jni] launch_file_dialog: new Intent failed: {e}");
+            return Some(false);
+        }
+    };
+
+    let category = env.new_string("android.intent.category.OPENABLE").ok()?;
+    if let Err(e) = env.call_method(
+        &intent,
+        "addCategory",
+        "(Ljava/lang/String;)Landroid/content/Intent;",
+        &[jni::objects::JValue::Object(&category)],
+    ) {
+        log::warn!("[android-jni] launch_file_dialog: addCategory failed: {e}");
+    }
+
+    // Default to any content when the caller gives no MIME type.
+    let mime = if mime_type.is_empty() { "*/*" } else { mime_type };
+    let mime_str = env.new_string(mime).ok()?;
+    if let Err(e) = env.call_method(
+        &intent,
+        "setType",
+        "(Ljava/lang/String;)Landroid/content/Intent;",
+        &[jni::objects::JValue::Object(&mime_str)],
+    ) {
+        log::warn!("[android-jni] launch_file_dialog: setType failed: {e}");
+    }
+
+    // startActivityForResult(Intent, int) — resolved reflectively on the stored
+    // object, which the instanceof check above proved is an Activity.
+    if let Err(e) = env.call_method(
+        context_obj,
+        "startActivityForResult",
+        "(Landroid/content/Intent;I)V",
+        &[
+            jni::objects::JValue::Object(&intent),
+            jni::objects::JValue::Int(FILE_DIALOG_REQUEST_CODE),
+        ],
+    ) {
+        log::error!("[android-jni] launch_file_dialog: startActivityForResult failed: {e}");
+        return Some(false);
+    }
+
+    log::info!(
+        "[android-jni] launch_file_dialog: ACTION_OPEN_DOCUMENT launched (mime={mime}, \
+         requestCode={FILE_DIALOG_REQUEST_CODE})"
+    );
+    Some(true)
+}
+
+/// Update the message of a dialog created by [`create_native_dialog`].
+pub fn set_native_dialog_message(id: ObjectId, message: &str) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let dialog = global.as_obj();
+        let java_message = match env.new_string(message) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!(
+                    "[android-jni] set_native_dialog_message({id}): new_string failed: {e}"
+                );
+                return false;
+            }
+        };
+        env.call_method(
+            dialog,
+            "setMessage",
+            "(Ljava/lang/CharSequence;)V",
+            &[jni::objects::JValue::Object(&java_message)],
+        )
+        .is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// Show or dismiss a dialog created by [`create_native_dialog`].
+pub fn set_native_dialog_visible(id: ObjectId, visible: bool) -> bool {
+    with_jni_env(|env| {
+        let global = match lookup_view(id) {
+            Some(g) => g,
+            None => return false,
+        };
+        let dialog = global.as_obj();
+        let method = if visible { "show" } else { "dismiss" };
+        env.call_method(dialog, method, "()V", &[]).is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// Dismiss and release a dialog created by [`create_native_dialog`].
+pub fn destroy_native_dialog(id: ObjectId) -> bool {
+    if lookup_view(id).is_none() {
+        return false;
+    }
+    let _ = set_native_dialog_visible(id, false);
+    unregister_view(id);
+    true
+}
+
 /// Apply layout params (position + size) to an Android View.
 ///
 /// This creates a `ViewGroup.MarginLayoutParams` (or `LayoutParams` with
@@ -822,6 +1746,205 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDestroyView(
     unregister_view(id);
 }
 
+/// Hand the host Activity `Context` to the Rust-side view factory.
+///
+/// This enables the Rust→Java direction: once the Context is stored,
+/// `AndroidPlatform::jni_available()` becomes true and `platform_impl`'s
+/// `create_*` methods construct real Android views through
+/// [`create_native_view`].
+///
+/// Returns `true` when the Context was stored.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeAttachContext(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    context: jni::objects::JObject,
+) -> jni::sys::jboolean {
+    init_logging();
+    if set_activity_context(&mut env, &context) {
+        jni::sys::JNI_TRUE
+    } else {
+        jni::sys::JNI_FALSE
+    }
+}
+
+/// Run the Rust-side `AndroidPlatform` create path for every native kind.
+///
+/// This exercises `platform_impl` → `attach_native_view` → JNI, i.e. the
+/// direction that does not go through a per-call Java entry point. Returns the
+/// number of widgets created, or a negative value on the first failure so the
+/// caller can distinguish "not ready" (`-1`) from a partial failure.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSelfTestKinds(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    init_logging();
+    if !native_view_creation_ready() {
+        log::error!("[android-jni] nativeSelfTestKinds: bridge not ready");
+        return -1;
+    }
+
+    // The `AndroidPlatform` backend only exists on Android; on other hosts the
+    // bridge is compiled for unit testing only, where there is no platform to
+    // drive. Report "unsupported" rather than pretending to have run.
+    #[cfg(not(target_os = "android"))]
+    {
+        log::warn!("[android-jni] nativeSelfTestKinds: not an Android target");
+        -1
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::android::AndroidPlatform;
+        use crate::platform::Platform;
+
+        /// One `(name, constructor)` pair in the kind sweep below.
+        type KindCreator = (&'static str, fn(&AndroidPlatform, u64) -> u64);
+
+        let platform = AndroidPlatform::new();
+        platform.init();
+
+        let window = platform.create_window("selftest", 0, 0, 320, 640);
+        if window == 0 {
+            return -2;
+        }
+
+        // (name, constructor)
+        let creators: [KindCreator; 7] = [
+            ("Button", |p, w| p.create_button(w, "b", 0, 0, 100, 40)),
+            ("Label", |p, w| p.create_label(w, "l", 0, 50, 100, 40)),
+            ("LineEdit", |p, w| p.create_line_edit(w, "e", 0, 100, 100, 40)),
+            ("CheckBox", |p, w| p.create_checkbox(w, "c", 0, 150, 100, 40)),
+            ("RadioButton", |p, w| p.create_radio_button(w, "r", 0, 200, 100, 40)),
+            ("ProgressBar", |p, w| p.create_progress_bar(w, 0, 250, 100, 40)),
+            ("Slider", |p, w| p.create_slider(w, 0, 300, 100, 40)),
+        ];
+
+        let mut created = 0i32;
+        for (name, create) in creators {
+            let id = create(&platform, window);
+            if id == 0 {
+                log::error!("[android-jni] nativeSelfTestKinds: create {name} failed");
+                return -3;
+            }
+            // A native view must actually back the logical handle.
+            if platform.native_view_of(id).is_none() {
+                log::error!("[android-jni] nativeSelfTestKinds: {name} has no native view");
+                return -4;
+            }
+            created += 1;
+            log::info!("[android-jni] nativeSelfTestKinds: {name} -> logical={id} ok");
+        }
+        created
+    }
+}
+
+/// Exercise the Rust-side dialog path: create an `AlertDialog` through
+/// `AndroidPlatform::create_message_box`, then update/dismiss/show it.
+///
+/// Returns `1` on success, or a negative value on the first failure.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSelfTestDialog(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    init_logging();
+    if !native_view_creation_ready() {
+        log::error!("[android-jni] nativeSelfTestDialog: bridge not ready");
+        return -1;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        log::warn!("[android-jni] nativeSelfTestDialog: not an Android target");
+        -1
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::android::AndroidPlatform;
+        use crate::platform::Platform;
+
+        let platform = AndroidPlatform::new();
+        platform.init();
+
+        let window = platform.create_window("dialog-test", 0, 0, 320, 640);
+        if window == 0 {
+            return -2;
+        }
+        let message_box =
+            platform.create_message_box(window, "Self Test", "Hello from Rust", 0, 0, 240, 160);
+        if message_box == 0 {
+            return -3;
+        }
+        // The dialog must be a real native object, not just a logical handle.
+        if platform.native_view_of(message_box).is_none() {
+            log::error!("[android-jni] nativeSelfTestDialog: no native dialog");
+            return -4;
+        }
+        // Body update must reach the AlertDialog setMessage().
+        platform.set_widget_text(message_box, "Updated by Rust");
+        // Hide/show must reach dismiss()/show().
+        platform.hide_widget(message_box);
+        platform.show_widget(message_box);
+        log::info!("[android-jni] nativeSelfTestDialog: ok");
+        1
+    }
+}
+
+/// Exercise the Rust-side file-dialog path: create a file dialog through
+/// `AndroidPlatform::create_file_dialog`, which must launch
+/// `ACTION_OPEN_DOCUMENT` on the stored Activity.
+///
+/// Returns `1` on success, or a negative value on the first failure.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSelfTestFileDialog(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    init_logging();
+    if !native_view_creation_ready() {
+        log::error!("[android-jni] nativeSelfTestFileDialog: bridge not ready");
+        return -1;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        log::warn!("[android-jni] nativeSelfTestFileDialog: not an Android target");
+        -1
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::android::AndroidPlatform;
+        use crate::platform::Platform;
+
+        let platform = AndroidPlatform::new();
+        platform.init();
+
+        let window = platform.create_window("file-dialog-test", 0, 0, 320, 640);
+        if window == 0 {
+            return -2;
+        }
+        // Creation requests the system picker; the result is delivered to the
+        // host Activity's own callback.
+        let file_dialog = platform.create_file_dialog(window, 0, 0, 240, 160);
+        if file_dialog == 0 {
+            log::error!("[android-jni] nativeSelfTestFileDialog: logical handle not created");
+            return -3;
+        }
+        // Exercise the launch path directly so the return value is observable
+        // (create_file_dialog only logs on failure).
+        if !launch_file_dialog("*/*") {
+            log::error!("[android-jni] nativeSelfTestFileDialog: picker not launched");
+            return -4;
+        }
+        log::info!("[android-jni] nativeSelfTestFileDialog: ok");
+        1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -850,5 +1973,114 @@ mod tests {
     #[test]
     fn test_unregister_nonexistent_view() {
         unregister_view(999); // should not panic
+    }
+
+    #[test]
+    fn test_view_class_paths_are_android_widgets() {
+        // Every mapped class must live in the `android/widget` package, which is
+        // what `JNIEnv::find_class` expects (slash-separated, no `.class`).
+        let classes = [
+            AndroidViewClass::Button,
+            AndroidViewClass::TextView,
+            AndroidViewClass::EditText,
+            AndroidViewClass::CheckBox,
+            AndroidViewClass::RadioButton,
+            AndroidViewClass::SeekBar,
+            AndroidViewClass::ProgressBar,
+            AndroidViewClass::Spinner,
+            AndroidViewClass::ListView,
+            AndroidViewClass::ScrollView,
+            AndroidViewClass::NumberPicker,
+            AndroidViewClass::FrameLayout,
+        ];
+        for class in classes {
+            assert!(
+                class.jni_class_path().starts_with("android/widget/"),
+                "unexpected class path {}",
+                class.jni_class_path()
+            );
+        }
+    }
+
+    #[test]
+    fn test_supports_text_matches_settext_capable_views() {
+        assert!(AndroidViewClass::Button.supports_text());
+        assert!(AndroidViewClass::TextView.supports_text());
+        assert!(AndroidViewClass::EditText.supports_text());
+        assert!(AndroidViewClass::CheckBox.supports_text());
+        assert!(AndroidViewClass::RadioButton.supports_text());
+        assert!(!AndroidViewClass::SeekBar.supports_text());
+        assert!(!AndroidViewClass::ProgressBar.supports_text());
+        assert!(!AndroidViewClass::ScrollView.supports_text());
+        assert!(!AndroidViewClass::FrameLayout.supports_text());
+    }
+
+    #[test]
+    fn test_native_view_helpers_noop_without_jvm() {
+        // No `JavaVM` has been stored in this unit-test process, so the
+        // Rust-callable helpers must report failure instead of panicking.
+        assert!(!is_initialized());
+        assert!(!has_activity_context());
+        assert!(!native_view_creation_ready());
+        assert_eq!(create_native_view(AndroidViewClass::Button, "x", 0, 0, 10, 10), None);
+        assert!(!destroy_native_view(1234));
+        assert!(!set_native_view_text(1234, "x"));
+        assert!(!set_native_view_bounds(1234, 0, 0, 10, 10));
+        assert!(!set_native_view_visibility(1234, true));
+        assert!(!set_native_view_enabled(1234, true));
+        assert!(!append_spinner_item(1234, "item", true));
+        assert!(!append_list_item(1234, &["item"]));
+        // File dialogs need an Activity to launch a result launcher; with no JVM
+        // there is none, so the request must report failure rather than claim
+        // success.
+        assert!(!launch_file_dialog("*/*"));
+    }
+
+    #[test]
+    fn test_native_view_creation_ready_requires_both_vm_and_context() {
+        // The readiness predicate is the AND of the two prerequisites. With no
+        // JVM it must be false regardless of the context slot; this pins the
+        // contract that `AndroidPlatform::jni_available` relies on, so a future
+        // change cannot make it true on only one of the two conditions.
+        assert_eq!(native_view_creation_ready(), is_initialized() && has_activity_context());
+        assert!(!native_view_creation_ready());
+    }
+
+    #[test]
+    fn test_android_integration_ready_reports_unready_without_jvm() {
+        let status = android_integration_ready();
+        assert!(!status.jni_initialized);
+        assert_eq!(status.native_methods_count, 13);
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_native_kinds_map_to_view_classes() {
+        use AndroidLogicalKind::*;
+        assert_eq!(view_class_for(Button), Some(AndroidViewClass::Button));
+        assert_eq!(view_class_for(Label), Some(AndroidViewClass::TextView));
+        assert_eq!(view_class_for(StatusBar), Some(AndroidViewClass::TextView));
+        assert_eq!(view_class_for(LineEdit), Some(AndroidViewClass::EditText));
+        assert_eq!(view_class_for(CheckBox), Some(AndroidViewClass::CheckBox));
+        assert_eq!(view_class_for(RadioButton), Some(AndroidViewClass::RadioButton));
+        assert_eq!(view_class_for(Slider), Some(AndroidViewClass::SeekBar));
+        assert_eq!(view_class_for(ProgressBar), Some(AndroidViewClass::ProgressBar));
+        assert_eq!(view_class_for(ComboBox), Some(AndroidViewClass::Spinner));
+        assert_eq!(view_class_for(ListBox), Some(AndroidViewClass::ListView));
+        assert_eq!(view_class_for(ListView), Some(AndroidViewClass::ListView));
+        assert_eq!(view_class_for(ScrollArea), Some(AndroidViewClass::ScrollView));
+        assert_eq!(view_class_for(SpinBox), Some(AndroidViewClass::NumberPicker));
+        assert_eq!(view_class_for(Panel), Some(AndroidViewClass::FrameLayout));
+        assert_eq!(view_class_for(Window), Some(AndroidViewClass::FrameLayout));
+    }
+
+    #[test]
+    fn test_logical_only_kinds_have_no_native_view() {
+        use AndroidLogicalKind::*;
+        for kind in
+            [MenuBar, Menu, MenuItem, ToolBar, MessageBox, FileDialog, ColorDialog, FontDialog]
+        {
+            assert_eq!(view_class_for(kind), None, "{kind:?} must not claim a native view");
+        }
     }
 }

@@ -45,7 +45,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_checkbox(parent, text, x, y, width, height)
+        get_platform().create_toggle_button(parent, text, x, y, width, height)
     }
     fn create_line_edit(
         &self,
@@ -254,7 +254,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_message_box(parent, title, "", x, y, width, height)
+        get_platform().create_dialog(parent, title, x, y, width, height)
     }
     fn create_message_box(
         &self,
@@ -303,14 +303,14 @@ impl ControlBackend for NativeControlBackend {
     }
     fn create_popup_window(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_window(title, x, y, width, height)
+        get_platform().create_popup_window(parent, title, x, y, width, height)
     }
     fn create_text_edit(
         &self,
@@ -342,7 +342,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_spin_box(parent, x, y, width, height)
+        get_platform().create_double_spin_box(parent, x, y, width, height)
     }
     fn create_list_view(
         &self,
@@ -372,7 +372,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_slider(parent, x, y, width, height)
+        get_platform().create_scroll_bar(parent, x, y, width, height)
     }
     fn create_scroll_area(
         &self,
@@ -397,13 +397,16 @@ impl ControlBackend for NativeControlBackend {
     fn create_group_box(
         &self,
         parent: ObjectId,
-        _title: &str,
+        title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_group_box(parent, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        get_platform().create_frame(parent, x, y, width, height)
     }
     fn create_tab_widget(
         &self,
@@ -413,7 +416,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_tab_widget(parent, x, y, width, height)
     }
     fn create_splitter(
         &self,
@@ -423,7 +426,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_splitter(parent, x, y, width, height)
     }
     fn create_stack_widget(
         &self,
@@ -511,7 +514,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_date_picker(parent, x, y, width, height)
     }
     fn create_time_picker(
         &self,
@@ -521,7 +524,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_time_picker(parent, x, y, width, height)
     }
     fn create_date_time_picker(
         &self,
@@ -531,18 +534,18 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_date_time_picker(parent, x, y, width, height)
     }
     fn create_directory_dialog(
         &self,
         parent: ObjectId,
-        _title: &str,
+        title: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_file_dialog(parent, x, y, width, height)
+        get_platform().create_directory_dialog(parent, title, x, y, width, height)
     }
     fn create_data_view(
         &self,
@@ -628,8 +631,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        log::warn!("[native] create_calendar: no native Calendar — falling back to Panel (use the custom backend for a real Calendar)");
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_calendar(parent, x, y, width, height)
     }
     fn create_column_view(
         &self,
@@ -686,10 +688,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        log::warn!(
-            "[native] create_font_combo_box: no native font enumeration — falling back to ComboBox"
-        );
-        get_platform().create_combo_box(parent, x, y, width, height)
+        get_platform().create_font_combo_box(parent, x, y, width, height)
     }
     fn create_web_engine_view(
         &self,
@@ -826,13 +825,13 @@ impl ControlBackend for NativeControlBackend {
     fn create_context_menu(
         &self,
         parent: ObjectId,
-        text: &str,
+        _text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_menu(parent, text, x, y, width, height)
+        get_platform().create_context_menu(parent, x, y, width, height)
     }
 }
 

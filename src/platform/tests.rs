@@ -6,6 +6,26 @@
 
 use crate::core::PlatformFamily;
 use crate::platform::{Platform, StubPlatform, WidgetTriggerEvent, WidgetTriggerKind};
+
+/// The process-global backend must be the Harmony backend when the `harmony`
+/// preview feature is enabled, rather than falling through to the generic
+/// desktop stub. Regression guard for the missing `create_native_platform` arm.
+#[cfg(feature = "harmony")]
+#[test]
+fn runtime_selects_harmony_backend_when_feature_enabled() {
+    let platform = crate::platform::get_platform();
+    assert_eq!(platform.backend_name(), "harmony-desktop");
+    assert_eq!(platform.family(), PlatformFamily::Desktop);
+}
+
+/// The generic stub must never be selected merely because the host OS is
+/// unrecognised; a feature-selected backend takes precedence.
+#[cfg(feature = "harmony")]
+#[test]
+fn runtime_does_not_fall_back_to_unknown_stub_with_harmony() {
+    let name = crate::platform::backend_name();
+    assert_ne!(name, "unknown-runtime-stub");
+}
 #[test]
 fn consistency_menu_trigger_roundtrip() {
     let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);

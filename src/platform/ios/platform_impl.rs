@@ -31,7 +31,7 @@
 //!    so the state-only backend remains the default for testing and CI.
 
 use super::types::{IosHandleKind, IosMobilePlatform};
-use crate::core::PlatformFamily;
+use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::{
     DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
@@ -52,6 +52,11 @@ impl Platform for IosMobilePlatform {
 
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Mobile
+    }
+
+    #[cfg(feature = "mobile-api")]
+    fn mobile_extension(&self) -> Option<&dyn crate::platform::types::MobilePlatformExtension> {
+        Some(self)
     }
 
     fn capabilities(&self) -> PlatformCapabilities {
@@ -438,6 +443,265 @@ impl Platform for IosMobilePlatform {
         }
 
         id
+    }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::DoubleSpinBox, "DoubleSpinBox", x, y, width, height)
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::FontComboBox, "FontComboBox", x, y, width, height)
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(IosHandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            IosHandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            IosHandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     // ─── Menu Bar / Menu / Menu Item ───

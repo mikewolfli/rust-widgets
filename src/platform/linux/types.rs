@@ -31,6 +31,25 @@ pub(crate) enum LinuxHandleKind {
     SpinBox,
     ListView,
     ScrollArea,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 #[derive(Default)]
 pub(crate) struct LinuxMenuState {
@@ -90,6 +109,13 @@ pub(crate) struct LinuxNativeState {
     pub(crate) widgets: HashMap<u64, gtk::Widget>,
     pub(crate) menu_bars: HashMap<u64, gtk::MenuBar>,
     pub(crate) menus: HashMap<u64, gtk::Menu>,
+    /// Native GTK dialogs (message box / file chooser / color / font)
+    /// indexed by logical widget id.
+    pub(crate) dialogs: HashMap<u64, gtk::Dialog>,
+    /// Native GTK color selection widgets for `create_color_dialog`.
+    pub(crate) color_choosers: HashMap<u64, gtk::ColorChooser>,
+    /// Native GTK font selection widgets for `create_font_dialog`.
+    pub(crate) font_choosers: HashMap<u64, gtk::FontChooser>,
 }
 
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]

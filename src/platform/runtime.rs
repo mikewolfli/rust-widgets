@@ -6,9 +6,23 @@
 
 #[cfg(not(feature = "mini"))]
 use crate::compat::OnceLock;
+#[cfg(all(target_os = "android", not(feature = "mini"), not(feature = "embedded")))]
+use crate::platform::android::AndroidPlatform;
+#[cfg(all(
+    any(target_os = "ohos", feature = "harmony"),
+    not(target_os = "android"),
+    not(feature = "mini"),
+    not(feature = "embedded")
+))]
+use crate::platform::harmony::HarmonyPlatform;
 #[cfg(target_os = "ios")]
 use crate::platform::ios::IosMobilePlatform;
-#[cfg(all(target_os = "linux", not(feature = "mini"), not(feature = "embedded")))]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "mini"),
+    not(feature = "embedded"),
+    not(feature = "harmony")
+))]
 use crate::platform::linux::LinuxPlatform;
 #[cfg(all(
     not(feature = "mini"),
@@ -21,7 +35,12 @@ use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 use crate::platform::mobile;
 #[cfg(not(feature = "mini"))]
 pub use crate::platform::types::*;
-#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native",
+    not(feature = "harmony")
+))]
 use crate::platform::wayland::WaylandPlatform;
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
@@ -36,7 +55,12 @@ use crate::platform::windows::WindowsPlatform;
 ///  1. `$WAYLAND_DISPLAY` environment variable is set → Wayland
 ///  2. `$XDG_SESSION_TYPE` equals `"wayland"` → Wayland
 ///  3. Otherwise → assume X11/"plain" Linux
-#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "embedded"),
+    feature = "wayland-native",
+    not(feature = "harmony")
+))]
 fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")
@@ -95,7 +119,8 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "mini"),
     target_os = "linux",
     not(feature = "embedded"),
-    feature = "wayland-native"
+    feature = "wayland-native",
+    not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     if is_wayland_session() {
@@ -106,14 +131,37 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// Linux without wayland-native feature → always use LinuxPlatform.
+///
+/// The `harmony` feature excludes this arm: enabling the Harmony preview
+/// backend on a Linux host must select `HarmonyPlatform`, matching the
+/// `any(target_os = "ohos", feature = "harmony")` arm below.
 #[cfg(all(
     not(feature = "mini"),
     target_os = "linux",
     not(feature = "embedded"),
-    not(feature = "wayland-native")
+    not(feature = "wayland-native"),
+    not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(LinuxPlatform::new())
+}
+
+/// Android platform backend (state-driven, optionally JNI-backed).
+#[cfg(all(not(feature = "mini"), target_os = "android", not(feature = "embedded")))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(AndroidPlatform::new())
+}
+
+/// HarmonyOS (OpenHarmony `ohos` target, or the `harmony` preview feature on
+/// any host). Falls back to the state-backed Harmony backend.
+#[cfg(all(
+    any(target_os = "ohos", feature = "harmony"),
+    not(target_os = "android"),
+    not(feature = "mini"),
+    not(feature = "embedded")
+))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(HarmonyPlatform::new())
 }
 
 /// iOS state-backed platform backend.
@@ -139,6 +187,8 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(feature = "mini"),
     not(feature = "embedded"),
     not(all(feature = "wasm", target_arch = "wasm32")),
+    not(target_os = "android"),
+    not(any(target_os = "ohos", feature = "harmony")),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -257,6 +307,17 @@ pub fn dpi_scale_factor() -> f32 {
 pub fn mobile_backend_name() -> &'static str {
     #[cfg(not(feature = "embedded"))]
     {
+        // Prefer the active platform's own mobile extension so the name matches
+        // the backend `get_platform()` returns. Only fall back to the preview
+        // singleton when the active platform is not a mobile backend (e.g. running
+        // the mobile API on a desktop host for development).
+        if let Some(ext) = get_platform().mobile_extension() {
+            return match ext.mobile_backend() {
+                crate::platform::types::MobileBackend::Android => "android-mobile",
+                crate::platform::types::MobileBackend::Ios => "ios-mobile",
+                crate::platform::types::MobileBackend::HarmonyMobile => "harmony-mobile",
+            };
+        }
         mobile::get_mobile_platform().backend_name()
     }
     #[cfg(feature = "embedded")]
@@ -270,6 +331,12 @@ pub fn mobile_backend_name() -> &'static str {
 pub fn mobile_attach_to_native_view(native_handle: usize) -> bool {
     #[cfg(not(feature = "embedded"))]
     {
+        // Route to the live platform's mobile extension first: on Android/iOS
+        // this is the same instance widget creation uses, so the attached view
+        // and the widget state stay in one object.
+        if let Some(ext) = get_platform().mobile_extension() {
+            return ext.attach_to_native_view(native_handle);
+        }
         mobile::get_mobile_platform().attach_to_native_view(native_handle)
     }
     #[cfg(feature = "embedded")]

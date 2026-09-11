@@ -261,7 +261,7 @@ pub mod windows {
                         GlobalUnlock(h_mem);
                         let result = SetClipboardData(CF_UNICODETEXT, h_mem);
                         CloseClipboard();
-                        return !result.is_null();
+                        !result.is_null()
                     }
                     ClipboardContent::Html { html, plain } => {
                         // Set CF_HTML (HTML Format)

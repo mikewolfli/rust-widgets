@@ -640,6 +640,293 @@ impl Platform for MacOSObjc2Platform {
 
         id
     }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(MacObjc2HandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::FontComboBox,
+            "FontComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::ContextMenu,
+            "ContextMenu",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::ProgressDialog,
+            "Progress",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(MacObjc2HandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            MacObjc2HandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
 
     // ---- Dialog creation ----
     fn create_message_box(

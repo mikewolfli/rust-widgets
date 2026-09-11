@@ -282,6 +282,8 @@ fn dialog_creation() {
 
     let msg_box = backend.create_message_box(window, "Title", "Message", 0, 0, 200, 100);
     assert!(msg_box > 0, "MessageBox should be created");
+    // Title and body are both retained in the logical handle.
+    assert_eq!(backend.get_widget_text(msg_box), "Title: Message");
 
     let file_dlg = backend.create_file_dialog(window, 0, 0, 400, 300);
     assert!(file_dlg > 0, "FileDialog should be created");
@@ -291,6 +293,30 @@ fn dialog_creation() {
 
     let font_dlg = backend.create_font_dialog(window, 0, 0, 300, 200);
     assert!(font_dlg > 0, "FontDialog should be created");
+}
+
+#[test]
+fn dialogs_and_extended_controls_reject_invalid_parent() {
+    // Every parented creator must return 0 for an unknown parent id instead of
+    // silently allocating an orphan widget.
+    let backend = HarmonyPlatform::new();
+    backend.init();
+    let window = backend.create_window("w", 0, 0, 200, 120);
+    assert!(window > 0);
+
+    let bogus = 9999;
+    assert_eq!(backend.create_message_box(bogus, "t", "m", 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_file_dialog(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_color_dialog(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_font_dialog(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_spin_box(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_list_view(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_scroll_area(bogus, 0, 0, 10, 10), 0);
+
+    // The same creators succeed with a valid parent.
+    assert!(backend.create_spin_box(window, 0, 0, 10, 10) > 0);
+    assert!(backend.create_list_view(window, 0, 0, 10, 10) > 0);
+    assert!(backend.create_scroll_area(window, 0, 0, 10, 10) > 0);
 }
 
 #[test]
@@ -334,4 +360,19 @@ fn drag_and_drop() {
         }),
         "inject_drop_event should succeed for valid target widget"
     );
+}
+
+/// The Harmony backend is state-only, so it must not advertise a native menu or
+/// inherit desktop defaults that would overstate its capabilities.
+#[test]
+fn capabilities_are_explicit_and_honest() {
+    let backend = HarmonyPlatform::new();
+    let caps = backend.capabilities();
+
+    assert_eq!(backend.family(), crate::core::PlatformFamily::Desktop);
+    assert!(caps.dpi_scaling, "DPI scaling is tracked from the host");
+    assert!(caps.ime, "IME state is modelled");
+    assert!(caps.accessibility, "a11y metadata is modelled");
+    assert!(!caps.native_menu, "the Harmony menu is an in-process tree, not an OS menu");
+    assert!(caps.typed_widget_trigger, "typed trigger events are supported");
 }

@@ -1,6 +1,6 @@
 use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use super::types::*;
-use crate::core::{MutexExt, PlatformFamily};
+use crate::core::{MutexExt, ObjectId, PlatformFamily};
 
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -15,6 +15,24 @@ impl Platform for HarmonyPlatform {
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
+    }
+
+    /// Capabilities published by the Harmony backend.
+    ///
+    /// The backend is state-driven: widget state, layout, events and menu
+    /// semantics are all modelled in-process, and no ArkUI/window-server object
+    /// is created. The flags therefore describe what the *state model* supports
+    /// rather than a native compositor, and `native_menu` is `false` because the
+    /// menu is an in-process tree served through an injectable queue, not an
+    /// OS menu.
+    fn capabilities(&self) -> crate::platform::types::PlatformCapabilities {
+        crate::platform::types::PlatformCapabilities {
+            dpi_scaling: true,
+            ime: true,
+            accessibility: true,
+            native_menu: false,
+            typed_widget_trigger: true,
+        }
     }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
@@ -421,32 +439,335 @@ impl Platform for HarmonyPlatform {
     }
     fn create_message_box(
         &self,
-        _parent: u64,
-        _title: &str,
-        _text: &str,
+        parent: u64,
+        title: &str,
+        text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> u64 {
-        self.insert_widget(HarmonyHandleKind::MessageBox, _text, x, y, width, height)
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        // HarmomyOS constructs dialogs through the Ability/Window subsystem, so
+        // the logical handle records the title/body the host should present.
+        self.insert_widget(
+            HarmonyHandleKind::MessageBox,
+            &format!("{}: {}", title, text),
+            x,
+            y,
+            width,
+            height,
+        )
     }
-    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::FileDialog, "FileDialog", _x, _y, width, height)
+    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
-    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::ColorDialog, "ColorDialog", _x, _y, width, height)
+    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
-    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::FontDialog, "FontDialog", _x, _y, width, height)
+    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
-    fn create_spin_box(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::SpinBox, "SpinBox", _x, _y, width, height)
+    fn create_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
-    fn create_list_view(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::ListView, "ListView", _x, _y, width, height)
+    fn create_list_view(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ListView, "ListView", x, y, width, height)
     }
-    fn create_scroll_area(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(HarmonyHandleKind::ScrollArea, "ScrollArea", _x, _y, width, height)
+    fn create_scroll_area(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(HarmonyHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
+    }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            HarmonyHandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            HarmonyHandleKind::FontComboBox,
+            "FontComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(HarmonyHandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            HarmonyHandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            HarmonyHandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 }

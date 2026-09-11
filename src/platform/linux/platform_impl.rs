@@ -209,6 +209,110 @@ impl Platform for LinuxPlatform {
     fn create_scroll_area(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         self.create_scroll_area_impl(parent, x, y, width, height)
     }
+    fn create_group_box(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_group_box_impl(parent, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_frame_impl(parent, x, y, width, height)
+    }
+    fn create_tab_widget(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_tab_widget_impl(parent, x, y, width, height)
+    }
+    fn create_splitter(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_splitter_impl(parent, x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_toggle_button_impl(parent, text, x, y, width, height)
+    }
+    fn create_calendar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_calendar_impl(parent, x, y, width, height)
+    }
+    fn create_scroll_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_scroll_bar_impl(parent, x, y, width, height)
+    }
+    fn create_double_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_double_spin_box_impl(parent, x, y, width, height)
+    }
+    fn create_font_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_font_combo_box_impl(parent, x, y, width, height)
+    }
+    fn create_context_menu(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_context_menu_impl(parent, x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_popup_window_impl(parent, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_dialog_impl(parent, title, x, y, width, height)
+    }
+    fn create_input_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_input_dialog_impl(parent, x, y, width, height)
+    }
+    fn create_progress_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_progress_dialog_impl(parent, x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_directory_dialog_impl(parent, title, x, y, width, height)
+    }
+    fn create_date_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_date_picker_impl(parent, x, y, width, height)
+    }
+    fn create_time_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_time_picker_impl(parent, x, y, width, height)
+    }
+    fn create_date_time_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_date_time_picker_impl(parent, x, y, width, height)
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: u64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.create_activity_indicator_impl(parent, x, y, width, height)
+    }
 
     // ── Menu methods ──
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
@@ -310,24 +414,24 @@ impl Platform for LinuxPlatform {
     }
     fn create_message_box(
         &self,
-        _parent: u64,
-        _title: &str,
-        _text: &str,
+        parent: u64,
+        title: &str,
+        text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> u64 {
-        self.create_message_box_impl(_parent, _title, _text, x, y, width, height)
+        self.create_message_box_impl(parent, title, text, x, y, width, height)
     }
-    fn create_file_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.create_file_dialog_impl(_parent, _x, _y, width, height)
+    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_file_dialog_impl(parent, x, y, width, height)
     }
-    fn create_color_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.create_color_dialog_impl(_parent, _x, _y, width, height)
+    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_color_dialog_impl(parent, x, y, width, height)
     }
-    fn create_font_dialog(&self, _parent: u64, _x: i32, _y: i32, width: u32, height: u32) -> u64 {
-        self.create_font_dialog_impl(_parent, _x, _y, width, height)
+    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        self.create_font_dialog_impl(parent, x, y, width, height)
     }
 
     #[cfg(target_os = "linux")]

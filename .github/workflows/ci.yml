@@ -249,3 +249,63 @@ jobs:
             -Zlinker-features \
             -C linker="$(echo $linker)" 2>&1 || \
           echo "INFO: Android NDK cross-compile check skipped (linker may not be available on non-Android CI)"
+
+  # The Windows backend is a large cfg(target_os = "windows") surface that a Linux
+  # dev host cannot run. Cross-checking it here keeps that code compiling and
+  # warning-free even though runtime verification still needs a Windows machine.
+  windows-cross-check:
+    name: Windows backend cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with Windows target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check (windows backend, full desktop surface)
+        run: |
+          cargo check --target x86_64-pc-windows-msvc --no-default-features \
+            --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management"
+
+      - name: Cargo clippy (windows backend, deny warnings)
+        run: |
+          cargo clippy --target x86_64-pc-windows-msvc --no-default-features \
+            --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management" \
+            -- -D warnings
+
+  wayland-compositor:
+    name: Wayland backend against a real compositor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # weston provides a headless compositor; dav1d is the system dependency of
+      # the `image` feature pulled in by `wayland-native`'s test feature set.
+      # Both are available as distro packages on the runner, so the rootless
+      # download-and-patch fallback used on developer machines is not needed.
+      - name: Install weston + dav1d
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq weston libdav1d-dev
+          weston --version
+
+      - name: Verify Wayland backend against a live compositor
+        shell: bash
+        run: |
+          chmod +x tools/run_wayland_compositor_tests.sh
+          # In auto mode the script prefers the system weston installed above.
+          WESTON_MODE=system ./tools/run_wayland_compositor_tests.sh

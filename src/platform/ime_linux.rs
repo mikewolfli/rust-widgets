@@ -21,34 +21,43 @@ use std::sync::Mutex;
 // IBus connection handle (feature-gated).
 // ──────────────────────────────────────────────
 
-/// Real IBus DBus proxy connection.
+/// Real IBus DBus proxy connection plus its input context.
 ///
-/// Connects to the session bus and resolves the IBus service. Once
-/// established, the connection can be used to send IME events to the
-/// IBus engine via the `org.freedesktop.IBus.Engine` interface.
+/// Connects to the session bus, resolves the IBus service, and creates an
+/// `org.freedesktop.IBus.InputContext` on the `org.freedesktop.IBus` interface.
+/// The input context is the object the engine protocol operates on
+/// (`FocusIn`/`FocusOut`/`SetCursorLocation`/`ProcessKeyEvent`), so holding it
+/// is what turns the bridge from a state model into a real IME client.
 #[cfg(feature = "linux-a11y")]
 struct IbusConnection {
     /// Active zbus session connection.
-    #[allow(dead_code)]
     connection: zbus::Connection,
+    /// Object path of the input context owned by this connection.
+    ///
+    /// IBus destroys the context when the owning bus connection drops, which is
+    /// why the connection is held here for the bridge's lifetime.
+    input_context_path: String,
 }
+
+/// IBus input-context interface name.
+#[cfg(feature = "linux-a11y")]
+const IBUS_IC_INTERFACE: &str = "org.freedesktop.IBus.InputContext";
 
 #[cfg(feature = "linux-a11y")]
 impl IbusConnection {
-    /// Attempt to connect to the IBus daemon via DBus.
+    /// Attempt to connect to the IBus daemon and create an input context.
     ///
     /// Uses the `org.freedesktop.IBus` well-known name on the session bus.
-    /// If the IBus daemon is not running or the session bus is unavailable,
-    /// this returns `None` and the bridge falls back to state-machine mode.
+    /// If the IBus daemon is not running, the session bus is unavailable, or
+    /// `CreateInputContext` fails, this returns `None` and the bridge falls
+    /// back to state-machine mode.
     fn try_connect() -> Option<Self> {
         // Connect to the DBus session bus.
         let conn = pollster::block_on(zbus::Connection::session()).ok()?;
 
-        // Check if the IBus daemon is available by resolving its name owner.
-        // The well-known name is `org.freedesktop.IBus`.
-        let reply: String = pollster::block_on(async {
-            // Create a generic proxy to the DBus daemon.
-            let proxy = zbus::Proxy::new(
+        let (owner, context_path): (String, String) = pollster::block_on(async {
+            // Resolve the IBus daemon on the session bus.
+            let dbus = zbus::Proxy::new(
                 &conn,
                 "org.freedesktop.DBus",
                 "/org/freedesktop/DBus",
@@ -56,18 +65,153 @@ impl IbusConnection {
             )
             .await
             .ok()?;
+            // `GetNameOwner` returns a plain string (`s`), not a variant (`v`);
+            // asking for `OwnedValue` fails the signature check and makes the
+            // whole probe silently report "IBus unavailable".
+            let owner: String = dbus.call("GetNameOwner", &("org.freedesktop.IBus",)).await.ok()?;
 
-            // Call GetNameOwner to check if IBus is running.
-            let result: zbus::zvariant::OwnedValue =
-                proxy.call("GetNameOwner", &("org.freedesktop.IBus",)).await.ok()?;
-            String::try_from(result).ok()
+            // Create an input context owned by this connection.
+            let ibus = zbus::Proxy::new(
+                &conn,
+                "org.freedesktop.IBus",
+                "/org/freedesktop/IBus",
+                "org.freedesktop.IBus",
+            )
+            .await
+            .ok()?;
+            let path: zbus::zvariant::OwnedObjectPath =
+                ibus.call("CreateInputContext", &("rust_widgets",)).await.ok()?;
+            Some((owner, path.to_string()))
         })?;
 
-        log::info!("[Linux IME] IBus DBus connection established (owner: {})", reply);
+        log::info!("[Linux IME] IBus connected (owner: {owner}); input context: {context_path}");
 
-        Some(IbusConnection { connection: conn })
+        Some(IbusConnection { connection: conn, input_context_path: context_path })
+    }
+
+    /// Invoke a void method on this connection's input context with no arguments.
+    fn call_input_context_no_args(&self, method: &str) -> bool {
+        let conn = self.connection.clone();
+        let path = self.input_context_path.clone();
+        let method = method.to_string();
+        pollster::block_on(async move {
+            let proxy =
+                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
+                    .await
+                    .ok()?;
+            match proxy.call_method(method.as_str(), &()).await {
+                Ok(_) => Some(()),
+                Err(e) => {
+                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
+                    None
+                }
+            }
+        })
+        .is_some()
+    }
+
+    /// Invoke a void method on this connection's input context with one `u` argument.
+    fn call_input_context_u(&self, method: &str, arg: u32) -> bool {
+        let conn = self.connection.clone();
+        let path = self.input_context_path.clone();
+        let method = method.to_string();
+        pollster::block_on(async move {
+            let proxy =
+                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
+                    .await
+                    .ok()?;
+            match proxy.call_method(method.as_str(), &(arg,)).await {
+                Ok(_) => Some(()),
+                Err(e) => {
+                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
+                    None
+                }
+            }
+        })
+        .is_some()
+    }
+
+    /// Invoke a void method on this connection's input context with four `i` args.
+    fn call_input_context_iiii(&self, method: &str, a: i32, b: i32, c: i32, d: i32) -> bool {
+        let conn = self.connection.clone();
+        let path = self.input_context_path.clone();
+        let method = method.to_string();
+        pollster::block_on(async move {
+            let proxy =
+                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
+                    .await
+                    .ok()?;
+            match proxy.call_method(method.as_str(), &(a, b, c, d)).await {
+                Ok(_) => Some(()),
+                Err(e) => {
+                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
+                    None
+                }
+            }
+        })
+        .is_some()
+    }
+
+    /// Set input capabilities advertised to the engine.
+    ///
+    /// Signature: `SetCapabilities(u)`. `IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS`
+    /// (1 | 4 = 5) tells the engine we can display preedit text and track focus,
+    /// which is what the bridge models.
+    fn set_capabilities(&self, flags: u32) -> bool {
+        self.call_input_context_u("SetCapabilities", flags)
+    }
+
+    /// Notify the engine that focus entered the input context.
+    ///
+    /// Signature: `FocusIn()` — takes no arguments.
+    fn focus_in(&self) -> bool {
+        self.call_input_context_no_args("FocusIn")
+    }
+
+    /// Notify the engine that focus left the input context.
+    ///
+    /// Signature: `FocusOut()` — takes no arguments.
+    fn focus_out(&self) -> bool {
+        self.call_input_context_no_args("FocusOut")
+    }
+
+    /// Tell the engine where the insertion point is (candidate window anchor).
+    ///
+    /// Signature: `SetCursorLocation(iiii)` in screen coordinates.
+    fn set_cursor_location(&self, x: i32, y: i32, w: u32, h: u32) -> bool {
+        self.call_input_context_iiii("SetCursorLocation", x, y, w as i32, h as i32)
+    }
+
+    /// Forward a key event to the engine.
+    ///
+    /// Signature: `ProcessKeyEvent(uuu)` returning `b`. `keyval`/`keycode`
+    /// follow the X11 conventions IBus expects; `state` is the X11 modifier
+    /// mask. Returns `Some(true)` when the engine consumed the event (it is
+    /// composing and will deliver preedit/commit as signals), `Some(false)`
+    /// when it declined and the key should be handled locally, and `None` when
+    /// the call itself failed (engine/connection gone).
+    fn process_key_event(&self, keyval: u32, keycode: u32, state: u32) -> Option<bool> {
+        let conn = self.connection.clone();
+        let path = self.input_context_path.clone();
+        pollster::block_on(async move {
+            let proxy =
+                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
+                    .await
+                    .ok()?;
+            match proxy.call_method("ProcessKeyEvent", &(keyval, keycode, state)).await {
+                Ok(reply) => reply.body().deserialize::<bool>().ok(),
+                Err(e) => {
+                    log::warn!("[Linux IME] IBus ProcessKeyEvent call failed: {e}");
+                    None
+                }
+            }
+        })
     }
 }
+
+/// `IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS`.
+#[cfg(feature = "linux-a11y")]
+const IBUS_CAP_PREEDIT_TEXT_FOCUS: u32 = 1 | 4;
 
 // ──────────────────────────────────────────────
 // Bridge struct
@@ -94,12 +238,11 @@ pub struct LinuxImeBridge {
     // ── Native IBus handle ──
     /// Whether an IBus connection was successfully established (probe result).
     ibus_available: Mutex<bool>,
-    /// Opaque IBus session-bus connection.
+    /// Opaque IBus session-bus connection plus its input context.
     ///
-    /// Held open to keep the daemon session alive after the availability
-    /// probe; the engine protocol is not wired (see module docs).
+    /// Held open for the bridge's lifetime: IBus destroys the input context as
+    /// soon as the owning bus connection drops, so this is also the keep-alive.
     #[cfg(feature = "linux-a11y")]
-    #[allow(dead_code)]
     ibus_connection: Mutex<Option<IbusConnection>>,
 }
 
@@ -159,11 +302,20 @@ impl LinuxImeBridge {
     // ── Native IME interface (exposed for platform event dispatch) ──
 
     /// Set the cursor (insertion-point) rectangle — tells IBus where
-    /// to place the candidate popup. Published as state only; the DBus
-    /// SetCursorLocation call is part of the unwired engine protocol.
+    /// to place the candidate popup.
+    ///
+    /// Forwards to `SetCursorLocation` on the IBus input context when IBus is
+    /// connected, and always records the rectangle locally so candidate
+    /// placement works without a daemon too.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}");
         *self.cursor_rect.lock().unwrap() = (x, y, w, h);
+        #[cfg(feature = "linux-a11y")]
+        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+            if !conn.set_cursor_location(x, y, w, h) {
+                log::warn!("[Linux IME] SetCursorLocation failed (engine may be gone)");
+            }
+        }
     }
 
     /// Process a raw key event through the IBus IME subsystem.
@@ -180,9 +332,23 @@ impl LinuxImeBridge {
             "[Linux IME] process_key_event: key={key_code}, mods={modifiers:#x}, pressed={pressed}",
         );
 
-        // When IBus is active, key events are forwarded via DBus to the
-        // input-method engine.  In state-machine mode, simulate a simple
-        // passthrough for printable characters.
+        // Forward to the engine first: IBus decides whether the key is consumed
+        // for composition or passed through, and delivers preedit/commit back
+        // through signals. Only when no engine consumed the key do we fall back
+        // to the local printable-ASCII passthrough.
+        #[cfg(feature = "linux-a11y")]
+        if pressed {
+            let consumed = {
+                let guard = self.ibus_connection.lock().unwrap();
+                guard
+                    .as_ref()
+                    .and_then(|conn| conn.process_key_event(key_code, key_code, modifiers))
+            };
+            if consumed == Some(true) {
+                // The engine owns the decision; preedit/commit arrive as signals.
+                return None;
+            }
+        }
 
         if self.has_marked_text() {
             // During composition, IBus consumes all key events.
@@ -264,6 +430,15 @@ impl ImeBridge for LinuxImeBridge {
         *self.focused_widget.lock().unwrap() = Some(widget_id);
         *self.active.lock().unwrap() = true;
         log::info!("[Linux IME] focus_in: widget={widget_id}");
+        // Announce capabilities once per connection, then focus the engine so it
+        // starts composing into this context.
+        #[cfg(feature = "linux-a11y")]
+        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+            conn.set_capabilities(IBUS_CAP_PREEDIT_TEXT_FOCUS);
+            if !conn.focus_in() {
+                log::warn!("[Linux IME] IBus FocusIn failed (engine may be gone)");
+            }
+        }
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
@@ -271,6 +446,12 @@ impl ImeBridge for LinuxImeBridge {
         *self.active.lock().unwrap() = false;
         self.clear_composition();
         log::info!("[Linux IME] focus_out: widget={widget_id}");
+        #[cfg(feature = "linux-a11y")]
+        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+            if !conn.focus_out() {
+                log::warn!("[Linux IME] IBus FocusOut failed (engine may be gone)");
+            }
+        }
     }
 
     fn commit_text(&self, text: &str) {
@@ -455,9 +636,73 @@ mod tests {
     }
 
     #[test]
-    fn test_ibus_not_available_in_test() {
-        // Without `linux-a11y` feature, IBus should be unavailable.
+    fn test_ibus_availability_matches_feature() {
+        // Without `linux-a11y` there is no DBus probe, so IBus must be reported
+        // unavailable. With the feature the result depends on whether a session
+        // bus and IBus daemon are reachable, so assert the consistency of the
+        // reported flag with the feature gate rather than a fixed value.
         let bridge = LinuxImeBridge::new();
-        assert!(!*bridge.ibus_available.lock().unwrap());
+        #[cfg(not(feature = "linux-a11y"))]
+        assert!(!bridge.is_ibus_available(), "no linux-a11y feature => no IBus probe");
+        #[cfg(feature = "linux-a11y")]
+        {
+            // `is_ibus_available` reflects whether an input context was created;
+            // the call must not panic regardless of the host environment.
+            let _ = bridge.is_ibus_available();
+        }
+    }
+
+    /// End-to-end check against a real IBus daemon.
+    ///
+    /// Runs only when `linux-a11y` is on and an IBus service owns
+    /// `org.freedesktop.IBus` on the session bus. It asserts the bridge created
+    /// an input context and that every engine-protocol call
+    /// (`SetCapabilities`, `FocusIn`, `SetCursorLocation`, `ProcessKeyEvent`,
+    /// `FocusOut`) is accepted by the daemon with its real D-Bus signature.
+    ///
+    /// Note on `ProcessKeyEvent`: the default `keyboard-us` engine *declines*
+    /// plain ASCII (returns `false`) and only consumes keys while composing, so
+    /// the test asserts the call is accepted rather than that it was consumed.
+    #[cfg(feature = "linux-a11y")]
+    #[test]
+    fn test_real_ibus_input_context_when_daemon_present() {
+        let bridge = LinuxImeBridge::new();
+        if !bridge.is_ibus_available() {
+            // No IBus on this host/CI runner: nothing to verify, and silently
+            // passing would overstate coverage, so say so explicitly.
+            eprintln!("skipped: no IBus daemon on the session bus");
+            return;
+        }
+
+        let context_path = {
+            let guard = bridge.ibus_connection.lock().unwrap();
+            guard.as_ref().expect("available implies a connection").input_context_path.clone()
+        };
+        assert!(
+            context_path.starts_with("/org/freedesktop/IBus/InputContext_"),
+            "unexpected input-context path: {context_path}"
+        );
+
+        // Every engine call must be accepted by the daemon.
+        {
+            let guard = bridge.ibus_connection.lock().unwrap();
+            let conn = guard.as_ref().unwrap();
+            assert!(conn.set_capabilities(IBUS_CAP_PREEDIT_TEXT_FOCUS), "SetCapabilities");
+            assert!(conn.focus_in(), "FocusIn");
+            assert!(conn.set_cursor_location(10, 20, 100, 30), "SetCursorLocation");
+            assert!(
+                conn.process_key_event('a' as u32, 38, 0).is_some(),
+                "ProcessKeyEvent must reach the engine"
+            );
+            assert!(conn.focus_out(), "FocusOut");
+        }
+
+        // The bridge-level path must also reach the engine (no silent fallback
+        // to the local state machine while an engine is attached).
+        bridge.focus_in(1);
+        assert!(bridge.is_active(), "focus_in must mark the session active");
+        bridge.set_cursor_rect(10, 20, 100, 30);
+        bridge.focus_out(1);
+        assert!(!bridge.is_active(), "focus_out must clear active state");
     }
 }

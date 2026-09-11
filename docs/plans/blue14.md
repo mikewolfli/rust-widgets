@@ -1,0 +1,245 @@
+# BLUE14 — 平台相关未完成项清单（Linux / Android / Harmony / WASM / Wayland）
+
+> 版本: v0.14.0
+> 基线: 继承 BLUE13 全部核心规则 + Rust 原生设计原则
+> 编制日期: 2026-09-11
+> 文档性质: `docs/log/log-20260909-1.md` 平台相关部分的**未完成项单一事实清单**
+> 关联记录: `docs/log/log-20260909-1.md`（已完成证据）、`docs/plans/FUTURE.md`（长期受限项）
+> 原则依据: `docs/plans/principle.md`（规则 #1/#12/#16/#18/#25/#26）
+
+---
+
+## 核心规则（继承 BLUE13 全部）
+
+1. 结论必须有构建/测试/代码证据，不允许"推测已修复"。
+2. 修一个点必须扫同类模式，避免重复返工。
+3. 优先修功能阻断项，再做体验增强。
+4. 平台策略不变：原生优先，自绘兜底。
+5. 不允许占位、空函数、逻辑错误，log/debug 占位 — 所有功能必须完整实现。
+6. 注释英文 — 所有新增模块的代码注释必须使用英文。
+7. 回写完成率 — 每轮完成后回写完成率。
+8. mod.rs 文件只放接口导入等。
+9. 单个代码文件少于 2000 行的无需拆分，除非有结构重组需要的 — 这条优先于更改计划。
+10. 最后清理所有 warnings + errors。
+11. 所有 test - fail, ignore 必须完整修复，不准跳过或删除，除非测试目标已删除。
+12. **🚫 绝对禁止假修复** — 修复必须产生可观测、可验证的行为变化。
+13. **🚫 绝对禁止不完整修复** — 每条修复必须完整闭环。
+14. **🚫 绝对禁止空修复** — 禁止占位行为。
+15. **🚫 绝对禁止跳过测试** — 测试修复的硬性要求。
+16. **🔍 每条修复必须附带验证证据** — cargo test / clippy / 运行时日志。
+17. **🚫 绝对禁止"迁移幻觉"** — 子模块代码被实际调用，旧代码被删除。
+18. **🚫 绝对禁止"文档欺骗"** — 文档与代码必须一致。
+19. **🔬 BLUE11 自检规则：每条声称的修复必须独立验证。**
+20. **🆕 移动端优先** — 新增控件必须同时考虑 desktop/tablet/mobile 三端适配。
+21. **🆕 向前兼容** — 不破坏现有 API 签名，通过 feature-gate 或新增模块引入。
+22. **🆕 WidgetKind 零孤儿原则** — 每个 WidgetKind 变体必须有对应实现或 type alias。
+23. **🆕 零重复变体原则** — 无语义重复或大小写重复的变体。
+24. **🆕 基础设施先于控件** — 缺失基础设施优先于新增控件。
+25. **🆕 FFI 接线完整性** — native FFI 必须在 platform_impl 中实际调用。
+26. **🆕 IME 真实现原则** — IME 必须是真实 OS API 调用，不允许 log 占位。
+27. **🆕 WidgetKind→Module 映射可审计** — 每个变体可追溯到唯一模块文件路径。
+28. **🦀 零成本抽象优先** — 能用 Rust enum / trait / 泛型解决的问题，不用运行时动态分发。
+29. **🦀 编译期安全检查** — 样式、布局、事件路由尽量在编译期通过类型系统约束。
+30. **🦀 所有权驱动内存** — 使用 `Box`/`Rc`/`Arc`/`heapless`，不用手动 malloc/free。
+31. **🦀 enum 数据布局** — 用 Rust `enum` + 模式匹配表达多态，零开销且类型安全。
+32. **🦀 Builder 模式替代 varargs** — 不用 C 的 varargs 风格函数簇。
+33. **🦀 Trait 替代回调函数指针** — 用 `EventHandler` trait + `match event`。
+34. **🦀 编译期样式检查** — setter 返回 `Result<_, StyleError>`，测试中验证。
+
+### BLUE14 新增规则
+
+35. **🆕 未完成项必须标注卡点类型** — 所有未完成项必须区分「外部环境依赖」与「本机可做的真实缺口」，不得混为一谈。
+36. **🆕 外部环境依赖不得计入完成率分母** — 但必须在本文档与 `FUTURE.md` 中同时登记。
+37. **🆕 环境阻断必须给出可复现的前置条件** — 若为解除环境阻断引入了本机安装（如 `~/.local` 下的依赖），必须写明复现所需的 `PATH`/`PKG_CONFIG_PATH`。
+38. **🆕 覆盖必须可见** — 「测试被 `#[cfg(target_os)]` 档在构建之外」不等于「测试跳过」：前者是**零覆盖且无任何提示**。审计必须区分「测试失败」「测试 ignore」「测试不在构建中」三者；后者必须登记为缺口（2026-09-11 第 7 轮新增，`ime_windows` 15 例 / `windows_notify` 11 例）。
+39. **🆕 生成文档不得手写镜像代码事实** — 能力矩阵/路由矩阵等的「降级说明」若描述代码行为，必须由**机械解析源码**生成，并配「重新生成后与落盘文档 diff」的门禁；手写镜像会脱节（2026-09-11 第 7 轮实证）。
+
+---
+
+## 一、统计口径
+
+**`docs/log/log-20260909-1.md` 本轮平台部分 todo 完成率：26/26。**
+
+其中：
+- **26 项已完成**（Linux / Android / Harmony / WASM / Wayland / 跨平台门禁）。
+- **1 项未计入分母**：Windows OLE 拖放 + IME TSF（按用户明确要求留待 Windows 机器执行）。
+- **9 项未完成**：其中 **3 项为外部环境依赖**，**6 项已闭环/落实**（#10 Android CI；#7 Wayland 合成器；#4 Android 真机 arm64；#5 Android FileDialog；#6 AndroidX Toolbar 定性；#3 Windows 三控件原生化（代码+编译验证完成），均 2026-09-11）。
+
+未完成项按性质分三类：
+
+| 类别 | 数量 | 含义 |
+|---|---|---|
+| A. 外部环境依赖 | 3 | 本机确实缺少运行环境；**未伪装为已闭环** |
+| B. 本机可做但未做 | 0（原 1） | 原唯一项（Android CI 作业）已于 2026-09-11 闭环 |
+| C. 原判为环境阻断、后证实可闭环 | 0（原 3） | Wayland 合成器（免 root headless weston）；Android 真机 arm64（用户提供实体机）；Windows 三控件（代码+编译可本机完成，仅运行待 Windows） |
+| D. **审计新发现的本机可做缺口**（2026-09-11 第 7 轮） | **5**（**全部已闭环**） | 见 §三之二。此前被「零缺口」判定遗漏，经第 7 轮审计证实并修复 |
+
+> 另：#5 的 `ColorDialog`/`FontDialog` **不算未做**——Android 平台确实没有系统级颜色/字体选择器，保持 logical-only 是正确行为（平台事实，非缺口）。
+
+> **第 7 轮审计更正（2026-09-11）**：§一 此前的「本机可做项已全部归零」结论**不完整**。
+> 经全项目审计（不采信文档标注，一律 grep + 读源码 + 编译取证），发现 **5 个本机可做的真实缺口**
+> （其中 1 个是 GTK 真实 panic 路径），**均已在本轮闭环**。详见 §三之二。
+
+---
+
+## 二、A 类 — 需要外部环境（本机确实做不到，未伪装为已完成）
+
+| # | 项目 | 卡点 | 现状 | 出处 |
+|---|---|---|---|---|
+| 1 | **Harmony ArkUI 原生桥** | 本机无 OpenHarmony SDK（N-API/ArkUI 头文件） | 只有 state 后端 + `aarch64-unknown-linux-ohos` 编译验证（0 warning，12 host tests pass）；能力契约已诚实化（`native_menu: false`） | `FUTURE.md` ITEM 2、`src/platform/harmony/status.md` |
+| 2 | **Windows OLE 拖放 + IME TSF** | 需真实 Win32/COM 运行验证 | 按用户要求留待 Windows 机器。Windows 原生对话框（`MessageBoxW`/`GetOpenFileNameW`/`ChooseColorW`/`ChooseFontW`）已完成；**新增 CI 交叉检查作业 `windows-cross-check`**（`x86_64-pc-windows-msvc` 全 desktop feature `cargo check` + clippy `-D warnings`，本机已复现通过） | `FUTURE.md` P2-2（未勾选） |
+| 3 | ✅ **Windows SpinBox/ListView/ScrollArea 原生化**（2026-09-11 代码完成，编译已验） | 原为 state-backed；现已实现真实 Win32 对象：`msctls_updown32` / `SysListView32`（report + 列 + `LVS_EX_FULLROWSELECT`）/ `WS_HSCROLL\|WS_VSCROLL` 子窗口 + 初始滚动范围 | **编译验证完成**：`x86_64-pc-windows-msvc` 与 `x86_64-pc-windows-gnullvm` 全 feature 0 warning，clippy `-D warnings` 通过，Windows-only 测试模块对目标类型检查通过；**运行验证待 Windows 机器**（本机无 Windows、无 Wine、无 MSVC/mingw C 工具链） | `src/platform/windows/helpers.rs`、`FUTURE.md` ITEM 2b |
+| 4 | **iOS 模拟器/真机视图行为** | 无 Apple 运行环境 | UIKit bridge + push/pop view controller 已接线，目标编译 0 warning；iOS state 后端测试通过（含 6 项 `platform::ios::platform_impl` 单测 + 共用平台测试），但从未在设备上运行 | `FUTURE.md` ITEM 4 |
+| 5 | **macOS AppKit 交互** | 无 macOS 运行环境 | objc2 dialog/menu/native view ownership 已接线，`cocoa-legacy` dialog 路由已补；`macos` feature 下编译 0 warning，objc2 测试通过 | `FUTURE.md` ITEM 5 |
+
+> 备注：**A 类合计 4 个条目、对应 3 个平台/领域类别**（Windows #2 与 Windows 运行验证归一类）。
+>
+> 说明：#3（Windows 三控件原生化）已从 A 类移出——代码完成、编译验证完成，仅剩运行验证，已单列于 `FUTURE.md` ITEM 2b。
+>
+> 已于 2026-09-11 移出本表并闭环/定性：
+> - **原 A 类 #7 Wayland 合成器交互** → 免 root headless weston 可闭环（§六）。
+> - **原 A 类 #4 Android 真机 arm64 运行** → 用户提供实体机，真机 `RESULT: PASS`（证据见 `docs/log/log-20260911-1.md` 附录）。
+> - **原 A 类 #5 Android FileDialog** → 已真实启动 `ACTION_OPEN_DOCUMENT`；ColorDialog/FontDialog 为平台事实，不算缺口。
+> - **原 A 类 #6 AndroidX Toolbar** → 由「推测」升级为真机实测的确定性约束（`R$attr` 等资源需 AAR 资源合并），有意不捆绑。
+
+---
+
+## 三、B 类 — 本机可做但未做（无环境阻断）
+
+| # | 项目 | 说明 | 优先级 |
+|---|---|---|---|
+| 10 | ✅ **Android CI 作业**（2026-09-11 完成） | 已交付 `.github/workflows/android.yml`：`jni-bindings`（双 ABI 构建+签名+JNI 签名/导出符号门禁+产物上传）与 `emulator-e2e`（API 34 x86_64 + KVM + `RESULT: PASS`）。CI 复用本机已验证脚本，并已按 CI 相同命令在本机逐条实跑取证（见 `docs/log/log-20260911-1.md`） | P1 |
+
+> B 类已归零。剔除外部环境依赖后的本机可做项完成率：1/1 = 100%。
+
+---
+
+## 三之二、D 类 — 第 7 轮审计新发现的真实缺口（全部**已闭环**，2026-09-11）
+
+> 本节是 §一 「本机可做项已全部归零」的**事实更正**。以下 5 项均为**本机可做、且无环境阻断**，
+> 但在此前各轮中被遗漏。每项均已修复并附可观测证据；证据全文见 `docs/log/log-20260911-1.md` 第 7 轮。
+
+| # | 项目 | 卡点类型 | 修复前的事实（可验证） | 闭环证据 |
+|---|---|---|---|---|
+| D-1 | **`ime_windows` 的 15 个测试从未编译、从未运行** | 本机可做（覆盖可见性） | `src/platform/mod.rs` 的模块级 `#[cfg(target_os = "windows")]` 使整个模块（含 `#[cfg(test)] mod tests`）**不在主机构建中**；且 `cargo check --tests --target *-windows-*` 本机先被 `cc-rs: lib.exe not found` 中断 ⇒ 这些测试在**任何可达路径上都不执行**。测试本身是**纯状态机逻辑**，不碰 HWND/COM | 解除模块级门控（TSF 部分本就内部 gated，行为不变）；`cargo test ime_windows` → **15 passed** |
+| D-2 | **Windows 通知码映射（纯逻辑）困在 `target_os` 之后** | 本机可做（覆盖可见性） | `src/platform/windows/notify.rs` **每个函数**都被 `#[cfg(target_os = "windows")]` 包裹，其测试与 `WindowsHandleKind`（纯数据枚举）同处 gated 模块，主机上**零执行** | 新建无门控的 `src/platform/windows_notify.rs`（**移动**而非拷贝，Windows 后端改为转调，公共 API 不变）；`cargo test windows_notify` → **11 passed** |
+| D-3 | **`windows/tests.rs` 存在「永不执行的主机回退分支」** | 本机可做（假覆盖） | 该文件写了 `else { assert_eq!(..., None) }` 主机回退断言，但整个测试模块被与 `WindowsPlatform` 同为 Windows-only 的模块门控 ⇒ 该分支**永不执行**，形成假覆盖 | 修复后语义诚实：需真实 `WindowsPlatform` 的测试显式 `#[cfg(target_os = "windows")]`，纯逻辑测试已在 D-2 的共享模块中于主机真实执行 |
+| D-4 | **`DatePicker`/`TimePicker`/`DateTimePicker` 的原生实现「已接线但从不被调用」** | 本机可做（规则 #25 FFI 接线完整性） | `src/control_backend/native.rs` 三者原样转调 `create_panel`（正是 🔶「降级为其它原语」）；但平台层**早已有真实实现**：Linux（`create_*_picker_impl`：`gtk::MenuButton`+`Popover`+`Calendar`、双 `SpinButton`）与 Windows（`SysDateTimePick32`）。同类 `Calendar` 早已改专用调用，三者被遗漏 ⇒ **既有原生代码成为死代码** | `native.rs` 三处改为转调各自平台方法；11 个后端**全部**实现三个 trait 方法且无一降级到 `Panel`；机械解析调用图确认指向已变（见 D-5） |
+| D-5 | **能力矩阵「降级说明」手写镜像已与代码脱节（文档欺骗，规则 #18）** | 本机可做（文档真实性） | `tools/generate_platform_capability_matrix.py` 的 `DEGRADATION_NOTES` 是**手打字符串**（注释自称 mirror of `native.rs`），**无任何校验**。实测已脱节：`GroupBox`/`TabWidget`/`Splitter`/`Calendar`/`FontComboBox`/`Dialog`/`DirectoryDialog`/`ContextMenu`/`PopupWindow` 早已专用化，却仍被列为降级 | 改为**机械解析** `native.rs` 调用图（自委派=专用实现自动排除）+ 按真实 `WidgetKind` 过滤去重；**新增防脱节门禁**（重新生成后 diff），并以**追加漂移标记使门禁如期失败**做负向验证 |
+| D-6 | **GTK 剪贴板的真实 panic 路径** | 本机可做（真实缺陷，非环境） | `src/platform/linux/widget_state.rs` 的 `gtk_clipboard()` 直调 `gdk::Display::default()`；文档注释声称 headless 返回 `None`，实则在**非主线程上 panic**（`GDK may only be used from the main thread`），任何非 GTK 线程读写剪贴板都会**中止进程**。`git checkout` 还原后失败依旧复现 ⇒ **既有缺陷** | 加 `gtk::is_initialized_main_thread()` 守卫，落到既有逻辑镜像回退。非主线程套件由 **1 failed → 2478 passed / 0 failed**；真实 X display(`:0`) 下注入 `assert!(is_initialized_main_thread())` 证明主线程路径**仍被执行**（未被守卫误伤） |
+
+> **新增规则 #38/#39 由此三类事实推出**：①「测试不在构建中」必须与「测试失败/ignore」区分登记；
+> ②描述代码事实的生成文档必须机械派生并配门禁。
+
+### D 类闭环后的测试增量归因
+
+`cargo test --lib --features desktop`：**3793 → 3819**（+26）。
+
+增量**全部**来自「既有测试从**从不执行**变为**真实执行**」：
+
+| 来源 | 增量 | 性质 |
+|---|---|---|
+| `platform::ime_windows::tests`（D-1） | +15 | 原「不在构建中」→ 现主机执行 |
+| `platform::windows_notify::tests`（D-2） | +11 | 原「不在构建中」→ 现主机执行 |
+| 新增断言 | 0 | **未**通过灌水断言数量凑数 |
+
+---
+
+## 四、长期受限项（`FUTURE.md` 登记，非本轮新增）
+
+| ITEM | 项目 | 说明 |
+|---|---|---|
+| ITEM 0 | Hybrid per-control 编译期路由闭合 | 需要稳定的 per-control 能力表 + 全 profile 编期路由校验 |
+| ITEM 1 | 无 `gtk-native` 时的 Linux 完整原生对等 | 当前是 state/preview 循环。本轮已让 `gtk-native` 路径**完整验证**，但非 GTK 路径的原生对等仍未解决 |
+| ITEM 2 | Harmony 桌面原生窗口/渲染/事件循环 | 同 A 类 #1 |
+| ITEM 4 | iOS mobile backend 实现 | 同 A 类 #8 |
+| ITEM 5 | macOS objc2 preview backend 毕业 | 同 A 类 #9 |
+| ITEM 6 | 跨平台全控件对等矩阵闭合 | 部分控件在至少一个后端仍走 trait 默认兜底语义，需逐后端补齐 `create_*` 或显式声明「不支持」。**2026-09-11 第 7 轮更新**：`DatePicker`/`TimePicker`/`DateTimePicker` 已不再转调 `create_panel`（改为调用早已存在的原生实现）；矩阵降级表已改为机械派生 + 防脱节门禁 |
+| ITEM 7 | **主机不可见测试覆盖**（被 `#[cfg(target_os)]` 挡在构建外） | **2026-09-11 第 7 轮新增**。已修 `ime_windows`(15) 与 `windows_notify`(11)；**仍开放**：`ime_macos`(19)、`macos_objc2`(17)、`ios`(6)、`android`(10)、`macos`(4)、`accessibility/windows`(2)、`control_backend/routing`(2) |
+
+---
+
+## 五、环境前置（不是代码缺陷，但影响复现）
+
+按规则 #37 登记：
+
+- 本机 `/usr/lib` 只有 dav1d **运行时**库、无开发包，且无免密 sudo。
+- 本轮用 `pip install --user meson ninja` + 从源码构建 dav1d 1.5.0 安装到 `~/.local`，解除了 `image` / `desktop` 的构建阻断。
+- **新 shell 中构建含 `image` 的配置需要**：
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig"
+  ```
+- 构建命令（`-Denable_asm=false`，因本机无 `nasm`）：
+  ```bash
+  meson setup build --prefix="$HOME/.local" --buildtype=release \
+    -Denable_tools=false -Denable_tests=false -Denable_examples=false -Denable_asm=false
+  ninja -C build && meson install -C build
+  ```
+- **更干净的长期方案**：系统级安装 `libdav1d-dev`。
+- **Wayland 合成器（2026-09-11 新增）**：本机无合成器二进制且无免密 sudo，但 `apt-get download` 不需要 root。复现脚本 `tools/run_wayland_compositor_tests.sh` 自包含完成：下载 weston 13.0.0 + libweston → 解包到 `~/.local/opt/weston-extract` → 将 libweston 中编译期硬编码的模块目录（`/usr/lib/x86_64-linux-gnu/libweston-13`、`/usr/lib/x86_64-linux-gnu/weston`）**原位补丁**为 `~/.local/lib/wlmods`（后者严格更短，故不改动二进制布局与任何偏移）→ 以 `headless-backend.so + kiosk-shell.so` 启真实合成器。
+  - **依赖**：`apt-get` 可达镜像、`python3`、`cargo`；无需 root、无需图形会话、无需 `libweston-13-0` 系统包。
+  - **一次性运行**：`bash tools/run_wayland_compositor_tests.sh`（构建含 `image` 的配置时需先设 dav1d 的 `PATH`/`PKG_CONFIG_PATH`）。
+  - **更干净的长期方案**：系统级安装 `weston`（有 sudo 时）。
+
+---
+
+## 六、本轮已完成（作为对照基线，证据见日志）
+
+Linux、Android、Wayland 三块在本机能力范围内**已全部闭环**：
+
+| 平台 | 已完成内容 |
+|---|---|
+| **Linux** | GTK dialog/chooser（`MessageDialog`/`FileChooserDialog`/`ColorChooserDialog`/`FontChooserDialog`）、GTK/GDK 剪贴板（含 `store()`）、AT-SPI a11y 名称转发、**IBus 引擎协议**（真实输入上下文 + 五个引擎调用，本机守护进程实测，修正 3 个导致静默失败的缺陷）、`set_widget_text` 子类 downcast 顺序缺陷、menu bar 几何/父级记录、**完整 `desktop` 回归（3787 passed / 0 failed / 0 ignored）** |
+| **Android** | JNI 视图工厂 `create_native_view`（12 种 `AndroidViewClass`）+ setter 转发、`MessageBox` 原生 `AlertDialog`、**`FileDialog` 真实 `ACTION_OPEN_DOCUMENT`**、`jni_available()` 修正、menu kind 校验、runtime 后端选择、`bindings` 门禁放开、logcat 日志后端、JNI 签名门禁 + 映射审计产物、NDK 交叉编译、无 Gradle APK 构建链、模拟器 E2E + **真机（arm64，Xiaomi M2102J2SC / Android 13）E2E `RESULT: PASS`** |
+| **Harmony** | 能力契约去过度声明（`native_menu: false`）、`aarch64-unknown-linux-ohos` 目标编译验证、`status.md` |
+| **Wayland** | fd 阻塞事件循环（`poll` on compositor socket）+ 退出延迟回归测试；**2026-09-11 新增**：无 root 下跑起真实 headless weston（`tools/run_wayland_compositor_tests.sh`，`system`/`rootless`/`auto` 三模式）+ 真实绑定测试（`native_session_binds_live_compositor`，实测 `wl_compositor=yes xdg_wm_base=yes`）+ **CI 作业 `wayland-compositor`**（apt 装 weston/dav1d 后以 system 模式跑） |
+| **WASM** | menu 树 parent-child 边记录 + shortcut 保留 |
+| **跨平台** | `runtime.rs` Android/Harmony 分支 + `Platform::mobile_extension()`、C ABI 生命周期测试、JNI 门禁多 ABI 化、JNI 映射审计产物 |
+| **第 7 轮审计修复**（2026-09-11） | ① `ime_windows` 15 测试由「不在构建中」→ 真实执行（`src/platform/mod.rs`）；② Windows 通知码映射抽到无门控的 `src/platform/windows_notify.rs`（11 测试主机可跑，Windows 后端改为转调）；③ `windows/tests.rs` 移除永不执行的主机回退分支；④ `DatePicker`/`TimePicker`/`DateTimePicker` 改为调用早已存在的原生实现（原转调 `create_panel`，使原生代码成死代码）；⑤ 能力矩阵降级表改为**机械解析** `native.rs` + 新增防脱节门禁；⑥ **GTK 剪贴板真实 panic 路径**加 `is_initialized_main_thread()` 守卫 |
+
+---
+
+## 七、验证现状
+
+最近一次全量验证（2026-09-11，**第 7 轮后重跑**）：
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test --lib --features desktop` | **3819 passed**, 0 failed, 0 ignored（较第 7 轮前 +26，见 §三之二） |
+| `cargo test --all-features`（CI 实际命令） | **全 0 failed** |
+| 全平台 feature（含 `gtk-native` + `image`） | **2478 passed**, 0 failed, 0 ignored（修复前为 1 failed — 见 D-6） |
+| `platform::ime_windows::tests`（D-1） | **15 passed**（修复前：0 — 不在构建中） |
+| `platform::windows_notify::tests`（D-2） | **11 passed**（修复前：0 — 不在构建中） |
+| harmony / wayland-native 特性套件 | 各 **2246 passed**, 0 failed |
+| GTK / a11y / IBus / harmony / wayland / android_jni / bindings | 1 / 17 / 15 / 12 / 12 / 10 / 4 — 全通过 |
+| Wayland（有真实 headless 合成器） | **14 passed, 0 failed**（含“必须真绑定”与“无合成器必须降级”双向断言） |
+| Wayland（无合成器，反向对照） | 1 passed（`native_session` 必为空） |
+| Wayland CI 作业（`ci.yml::wayland-compositor`，system 模式） | 本机模拟实跑：14 passed + 负向对照 1 passed |
+| clippy（desktop；Windows 目标全 feature `-D warnings`） | 0 warnings |
+| target check — msvc / gnullvm / OHOS / wasm32 / Android / iOS（6 目标） | **全部 err=0 warn=0** |
+| Android 模拟器 E2E（双 ABI 已构建） | `RESULT: PASS` |
+| **Android 真机 E2E（arm64：Xiaomi M2102J2SC / Android 13）** | **`RESULT: PASS`**，零 `AndroidRuntime` 错误 |
+| **Android FileDialog 真机** | 真实启动 `com.android.documentsui` 选择器（`Displayed … +258ms`） |
+| JNI 签名门禁（含新增 FileDialog 导出） | 56/56 + 17/17；两 ABI 各 73 个导出符号 |
+| 5 道 QA 门禁（含**新增的矩阵防脱节检查**，负向验证过） + `cargo fmt --check` + `git diff --check` | 全部通过 |
+| Windows 三控件原生化 + Date/Time/DateTimePicker 接线 | 编译验证通过；**运行验证待 Windows 机器**（本机无 Windows/Wine） |
+
+> **方法学声明（规则 #38）**：本轮验证额外区分了三类「未通过/未覆盖」状态——
+> ①测试 FAILED；②测试 `ignored`；③测试**根本不在构建中**（`#[cfg(target_os)]` 挡在外的零覆盖）。
+> D-1/D-2 属③，此前无任何机制提示，现已修复为可执行。（本仓库无 `ignore`，① 已归零。）
+
+---
+
+## 八、结论
+
+- **Linux、Android、Wayland 在本机能力范围内已全部闭环**，证据见 `docs/log/log-20260909-1.md` 与 `docs/log/log-20260911-1.md`。
+- **B 类（#10 Android CI 作业）已于 2026-09-11 闭环**。
+- **原 A 类 #7（Wayland 合成器交互运行）已于 2026-09-11 闭环**：证实「无合成器」并非不可解除的环境阻断。
+- **原 A 类 #4/#5/#6（Android）已于 2026-09-11 闭环/定性**：用户提供实体 arm64 真机后，#4 真机 `RESULT: PASS`；#5 FileDialog 真实启动系统选择器；#6 Toolbar 由推测升级为真机实测的确定性约束。
+- **原 A 类 #3（Windows 三控件原生化）已于 2026-09-11 完成代码 + 编译验证**（真实 `msctls_updown32` / `SysListView32` / 滚动子窗口），并纳入 CI 交叉检查；**运行验证待 Windows 机器**。
+- **第 7 轮审计更正：原「本机可做项已全部归零」结论不完整。** 全项目审计后发现 **5 个本机可做的真实缺口**（D-1~D-6，见 §三之二）——包括 **26 个被 `#[cfg(target_os)]` 挡在构建之外、从未执行的测试**，一个**已接线但从不被调用**的原生实现（Date/Time/DateTimePicker），以及一条 **GTK 剪贴板的真实 panic 路径**。**均已在本轮闭环**，`--features desktop` 由 3793 → **3819 passed / 0 failed**。
+- **新增规则 #38（覆盖必须可见）与 #39（生成文档不得手写镜像代码事实）**由本轮事实推出，并已加入 §核心规则。
+- 剩余未完成项：**3 类**（Windows OLE/IME + Windows 运行验证 / Harmony SDK / Apple），**均未伪装为已闭环**。
+- 所有外部环境依赖项**均未伪装为已闭环**，均在 `FUTURE.md` 与各平台 `status.md` 中如实登记（遵守规则 #18）。
+- **诚实边界**：D-1~D-3 的意义是「覆盖变为可见」，**不等于** Windows 运行时行为已在 Windows 上验证；Windows 运行验证仍待 Windows 机器，本机无 Windows / Wine / MSVC·mingw C 工具链（`--tests` 交叉编译被 `lib.exe` 阻断，已如实记录）。

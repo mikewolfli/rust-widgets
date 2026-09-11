@@ -523,4 +523,52 @@ mod tests {
             );
         }
     }
+
+    /// End-to-end guard for the 2026-09-11 routing change: kinds whose native
+    /// path silently degrades to a different control must resolve to the custom
+    /// backend at create time, otherwise creating e.g. a `DatePicker` would
+    /// return a `Panel` with no date functionality.
+    #[cfg(all(
+        feature = "controls-native",
+        feature = "controls-custom",
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
+    #[test]
+    fn native_degraded_kinds_resolve_to_custom_backend() {
+        let degraded = [
+            WidgetKind::DatePicker,
+            WidgetKind::TimePicker,
+            WidgetKind::DateTimePicker,
+            WidgetKind::Calendar,
+            WidgetKind::ActivityIndicator,
+            WidgetKind::Dial,
+            WidgetKind::LCDNumber,
+            WidgetKind::FontComboBox,
+            WidgetKind::DoubleSpinBox,
+            WidgetKind::ToggleButton,
+            WidgetKind::ScrollBar,
+            WidgetKind::ScrollArea,
+            WidgetKind::TabWidget,
+            WidgetKind::Splitter,
+            WidgetKind::GroupBox,
+            WidgetKind::Frame,
+            WidgetKind::ContextMenu,
+            WidgetKind::MenuItem,
+            WidgetKind::DirectoryDialog,
+            WidgetKind::Dialog,
+            WidgetKind::InputDialog,
+            WidgetKind::ProgressDialog,
+            WidgetKind::PopupWindow,
+        ];
+        for kind in &degraded {
+            let backend = get_control_backend_for_widget(*kind);
+            assert_eq!(
+                backend.kind(),
+                crate::control_backend::types::ControlBackendKind::Custom,
+                "WidgetKind::{:?} degrades on the native path and must resolve to \
+                 the custom backend",
+                kind,
+            );
+        }
+    }
 }

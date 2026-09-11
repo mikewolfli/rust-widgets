@@ -37,6 +37,25 @@ pub(crate) enum StubHandleKind {
     SpinBox,
     ListView,
     ScrollArea,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 
 pub struct StubPlatform {
@@ -531,6 +550,272 @@ impl Platform for StubPlatform {
         height: u32,
     ) -> ObjectId {
         self.state.create_widget(StubHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
+    }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            StubHandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::FontComboBox, "FontComboBox", x, y, width, height)
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(StubHandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            StubHandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            StubHandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {

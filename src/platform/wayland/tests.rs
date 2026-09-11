@@ -7,6 +7,130 @@
 use crate::platform::wayland::WaylandPlatform;
 use crate::platform::Platform;
 
+/// With a live compositor on `WAYLAND_DISPLAY`, creating a window must take the
+/// *native* path: connect to the compositor, bind `wl_compositor` and
+/// `xdg_wm_base`, and create a real `xdg_toplevel` surface.
+///
+/// This is the automated half of the "Wayland compositor interaction" gap: a
+/// state-only backend never populates `native_session`, so asserting that it is
+/// `Some` after `create_window` proves the protocol path actually ran rather
+/// than silently falling back.
+///
+/// The test is opt-in — it skips (with a notice) when no compositor is present,
+/// so a headless CI runner without weston does not fail. To run it against a
+/// real compositor use `tools/run_wayland_compositor_tests.sh`, which fetches
+/// and/or installs weston and drives both this test and its negative control.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[test]
+fn native_session_binds_live_compositor() {
+    use crate::core::PlatformFamily;
+    use crate::platform::Platform as _;
+
+    // No compositor advertised → nothing to verify here; skip rather than fail.
+    if !compositor_advertised() {
+        eprintln!("skipping: WAYLAND_DISPLAY is not set (no compositor to bind)");
+        return;
+    }
+
+    let backend = WaylandPlatform::new();
+    backend.init();
+    assert_eq!(backend.family(), PlatformFamily::Desktop);
+
+    let window = backend.create_window("NativeProbe", 0, 0, 320, 200);
+    assert!(window > 0, "window should be created");
+
+    // The state handle alone does not prove the native path; the session does.
+    let guard = backend.native_session.lock().expect("native_session mutex poisoned");
+    let session = guard.as_ref().expect(
+        "native_session must be Some after create_window with a live compositor \
+         (state-only fallback would leave it None)",
+    );
+
+    // Both globals must have been bound during the registry roundtrip.
+    assert!(
+        session.state.compositor.is_some(),
+        "wl_compositor must be bound from the live compositor"
+    );
+    assert!(
+        session.state.xdg_wm_base.is_some(),
+        "xdg_wm_base must be bound from the live compositor"
+    );
+
+    eprintln!(
+        "bound live compositor: wl_compositor=yes xdg_wm_base=yes dpi_scale={}",
+        session.state.dpi_scale
+    );
+}
+
+/// Whether the environment advertises a usable compositor.
+///
+/// An *empty* `WAYLAND_DISPLAY` does not name a socket, so it is treated the
+/// same as an unset one — this lets the negative control run under
+/// `WAYLAND_DISPLAY=` instead of being silently skipped.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+fn compositor_advertised() -> bool {
+    matches!(std::env::var("WAYLAND_DISPLAY"), Ok(v) if !v.is_empty())
+}
+
+/// Without a compositor the backend must degrade to state-only and leave
+/// `native_session` empty — this is the negative control for the test above.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[test]
+fn native_session_stays_empty_without_compositor() {
+    use crate::platform::Platform as _;
+
+    if compositor_advertised() {
+        eprintln!("skipping: a compositor is advertised, cannot test the fallback");
+        return;
+    }
+
+    let backend = WaylandPlatform::new();
+    backend.init();
+    let window = backend.create_window("Fallback", 0, 0, 200, 120);
+    assert!(window > 0, "state-only window should still be created");
+
+    let guard = backend.native_session.lock().expect("native_session mutex poisoned");
+    assert!(guard.is_none(), "native_session must stay empty when there is no compositor");
+}
+
+/// The event loop must observe `quit()` promptly even with no compositor: the
+/// fd-based loop falls back to a bounded idle wait when there is no native
+/// session, so `run()` cannot hang. This guards the quit-latency contract.
+#[test]
+fn run_exits_promptly_on_quit_without_compositor() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let backend = Arc::new(WaylandPlatform::new());
+    backend.init();
+
+    let runner = Arc::clone(&backend);
+    let handle = std::thread::spawn(move || runner.run());
+
+    // Let the loop enter its wait state, then quit from this thread.
+    std::thread::sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    backend.quit();
+
+    // The loop re-checks the flag at least once per idle timeout, so joining
+    // must complete well within a generous bound.
+    let mut finished = false;
+    for _ in 0..100 {
+        if handle.is_finished() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let elapsed = started.elapsed();
+    if !finished {
+        // Avoid a hung test process if the contract regressed.
+        panic!("run() did not exit within 2s of quit() (elapsed {elapsed:?})");
+    }
+    handle.join().expect("event loop thread panicked");
+    assert!(elapsed < Duration::from_millis(500), "quit() took too long: {elapsed:?}");
+}
+
 #[test]
 fn platform_creates_and_runs() {
     let backend = WaylandPlatform::new();
@@ -192,7 +316,7 @@ fn menu_system() {
     let menu_bar = backend.create_menu_bar(window, 0, 0, 400, 24);
     assert!(menu_bar > 0, "MenuBar should be created");
 
-    let file_menu = backend.create_menu(window, "File", 0, 24, 100, 24);
+    let file_menu = backend.create_menu(menu_bar, "File", 0, 24, 100, 24);
     assert!(file_menu > 0, "File menu should be created");
 
     let new_item = backend.menu_add_item(file_menu, "New", Some("Ctrl+N"));
@@ -268,6 +392,55 @@ fn dialog_and_extended_controls() {
 
     let scroll = backend.create_scroll_area(window, 10, 200, 200, 150);
     assert!(scroll > 0, "ScrollArea should be created");
+}
+
+#[test]
+fn invalid_parent_and_kind_validation() {
+    let backend = WaylandPlatform::new();
+    backend.init();
+
+    let window = backend.create_window("Validation", 0, 0, 400, 300);
+    assert!(window > 0);
+
+    let bogus = 9999;
+    // Parented creators reject an unknown parent instead of orphaning widgets.
+    assert_eq!(backend.create_button(bogus, "b", 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_label(bogus, "l", 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_combo_box(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_list_box(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_message_box(bogus, "t", "m", 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_file_dialog(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_spin_box(bogus, 0, 0, 10, 10), 0);
+    assert_eq!(backend.create_scroll_area(bogus, 0, 0, 10, 10), 0);
+
+    // A menu must hang off a menu bar (or another menu), not a window.
+    assert_eq!(backend.create_menu(window, "File", 0, 0, 10, 10), 0);
+
+    let menu_bar = backend.create_menu_bar(window, 0, 0, 400, 24);
+    assert!(menu_bar > 0);
+    let menu = backend.create_menu(menu_bar, "File", 0, 0, 10, 10);
+    assert!(menu > 0, "menu under a menu bar must succeed");
+
+    // Menu item requires a menu parent.
+    assert_eq!(backend.menu_add_item(window, "Bad", None), 0);
+    let item = backend.menu_add_item(menu, "Open", None);
+    assert!(item > 0);
+
+    // Only a menu item may be injected as a menu trigger.
+    assert!(!backend.inject_menu_trigger(window));
+    assert!(!backend.inject_menu_trigger(menu_bar));
+    assert!(backend.inject_menu_trigger(item));
+
+    // attach_menu_bar_to_window validates both ids and their kinds.
+    assert!(!backend.attach_menu_bar_to_window(bogus, menu_bar));
+    assert!(!backend.attach_menu_bar_to_window(window, bogus));
+    assert!(!backend.attach_menu_bar_to_window(window, item));
+    assert!(backend.attach_menu_bar_to_window(window, menu_bar));
+
+    // inject_widget_trigger_event rejects unknown ids.
+    use crate::platform::WidgetTriggerKind;
+    assert!(!backend.inject_widget_trigger_event(bogus, WidgetTriggerKind::Clicked));
+    assert!(backend.inject_widget_trigger_event(window, WidgetTriggerKind::Clicked));
 }
 
 #[test]

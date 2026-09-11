@@ -41,6 +41,7 @@ impl Platform for WindowsPlatform {
                         | WindowsHandleKind::FileDialog
                         | WindowsHandleKind::ColorDialog
                         | WindowsHandleKind::FontDialog
+                        | WindowsHandleKind::DirectoryDialog
                 ) {
                     present_native_dialog(self, widget_id, kind);
                     return;
@@ -1538,14 +1539,16 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Validate that parent exists before creating spin box surrogate.
             if self.state.kind_of(parent).is_none() {
                 return 0;
             }
-            log::warn!(
-                "[rust_widgets][windows] SpinBox surrogate until native up-down control lands"
-            );
-            self.state.create_widget(WindowsHandleKind::SpinBox, "SpinBox", x, y, width, height)
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_spin_box(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_spin_box failed (parent={parent})");
+            0
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1563,14 +1566,16 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Validate that parent exists before creating list view surrogate.
             if self.state.kind_of(parent).is_none() {
                 return 0;
             }
-            log::warn!(
-                "[rust_widgets][windows] ListView surrogate until native SysListView32 lands"
-            );
-            self.state.create_widget(WindowsHandleKind::ListView, "ListView", x, y, width, height)
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_list_view(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_list_view failed (parent={parent})");
+            0
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1588,19 +1593,16 @@ impl Platform for WindowsPlatform {
     ) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
-            // Validate that parent exists before creating scroll area surrogate.
             if self.state.kind_of(parent).is_none() {
                 return 0;
             }
-            log::warn!("[rust_widgets][windows] ScrollArea surrogate until native WS_HSCROLL/WS_VSCROLL lands");
-            self.state.create_widget(
-                WindowsHandleKind::ScrollArea,
-                "ScrollArea",
-                x,
-                y,
-                width,
-                height,
-            )
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_scroll_area(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_scroll_area failed (parent={parent})");
+            0
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1608,6 +1610,475 @@ impl Platform for WindowsPlatform {
             0
         }
     }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_group_box(
+                self, parent, title, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_group_box failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, title, x, y, width, height);
+            0
+        }
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_frame(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_frame failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_tab_widget(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_tab_widget failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_splitter(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_splitter failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_toggle_button(
+                self, parent, text, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_toggle_button failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, text, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_calendar(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_calendar failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_scroll_bar(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_scroll_bar failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_double_spin_box(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_double_spin_box failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_font_combo_box(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_font_combo_box failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WindowsHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WindowsHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WindowsHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WindowsHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WindowsHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            // Non-blocking creation; the modal IFileDialog (FOS_PICKFOLDERS) is
+            // presented from show_widget and the chosen directory path is stored
+            // into state text.
+            let id = self.state.create_widget(
+                WindowsHandleKind::DirectoryDialog,
+                title,
+                x,
+                y,
+                width,
+                height,
+            );
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.insert(
+                    id,
+                    Win32DialogData {
+                        parent_hwnd: self
+                            .get_native_handle(parent)
+                            .map(|h| h as usize)
+                            .unwrap_or(0),
+                        title: if title.is_empty() {
+                            "Select Folder".to_string()
+                        } else {
+                            title.to_string()
+                        },
+                    },
+                );
+            }
+            id
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, title, x, y, width, height);
+            0
+        }
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_date_picker(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_date_picker failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_time_picker(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_time_picker failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) = crate::platform::windows::helpers::try_create_date_time_picker(
+                self, parent, x, y, width, height,
+            ) {
+                return widget_id;
+            }
+            log::error!("[rust_widgets][windows] create_date_time_picker failed (parent={parent})");
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.kind_of(parent).is_none() {
+                return 0;
+            }
+            if let Some(widget_id) =
+                crate::platform::windows::helpers::try_create_activity_indicator(
+                    self, parent, x, y, width, height,
+                )
+            {
+                return widget_id;
+            }
+            log::error!(
+                "[rust_widgets][windows] create_activity_indicator failed (parent={parent})"
+            );
+            0
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (parent, x, y, width, height);
+            0
+        }
+    }
+
     fn set_clipboard_text(&self, _text: &str) -> bool {
         #[cfg(target_os = "windows")]
         {

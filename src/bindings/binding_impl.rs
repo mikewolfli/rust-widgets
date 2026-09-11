@@ -1091,6 +1091,79 @@ pub unsafe extern "C" fn rw_free_rust_string(s: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the core C ABI round-trip through the real `extern "C"` entry
+    /// points: create a window and child controls, mutate text/geometry/
+    /// visibility/enabled, read text back, then free the returned string.
+    ///
+    /// This is the contract C/Java callers depend on, so it asserts the return
+    /// conventions (0 on failure, non-zero handles) and that `rw_free_string`
+    /// releases what `rw_get_widget_text` allocated.
+    #[test]
+    fn c_abi_widget_lifecycle_roundtrip() {
+        use std::ffi::{CStr, CString};
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("abi-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0, "window creation must return a non-zero handle");
+
+            // Child creation with a valid parent must succeed; an invalid parent is
+            // rejected by the platform contract (returns 0).
+            let label = c("hello");
+            let button = rw_create_button(window, label.as_ptr(), 10, 10, 80, 30);
+            assert_ne!(button, 0, "button creation must return a non-zero handle");
+            assert_eq!(
+                rw_create_button(9999, label.as_ptr(), 0, 0, 10, 10),
+                0,
+                "an unknown parent must be rejected"
+            );
+
+            // Text round-trip through the C string boundary.
+            let updated = c("updated");
+            rw_set_widget_text(button, updated.as_ptr());
+            let ptr = rw_get_widget_text(button);
+            assert!(!ptr.is_null(), "rw_get_widget_text must never return null");
+            let read_back = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            assert_eq!(read_back, "updated");
+            rw_free_string(ptr as *mut c_char);
+
+            // Geometry, visibility and enabled round-trips. `CBool` is `bool`.
+            rw_set_widget_geometry(button, 20, 20, 120, 40);
+            rw_hide_widget(button);
+            assert!(!rw_is_widget_visible(button), "hidden widget reports not visible");
+            rw_show_widget(button);
+            assert!(rw_is_widget_visible(button), "shown widget reports visible");
+
+            rw_set_widget_enabled(button, false);
+            assert!(!rw_is_widget_enabled(button), "disabled widget reports disabled");
+            rw_set_widget_enabled(button, true);
+            assert!(rw_is_widget_enabled(button), "enabled widget reports enabled");
+        }
+    }
+
+    /// Reading text for an unknown widget must yield an empty (non-null)
+    /// string rather than a dangling pointer, and freeing it must be safe.
+    #[test]
+    fn c_abi_unknown_widget_text_is_empty_not_null() {
+        use std::ffi::CStr;
+
+        unsafe {
+            let ptr = rw_get_widget_text(0xDEAD_BEEF);
+            assert!(!ptr.is_null(), "unknown widget must still return a valid pointer");
+            let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            assert!(text.is_empty(), "unknown widget text should be empty, got {text:?}");
+            rw_free_string(ptr as *mut c_char);
+        }
+    }
+
+    /// The AA-sample config setters are exercised through the C ABI, which is
+    /// available whenever `bindings` is built. The shared test lock, however,
+    /// is only compiled on the `desktop` profile, so this case is gated to
+    /// match it rather than leaving an unconditional reference.
+    #[cfg(all(feature = "desktop", not(any(feature = "mini", feature = "embedded"))))]
     #[test]
     fn render_aa_sample_abi_roundtrip_clamps_values() {
         let _guard = crate::render::software_render_config_test_lock()

@@ -20,15 +20,16 @@ impl LinuxPlatform {
             return 0;
         }
         let id = self.insert_widget(LinuxHandleKind::MenuBar, "MenuBar", x, y, width, height);
+        self.menus.lock().expect("linux menu lock poisoned").widget_parent.insert(id, parent);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let menu_bar = gtk::MenuBar::new();
+            menu_bar.set_size_request(width as i32, height as i32);
             let widget = menu_bar.clone().upcast::<gtk::Widget>();
             let mut native = self.native.lock_guard();
             native.menu_bars.insert(id, menu_bar);
             native.widgets.insert(id, widget);
-            let _ = parent;
-            let _ = (x, y, width, height);
+            let _ = (x, y);
         }
         id
     }

@@ -53,12 +53,19 @@ pub mod ime_macos;
 /// Platform-specific IME stubs (macOS, Windows).
 pub mod ime_stubs;
 /// Real Windows IME bridge (TSF integration).
-#[cfg(target_os = "windows")]
+///
+/// The composition/marked-text state machine is platform-independent, so the
+/// module is compiled on every host to keep its unit tests executable. All TSF
+/// (`msctf.dll`/`winapi`) touch points are `#[cfg(target_os = "windows")]`-gated
+/// internally; on other hosts `TsfThreadMgr::try_create` reports TSF as
+/// unavailable and the bridge runs in pure state-machine mode.
 pub mod ime_windows;
 pub(crate) mod runtime;
 pub mod state;
 mod stub;
 pub mod types;
+/// Pure Win32 notification-code semantics (host-compilable, no OS calls).
+pub mod windows_notify;
 
 #[cfg(all(test, not(feature = "mini")))]
 mod tests;

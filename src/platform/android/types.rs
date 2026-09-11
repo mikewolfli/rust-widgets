@@ -58,6 +58,25 @@ pub(crate) enum AndroidHandleKind {
     ListView,
     /// Scrollable content area.
     ScrollArea,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 
 /// List storage state for ComboBox and ListBox.
@@ -123,6 +142,10 @@ pub struct AndroidPlatform {
     pub(crate) list_data: Mutex<HashMap<u64, AndroidListData>>,
     /// Optional JVM pointer (set via `init_jvm`).
     pub(crate) jvm: Option<*mut std::ffi::c_void>,
+    /// Maps logical widget id → JNI view-registry id for widgets that have a
+    /// real native Android `View` (only populated under `android-jni`).
+    #[cfg(feature = "android-jni")]
+    pub(crate) native_views: Mutex<HashMap<u64, crate::core::ObjectId>>,
 }
 
 // Safety: `jvm` is a raw pointer only used within JNI calls that are
@@ -139,6 +162,8 @@ impl AndroidPlatform {
             runtime: AndroidRuntimeState::new(),
             list_data: Mutex::new(HashMap::new()),
             jvm: None,
+            #[cfg(feature = "android-jni")]
+            native_views: Mutex::new(HashMap::new()),
         }
     }
 
@@ -147,15 +172,68 @@ impl AndroidPlatform {
         self.jvm = Some(jvm);
     }
 
-    /// Check if JNI is available (JVM pointer set + JNI feature enabled).
+    /// Store the JNI view-registry id backing a logical widget id.
+    #[cfg(feature = "android-jni")]
+    pub(crate) fn set_native_view(&self, logical_id: u64, jni_id: crate::core::ObjectId) {
+        self.native_views
+            .lock()
+            .expect("android native views lock poisoned")
+            .insert(logical_id, jni_id);
+    }
+
+    /// Look up the JNI view-registry id backing a logical widget id.
+    #[cfg(feature = "android-jni")]
+    pub(crate) fn native_view_of(&self, logical_id: u64) -> Option<crate::core::ObjectId> {
+        self.native_views
+            .lock()
+            .expect("android native views lock poisoned")
+            .get(&logical_id)
+            .copied()
+    }
+
+    /// Create a native Android view for `logical_id` when JNI is available.
+    ///
+    /// Returns the created JNI registry id, or `None` when the bridge is not
+    /// initialized or the view could not be constructed.
+    #[cfg(feature = "android-jni")]
+    pub(crate) fn attach_native_view(
+        &self,
+        logical_id: u64,
+        class: crate::platform::android_jni::AndroidViewClass,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Option<crate::core::ObjectId> {
+        if !self.jni_available() {
+            return None;
+        }
+        let jni_id =
+            crate::platform::android_jni::create_native_view(class, text, x, y, width, height)?;
+        self.set_native_view(logical_id, jni_id);
+        Some(jni_id)
+    }
+
+    /// Check whether native view creation is possible.
+    ///
+    /// True when the `android-jni` feature is enabled, the JNI bridge has a
+    /// `JavaVM` (`nativeInit` ran), and an Activity `Context` has been stored
+    /// (via [`Self::attach_to_native_view`] or `android_jni::set_activity_context`).
+    ///
+    /// The legacy `jvm` raw pointer is no longer required: `attach_to_native_view`
+    /// takes `&self` and cannot populate it, so requiring it made every widget
+    /// silently stay state-backed even after a successful Context attach. The
+    /// bridge's own readiness is the authoritative signal.
     pub fn jni_available(&self) -> bool {
         #[cfg(feature = "android-jni")]
         {
-            self.jvm.is_some() && crate::platform::android_jni::is_initialized()
+            let _ = &self.jvm;
+            crate::platform::android_jni::native_view_creation_ready()
         }
         #[cfg(not(feature = "android-jni"))]
         {
-            let _ = self.jvm;
+            let _ = &self.jvm;
             false
         }
     }

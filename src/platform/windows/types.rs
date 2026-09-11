@@ -4,32 +4,7 @@ use super::notify;
 use crate::platform::state::BackendState;
 use crate::platform::{Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum WindowsHandleKind {
-    Window,
-    Button,
-    Label,
-    CheckBox,
-    RadioButton,
-    LineEdit,
-    ListBox,
-    Panel,
-    MenuBar,
-    Menu,
-    MenuItem,
-    ToolBar,
-    StatusBar,
-    ProgressBar,
-    Slider,
-    ComboBox,
-    MessageBox,
-    FileDialog,
-    ColorDialog,
-    FontDialog,
-    SpinBox,
-    ListView,
-    ScrollArea,
-}
+pub use crate::platform::windows_notify::WindowsHandleKind;
 #[cfg(target_os = "windows")]
 pub(crate) unsafe extern "system" fn rw_wnd_proc(
     hwnd: HWND,

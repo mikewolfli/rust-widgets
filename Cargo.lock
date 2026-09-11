@@ -3793,6 +3793,7 @@ dependencies = [
  "jni",
  "jpeg-decoder",
  "js-sys",
+ "libc",
  "log",
  "minimp3_fixed",
  "miniz_oxide 0.8.9",

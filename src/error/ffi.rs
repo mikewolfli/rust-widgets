@@ -60,8 +60,12 @@ pub fn record_last_ffi_error(error: super::RwError) {
 
 /// Returns the last FFI error, if any.
 ///
-/// Only the desktop FFI bindings (`rw_error_code` / `rw_error_message`) read it.
-#[cfg(all(feature = "desktop", not(feature = "mini")))]
+/// Read by the C ABI error accessors (`rw_error_code` / `rw_error_message`),
+/// which are available wherever the `bindings` module is built.
+#[cfg(all(
+    any(feature = "desktop", feature = "jni", feature = "mobile-api"),
+    not(feature = "mini")
+))]
 pub(crate) fn last_ffi_error() -> Option<super::RwError> {
     LAST_FFI_ERROR.lock().ok().and_then(|slot| slot.clone())
 }

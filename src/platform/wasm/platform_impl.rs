@@ -24,6 +24,8 @@ struct WasmListData {
 #[derive(Default)]
 struct WasmMenuState {
     attached_menu_bar: HashMap<u64, u64>,
+    /// Parent menu id → direct child menu/menu-item ids.
+    menu_children: HashMap<u64, Vec<u64>>,
     pending_menu_events: Vec<u64>,
     pending_widget_events: Vec<WidgetTriggerEvent>,
 }
@@ -456,7 +458,15 @@ impl Platform for WasmPlatform {
             return 0;
         }
         let id = self.insert_widget(WasmHandleKind::Menu, text, x, y, width, height);
-        let _ = (parent, x, y, width, height);
+        // Record the parent→child edge so the menu tree is queryable (mirrors
+        // the Linux/Harmony/Wayland backends) instead of dropping `parent`.
+        MENU_STATE
+            .lock()
+            .expect("wasm menu state lock poisoned")
+            .menu_children
+            .entry(parent)
+            .or_default()
+            .push(id);
         id
     }
 
@@ -506,7 +516,18 @@ impl Platform for WasmPlatform {
             return 0;
         }
         let item_id = self.insert_widget(WasmHandleKind::MenuItem, text, 0, 0, 0, 0);
-        let _ = shortcut;
+        // Preserve the shortcut in the stored text so it survives round-trips
+        // and matches the Linux/Wayland display convention.
+        if let Some(shortcut) = shortcut {
+            self.state.set_text(item_id, &format!("{}\t{}", text, shortcut));
+        }
+        MENU_STATE
+            .lock()
+            .expect("wasm menu state lock poisoned")
+            .menu_children
+            .entry(parent_menu)
+            .or_default()
+            .push(item_id);
         item_id
     }
 
@@ -712,6 +733,174 @@ impl Platform for WasmPlatform {
         let _ = (parent, x, y, width, height);
         id
     }
+    fn create_group_box(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: u64,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::DoubleSpinBox, "DoubleSpinBox", x, y, width, height)
+    }
+    fn create_font_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::FontComboBox, "FontComboBox", x, y, width, height)
+    }
+    fn create_context_menu(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: u64,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(WasmHandleKind::DateTimePicker, "DateTimePicker", x, y, width, height)
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: u64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        if self.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.insert_widget(
+            WasmHandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
 }
 
 // ─── Global state for list data and menu tracking ────────────────────────────
@@ -822,5 +1011,48 @@ mod tests {
         let p = make_platform();
         let btn = p.create_button(9999, "orphan", 0, 0, 50, 20);
         assert_eq!(btn, 0);
+    }
+
+    #[test]
+    fn menu_tree_records_parent_child_edges() {
+        let p = make_platform();
+        let win = p.create_window("win", 0, 0, 400, 300);
+        let menu_bar = p.create_menu_bar(win, 0, 0, 400, 20);
+        assert!(menu_bar > 0);
+
+        let file = p.create_menu(menu_bar, "File", 0, 0, 80, 20);
+        assert!(file > 0);
+        let edit = p.create_menu(menu_bar, "Edit", 0, 0, 80, 20);
+        assert!(edit > 0);
+
+        let new_item = p.menu_add_item(file, "New", Some("Ctrl+N"));
+        assert!(new_item > 0);
+        let open_item = p.menu_add_item(file, "Open", None);
+        assert!(open_item > 0);
+
+        // The menu tree must actually record the edges (previously dropped).
+        let state = MENU_STATE.lock().expect("wasm menu state lock poisoned");
+        assert_eq!(state.menu_children.get(&menu_bar), Some(&vec![file, edit]));
+        assert_eq!(state.menu_children.get(&file), Some(&vec![new_item, open_item]));
+        drop(state);
+
+        // Shortcut text is preserved in the item label.
+        assert_eq!(p.get_widget_text(new_item), "New\tCtrl+N");
+        assert_eq!(p.get_widget_text(open_item), "Open");
+    }
+
+    #[test]
+    fn menu_creation_rejects_wrong_parent_kind() {
+        let p = make_platform();
+        let win = p.create_window("win", 0, 0, 400, 300);
+        let btn = p.create_button(win, "b", 0, 0, 50, 20);
+
+        // A menu must hang off a menu bar or another menu, not a window/button.
+        assert_eq!(p.create_menu(win, "Bad", 0, 0, 80, 20), 0);
+        assert_eq!(p.create_menu(btn, "Bad", 0, 0, 80, 20), 0);
+
+        // A menu item must hang off a menu.
+        assert_eq!(p.menu_add_item(win, "Bad", None), 0);
+        assert_eq!(p.menu_add_item(btn, "Bad", None), 0);
     }
 }

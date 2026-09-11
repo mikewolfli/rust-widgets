@@ -68,6 +68,25 @@ pub(crate) enum WaylandHandleKind {
     ListView,
     /// Scrollable content area.
     ScrollArea,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 
 /// Runtime state for menu tracking in the Wayland backend.

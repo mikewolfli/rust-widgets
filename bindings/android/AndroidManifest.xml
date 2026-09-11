@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest for the rust_widgets Android JNI integration test app.
+
+  The app has no UI of its own: it loads librust_widgets, calls into the JNI
+  bridge, and exposes the results through logcat. It exists to prove that the
+  native library is packaged into an APK, that its JNI symbols resolve, and
+  that the bridge can be initialised on a device or emulator.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="rust_widgets.testapp"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="34" />
+
+    <application
+        android:label="rust_widgets JNI Test"
+        android:hasCode="true">
+        <activity
+            android:name="rust_widgets.testapp.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

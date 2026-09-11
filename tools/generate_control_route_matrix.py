@@ -133,6 +133,15 @@ def parse_widget_kinds(kind_rs: pathlib.Path) -> List[str]:
 
 
 def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
+    """Resolve kind -> preference, honouring platform-conditional overrides.
+
+    `route_preference_for_widget_kind` may contain an early-return
+    `#[cfg(target_os = "...")]` block *before* the main `match`. Those entries
+    intentionally take precedence for that platform and may also appear in the
+    general match (where they describe the other platforms). Modelling this as
+    "last arm wins" would either raise a false conflict or silently drop the
+    override, so the conditional block is parsed first and layered on top.
+    """
     text = routing_rs.read_text(encoding="utf-8")
     fn_start = text.find("pub fn route_preference_for_widget_kind")
     # The tests module may be gated (e.g. `#[cfg(all(test, not(feature = "mini")))]`)
@@ -143,13 +152,24 @@ def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
 
     body = text[fn_start:tests_mod]
 
-    result: Dict[str, str] = {}
     segment_re = re.compile(
         r"(?P<arms>(?:.|\n)*?)=>\s*ControlRoutePreference::(?P<pref>NativePreferred|CustomRequired)",
         re.DOTALL,
     )
 
-    for seg in segment_re.finditer(body):
+    # Locate the platform-conditional early-return block, if present. It ends at
+    # the first `match kind {` after it (the general table).
+    override_prefs: Dict[str, str] = {}
+    general_start = body.find("match kind {")
+    if general_start > 0:
+        header = body[:general_start]
+        if "cfg(target_os" in header:
+            for kind in kind_use_re.findall(header):
+                override_prefs[kind] = "CustomRequired"
+
+    general = body[general_start:] if general_start >= 0 else body
+    result: Dict[str, str] = {}
+    for seg in segment_re.finditer(general):
         pref = seg.group("pref")
         arms = seg.group("arms")
         for kind in kind_use_re.findall(arms):
@@ -159,6 +179,9 @@ def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
                     f"{result[kind]} vs {pref}"
                 )
             result[kind] = pref
+
+    # Platform overrides win for the platform they are gated on.
+    result.update(override_prefs)
 
     if not result:
         raise ValueError("Parsed 0 routed WidgetKind preferences")

@@ -4,12 +4,17 @@
 Cross-checks the generated `docs/plans/platform_capability_matrix.md` against
 the per-OS `platform_impl` implementation-grade scanner:
 
-  - A desktop cell marked ✅ (usable path) is a contradiction when the mapped
+  - A desktop cell marked ✅ (native) is a contradiction when the mapped
     `create_*` method is Missing or Placeholder in the corresponding OS
-    `platform_impl` (i.e. the doc claims a usable path that does not exist).
+    `platform_impl` (i.e. the doc claims a real native primitive that does not
+    exist).
 
-StateBacked is allowed under ✅ (the matrix legend defines ✅ as "usable path,
-either native or state/self-drawn"). 🔶 / ⬜ / ➖ cells are never contradicted.
+The matrix distinguishes three usable/non-usable states, so only ✅ is checked:
+
+  - ✅    native primitive          → must be backed by a real OS create_* here
+  - 🟦    self-drawn but functional  → backed by the custom backend, not checked
+                                       against platform_impl (by design)
+  - 🔶    genuine native downgrade   → never contradicts ✅
 
 Exit code is non-zero when any contradiction is found.
 """

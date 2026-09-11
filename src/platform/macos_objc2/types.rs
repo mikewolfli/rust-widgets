@@ -66,6 +66,25 @@ pub(crate) enum MacObjc2HandleKind {
     ColorDialog,
     /// Font selection dialog.
     FontDialog,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 #[derive(Default)]
 pub(crate) struct MacObjc2MenuState {

@@ -157,6 +157,7 @@ linux-wayland = [
     "dep:wayland-client",
     "dep:wayland-protocols",
     "dep:wayland-cursor",
+    "dep:libc",
 ]
 linux-a11y = ["dep:zbus", "dep:pollster"]
 android = ["dep:jni"]
@@ -358,6 +359,8 @@ winapi = { version = "0.3", features = [
     "objbase",
     "knownfolders",
     "shlobj",
+    "shobjidl",
+    "winerror",
     "errhandlingapi",
     "libloaderapi",
 ] }
@@ -380,6 +383,9 @@ objc2-ui-kit = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
+# Used by the Wayland backend to poll() the compositor socket in the native
+# event loop (the crate is already in the dependency graph transitively).
+libc = { version = "0.2", optional = true }
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols = { version = "0.32", features = [
     "staging",

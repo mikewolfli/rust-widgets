@@ -57,6 +57,25 @@ pub(crate) enum IosHandleKind {
     ColorDialog,
     /// Font selection dialog.
     FontDialog,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 
 /// List storage state for ComboBox and ListBox.
@@ -115,6 +134,8 @@ pub struct IosMobilePlatform {
     pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
     /// Shared list storage for ComboBox widgets.
     pub(crate) combo_data: Mutex<HashMap<u64, ListData>>,
+    /// Native root view handle attached via `MobilePlatformExtension`.
+    pub(crate) attached_native_view: std::sync::atomic::AtomicUsize,
 }
 
 impl IosMobilePlatform {
@@ -126,6 +147,17 @@ impl IosMobilePlatform {
             runtime: IosRuntimeState::new(),
             list_data: Mutex::new(HashMap::new()),
             combo_data: Mutex::new(HashMap::new()),
+            attached_native_view: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Returns the currently attached native root view handle, if any.
+    pub fn attached_native_view(&self) -> Option<usize> {
+        let handle = self.attached_native_view.load(std::sync::atomic::Ordering::SeqCst);
+        if handle == 0 {
+            None
+        } else {
+            Some(handle)
         }
     }
 
@@ -187,5 +219,22 @@ impl IosMobilePlatform {
 impl Default for IosMobilePlatform {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::platform::types::MobilePlatformExtension for IosMobilePlatform {
+    fn mobile_backend(&self) -> crate::platform::types::MobileBackend {
+        crate::platform::types::MobileBackend::Ios
+    }
+
+    fn attach_to_native_view(&self, native_handle: usize) -> bool {
+        // The handle is the host `UIWindow`/root `UIView` provided by the app
+        // delegate. It is recorded so the runtime can report the attached view;
+        // UIKit objects themselves are retained by the Objective-C runtime.
+        if native_handle == 0 {
+            return false;
+        }
+        self.attached_native_view.store(native_handle, std::sync::atomic::Ordering::SeqCst);
+        true
     }
 }

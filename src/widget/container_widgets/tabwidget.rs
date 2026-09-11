@@ -1154,6 +1154,7 @@ mod tests {
 
     // ── 18. Tab icon set/get ───────────────────────────────────────────────────
 
+    #[cfg(feature = "image")]
     #[test]
     fn tabwidget_tab_icon_default_none() {
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));

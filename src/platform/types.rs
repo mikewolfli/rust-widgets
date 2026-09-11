@@ -139,6 +139,17 @@ pub trait Platform: Send + Sync {
         static UNIT: () = ();
         &UNIT as &dyn core::any::Any
     }
+    /// Returns the mobile backend extension when this platform drives a mobile
+    /// native view.
+    ///
+    /// Mobile runtimes (Android/iOS) override this so the `mobile-*` runtime
+    /// helpers configure the *same* platform instance that `get_platform()`
+    /// returns, instead of a separate preview singleton. Desktop/stub backends
+    /// keep the default `None`.
+    #[cfg(feature = "mobile-api")]
+    fn mobile_extension(&self) -> Option<&dyn MobilePlatformExtension> {
+        None
+    }
     /// Returns backend identifier string.
     fn backend_name(&self) -> &'static str;
     /// Returns platform family classification.
@@ -366,6 +377,201 @@ pub trait Platform: Send + Sync {
         width: u32,
         height: u32,
     ) -> ObjectId;
+
+    /// Create a labelled group frame (a real border+label container where the
+    /// platform provides one).
+    ///
+    /// Backends without a dedicated group primitive return a plain panel; the
+    /// hybrid route sends `WidgetKind::GroupBox` to the self-drawn backend, so
+    /// this method only needs to be meaningful for `NativePreferred` callers.
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a plain bordered frame container.
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
+
+    /// Create a tabbed container.
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a draggable splitter (two panes with a movable divider).
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a toggle button (a button with a persistent active state).
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a calendar view.
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a scroll bar (a scrollbar control with an adjustment model).
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a fractional (double) spin box.
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a font-family combo box.
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a context (popup) menu: a menu shown on demand rather than
+    /// attached to a menu bar.
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a transient popup window.
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a generic dialog window (title + content area).
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create an input dialog.
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a progress dialog.
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a directory (folder) chooser dialog.
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a date picker.
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a time picker.
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a combined date+time picker.
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
+    /// Create a busy/activity indicator (indeterminate progress).
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId;
+
     fn show_widget(&self, widget_id: ObjectId);
     fn hide_widget(&self, widget_id: ObjectId);
     fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32);

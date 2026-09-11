@@ -26,6 +26,25 @@ enum MobileHandleKind {
     MenuItem,
     ToolBar,
     StatusBar,
+    GroupBox,
+    Frame,
+    TabWidget,
+    Splitter,
+    ToggleButton,
+    Calendar,
+    ScrollBar,
+    DoubleSpinBox,
+    FontComboBox,
+    ContextMenu,
+    PopupWindow,
+    Dialog,
+    InputDialog,
+    ProgressDialog,
+    DirectoryDialog,
+    DatePicker,
+    TimePicker,
+    DateTimePicker,
+    ActivityIndicator,
 }
 #[derive(Default)]
 struct MobileMenuState {
@@ -662,6 +681,306 @@ impl Platform for AndroidMobilePlatform {
             parent,
             MobileHandleKind::Panel,
             "scroll_area",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::TabWidget,
+            "TabWidget",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::Splitter,
+            "Splitter",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::Calendar,
+            "Calendar",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::ScrollBar,
+            "ScrollBar",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::FontComboBox,
+            "FontComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::ContextMenu,
+            "ContextMenu",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(parent, MobileHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::InputDialog,
+            "Input",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::ProgressDialog,
+            "Progress",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::DirectoryDialog,
+            title,
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::DatePicker,
+            "DatePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::TimePicker,
+            "TimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.create_child_widget(
+            parent,
+            MobileHandleKind::ActivityIndicator,
+            "ActivityIndicator",
             x,
             y,
             width,

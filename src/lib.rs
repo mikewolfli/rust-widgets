@@ -25,8 +25,15 @@ pub mod asset;
 /// Audio module — format detection, decoding, encoding, sample processing, and normalization.
 #[cfg(feature = "audio")]
 pub mod audio;
-/// Desktop-only: C ABI bindings for desktop runtime.
-#[cfg(all(feature = "desktop", not(feature = "mini")))]
+/// C ABI and language bindings (C / Java-JNI / etc.).
+///
+/// Available on the `desktop` profile and on any profile that exposes an
+/// FFI consumer (`jni` for Java, `mobile-api` for the mobile runtime). The
+/// `mini` profile excludes it because it is `alloc`-free / no-std oriented.
+#[cfg(all(
+    any(feature = "desktop", feature = "jni", feature = "mobile-api"),
+    not(feature = "mini")
+))]
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;

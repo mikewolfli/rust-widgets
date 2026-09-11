@@ -125,20 +125,12 @@ impl Platform for WaylandPlatform {
         }
         event_loop.start();
 
-        // ── Polling loop ──
-        // Current state: busy-wait with 16 ms sleep (~60 Hz polling rate) checking
-        // the `running` flag. This is sufficient for the state-only backend but
-        // is NOT a proper Wayland event loop.
-        //
-        // Path to a proper Wayland event loop:
-        // 1. Use `wl_client::EventQueue::dispatch()` or `dispatch_pending()` on
-        //    the Wayland connection in each iteration instead of sleeping.
-        // 2. Integrate with an epoll/fd-based pump so the thread blocks on the
-        //    Wayland socket fd rather than busy-waiting.
-        // 3. Replace `EventLoop` with `calloop` or an `os_pipe`-based wakeup
-        //    mechanism to support proper event sources.
-        // 4. Wire `wl_display_roundtrip()` during init to ensure all globals are
-        //    received before entering the main loop.
+        #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+        {
+            self.run_native_event_loop();
+        }
+
+        #[cfg(not(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux")))]
         while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
@@ -165,94 +157,111 @@ impl Platform for WaylandPlatform {
 
     fn create_button(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::Button, text, x, y, width, height)
     }
 
     fn create_checkbox(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::CheckBox, text, x, y, width, height)
     }
 
     fn create_line_edit(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::LineEdit, text, x, y, width, height)
     }
 
     fn create_label(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::Label, text, x, y, width, height)
     }
 
     fn create_radio_button(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::RadioButton, text, x, y, width, height)
     }
 
-    fn create_slider(
-        &self,
-        _parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
+    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::Slider, "Slider", x, y, width, height)
     }
 
     fn create_progress_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
 
     fn create_combo_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         let id = self.insert_widget(WaylandHandleKind::ComboBox, "ComboBox", x, y, width, height);
         // Initialize empty list data for this combo box.
         if let Ok(mut data) = self.list_data.lock() {
@@ -263,12 +272,15 @@ impl Platform for WaylandPlatform {
 
     fn create_list_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         let id = self.insert_widget(WaylandHandleKind::ListBox, "ListBox", x, y, width, height);
         // Initialize empty list data for this list box.
         if let Ok(mut data) = self.list_data.lock() {
@@ -277,53 +289,76 @@ impl Platform for WaylandPlatform {
         id
     }
 
-    fn create_panel(&self, _parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::MenuBar, "MenuBar", x, y, width, height)
     }
 
     fn create_menu(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(WaylandHandleKind::Menu, text, x, y, width, height)
+        // A menu must hang off a menu bar or another menu.
+        if !matches!(
+            self.state.kind_of(parent),
+            Some(WaylandHandleKind::MenuBar | WaylandHandleKind::Menu)
+        ) {
+            return 0;
+        }
+        let id = self.insert_widget(WaylandHandleKind::Menu, text, x, y, width, height);
+        if let Ok(mut menus) = self.menus.lock() {
+            menus.menu_children.entry(parent).or_default().push(id);
+        }
+        id
     }
 
     fn create_tool_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::ToolBar, "ToolBar", x, y, width, height)
     }
 
     fn create_status_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::StatusBar, text, x, y, width, height)
     }
 
@@ -333,81 +368,384 @@ impl Platform for WaylandPlatform {
 
     fn create_message_box(
         &self,
-        _parent: ObjectId,
-        _title: &str,
-        _text: &str,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
-        self.insert_widget(WaylandHandleKind::MessageBox, _text, x, y, width, height)
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
+        // Wayland has no platform dialog protocol; the host renders the dialog
+        // surface, so the logical handle records title and body.
+        self.insert_widget(
+            WaylandHandleKind::MessageBox,
+            &format!("{}: {}", title, text),
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     fn create_file_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
 
     fn create_color_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
 
     fn create_font_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
 
     fn create_spin_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
 
     fn create_list_view(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::ListView, "ListView", x, y, width, height)
     }
 
     fn create_scroll_area(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if !self.state.contains_widget(parent) {
+            return 0;
+        }
         self.insert_widget(WaylandHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
+    }
+    fn create_group_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::GroupBox, title, x, y, width, height)
+    }
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::Frame, "Frame", x, y, width, height)
+    }
+    fn create_tab_widget(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::TabWidget, "TabWidget", x, y, width, height)
+    }
+    fn create_splitter(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::Splitter, "Splitter", x, y, width, height)
+    }
+    fn create_toggle_button(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::ToggleButton, text, x, y, width, height)
+    }
+    fn create_calendar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::Calendar, "Calendar", x, y, width, height)
+    }
+    fn create_scroll_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+    }
+    fn create_double_spin_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            WaylandHandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_font_combo_box(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            WaylandHandleKind::FontComboBox,
+            "FontComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_context_menu(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+    }
+    fn create_popup_window(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::PopupWindow, title, x, y, width, height)
+    }
+    fn create_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::Dialog, title, x, y, width, height)
+    }
+    fn create_input_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::InputDialog, "Input", x, y, width, height)
+    }
+    fn create_progress_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::ProgressDialog, "Progress", x, y, width, height)
+    }
+    fn create_directory_dialog(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::DirectoryDialog, title, x, y, width, height)
+    }
+    fn create_date_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::DatePicker, "DatePicker", x, y, width, height)
+    }
+    fn create_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(WaylandHandleKind::TimePicker, "TimePicker", x, y, width, height)
+    }
+    fn create_date_time_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            WaylandHandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
+    }
+    fn create_activity_indicator(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
+        self.state.create_widget(
+            WaylandHandleKind::ActivityIndicator,
+            "ActivityIndicator",
+            x,
+            y,
+            width,
+            height,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -415,6 +753,14 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
+        // Both the window and the menu bar must be live widgets of the right
+        // kind, otherwise the attachment map would hold an invalid pair.
+        if !matches!(self.state.kind_of(window), Some(WaylandHandleKind::Window)) {
+            return false;
+        }
+        if !matches!(self.state.kind_of(menu_bar), Some(WaylandHandleKind::MenuBar)) {
+            return false;
+        }
         if let Ok(mut menus) = self.menus.lock() {
             menus.attached_menu_bar.insert(window, menu_bar);
             true
@@ -425,6 +771,9 @@ impl Platform for WaylandPlatform {
     }
 
     fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
+        if !matches!(self.state.kind_of(parent_menu), Some(WaylandHandleKind::Menu)) {
+            return 0;
+        }
         let display = if let Some(shortcut) = shortcut {
             format!("{}\t{}", text, shortcut)
         } else {
@@ -447,7 +796,8 @@ impl Platform for WaylandPlatform {
     }
 
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
-        if !self.state.contains_widget(menu_item_id) {
+        // Only a menu item may produce a menu trigger.
+        if !matches!(self.state.kind_of(menu_item_id), Some(WaylandHandleKind::MenuItem)) {
             return false;
         }
         if let Ok(mut menus) = self.menus.lock() {
@@ -811,6 +1161,73 @@ impl Platform for WaylandPlatform {
 
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 impl WaylandPlatform {
+    /// Run the real Wayland event loop.
+    ///
+    /// Blocks on the connection's socket via `prepare_read()` → `poll()` so the
+    /// thread sleeps until the compositor actually sends something, instead of
+    /// busy-waiting. A `poll` timeout bounds how long the loop can sit idle
+    /// before re-checking the `running` flag, so `quit()` is honoured promptly
+    /// even with no incoming events.
+    ///
+    /// Falls back to the timed polling loop when no Wayland session exists
+    /// (headless CI), which keeps `run()`/`quit()` semantics identical.
+    #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+    fn run_native_event_loop(&self) {
+        use std::os::fd::AsRawFd;
+
+        // Idle timeout: bounds quit latency when the compositor is silent.
+        const IDLE_TIMEOUT_MS: i32 = 50;
+
+        log::info!("[wayland] Entering native fd-based event loop");
+        loop {
+            if !self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            let mut guard = self.native_session.lock().unwrap();
+            let Some(session) = guard.as_mut() else {
+                // No native session yet (no window created): stay responsive to
+                // quit without spinning.
+                drop(guard);
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                continue;
+            };
+
+            // Flush any queued requests before waiting for the reply.
+            if let Err(e) = session.event_queue.flush() {
+                log::warn!("[wayland] flush failed: {e}");
+            }
+
+            // Block until either the socket is readable or the timeout expires.
+            match session.event_queue.prepare_read() {
+                Some(read_guard) => {
+                    let fd = read_guard.connection_fd().as_raw_fd();
+                    let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                    let rc = unsafe { libc::poll(&mut pollfd, 1, IDLE_TIMEOUT_MS) };
+                    if rc > 0 {
+                        // Data available: read it, then dispatch to handlers.
+                        if let Err(e) = read_guard.read() {
+                            log::warn!("[wayland] read failed: {e}");
+                        }
+                        if let Err(e) = session.event_queue.dispatch_pending(&mut session.state) {
+                            log::warn!("[wayland] dispatch failed: {e}");
+                        }
+                    } else if rc < 0 {
+                        let err = std::io::Error::last_os_error();
+                        log::warn!("[wayland] poll failed: {err}");
+                        std::thread::sleep(std::time::Duration::from_millis(16));
+                    }
+                    // rc == 0: idle timeout, loop to re-check `running`.
+                }
+                None => {
+                    // Events are already buffered; drain them without blocking.
+                    let _ = session.event_queue.dispatch_pending(&mut session.state);
+                }
+            }
+        }
+        log::info!("[wayland] Native event loop exited");
+    }
+
     /// Dispatch pending native Wayland events.
     ///
     /// Intended to be called from an `EventLoop` native pump callback
