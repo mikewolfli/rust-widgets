@@ -45,7 +45,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_toggle_button(parent, text, x, y, width, height)
+        get_platform().create_checkbox(parent, text, x, y, width, height)
     }
     fn create_line_edit(
         &self,
@@ -342,7 +342,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_double_spin_box(parent, x, y, width, height)
+        get_platform().create_spin_box(parent, x, y, width, height)
     }
     fn create_list_view(
         &self,
@@ -382,7 +382,7 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        get_platform().create_scroll_area(parent, x, y, width, height)
     }
     fn create_dock_panel(
         &self,
@@ -469,7 +469,11 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_checkbox(parent, text, x, y, width, height)
+        // `ToggleButton` is routed to the custom backend by `routing.rs`
+        // (`ControlRoutePreference::CustomRequired`), so the native path is not
+        // normally reached. Delegating to `create_toggle_button` keeps the
+        // widget's identity if it ever is, instead of masquerading as a checkbox.
+        get_platform().create_toggle_button(parent, text, x, y, width, height)
     }
     fn create_check_list_box(
         &self,
@@ -489,7 +493,11 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_spin_box(parent, x, y, width, height)
+        // `DoubleSpinBox` is routed to the custom backend by `routing.rs`
+        // (`ControlRoutePreference::CustomRequired`) because its native path had
+        // no dedicated decimal-aware primitive. Keep the identity-preserving
+        // call for the rare native fallback rather than aliasing to SpinBox.
+        get_platform().create_double_spin_box(parent, x, y, width, height)
     }
     fn create_dial(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         log::warn!("[native] create_dial: no native Dial — falling back to Slider");

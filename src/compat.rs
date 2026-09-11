@@ -239,6 +239,34 @@ impl<T> OnceLock<T> {
             None
         }
     }
+
+    /// Stores a value, mirroring `std::sync::OnceLock::set`.
+    ///
+    /// Returns `Ok(())` on first initialization, or `Err(value)` with the
+    /// rejected value if the cell was already set.
+    pub fn set(&self, value: T) -> Result<(), T> {
+        if self
+            .initialized
+            .compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            // SAFETY: We won the compare-exchange race, so this is the only
+            // writer and no reader can observe the cell until the Release store
+            // above flips `initialized`. Under mini (single-threaded) there is
+            // no concurrent access; the ordering keeps the API equivalent to std.
+            unsafe {
+                (*self.data.get()).write(value);
+            }
+            Ok(())
+        } else {
+            Err(value)
+        }
+    }
 }
 
 #[cfg(feature = "mini")]

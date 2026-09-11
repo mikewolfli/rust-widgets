@@ -15,7 +15,7 @@ use crate::platform::android::AndroidPlatform;
     not(feature = "embedded")
 ))]
 use crate::platform::harmony::HarmonyPlatform;
-#[cfg(target_os = "ios")]
+#[cfg(all(not(feature = "mini"), target_os = "ios", not(feature = "embedded")))]
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(
     target_os = "linux",
@@ -42,7 +42,7 @@ pub use crate::platform::types::*;
     not(feature = "harmony")
 ))]
 use crate::platform::wayland::WaylandPlatform;
-#[cfg(all(target_os = "windows", not(feature = "embedded")))]
+#[cfg(all(not(feature = "mini"), target_os = "windows", not(feature = "embedded")))]
 use crate::platform::windows::WindowsPlatform;
 
 // ---------------------------------------------------------------------------

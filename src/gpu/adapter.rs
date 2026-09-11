@@ -471,9 +471,8 @@ pub fn detect_browser_forced_integrated_gpu() -> bool {
     false // Not in browser
 }
 /// Detects Windows browser environment that forces integrated GPU
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "mini"), not(feature = "embedded")))]
 pub fn detect_windows_browser_forced_igpu() -> Option<String> {
-    #[cfg(not(feature = "mini"))]
     use std::env;
     // Check if we're in a browser environment on Windows
     // Common browser executables that force iGPU
@@ -493,7 +492,9 @@ pub fn detect_windows_browser_forced_igpu() -> Option<String> {
     }
     None
 }
-#[cfg(not(target_os = "windows"))]
+/// No browser-heritage detection in the alloc-free `mini`/`embedded` profiles
+/// (no `std::env`), or on non-Windows hosts.
+#[cfg(not(all(target_os = "windows", not(feature = "mini"), not(feature = "embedded"))))]
 pub fn detect_windows_browser_forced_igpu() -> Option<String> {
     None
 }

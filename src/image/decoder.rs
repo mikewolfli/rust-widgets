@@ -15,7 +15,7 @@
 //! | GIF    | Real static decoder via `image`; `decode` returns the first frame. |
 //! | WebP   | Real static decoder via `image`; animated inputs return the first frame. |
 //! | TIFF   | Real decoder via `image`. |
-//! | AVIF   | Real decoder via `image`/dav1d. |
+//! | AVIF   | Real decoder via the pure-Rust `image`/ravif codec. |
 //! | ICO    | Real decoder via `image`; `decode` selects the decoder's image. |
 //! | SVG/SVGZ | Real rasterizer via `resvg`, using the SVG intrinsic size. |
 //!

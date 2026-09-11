@@ -212,7 +212,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: WASM check
-        run: cargo check --target wasm32-unknown-unknown --features wasm
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
 
   android-cross-check:
     name: Android NDK cross-compile check
@@ -223,7 +223,7 @@ jobs:
       - name: Install Rust stable with Android target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Install Android NDK
@@ -237,18 +237,36 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          # Create the android-cc link so cargo can find the linker
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
           HOST_TAG="linux-x86_64"
           TOOLCHAIN_DIR="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG"
-          echo "linker=$TOOLCHAIN_DIR/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
-      - name: Cargo check (aarch64-linux-android, no-default-features)
+          echo "ANDROID_TOOLCHAIN=$TOOLCHAIN_DIR/bin" >> $GITHUB_ENV
+          # Point cargo at the NDK linker/compilers for every shipped ABI. Without
+          # these, cc-rs and the linker step fall back to host tools and the
+          # build fails or silently links host objects.
+          {
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN_DIR/bin/aarch64-linux-android21-clang"
+            echo "CC_aarch64_linux_android=$TOOLCHAIN_DIR/bin/aarch64-linux-android21-clang"
+            echo "AR_aarch64_linux_android=$TOOLCHAIN_DIR/bin/llvm-ar"
+            echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$TOOLCHAIN_DIR/bin/x86_64-linux-android21-clang"
+            echo "CC_x86_64_linux_android=$TOOLCHAIN_DIR/bin/x86_64-linux-android21-clang"
+            echo "AR_x86_64_linux_android=$TOOLCHAIN_DIR/bin/llvm-ar"
+          } >> $GITHUB_ENV
+      # This gate is what caught the `mobile`/`tablet`/`desktop` profiles failing
+      # to cross-compile: `image`'s AVIF codec used to pull in the system
+      # `dav1d-sys`, which needs a pkg-config sysroot on non-host targets. Keep
+      # the check honest -- no `|| echo skipped` -- so a regression fails CI.
+      - name: Cargo check (Android ABIs x profiles)
         shell: bash
         run: |
-          cargo check --target aarch64-linux-android --no-default-features --features android-jni \
-            -Zlinker-features \
-            -C linker="$(echo $linker)" 2>&1 || \
-          echo "INFO: Android NDK cross-compile check skipped (linker may not be available on non-Android CI)"
+          set -euo pipefail
+          for target in aarch64-linux-android x86_64-linux-android; do
+            for profile in mini embedded mobile tablet desktop; do
+              echo "::group::cargo check --target $target --no-default-features --features $profile"
+              cargo check --target "$target" --no-default-features --features "$profile"
+              echo "::endgroup::"
+            done
+          done
 
   # The Windows backend is a large cfg(target_os = "windows") surface that a Linux
   # dev host cannot run. Cross-checking it here keeps that code compiling and

@@ -437,6 +437,34 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
   **compile-verified** for `x86_64-pc-windows-msvc`/`gnullvm` and clippy-clean via
   the `windows-cross-check` CI job, but have not yet been observed on a running
   Windows machine.
+  `route_preference_for_widget_kind` promotes these three kinds to
+  `ControlRoutePreference::NativePreferred` **only under `cfg(target_os = "windows")`**;
+  every other OS keeps them on the custom backend, because no other platform provides
+  these primitives. Before that routing change the Win32 implementations existed but
+  were unreachable — the global `CustomRequired` arm always won — so the ✅ cells
+  overstated the reachable behaviour. The Win32 objects are reached through
+  `NativeControlBackend::create_spin_box`/`create_list_view`/`create_scroll_area`,
+  each of which forwards to its same-named `Platform` method (no aliasing to a Panel).
+  `windows_native_controls_route_natively` and
+  `non_windows_native_controls_use_custom_backend` pin both sides of that split.
+
+### ✅ cells not yet verified on a real device（未经真机验证的 ✅ 单元格）
+
+A ✅ cell means a real platform primitive is created and reached. The following
+cells are **compile-verified only** — they build cleanly for their target and are
+covered by clippy, but no one has observed the widget on the running OS. Treat
+them as "implemented and wired, pending hardware confirmation", not as confirmed
+runtime behaviour:
+
+| Widget | Platform | Status |
+| --- | --- | --- |
+| `SpinBox` | Windows | compile-verified (`x86_64-pc-windows-msvc`/`gnullvm`), not yet run on Windows |
+| `ListView` | Windows | compile-verified, not yet run on Windows |
+| `ScrollArea` | Windows | compile-verified, not yet run on Windows |
+
+Everything else marked ✅ has been exercised on a real device or the platform's
+native runtime (Windows/Linux/macOS desktop backends are the default build path;
+the Android JNI cells were verified on an emulator and a physical arm64 device).
 - `SpinBox` is 🟦 (self-drawn) on Linux/X11, Wayland, Mobile and Harmony: the macOS
   objc2 backend creates a native `NSStepper` under the `macos` feature, but the
   default cocoa-legacy path is not native. Under `gtk-native` the Linux backend
@@ -476,6 +504,12 @@ def generate_matrix() -> str:
     lines.append("> **Auto-generated** by `tools/generate_platform_capability_matrix.py`")
     lines.append(
         "> **Legend:** ✅ Native · 🟦 Self-drawn (functional) · 🔶 Limited · ⬜ Placeholder · ➖ N/A"
+    )
+    lines.append(
+        "> A few ✅ cells are compile-verified only; see "
+        "[✅ cells not yet verified on a real device]"
+        "(#-cells-not-yet-verified-on-a-real-device未经真机验证的--单元格)"
+        " under Degradation notes."
     )
     lines.append("")
     lines.append("## Symbol semantics（符号语义）")

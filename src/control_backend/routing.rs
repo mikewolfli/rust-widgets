@@ -4,20 +4,31 @@ use crate::widget::WidgetKind;
 pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePreference {
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
     {
-        // Windows-specific overrides. SpinBox/ListView/ScrollArea are no longer
-        // listed here: they now have real native implementations (up-down,
-        // SysListView32, a scrollable child window) and route natively above.
-        // The dialogs still lack a dedicated native path in the default build, so
-        // they keep routing to the custom backend on Windows.
+        // Windows-specific overrides. The dialogs still lack a dedicated native
+        // path in the default build, so they keep routing to the custom backend
+        // on Windows.
         #[cfg(target_os = "windows")]
-        if matches!(
-            kind,
-            WidgetKind::MessageBox
-                | WidgetKind::FileDialog
-                | WidgetKind::ColorDialog
-                | WidgetKind::FontDialog
-        ) {
-            return ControlRoutePreference::CustomRequired;
+        {
+            if matches!(
+                kind,
+                WidgetKind::MessageBox
+                    | WidgetKind::FileDialog
+                    | WidgetKind::ColorDialog
+                    | WidgetKind::FontDialog
+            ) {
+                return ControlRoutePreference::CustomRequired;
+            }
+
+            // These kinds have real Win32 implementations that would otherwise be
+            // discarded by the `CustomRequired` match below: `SpinBox` uses
+            // `UPDOWN_CLASS` (`msctls_updown32`), `ListView` uses `SysListView32`,
+            // and `ScrollArea` a `WS_HSCROLL | WS_VSCROLL` child window. Only
+            // Windows has these primitives, so the promotion is gated per-OS
+            // rather than listed in the global match. See
+            // `windows_native_controls_route_natively` below.
+            if matches!(kind, WidgetKind::SpinBox | WidgetKind::ListView | WidgetKind::ScrollArea) {
+                return ControlRoutePreference::NativePreferred;
+            }
         }
 
         match kind {
@@ -315,6 +326,10 @@ mod tests {
 
     /// The Windows native controls must not be re-routed to the custom backend:
     /// that would discard the real Win32 implementations.
+    ///
+    /// This is the counterpart to the `#[cfg(not(target_os = "windows"))]` arm in
+    /// `custom_required_widget_kinds`; the two together pin the per-OS routing so
+    /// a future edit cannot silently drop a Win32 primitive.
     #[cfg(all(not(any(feature = "mini", feature = "embedded")), target_os = "windows"))]
     #[test]
     fn windows_native_controls_route_natively() {
@@ -328,6 +343,21 @@ mod tests {
         }
     }
 
+    /// On every non-Windows host the same kinds fall back to the custom backend,
+    /// because no other platform provides these primitives.
+    #[cfg(all(not(any(feature = "mini", feature = "embedded")), not(target_os = "windows")))]
+    #[test]
+    fn non_windows_native_controls_use_custom_backend() {
+        for kind in [WidgetKind::ListView, WidgetKind::ScrollArea] {
+            assert_eq!(
+                route_preference_for_widget_kind(kind),
+                ControlRoutePreference::CustomRequired,
+                "WidgetKind::{kind:?} has no native primitive off Windows and must \
+                 use the custom backend",
+            );
+        }
+    }
+
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
     #[test]
     fn custom_required_widget_kinds() {
@@ -335,6 +365,10 @@ mod tests {
         let custom_required = [
             WidgetKind::TextEdit,
             WidgetKind::RichEdit,
+            // `ListView` has a real Win32 `SysListView32` implementation, so it is
+            // `NativePreferred` on Windows and only `CustomRequired` elsewhere.
+            // See `windows_native_controls_route_natively`.
+            #[cfg(not(target_os = "windows"))]
             WidgetKind::ListView,
             WidgetKind::TreeView,
             WidgetKind::DockPanel,
