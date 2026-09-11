@@ -68,8 +68,9 @@ if [[ -z "$UDID" || ${#UDID} -lt 8 ]]; then
 fi
 
 echo "[1/4] Booting simulator $DEVICE_NAME ($UDID)"
-xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
-xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
+# `bootstatus -b` both boots and waits; it is a no-op wait when already booted.
+xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || \
+  { xcrun simctl boot "$UDID" >/dev/null 2>&1 || true; xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true; }
 
 echo "[2/4] Installing app bundle"
 xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -77,25 +78,36 @@ xcrun simctl install "$UDID" "$APP_BUNDLE"
 
 echo "[3/4] Launching probe"
 LOG_FILE="$ROOT_DIR/target/ios-testapp-$IOS_SIM_ARCH/launch.log"
-xcrun simctl launch --console-pty "$UDID" "$BUNDLE_ID" 2>&1 | tee "$LOG_FILE" || true
+# Use a plain launch (not --console-pty): the probe is a UIApplication that stays
+# alive, so attaching to its console would block forever. Its evidence is read
+# back from the data container below.
+xcrun simctl launch "$UDID" "$BUNDLE_ID" 2>&1 | tee "$LOG_FILE" || true
+
+# Give UIKit a moment to run the app delegate, then poll for the result file
+# (written by the probe at the end of `didFinishLaunchingWithOptions`).
+CONTAINER=""
+RESULT_FILE="$ROOT_DIR/target/ios-testapp-$IOS_SIM_ARCH/ios_probe_result.txt"
+rm -f "$RESULT_FILE"
+for _ in $(seq 1 30); do
+  sleep 1
+  CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || true)"
+  if [[ -n "$CONTAINER" && -f "$CONTAINER/Documents/ios_probe_result.txt" ]]; then
+    cp "$CONTAINER/Documents/ios_probe_result.txt" "$RESULT_FILE"
+    break
+  fi
+done
 
 echo "[4/4] Extracting result file"
-CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || true)"
-RESULT_FILE="$ROOT_DIR/target/ios-testapp-$IOS_SIM_ARCH/ios_probe_result.txt"
-if [[ -n "$CONTAINER" && -f "$CONTAINER/Documents/ios_probe_result.txt" ]]; then
-  cp "$CONTAINER/Documents/ios_probe_result.txt" "$RESULT_FILE"
+if [[ -f "$RESULT_FILE" ]]; then
   echo "--- probe checks ---"
   cat "$RESULT_FILE"
   echo ""
-fi
-
-if grep -q "RESULT: PASS" "$LOG_FILE" 2>/dev/null; then
-  echo "RESULT: PASS"
-  exit 0
+else
+  echo "warning: probe result file not found after 30s" >&2
 fi
 
 if [[ -f "$RESULT_FILE" ]] && ! grep -q "FAIL" "$RESULT_FILE"; then
-  echo "RESULT: PASS (from result file)"
+  echo "RESULT: PASS"
   exit 0
 fi
 
