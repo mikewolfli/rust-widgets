@@ -4,6 +4,24 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 1.1.1 (2026-09-11) — Cross-compilation & Coverage Visibility Release
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for full details.
+
+### Highlights
+- **AVIF switched to the pure-Rust `avif` codec** (no more `dav1d-sys`), making
+  `mobile`/`tablet`/`desktop` genuinely cross-compilable for Android/iOS/wasm
+- **Control routing fixed**: `NativeControlBackend` was bypassing real Win32 primitives
+  (`BS_AUTOCHECKBOX`, `msctls_updown32`, the scrollable child window); `SpinBox`/`ListView`/
+  `ScrollArea` now route natively **on Windows only**
+- **50 previously invisible tests** (`ime_macos`/`android`/`ios`/`macos_objc2`) are now compiled
+  and executed on the host; fixed a missing `Debug` that made three `android` tests uncompilable
+- **`cargo test --all-features` (the CI command) now compiles** — it previously failed with `E0277`
+- **Two dead CI jobs repaired**: the wasm job was missing `--no-default-features`, and the Android
+  job swallowed every failure
+- **Version references aligned to `1.1.1`**; **no ABI break** (`rw_bindings_api_version` = `8`)
+- **3853 tests passing**, 0 failing
+
 ## 1.1.0 (2026-09-09) — Version Contract Sync Release
 
 See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for full details.

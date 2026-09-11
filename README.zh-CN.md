@@ -6,8 +6,11 @@
 
 纯 Rust 编写的跨平台原生 GUI 库。支持桌面、平板、手机、嵌入式以及精简特性（**mini**）目标。
 
+全部 167 种控件均可编译，并由平台能力矩阵（`docs/plans/platform_capability_matrix.md`）
+覆盖——该矩阵由源码机械派生，并在 CI 中设有防脱节门禁。
+
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3400%2B-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-3850%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 <p align="center">
@@ -30,9 +33,18 @@ cargo check --no-default-features --features mini
 # 嵌入式
 cargo check --no-default-features --features embedded
 
-# 测试
+# 测试（lib 套件；CI 实际命令为 `cargo test --all-features -q`）
 cargo test --lib
+
+# CI 使用的交叉编译检查（无需系统库）
+cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
+cargo check --target x86_64-pc-windows-msvc --no-default-features \
+  --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management"
 ```
+
+> **Android**：用 `./tools/build_android_testapp.sh` 构建 JNI 测试 APK
+> （`ANDROID_SDK_ROOT` 默认 `~/Android/Sdk`；NDK 取自 `$ANDROID_SDK_ROOT/ndk`）。
+> 详见[构建要求](#构建要求)。
 
 ### 设备配置
 
@@ -136,9 +148,11 @@ cargo test --lib
 
 **图表**：LineChart、BarChart、PieChart、Sparkline
 
-**网页**：WebView、WebEngineView、WebEnginePage、WebEngineSettings、WebEngineDownloadItem、WebEngineCookieStore、WebEngineWebChannel
+**网页**：WebView、WebEngineView、WebEnginePage、WebEngineSettings、WebEngineDownloadItem、WebEngineCookieStore、WebEngineWebChannel、WebEngineFindTextResult、WebEngineNotification、WebEngineScriptDialog、WebEngineContextMenuRequest
 
 **菜单**：PieMenu、RibbonBar、MenuButton、DropdownMenu、Popover、SegmentedButton
+
+**特殊**：FreeformShape、QRCode、ColorHistory、ColorWell、MasonryLayout、Stepper、Divider、SwipeToDismiss、Toolbox、PropertiesPanel、PropertyGrid、WizardDialog、Wizard、AnimatedImage、HeroAnimation、BezierCurveEditor、LottieWidget、RiveWidget、VideoPlayer、ImageGallery、AudioVisualizer、CameraPreview、BarcodeScanner、Breakcrumb、CodeEditor、ColorPicker、CommandEntry、CommandPalette、DiffViewer、MapView、MediaPlayer、NotificationCenter、Snackbar、SplitButton、TerminalView、ToastStack
 
 ### Mini / Embedded（精简核心控件集）
 
@@ -185,6 +199,8 @@ python examples/python/demo_basic.py
 | `web` | WebEngine、WebView、JS 引擎 | 桌面+ |
 | `pdf` | PDF 文档创建 | 桌面+ |
 | `print` | 打印支持 | 桌面+ |
+| `performance` | 性能分析器、帧率监控 | 桌面+ |
+| `memory` | ObjectPool、ArenaAllocator、BufferPool | 桌面+ |
 
 ---
 
@@ -195,6 +211,27 @@ python examples/python/demo_basic.py
 | 桌面 | 1.87+ | wgpu、GTK/Wayland (Linux)、objc2 (macOS) |
 | Mini | 1.87+ | heapless、hashbrown、bumpalo（no_std 就绪；profile 在 std 上编译） |
 | 嵌入式 | 1.87+ | 无 |
+
+### 图像编解码与交叉编译
+
+AVIF 支持使用**纯 Rust** 的 `avif` 编解码器（ravif），而非 `avif-native`，因此为
+异种目标构建 `mobile`/`tablet`/`desktop` 时**不需要** `dav1d` sysroot，也无需手工配置
+交叉 `pkg-config`。早期版本会引入 `dav1d-sys`，除非手工配好 pkg-config sysroot，
+否则 Android/iOS/wasm 的交叉编译会失败。
+
+代价是解码速度：纯 Rust 编解码器慢于 C 版 `dav1d` 后端，并增加约 15 个构建期
+crate（`rav1e` 等）。
+
+---
+
+## 性能
+
+| 指标 | 桌面 | Mini（目标值） |
+|------|------|----------------|
+| 二进制体积 | ~5MB | < 100KB |
+| 内存占用（典型） | < 100MB | < 32KB |
+| 帧率 | 60 FPS | 30 FPS |
+| 控件创建耗时 | < 1ms | < 0.1ms |
 
 ---
 

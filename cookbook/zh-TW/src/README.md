@@ -143,7 +143,7 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 
 | | |
 |---|---|
-| **版本** | 1.1.0 |
+| **版本** | 1.1.1 |
 | **授權條款** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **儲存庫** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **測試數量** | 3400+ |

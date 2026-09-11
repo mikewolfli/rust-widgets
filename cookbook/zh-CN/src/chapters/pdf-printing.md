@@ -513,7 +513,7 @@ let metadata = PdfMetadata {
     author: "李四".into(),
     subject: "2026 年第二季度财务结果".into(),
     keywords: "财务, 季度, 2026, 报告".into(),
-    creator: "rust-widgets 1.1.0".into(),
+    creator: "rust-widgets 1.1.1".into(),
     producer: "rust-widgets PDF 引擎".into(),
     creation_date: "2026-06-10T12:00:00Z".into(),
     modification_date: "2026-06-10T12:00:00Z".into(),

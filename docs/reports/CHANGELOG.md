@@ -2,6 +2,81 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.1 (2026-09-11) — Cross-compilation & Coverage Visibility Release
+
+### Fixed — cross-compilation
+- **AVIF now uses the pure-Rust `avif` codec instead of `avif-native`.**
+  `avif-native` pulled in `dav1d-sys`, a system C library that fails to cross-compile for
+  Android/iOS/wasm unless a pkg-config sysroot is configured by hand. This made the
+  `mobile`/`tablet`/`desktop` profiles impossible to build for any foreign target.
+  Trade-off: slower AVIF decode and ~15 extra build-time crates (`rav1e` et al.), in exchange
+  for genuinely cross-compilable builds. Verified: Android (2 ABIs × 5 profiles), iOS,
+  Windows (msvc/gnullvm), and wasm32 all compile clean.
+- **Cross-target cfg-gating mismatches fixed** in `platform/runtime.rs`, `platform/android/types.rs`,
+  `platform/ios/types.rs`, `gpu/adapter.rs`, and `compat.rs`. Several imports and helpers were gated on
+  `target_os` alone while their users were also gated on `not(feature = "mini")` /
+  `not(feature = "embedded")`, producing `E0432`/`E0433`/`E0599` on the affected combinations.
+- **`compat::OnceLock` gained `set()`** so the `mini` profile matches the `std::sync::OnceLock` API
+  surface (the Windows notify path calls it).
+
+### Fixed — control routing
+- **`NativeControlBackend` delegated to the wrong platform primitives**, discarding real Win32
+  implementations:
+  - `create_checkbox` → `create_toggle_button` (bypassed `BS_AUTOCHECKBOX`)
+  - `create_spin_box` → `create_double_spin_box` (bypassed `msctls_updown32`)
+  - `create_scroll_area` → `create_panel` (bypassed the scrollable child window)
+  The two reverse delegations (`create_toggle_button`, `create_double_spin_box`) were dead code and
+  now preserve widget identity.
+- **Per-OS routing for `SpinBox`/`ListView`/`ScrollArea`.** They have real Win32 implementations but
+  were listed in the global `CustomRequired` arm, so the native path was unreachable on Windows while
+  other platforms (which have no such primitive) genuinely need the custom backend. Routing now
+  promotes them to `NativePreferred` **only under `cfg(target_os = "windows")`**, pinned by two
+  complementary tests.
+
+### Fixed — test coverage visibility
+- **50 pure-logic tests that never compiled or ran on any reachable path** are now part of the host
+  build, following the BLUE14 rule that "not in the build" must be distinguished from "failed" and
+  "ignored": `ime_macos` (19), `android` (8), `ios` (6), `macos_objc2` (17). Each was verified by
+  mechanical scan to touch no OS API.
+- **`AndroidHandleKind` was missing `Debug`**, which made three of its own `assert_eq!` tests
+  impossible to compile. Never surfaced because the module was excluded from the host build.
+- **`cargo test --all-features` (the actual CI command) did not compile** (`E0277`): `serialize_state`
+  was gated more loosely than the `BackendState` `Serialize` derive it depends on.
+- **`tools/generate_platform_capability_matrix.py`** now derives the degradation table by mechanically
+  parsing `native.rs`; the capability-matrix doc is gated against drift in CI. Its prose is generated,
+  so hand-editing the markdown is no longer possible without the freshness check failing.
+
+### CI
+- **`wasm-check` job was permanently broken**: it ran `--features wasm` without
+  `--no-default-features`, which pulled in the whole `desktop` profile (audio, JS engine) for a wasm32
+  target. Now pinned to `--no-default-features --features wasm`.
+- **`android-cross-check` job was a no-op**: it passed `-Zlinker-features`/`-C linker` (rustc flags,
+  invalid for `cargo check`) and swallowed every failure with `|| echo skipped`. It now exports the
+  NDK linker/compiler via `CARGO_TARGET_*`/`CC_*` and checks 2 ABIs × 5 profiles with no failure mask.
+
+### Changed
+- Crate version bumped `1.1.0` → `1.1.1`. **No ABI change**: `rw_bindings_api_version` remains `8`
+  and no exported symbols were added or removed.
+- Version references aligned to `1.1.1` across `Cargo.toml`, the `CoreConfig` runtime version contract,
+  Node.js/Python package metadata, the demo banner, and the en/zh-CN/zh-TW cookbooks.
+
+### Documentation
+- README (en + zh-CN) refreshed: corrected the stale test-count badge (`3700+`/`3400+` → `3850+`),
+  documented the AVIF codec switch and its trade-off, added the CI cross-compile commands, and
+  filled in zh-CN sections that had drifted (Web widget list, Special widgets, `performance`/`memory`
+  core modules, Performance section).
+- `docs/plans/blue14.md` updated with the round-8 audit record (E-class), including the one item
+  deliberately left gated (`accessibility/windows`) because un-gating it would only produce an
+  empty assertion body.
+
+### Verification
+- `cargo test --lib`: **3853 passed**, 0 failed (was 3820).
+- `cargo test --all-features` (CI command): 0 failed (previously failed to compile).
+- `clippy --all-targets -D warnings` and `clippy --all-features --all-targets -D warnings`: 0 warnings.
+- All profiles (desktop/mobile/tablet/mini/embedded/full) and cross-targets
+  (iOS / wasm32 / Windows gnullvm) build with 0 errors, 0 warnings.
+- Android JNI test APK builds and signs via `tools/build_android_testapp.sh`.
+
 ## 1.1.0 (2026-09-09) — Version Contract Sync Release
 
 ### Changed

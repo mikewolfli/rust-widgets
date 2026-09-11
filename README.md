@@ -6,8 +6,12 @@
 
 Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and minimal-profile **mini** targets.
 
+All 167 widget kinds compile and are covered by the platform capability matrix
+(`docs/plans/platform_capability_matrix.md`), which is generated from source and
+gated for drift in CI.
+
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3700%2B-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-3850%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 <p align="center">
@@ -30,9 +34,18 @@ cargo check --no-default-features --features mini
 # Embedded
 cargo check --no-default-features --features embedded
 
-# Tests
+# Tests (lib suite; the CI command is `cargo test --all-features -q`)
 cargo test --lib
+
+# Cross-compile checks used by CI (no system libraries required)
+cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
+cargo check --target x86_64-pc-windows-msvc --no-default-features \
+  --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management"
 ```
+
+> **Android:** build the JNI test APK with `./tools/build_android_testapp.sh`
+> (`ANDROID_SDK_ROOT` defaults to `~/Android/Sdk`; the NDK is taken from
+> `$ANDROID_SDK_ROOT/ndk`). See [Build Requirements](#build-requirements).
 
 ### Device Profiles
 
@@ -199,6 +212,17 @@ python examples/python/demo_basic.py
 | Desktop | 1.87+ | wgpu, GTK/Wayland (Linux), objc2 (macOS) |
 | Mini | 1.87+ | heapless, hashbrown, bumpalo (no_std-ready; profile compiles on std) |
 | Embedded | 1.87+ | None (software-only) |
+
+### Image codecs and cross-compilation
+
+AVIF support uses the **pure-Rust** `avif` codec (ravif), not `avif-native`, so
+building `mobile`/`tablet`/`desktop` for a foreign target does **not** require a
+`dav1d` sysroot or cross-configured `pkg-config`. Earlier releases pulled in
+`dav1d-sys`, which failed to cross-compile for Android/iOS/wasm unless a
+pkg-config sysroot was set up by hand.
+
+The trade-off is decode speed: the pure-Rust codec is slower than the C `dav1d`
+backend, and it adds ~15 build-time crates (`rav1e` et al.).
 
 ---
 
