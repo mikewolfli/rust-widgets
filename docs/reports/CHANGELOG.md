@@ -2,6 +2,128 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.2 (2026-09-12) — Platform Correctness & Unsafe-Surface Audit Release
+
+An audit-driven release. Work began as "complete the Apple-related items in `blue14.md`" and
+continued through seven rotated audit directions (FFI soundness, error-path leaks, concurrency/panic
+safety, memory/long-run, API-contract consistency, doc/code consistency, and unsafe-impl necessity).
+Every fix below was reproduced first, then closed with a regression test and **negative verification**
+(revert the fix → the test must fail).
+
+### Fixed — Apple (host-visible only on macOS, so latent for the project's whole history)
+- **`MacOSPlatform` (cocoa-legacy) made unguarded AppKit calls from any thread.** Creating a window
+  or touching any of ~30 other call sites from a worker thread made AppKit raise a foreign
+  Objective-C exception, which Rust cannot catch, so the **entire test process died with SIGABRT**
+  (`cargo test --lib --features desktop` aborted in `c_abi_widget_lifecycle_roundtrip`).
+  Added an `is_main_thread()` guard plus a state-only fallback handle to every AppKit entry point,
+  and made `add_to_parent_window`/`sync_list_box_native` skip nil receivers (the `cocoa` crate
+  dereferences null and aborts).
+- **`macos_objc2` native FFI was gated on the alias feature `objc2-macos` instead of `macos`.**
+  Because feature aliases are one-way, `--features macos` left **43 native call sites silently
+  compiled out**, degrading the backend to state-only with no error. Now gated on the canonical
+  feature.
+- **`set_native_text` declared `performSelector:withObject:` as returning `()`**, but it returns
+  `id`; the mismatch aborted at runtime. Return type corrected.
+- **`ime_macos` declared `ImeCtx` as four identically-named *local* structs.** `Any::downcast_ref`
+  matches on `TypeId`, not memory layout, so every downcast silently returned `None` and **three
+  native IME paths were no-ops**. Types hoisted to module level.
+
+### Fixed — FFI soundness
+- **Removed three unnecessary `unsafe impl Sync`, each proven redundant by a delete-and-compile
+  test**: `EventHandlerContext` (`json/events.rs`), `LinuxPlatform` (`linux/types.rs`), and
+  `TsfThreadMgr` (`ime_windows.rs`). Each removal compiled clean across desktop, `--all-features`,
+  every profile, and `x86_64-pc-windows-gnu`. `EventHandlerContext` was the sharpest case: it exposes
+  both `user_data<T>() -> &T` and `user_data_mut<T>() -> &mut T` from the same unowned pointer, so a
+  `Sync` impl would have legalized a genuine data race. `AndroidPlatform`'s `Sync` was **kept** —
+  removing it produces 55 `E0277` errors, i.e. real code depends on it. The crate now has exactly
+  one `unsafe impl Sync`.
+
+### Fixed — resource leaks on error paths
+- **`ffmpeg_encoder` leaked its temp file on any encode failure.** `format::output_as` creates the
+  file before many `?` early-returns, so failures after that point left the file behind. Now guarded
+  by RAII (`TempFileGuard`).
+- **`ffmpeg_decoder` leaked on write failure** — same class, fixed the same way.
+
+### Fixed — concurrency, panic safety, timing
+- **i18n hot-reload trusted `mtime` alone**, so on coarse-granularity filesystems a change could be
+  missed entirely. Replaced with a content fingerprint.
+- **`undo/stack` test fixture used `static mut`**, a real data race between concurrent tests. Now atomic.
+- **Data-binding's `syncing` re-entrancy flag stayed stuck forever if a callback panicked**, silently
+  disabling all future two-way sync. Now an RAII guard, so a panic unwinds it.
+
+### Fixed — API contracts and lifecycle
+- **`StubPlatform` contradicted itself**: 21 `create_*` methods ignored their `parent` argument while
+  19 sibling methods validated it. All 21 now validate, so tests built on the stub are a valid
+  contract baseline. `create_menu_bar` requires a `Window` parent; `create_menu` requires
+  `MenuBar | Menu`.
+- **`macos`/cocoa's `create_spin_box`/`create_list_view`/`create_scroll_area` ignored `parent`**
+  while the `create_group_box` directly beneath them validated it. Fixed.
+- **Added `Platform::destroy_widget()` and `widget_count()`** (plus `rw_destroy_widget` in the C ABI,
+  all 11 backends, and the `ControlBackend` trait). Previously there was **no way to destroy a
+  widget at all**, so dynamic UIs accumulated registry entries without bound. Cleanup is real, not
+  cosmetic: objc2 releases derived submenu ids and cascades menu children; cocoa now calls the
+  previously-never-called `a11y_bridge.unregister_handle`; iOS releases its `ButtonTarget`.
+- **GTK clipboard panicked off the main thread.** `gtk_clipboard()` called
+  `gdk::Display::default()` directly, and GDK panics ("may only be used from the main thread") on a
+  non-GTK thread, aborting the process; the function's own doc comment claimed it returned `None`
+  there. Now guarded by `gtk::is_initialized_main_thread()` with the documented mirror fallback.
+- **`libvorbis` was hard-coded as an external encoder.** This had been misattributed as an
+  "environment failure"; `brew deps ffmpeg` / `otool -L` proved Homebrew's ffmpeg ships no vorbis.
+  Now falls back to ffmpeg's native Vorbis encoder.
+
+### Fixed — test coverage that was not actually running
+- **50 logic-only tests were excluded from the build** by module-level `#[cfg(target_os = ...)]`:
+  `ime_macos` (19), `macos_objc2` (17), `android` (8), `ios` (6). All now execute on the host.
+  Un-gating them exposed a previously-uncompilable `assert_eq!` in the `android` tests
+  (`AndroidHandleKind` lacked `Debug`).
+- Earlier rounds likewise recovered `ime_windows` (15) and `windows_notify` (11) tests that were
+  trapped behind `target_os` gates despite being pure state-machine logic.
+- Added `platform::contract_tests` (11 tests, incl. a 17-method parent-rejection matrix) and
+  `platform::teardown_tests` (3 tests asserting the library's own registry sizes).
+
+### Added
+- `tools/check_widget_kind_count.sh` — mechanically parses `src/widget/kind.rs` and fails if any
+  document's stated widget-kind count has drifted. Wired into the CI `validation-gates` job.
+- `tools/check_apple_native.sh`, `tools/check_apple_thread_safety.sh`, `tools/build_ios_testapp.sh`,
+  `tools/run_ios_testapp.sh` — a real iOS `.app` (staticlib + ObjC host, no Xcode project) that
+  boots an iOS simulator, installs, launches, and asserts `RESULT: PASS`; plus AppKit probes for
+  both macOS backends.
+- `examples/apple_appkit_probe_objc2.rs` — a separate probe for the objc2 backend (the two macOS
+  backends use different Objective-C crates).
+- An `apple-native` CI job covering both macOS backends and the iOS simulator run.
+
+### Changed
+- Crate version bumped `1.1.1` → `1.1.2`. **No ABI change**: `rw_bindings_api_version` remains `8`.
+  `rw_destroy_widget` is a new symbol in the generated header (106 declarations, up from 105).
+- Version references aligned to `1.1.2` in `Cargo.toml`, the `CoreConfig` runtime version contract,
+  Node.js/Python package metadata, the demo banner, and the en/zh-CN/zh-TW cookbooks.
+- **Docs corrected where they contradicted the code**: `codemap.md` claimed 166 `WidgetKind`
+  variants (actual 167), and both READMEs advertised "80+ widgets" (actual 167 kinds).
+
+### Verification
+- `cargo test --lib`: **3854 passed**, 0 failed (desktop) / **3946** (full) / **1869**
+  (`--all-features`); mobile 3662, tablet 3653, wasm 2263, harmony 2268 — all 0 failed.
+- `clippy --all-features --all-targets -- -D warnings`: **0 warnings**; `cargo fmt --check` clean.
+- `cargo check --all-targets` across desktop/full/mini/embedded/mobile/tablet/wasm/harmony: 0 errors.
+- Eight CI gates pass: profiles, ABI, widget-kind count, platform capability matrix, capability
+  truthfulness, control route matrix, platform impl matrix, Apple thread safety.
+- Both macOS AppKit probes report `RESULT: PASS` (12 named checks each) against live AppKit objects.
+
+### Notes on what was deliberately *not* changed
+- **Dialog parent validation stays as-is.** `create_message_box` / `create_file_dialog` /
+  `create_color_dialog` / `create_font_dialog` ignore the parent on 7 of 11 backends and validate on
+  4. Ignoring is the majority convention and is semantically right (dialogs are top-level modals,
+  not children of a widget); forcing uniformity would break the 7 backends behaving correctly. The
+  contract is now pinned by a test so future audits do not re-flag it.
+- **`accessibility/windows` stays gated.** It references `winapi::um::winuser::EVENT_*`
+  unconditionally, so it genuinely cannot compile off Windows, and un-gating it would only produce
+  an empty assertion body (false coverage).
+- **An RSS-based leak claim was retracted as wrong.** A draft report asserted a leak from
+  "8000 widgets → +49 MB RSS". Three independent checks disproved it: macOS `leaks --atExit`
+  reported `0 leaks for 0 total leaked bytes`, malloc node counts did not grow under churn, and a
+  pure-AppKit control (no rust-widgets code) reproduced the same RSS curve. The growth is AppKit's
+  own caching. Regression tests now assert registry state, not RSS.
+
 ## 1.1.1 (2026-09-11) — Cross-compilation & Coverage Visibility Release
 
 ### Fixed — cross-compilation

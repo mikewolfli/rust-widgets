@@ -57,6 +57,14 @@ objc2 backend. **Both are now native-verified** (see below).
 > This was masked before the feature-gate fix above made the native path
 > reachable from `--features macos`.
 
+> Fixed 2026-09-11: the `set_native_frame` / `set_native_hidden` helpers sent the
+> **view** selectors `setFrame:` / `setHidden:` to whatever object was stored —
+> including an `NSWindow`, which implements neither (windows use
+> `setFrame:display:` and `orderOut:` / `makeKeyAndOrderFront:`). objc2 raised
+> `invalid message send to -[NSWindow setFrame:]: method not found` and aborted.
+> Both helpers are now window/view aware and carry a main-thread guard, and
+> `set_native_enabled` / `set_native_text` probe `respondsToSelector:` first.
+
 ## Verification (real Mac, 2026-09-11)
 
 `cargo run --example apple_appkit_probe --features <backend>` runs on the AppKit
@@ -73,9 +81,16 @@ backend = cocoa                    backend = macos-objc2-preview
 [PASS] native_menu_bar             [PASS] native_menu_bar
 [PASS] native_clipboard            [PASS] native_clipboard
 [PASS] native_dialog_kinds         [PASS] native_dialog_kinds
+[PASS] native_window_frame_applied [PASS] native_window_frame_applied
+[PASS] native_window_visibility    [PASS] native_window_visibility
 [PASS] visibility_roundtrip        [PASS] visibility_roundtrip
-RESULT: PASS                       RESULT: PASS
+RESULT: PASS (12 checks)           RESULT: PASS (12 checks)
 ```
+
+> `native_window_frame_applied` and `native_window_visibility` read back the
+> **native** `NSWindow.frame` / `isVisible`, so they distinguish a real FFI
+> wiring from a state-only stub. They are what caught the objc2 selector bug
+> above (`setFrame:` on an `NSWindow`).
 
 Test suites on the real Mac:
 

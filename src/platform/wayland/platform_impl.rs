@@ -141,6 +141,48 @@ impl Platform for WaylandPlatform {
         log::info!("[wayland] Platform quit.");
     }
 
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Beyond the authoritative `BackendState` record, the Wayland backend keeps
+    /// per-widget entries in the shared list storage (`list_data`, used by
+    /// ComboBox/ListBox) and the menu bookkeeping (`menus`: the attachment map,
+    /// the menu tree and the queued triggers). All must be purged, otherwise a UI
+    /// rebuilt in a create/destroy loop would leak one entry per discarded widget.
+    /// Every lock is scoped to its own statement so no two guards are ever held at
+    /// the same time.
+    ///
+    /// The native session (`native_session`) is a single connection-wide object
+    /// shared by every window rather than a per-widget registry, so there is
+    /// nothing per-widget to release there and no protocol request is issued.
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        if let Ok(mut data) = self.list_data.lock() {
+            data.remove(&widget_id);
+        } else {
+            log::error!("[wayland] destroy_widget: list data mutex poisoned");
+        }
+
+        if let Ok(mut menus) = self.menus.lock() {
+            // The widget may be an attached menu bar (keyed by window id) or a
+            // window owning one, so both directions are cleared.
+            menus.attached_menu_bar.remove(&widget_id);
+            menus.attached_menu_bar.retain(|_, bar| *bar != widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+            // Drop queued triggers that reference a widget that no longer exists.
+            menus.pending_menu_events.retain(|queued| *queued != widget_id);
+            menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+        } else {
+            log::error!("[wayland] destroy_widget: menu mutex poisoned");
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     // -----------------------------------------------------------------------
     // Widget creation
     // -----------------------------------------------------------------------

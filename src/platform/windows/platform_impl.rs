@@ -247,6 +247,62 @@ impl Platform for WindowsPlatform {
             PostQuitMessage(0);
         }
     }
+
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Beyond the authoritative `BackendState` record, the Win32 backend keeps
+    /// per-widget entries in four side tables: the native handle map (`handles`),
+    /// the menu ownership map (`menu_owner_window`), the menu command map
+    /// (`menu_command_to_item`) and the native-dialog metadata (`dialog_data`).
+    /// Control command ids (`control_command_to_widget`, keyed by command id
+    /// rather than widget id) are swept by value so no entry outlives its widget.
+    /// All of them must be purged, otherwise a UI rebuilt in a create/destroy
+    /// loop would leak one entry per discarded widget. Every lock is scoped to its
+    /// own statement so no two guards are ever held at the same time.
+    ///
+    /// Only the library's own bookkeeping is released here: no Win32 message is
+    /// sent and no window is destroyed — the process-wide HWND may still be owned
+    /// elsewhere, so `DestroyWindow` is deliberately not called.
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(mut handles) = self.menu_state.handles.lock() {
+                handles.remove(&widget_id);
+            } else {
+                log::error!("[rust_widgets][windows] destroy_widget: handles mutex poisoned");
+            }
+            if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
+                owners.remove(&widget_id);
+            } else {
+                log::error!(
+                    "[rust_widgets][windows] destroy_widget: menu_owner_window mutex poisoned"
+                );
+            }
+            if let Ok(mut map) = self.menu_state.menu_command_to_item.lock() {
+                map.retain(|_, item| *item != widget_id);
+            } else {
+                log::error!(
+                    "[rust_widgets][windows] destroy_widget: menu_command_to_item mutex poisoned"
+                );
+            }
+            if let Ok(mut map) = self.menu_state.control_command_to_widget.lock() {
+                map.retain(|_, owner| *owner != widget_id);
+            } else {
+                log::error!(
+                    "[rust_widgets][windows] destroy_widget: control_command_to_widget mutex poisoned"
+                );
+            }
+            if let Ok(mut data) = self.dialog_data.lock() {
+                data.remove(&widget_id);
+            } else {
+                log::error!("[rust_widgets][windows] destroy_widget: dialog_data mutex poisoned");
+            }
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         #[cfg(target_os = "windows")]
         {

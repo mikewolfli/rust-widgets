@@ -131,25 +131,49 @@ impl Platform for StubPlatform {
         log::info!("[stub] StubPlatform quit");
     }
 
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Besides the authoritative `BackendState` record the stub keeps five
+    /// in-memory side tables: `menu_nodes`, the combo-box item/selection maps and
+    /// the list-box item/selection maps. All of them must be purged, otherwise a
+    /// UI rebuilt in a create/destroy loop would leak one entry per discarded
+    /// widget. Each lock is scoped to its own statement so no two guards are ever
+    /// held at the same time.
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        self.menu_nodes.lock().expect("platform lock poisoned").remove(&widget_id);
+
+        self.combo_box_items.lock().expect("platform lock poisoned").remove(&widget_id);
+        self.combo_box_selection.lock().expect("platform lock poisoned").remove(&widget_id);
+
+        self.list_box_items.lock().expect("platform lock poisoned").remove(&widget_id);
+        self.list_box_selection.lock().expect("platform lock poisoned").remove(&widget_id);
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.state.create_widget(StubHandleKind::Window, title, x, y, width, height)
     }
 
     fn create_button(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::Button, text, x, y, width, height)
     }
 
     fn create_menu_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -157,6 +181,9 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_menu_bar");
+        }
+        if !matches!(self.state.kind_of(parent), Some(StubHandleKind::Window)) {
+            return 0;
         }
         let id = self.state.create_widget(StubHandleKind::MenuBar, "MenuBar", x, y, width, height);
         self.menu_nodes
@@ -168,82 +195,96 @@ impl Platform for StubPlatform {
 
     fn create_checkbox(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::CheckBox, text, x, y, width, height)
     }
 
     fn create_line_edit(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::LineEdit, text, x, y, width, height)
     }
 
     fn create_label(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::Label, text, x, y, width, height)
     }
 
     fn create_radio_button(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::RadioButton, text, x, y, width, height)
     }
 
-    fn create_slider(
-        &self,
-        _parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
+    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::Slider, "Slider", x, y, width, height)
     }
 
     fn create_progress_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
     }
 
     fn create_combo_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         let id =
             self.state.create_widget(StubHandleKind::ComboBox, "ComboBox", x, y, width, height);
         self.combo_box_items.lock().expect("platform lock poisoned").insert(id, Vec::new());
@@ -318,12 +359,15 @@ impl Platform for StubPlatform {
 
     fn create_list_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         let id = self.state.create_widget(StubHandleKind::ListBox, "ListBox", x, y, width, height);
         self.list_box_items.lock().expect("platform lock poisoned").insert(id, Vec::new());
         self.list_box_selection.lock().expect("platform lock poisoned").insert(id, None);
@@ -420,13 +464,16 @@ impl Platform for StubPlatform {
             .and_then(|items| items.get(index).cloned())
     }
 
-    fn create_panel(&self, _parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::Panel, "Panel", x, y, width, height)
     }
 
     fn create_menu(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -435,6 +482,12 @@ impl Platform for StubPlatform {
     ) -> ObjectId {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_menu");
+        }
+        if !matches!(
+            self.state.kind_of(parent),
+            Some(StubHandleKind::MenuBar | StubHandleKind::Menu)
+        ) {
+            return 0;
         }
         let id = self.state.create_widget(StubHandleKind::Menu, text, x, y, width, height);
         self.menu_nodes
@@ -446,7 +499,7 @@ impl Platform for StubPlatform {
 
     fn create_tool_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
@@ -455,12 +508,15 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_tool_bar");
         }
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::ToolBar, "ToolBar", x, y, width, height)
     }
 
     fn create_status_bar(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         text: &str,
         x: i32,
         y: i32,
@@ -470,12 +526,15 @@ impl Platform for StubPlatform {
         if self.is_embedded_profile() {
             return self.embedded_unsupported_id("create_status_bar");
         }
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::StatusBar, text, x, y, width, height)
     }
 
     fn create_message_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         _title: &str,
         _text: &str,
         x: i32,
@@ -483,72 +542,93 @@ impl Platform for StubPlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::MessageBox, "MessageBox", x, y, width, height)
     }
 
     fn create_file_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::FileDialog, "FileDialog", x, y, width, height)
     }
 
     fn create_color_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::ColorDialog, "ColorDialog", x, y, width, height)
     }
 
     fn create_font_dialog(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::FontDialog, "FontDialog", x, y, width, height)
     }
 
     fn create_spin_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height)
     }
 
     fn create_list_view(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::ListView, "ListView", x, y, width, height)
     }
 
     fn create_scroll_area(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(StubHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
     }
     fn create_group_box(

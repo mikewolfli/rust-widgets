@@ -42,6 +42,15 @@ pub trait ControlBackend: Send + Sync {
 
     // ── Concrete widget creation methods ──
 
+    /// Destroy a previously created widget and release its resources.
+    ///
+    /// Returns `true` when the widget existed and was torn down. The default
+    /// returns `false` so existing backends keep compiling; the native and
+    /// custom backends forward this to the active platform backend.
+    fn destroy_widget(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
+
     /// Create top-level window.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
     /// Create button control.

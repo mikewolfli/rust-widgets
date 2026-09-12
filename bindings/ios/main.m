@@ -181,6 +181,13 @@ static void writeResultFile(NSString *text) {
         rw_free_string((char *)read_back);
     }
 
+    // 4b. The text change must reach the *native* UIButton, not only the Rust
+    //     state: this is what distinguishes a real FFI wiring from a state-only
+    //     stub (BLUE14 F 类 "no fake fix" requirement).
+    NSString *native_title = [(UIButton *)buttonView titleForState:UIControlStateNormal];
+    record(@"native_text_applied", [native_title isEqualToString:@"Tapped"],
+           [NSString stringWithFormat:@"UIButton title = %@", native_title]);
+
     // 5. Geometry + visibility must drive the real UIKit view.
     rw_set_widget_geometry(button, 20, 60, 140, 44);
     rw_hide_widget(button);

@@ -6,12 +6,69 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::SystemTime;
+/// Fingerprint of a translation file used to detect changes.
+///
+/// `mtime` alone is not sufficient: filesystems with coarse timestamp
+/// granularity (e.g. 1 s on some Linux/network mounts) report the *same* mtime
+/// for two writes within one tick, so a strict `modified > last_modified`
+/// comparison silently misses the update and the reload never fires. Pairing the
+/// timestamp with the byte length makes same-tick edits observable, and a
+/// content hash catches same-tick edits that happen to keep the same length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
+    /// Stable content digest; `0` means "not computed".
+    hash: u64,
+}
+
+impl FileFingerprint {
+    /// Reads the fingerprint of `path`, computing a content hash.
+    fn read(path: &std::path::Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified = metadata.modified().ok();
+        let len = metadata.len();
+        // Hashing is only needed to disambiguate equal (mtime, len) pairs; doing
+        // it unconditionally keeps the logic simple and the files are tiny.
+        let hash = std::fs::read(path).map(|bytes| fnv1a(&bytes)).unwrap_or(0);
+        Some(Self { modified, len, hash })
+    }
+
+    /// True when `self` is newer than `previous`.
+    ///
+    /// Ordered by mtime first, then length, then content hash, so a change is
+    /// detected even when the filesystem clock did not advance.
+    fn is_newer_than(&self, previous: &Self) -> bool {
+        if let (Some(now), Some(before)) = (self.modified, previous.modified) {
+            if now != before {
+                return now > before;
+            }
+        }
+        // Same (or unavailable) timestamp: fall back to size, then content.
+        if self.len != previous.len {
+            return true;
+        }
+        self.hash != previous.hash
+    }
+}
+
+/// 64-bit FNV-1a hash — small, dependency-free, and adequate for change
+/// detection (this is not a security boundary).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// i18n manager with hot reload support
 pub struct I18nManager {
     translations: HashMap<String, TranslationFile>,
     current_language: String,
     translation_paths: HashMap<String, PathBuf>,
-    file_modification_times: HashMap<String, SystemTime>,
+    file_fingerprints: HashMap<String, FileFingerprint>,
     hot_reload_enabled: bool,
     reload_sender: Option<Sender<ReloadEvent>>,
 }
@@ -22,7 +79,7 @@ impl I18nManager {
             translations: HashMap::new(),
             current_language: "en".to_string(),
             translation_paths: HashMap::new(),
-            file_modification_times: HashMap::new(),
+            file_fingerprints: HashMap::new(),
             hot_reload_enabled: false,
             reload_sender: None,
         }
@@ -50,12 +107,8 @@ impl I18nManager {
             let translation_file: TranslationFile =
                 serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
             self.translations.insert(language.to_string(), translation_file);
-            if let Some(modified) = File::open(path)
-                .ok()
-                .and_then(|f| f.metadata().ok())
-                .and_then(|m| m.modified().ok())
-            {
-                self.file_modification_times.insert(language.to_string(), modified);
+            if let Some(fingerprint) = FileFingerprint::read(path) {
+                self.file_fingerprints.insert(language.to_string(), fingerprint);
             }
             if let Some(ref sender) = self.reload_sender {
                 if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
@@ -78,13 +131,12 @@ impl I18nManager {
         }
         let mut languages_to_reload: Vec<String> = Vec::new();
         for (language, path) in self.translation_paths.iter() {
-            if let Ok(metadata) = std::fs::metadata(path) {
-                if let Ok(modified) = metadata.modified() {
-                    if let Some(last_modified) = self.file_modification_times.get(language) {
-                        if modified > *last_modified {
-                            languages_to_reload.push(language.clone());
-                        }
-                    }
+            let Some(fingerprint) = FileFingerprint::read(path) else {
+                continue;
+            };
+            if let Some(previous) = self.file_fingerprints.get(language) {
+                if fingerprint.is_newer_than(previous) {
+                    languages_to_reload.push(language.clone());
                 }
             }
         }
@@ -112,11 +164,9 @@ impl I18nManager {
         let translation_file: TranslationFile = serde_json::from_str(&content)?;
         let language = translation_file.language.clone();
         self.translations.insert(language.clone(), translation_file);
-        self.translation_paths.insert(language.clone(), path_buf);
-        if let Ok(metadata) = std::fs::metadata(path) {
-            if let Ok(modified) = metadata.modified() {
-                self.file_modification_times.insert(language, modified);
-            }
+        self.translation_paths.insert(language.clone(), path_buf.clone());
+        if let Some(fingerprint) = FileFingerprint::read(&path_buf) {
+            self.file_fingerprints.insert(language, fingerprint);
         }
         Ok(())
     }

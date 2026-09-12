@@ -89,6 +89,52 @@ impl Platform for IosMobilePlatform {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
 
+    fn destroy_widget(&self, widget_id: u64) -> bool {
+        // The kind is only consulted for the native registries, which exist only
+        // on the UIKit FFI path; the state record carries the authority for the
+        // return value on every configuration.
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        let kind = self.kind_of(widget_id);
+        let existed = self.state.destroy_widget(widget_id);
+
+        // Release the native UIKit registries. `remove_native_view` drops the raw
+        // view pointer and the child-to-parent map entry; buttons additionally own
+        // a retained `ButtonTarget` that UIKit does not keep alive for us.
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            if matches!(kind, Some(IosHandleKind::Button | IosHandleKind::RadioButton)) {
+                super::native::remove_button_target(widget_id);
+            }
+            super::native::remove_native_view(widget_id);
+        }
+
+        // Drop the per-widget list storage for both list-backed widgets. Each lock
+        // is released at the end of its statement so no two guards are held at once.
+        self.list_data.lock().expect("ios list data lock poisoned").remove(&widget_id);
+        self.combo_data.lock().expect("ios combo data lock poisoned").remove(&widget_id);
+
+        // Drop the menu bookkeeping that names this widget: attached menu-bar
+        // ownership, membership in a parent menu's child list, and any queued
+        // trigger that would otherwise fire for a widget that no longer exists.
+        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        menus.attached_menu_bar.retain(|_window, menu_bar| *menu_bar != widget_id);
+        let destroyed_children = menus.menu_children.remove(&widget_id);
+        menus.menu_children.retain(|_parent, children| {
+            children.retain(|child| *child != widget_id);
+            !children.is_empty()
+        });
+        menus.pending_menu_events.retain(|queued| *queued != widget_id);
+        drop(menus);
+
+        // A destroyed `Menu` owns child menu items that were only reachable
+        // through it; cascade the teardown so those items are not orphaned.
+        for child in destroyed_children.into_iter().flatten() {
+            self.destroy_widget(child);
+        }
+
+        existed
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(IosHandleKind::Window, title, x, y, width, height);
 

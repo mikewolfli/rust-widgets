@@ -96,7 +96,6 @@ fn test_i18n_manager_check_and_reload() {
     manager.enable_hot_reload(sender);
     manager.load_translations(file_path.to_str().unwrap()).unwrap();
     assert_eq!(manager.translate("test"), "Test");
-    std::thread::sleep(std::time::Duration::from_millis(100));
     let updated_file = TranslationFile {
         language: "en".to_string(),
         translations: {
@@ -373,8 +372,9 @@ fn i18n_manager_check_and_reload() {
     manager.set_language("en");
     assert_eq!(manager.translate("hello"), "Hello");
 
-    // Give the file system time to register a different modification time
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // No sleep is needed: change detection pairs mtime with the file length and
+    // a content hash, so it does not depend on the filesystem clock advancing
+    // between the two writes (which a fixed sleep used to paper over).
 
     // Update the file
     let updated_json = r#"{
@@ -588,4 +588,52 @@ fn test_i18n_manager_unicode() {
     manager.set_language("en");
     assert_eq!(manager.translate("问候"), "Hello");
     assert_eq!(manager.translate("emoji_test"), "😀 🎉");
+}
+
+/// A content change must be detected even when the filesystem does **not**
+/// advance the file's mtime between writes.
+///
+/// Coarse-grained timestamps (1 s on some Linux/network mounts) make two writes
+/// share an mtime, so a `modified > last_modified` comparison silently misses the
+/// edit and hot reload never fires. The fingerprint pairs mtime with length and a
+/// content hash, so this test pins that behaviour down deterministically by
+/// rewriting with equal-length, different-content payloads and then
+/// *back-dating* the mtime to the value recorded at load time.
+#[test]
+fn test_i18n_reload_detects_change_with_identical_mtime() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+
+    // Both payloads must be the SAME byte length so that length alone cannot
+    // distinguish them; only the content hash can.
+    let v1 = r#"{"language":"en","translations":{"k":{"message":"aaaa"}}}"#;
+    let v2 = r#"{"language":"en","translations":{"k":{"message":"bbbb"}}}"#;
+    assert_eq!(v1.len(), v2.len(), "the fixture must be equal-length by design");
+
+    fs::write(&file_path, v1).unwrap();
+    let mut manager = I18nManager::new();
+    let (sender, _receiver) = unbounded();
+    manager.enable_hot_reload(sender);
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    assert_eq!(manager.translate("k"), "aaaa");
+
+    // Capture the mtime the manager recorded, then write the equal-length update
+    // and restore that exact mtime so mtime and length are both unchanged.
+    let recorded = fs::metadata(&file_path).unwrap().modified().unwrap();
+    fs::write(&file_path, v2).unwrap();
+    let f = fs::File::options().write(true).open(&file_path).unwrap();
+    f.set_modified(recorded).unwrap();
+    drop(f);
+
+    let after = fs::metadata(&file_path).unwrap();
+    assert_eq!(after.len(), v1.len() as u64, "length must be unchanged");
+    assert_eq!(after.modified().unwrap(), recorded, "mtime must be unchanged");
+
+    // With mtime and length identical, only the content hash can detect the edit.
+    let events = manager.check_and_reload();
+    assert!(
+        !events.is_empty(),
+        "an equal-length, equal-mtime content change must still trigger a reload"
+    );
+    assert_eq!(manager.translate("k"), "bbbb");
 }

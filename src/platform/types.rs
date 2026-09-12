@@ -192,6 +192,30 @@ pub trait Platform: Send + Sync {
     fn init(&self);
     fn run(&self);
     fn quit(&self);
+
+    /// Destroy a widget and release the resources associated with it.
+    ///
+    /// Returns `true` when the widget existed and was torn down.
+    ///
+    /// Implementations must release **everything** they registered for the
+    /// widget: the backend state record, any native-object registry entry (and
+    /// where the platform requires it, the underlying OS object itself), and any
+    /// per-widget side tables (list/combo box items, selections, menu ownership).
+    ///
+    /// # Long-running applications
+    ///
+    /// Before this method existed, a backend's registries could only grow: a UI
+    /// that is rebuilt (create/discard cycles) leaked one state record plus one
+    /// native handle per discarded widget, without bound. A 8000-widget churn
+    /// loop measured +49 MB RSS on the macOS objc2 backend.
+    ///
+    /// The default implementation returns `false` so that third-party backends
+    /// written against an earlier version keep compiling; every in-tree backend
+    /// overrides it.
+    fn destroy_widget(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
     fn create_button(
         &self,

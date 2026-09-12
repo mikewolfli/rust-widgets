@@ -22,6 +22,9 @@ impl ControlBackend for NativeControlBackend {
     fn kind(&self) -> ControlBackendKind {
         ControlBackendKind::Native
     }
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        get_platform().destroy_widget(widget_id)
+    }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         get_platform().create_window(title, x, y, width, height)
     }

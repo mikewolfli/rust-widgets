@@ -37,6 +37,35 @@ fn next_temp_path() -> PathBuf {
     path
 }
 
+/// Removes a temporary file on drop unless the decoder took ownership of it.
+///
+/// Construction creates the file before the payload is written; any failure in
+/// between must not leave the file behind.
+struct TempFileGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Hands ownership of the path to the decoder (which cleans it up on drop).
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best effort: never mask the original error.
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Standalone convenience: decode entire video in one shot
 // ---------------------------------------------------------------------------
@@ -118,19 +147,26 @@ impl FfmpegDecoder {
 
         // Write data to a temporary file so ffmpeg-next can open it.
         let temp_path = next_temp_path();
+
+        // The file is created on disk before the writes below, and the writes can
+        // fail (`?`). Without a guard those early returns leaked the temp file —
+        // the pre-existing cleanup only ran when `from_path` returned `Err`, so a
+        // failed `write_all`/`flush` left the file behind.
+        let mut temp_guard = TempFileGuard::new(temp_path.clone());
+
         let mut file =
             fs::File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {e}"))?;
         file.write_all(&data).map_err(|e| format!("Failed to write temp file: {e}"))?;
         file.flush().map_err(|e| format!("Failed to flush temp file: {e}"))?;
+        // Close the handle before FFmpeg opens the path, so the write is durable
+        // on platforms that lock the file (Windows).
+        drop(file);
 
-        let result = Self::from_path(&temp_path);
-
-        // If construction failed, clean up the temp file immediately.
-        if result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-
-        result
+        // On failure the guard removes the file; on success ownership passes to
+        // the decoder, whose `Drop` cleans up `_temp_path`.
+        let decoder = Self::from_path(&temp_path)?;
+        temp_guard.disarm();
+        Ok(decoder)
     }
 
     /// Open an FFmpeg decoder from a file path.
@@ -521,12 +557,14 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_data() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = FfmpegDecoder::new(vec![0u8; 100]);
         assert!(result.is_err(), "expected error for invalid video data");
     }
 
     #[test]
     fn test_decode_invalid_mp4() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // An ftyp box with no moov → should fail gracefully.
         let data = small_mp4_data();
         let result = FfmpegDecoder::new(data);
@@ -535,18 +573,21 @@ mod tests {
 
     #[test]
     fn test_decode_empty() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = FfmpegDecoder::new(vec![]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_standalone_decode_frames_empty() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = decode_frames(b"");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_standalone_decode_frames_invalid() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let result = decode_frames(&[0u8; 256]);
         assert!(result.is_err());
     }
@@ -556,5 +597,60 @@ mod tests {
         assert_eq!(codec_name_from_id(ffmpeg_next::codec::Id::H264), "h264");
         assert_eq!(codec_name_from_id(ffmpeg_next::codec::Id::VP9), "vp9");
         assert_eq!(codec_name_from_id(ffmpeg_next::codec::Id::MJPEG), "mjpeg");
+    }
+
+    /// Returns true when this process still has the decoder temp file `index`.
+    fn decoder_temp_file_exists(index: u64) -> bool {
+        let pid = std::process::id();
+        let prefix = format!("rust_widgets_ffmpeg_{pid}_{index}.");
+        std::fs::read_dir(std::env::temp_dir())
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Serializes the temp-file lifecycle tests.
+    ///
+    /// `TEMP_COUNTER` is shared by every decoder test in this thread pool, so
+    /// reading it and then calling `new()` is racy: a concurrent test can claim
+    /// the same index in between. The lock removes that window (and the rare
+    /// false failure it produced).
+    static DECODER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A **failed** decoder construction must not leave its temp file behind.
+    ///
+    /// Regression: the file is created before the payload is written, and the
+    /// write/flush steps use `?`. Before the `TempFileGuard`, an error there
+    /// returned early without deleting the file (the old cleanup only ran for
+    /// `from_path` failures).
+    #[test]
+    fn test_failed_decoder_leaves_no_temp_file() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let index = TEMP_COUNTER.load(Ordering::Relaxed);
+
+        let result = FfmpegDecoder::new(vec![0u8; 100]);
+        assert!(result.is_err(), "invalid video data must fail to decode");
+
+        assert!(
+            !decoder_temp_file_exists(index),
+            "a failed decoder construction leaked its temp file (index {index})"
+        );
+    }
+
+    /// A decoder temp file must never survive construction, whether it succeeded
+    /// (the decoder owns it and removes it on drop) or failed (the guard
+    /// removes it).
+    #[test]
+    fn test_decoder_leaves_no_temp_file() {
+        let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let index = TEMP_COUNTER.load(Ordering::Relaxed);
+        let _ = FfmpegDecoder::new(small_mp4_data());
+        assert!(
+            !decoder_temp_file_exists(index),
+            "a decoder temp file survived construction (index {index})"
+        );
     }
 }

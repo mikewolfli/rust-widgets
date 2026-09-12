@@ -38,14 +38,19 @@ struct TsfThreadMgr {
     _private: (),
 }
 
-// SAFETY: `TsfThreadMgr` holds an msctf.dll handle (and, in a full
-// implementation, TSF COM interface pointers) that is only touched from the
-// Windows message-loop thread. It lives inside the process-global platform
-// singleton (a `OnceLock`), and is never shared across threads concurrently —
-// the same discipline used for HWNDs, which the Windows backend stores as
+// SAFETY: `TsfThreadMgr` holds an msctf.dll handle that is only touched from
+// the Windows message-loop thread. It lives inside the process-global platform
+// singleton (a `OnceLock`), and is never shared across threads *concurrently*
+// -- the same discipline used for HWNDs, which the Windows backend stores as
 // `usize` in `Win32MenuState`.
+//
+// `Send` is required because the singleton is stored behind a `Mutex` that any
+// thread may lock to fetch the handle.
+//
+// `Sync` is deliberately NOT implemented: it would additionally promise that
+// `&TsfThreadMgr` may be shared across threads, but TSF COM objects require
+// apartment-threaded access, so that promise is not one this type can keep.
 unsafe impl Send for TsfThreadMgr {}
-unsafe impl Sync for TsfThreadMgr {}
 
 impl TsfThreadMgr {
     /// Attempt to create a TSF thread manager by loading `msctf.dll` at

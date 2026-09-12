@@ -118,6 +118,26 @@ where
     pub fn contains_widget(&self, widget_id: ObjectId) -> bool {
         self.widgets.lock().expect("backend state widget lock poisoned").contains_key(&widget_id)
     }
+
+    /// Remove a widget record, returning `true` when it existed.
+    ///
+    /// This is the state-side half of widget teardown. Without it a backend's
+    /// registry could only ever grow: a long-running app that rebuilds its UI
+    /// (create/discard cycles) would leak one record — plus whatever native
+    /// object the backend stored — per discarded widget, forever.
+    pub fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .remove(&widget_id)
+            .is_some()
+    }
+
+    /// Number of live widget records. Used by tests and diagnostics to prove
+    /// that teardown actually releases state.
+    pub fn widget_count(&self) -> usize {
+        self.widgets.lock().expect("backend state widget lock poisoned").len()
+    }
     /// Return kind for an existing widget.
     pub fn kind_of(&self, widget_id: ObjectId) -> Option<K> {
         self.widgets

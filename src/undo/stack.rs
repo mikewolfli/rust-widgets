@@ -173,7 +173,17 @@ mod tests {
 
     // ── Test helpers ──
 
-    static mut NEXT_ID: u64 = 0;
+    /// Monotonic command-id source for the test fixtures.
+    ///
+    /// This used to be a `static mut NEXT_ID: u64` incremented inside an
+    /// `unsafe` block. Rust's test harness runs tests on multiple threads, so
+    /// that was a genuine data race (and `static mut` is a hard error in Rust
+    /// 2024). An atomic gives the same unique-id behaviour without `unsafe`.
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_command_id() -> CommandId {
+        CommandId(NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 
     /// A basic command that does NOT merge. Used for most tests.
     struct TextCommand {
@@ -184,11 +194,7 @@ mod tests {
 
     impl TextCommand {
         fn new(text: &str, initial: &str) -> Self {
-            let id = unsafe {
-                let id = NEXT_ID;
-                NEXT_ID += 1;
-                CommandId(id)
-            };
+            let id = next_command_id();
             TextCommand { id, text: text.to_string(), applied: initial.to_string() }
         }
     }
@@ -238,11 +244,7 @@ mod tests {
 
     impl MergeableTextCommand {
         fn new(text: &str, initial: &str) -> Self {
-            let id = unsafe {
-                let id = NEXT_ID;
-                NEXT_ID += 1;
-                CommandId(id)
-            };
+            let id = next_command_id();
             MergeableTextCommand { id, text: text.to_string(), applied: initial.to_string() }
         }
     }

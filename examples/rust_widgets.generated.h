@@ -43,6 +43,7 @@ uint64_t rw_create_spin_box(uint64_t parent, int x, int y, unsigned int width, u
 uint64_t rw_create_status_bar(uint64_t parent, const char* text, int x, int y, unsigned int width, unsigned int height);
 uint64_t rw_create_tool_bar(uint64_t parent, int x, int y, unsigned int width, unsigned int height);
 uint64_t rw_create_window(const char* title, int x, int y, unsigned int width, unsigned int height);
+bool rw_destroy_widget(uint64_t widget_id);
 uint64_t rw_embedded_engine_button_count(void);
 uint64_t rw_embedded_engine_frame_count(void);
 bool rw_embedded_engine_is_initialized(void);

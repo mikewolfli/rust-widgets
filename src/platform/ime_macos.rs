@@ -34,6 +34,33 @@ use std::sync::Mutex;
 // Native macOS IME imports (feature-gated)
 // ──────────────────────────────────────────────
 
+/// Opaque token type carrying an `NSTextInputContext` pointer through
+/// `Box<dyn Any + Send>`.
+///
+/// This MUST be a single module-level type. It used to be declared separately
+/// inside each function that needed it, which made every `downcast_ref::<ImeCtx>`
+/// fail: `Any::downcast_ref` matches on `TypeId`, not on memory layout, so four
+/// identically-named local structs were four *distinct* types. The bridge stored
+/// the token but could never read it back, so `invalidateCharacterCoordinates`,
+/// `activate` and `deactivate` were all silent no-ops.
+///
+/// `Send` is required (`Box<dyn Any + Send>`); `Sync` is not implemented.
+#[cfg(all(target_os = "macos", feature = "macos"))]
+#[repr(C)]
+struct ImeCtx(*mut objc2::runtime::AnyObject);
+
+#[cfg(all(target_os = "macos", feature = "macos"))]
+unsafe impl Send for ImeCtx {}
+
+/// Reads the `NSTextInputContext` pointer out of an opaque token.
+///
+/// Returns `None` when the token did not come from
+/// [`try_activate_nstextinputcontext`] (e.g. it is `None` or a different type).
+#[cfg(all(target_os = "macos", feature = "macos"))]
+fn ime_ctx_from_token(token: &dyn std::any::Any) -> Option<*mut objc2::runtime::AnyObject> {
+    token.downcast_ref::<ImeCtx>().map(|ctx| ctx.0)
+}
+
 /// Wrapper that attempts to acquire an `NSTextInputContext` from a raw view
 /// pointer, returning a boxed opaque token if successful.
 ///
@@ -68,11 +95,6 @@ fn try_activate_nstextinputcontext(
 
         log::debug!("[macOS IME] NSTextInputContext activated");
 
-        // Opaque wrapper to carry the raw pointer through Box<dyn Any + Send>.
-        #[repr(C)]
-        struct ImeCtx(*mut AnyObject);
-        unsafe impl Send for ImeCtx {}
-
         Some(Box::new(ImeCtx(ctx)) as Box<dyn std::any::Any + Send>)
     }
 }
@@ -93,19 +115,17 @@ fn sync_nstextinputcontext(
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
 
-        #[repr(C)]
-        struct ImeCtx(*mut AnyObject);
-
-        // SAFETY: The token was created by try_activate_nstextinputcontext,
-        // so the repr(C) layout guarantees downcast_ref works.
-        let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() else {
+        // The token was created by `try_activate_nstextinputcontext`; the shared
+        // module-level `ImeCtx` type makes this downcast actually succeed.
+        let Some(ctx) = ime_ctx_from_token(token) else {
             return;
         };
 
-        let ctx: *mut AnyObject = ime_ctx.0;
         if ctx.is_null() {
             return;
         }
+
+        let ctx: *mut AnyObject = ctx;
 
         // Tell the IME that the cursor / composition state changed so it
         // re-queries our NSTextInputClient for the latest data.
@@ -372,12 +392,9 @@ impl ImeBridge for MacOsImeBridge {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
 
-                    #[repr(C)]
-                    struct ImeCtx(*mut AnyObject);
-
-                    if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
-                        let ctx: *mut AnyObject = ime_ctx.0;
+                    if let Some(ctx) = ime_ctx_from_token(token.as_ref()) {
                         if !ctx.is_null() {
+                            let ctx: *mut AnyObject = ctx;
                             let _: () = msg_send![ctx, activate];
                             log::info!(
                                 "[macOS IME] NSTextInputContext activated for widget={}",
@@ -407,12 +424,9 @@ impl ImeBridge for MacOsImeBridge {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
 
-                    #[repr(C)]
-                    struct ImeCtx(*mut AnyObject);
-
-                    if let Some(ime_ctx) = token.downcast_ref::<ImeCtx>() {
-                        let ctx: *mut AnyObject = ime_ctx.0;
+                    if let Some(ctx) = ime_ctx_from_token(token.as_ref()) {
                         if !ctx.is_null() {
+                            let ctx: *mut AnyObject = ctx;
                             let _: () = msg_send![ctx, deactivate];
                             log::info!(
                                 "[macOS IME] NSTextInputContext deactivated for widget={}",
@@ -516,6 +530,39 @@ fn byte_offset_to_utf16(s: &str, byte_offset: usize) -> usize {
 mod tests {
     use super::*;
     use crate::platform::ime::ImeComposition;
+
+    // ── Native IME token round-trip ──
+
+    /// The opaque token must survive a `downcast_ref` back to its own type.
+    ///
+    /// This is the regression guard for a real defect: `ImeCtx` used to be
+    /// declared as a *local* struct inside each function that touched it, so the
+    /// token's type never matched the reader's type and every native call
+    /// (`invalidateCharacterCoordinates` / `activate` / `deactivate`) silently
+    /// returned early. `Any::downcast_ref` matches on `TypeId`, never on layout,
+    /// so `#[repr(C)]` does not make distinct declarations interchangeable.
+    #[cfg(all(target_os = "macos", feature = "macos"))]
+    #[test]
+    fn ime_token_downcasts_back_to_ime_ctx() {
+        // A non-null sentinel pointer; never dereferenced by this test.
+        let sentinel = 0x1234usize as *mut objc2::runtime::AnyObject;
+        let token: Box<dyn std::any::Any + Send> = Box::new(ImeCtx(sentinel));
+
+        let recovered = ime_ctx_from_token(token.as_ref())
+            .expect("a token built from ImeCtx must downcast back to it");
+        assert_eq!(recovered, sentinel, "the stored NSTextInputContext pointer must round-trip");
+    }
+
+    /// A token of an unrelated type must not be mistaken for an IME context.
+    #[cfg(all(target_os = "macos", feature = "macos"))]
+    #[test]
+    fn ime_token_rejects_foreign_type() {
+        let token: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        assert!(
+            ime_ctx_from_token(token.as_ref()).is_none(),
+            "an unrelated token must not resolve to an NSTextInputContext"
+        );
+    }
 
     // ── ImeBridge trait tests ──
 

@@ -16,7 +16,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
-use objc2::{msg_send, sel};
+use objc2::{class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSApplication, NSBackingStoreType, NSBorderType, NSButton, NSButtonType, NSColorPanel,
     NSFontPanel, NSMenu, NSMenuItem, NSOpenPanel, NSPopUpButton, NSProgressIndicator, NSScrollView,
@@ -29,11 +29,21 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-/// Wrapper around `*mut c_void` that implements Send and Sync.
+/// Wrapper around `*mut c_void` that implements `Send`.
+///
+/// `Send` is required because the pointer is stored in a process-global
+/// `Mutex<HashMap<..>>` (the registry lives in a `LazyLock` static).
+///
+/// `Sync` is deliberately NOT implemented: AppKit objects are owned by the
+/// main thread, and an `unsafe impl Sync` would additionally permit `&NativePtr`
+/// to be shared across threads, removing the compiler's last guard against
+/// off-main AppKit access. Every native entry point still re-checks the thread
+/// before messaging AppKit (see `check_apple_thread_safety.sh`), and keeping the
+/// bound narrow means a future helper that forgets that check has a smaller
+/// unsafe surface to slip through.
 #[derive(Clone, Copy)]
 struct NativePtr(*mut std::ffi::c_void);
 unsafe impl Send for NativePtr {}
-unsafe impl Sync for NativePtr {}
 
 /// Thread-local storage for native widget handles.
 static NATIVE_VIEWS: LazyLock<Mutex<HashMap<u64, NativePtr>>> =
@@ -58,10 +68,28 @@ pub(crate) fn get_native_view(widget_id: u64) -> Option<*mut std::ffi::c_void> {
     NATIVE_VIEWS.lock().unwrap().get(&widget_id).map(|p| p.0)
 }
 
+/// Number of native views currently registered (test/diagnostic helper).
+pub(crate) fn native_view_count() -> usize {
+    NATIVE_VIEWS.lock().unwrap().len()
+}
+
 pub(crate) fn remove_native_view(widget_id: u64) {
-    if let Some(ptr) = NATIVE_VIEWS.lock().unwrap().remove(&widget_id) {
+    let removed = NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
+    if let Some(ptr) = removed {
         unsafe {
             let object = ptr.0 as *mut AnyObject;
+            // Detach from the superview first. `add_as_subview` makes the parent
+            // view retain this object, and that reference is NOT balanced by the
+            // registry's `retain`/`release` pair — so releasing only the registry
+            // reference left the object alive and owned by the parent forever
+            // (a create/destroy UI churn grew RSS by ~6 KB per widget, without
+            // bound). `removeFromSuperview` drops the parent's reference, which
+            // is what actually lets the object deallocate.
+            let has_superview: bool =
+                msg_send![object, respondsToSelector: sel!(removeFromSuperview)];
+            if has_superview {
+                let _: () = msg_send![object, removeFromSuperview];
+            }
             let _: () = msg_send![object, release];
         }
     }
@@ -104,9 +132,27 @@ pub(crate) fn set_native_frame(widget_id: u64, x: i32, y: i32, width: u32, heigh
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    // AppKit window-server mutations must happen on the main thread; off-main we
+    // leave the native frame untouched (the backend state already records it).
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let object = ptr as *mut AnyObject;
-        let _: () = msg_send![object, setFrame: make_rect(x, y, width, height)];
+        let rect = make_rect(x, y, width, height);
+        // `NSWindow` does NOT respond to `setFrame:` — the window-setter is
+        // `setFrame:display:`. Sending the view selector to a window raises
+        // "invalid message send to -[NSWindow setFrame:]: method not found",
+        // which used to abort the process. Probe the class' actual API instead.
+        let is_window: bool = msg_send![object, isKindOfClass: class!(NSWindow)];
+        if is_window {
+            let _: () = msg_send![object, setFrame: rect, display: true];
+        } else {
+            let responds: bool = msg_send![object, respondsToSelector: sel!(setFrame:)];
+            if responds {
+                let _: () = msg_send![object, setFrame: rect];
+            }
+        }
     }
 }
 
@@ -114,10 +160,28 @@ pub(crate) fn set_native_hidden(widget_id: u64, hidden: bool) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let object = ptr as *mut AnyObject;
-        let hidden: bool = hidden;
-        let _: () = msg_send![object, setHidden: hidden];
+        // `NSView` uses `setHidden:`, but `NSWindow` uses `orderOut:` /
+        // `makeKeyAndOrderFront:` — sending `setHidden:` to a window is a
+        // method-not-found abort.
+        let is_window: bool = msg_send![object, isKindOfClass: class!(NSWindow)];
+        if is_window {
+            if hidden {
+                let _: () = msg_send![object, orderOut: std::ptr::null_mut::<AnyObject>()];
+            } else {
+                let _: () =
+                    msg_send![object, makeKeyAndOrderFront: std::ptr::null_mut::<AnyObject>()];
+            }
+        } else {
+            let responds: bool = msg_send![object, respondsToSelector: sel!(setHidden:)];
+            if responds {
+                let _: () = msg_send![object, setHidden: hidden];
+            }
+        }
     }
 }
 
@@ -125,8 +189,13 @@ pub(crate) fn set_native_enabled(widget_id: u64, enabled: bool) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let object = ptr as *mut AnyObject;
+        // Only `NSControl` (and subclasses) implements `setEnabled:`; windows and
+        // plain `NSView` containers do not, so guard with `respondsToSelector:`.
         let selector = sel!(setEnabled:);
         let responds: bool = msg_send![object, respondsToSelector: selector];
         if responds {
@@ -139,6 +208,10 @@ pub(crate) fn set_native_text(widget_id: u64, text: &str) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    // Text mutation touches AppKit object state on the window server.
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let object = ptr as *mut AnyObject;
         let value = NSString::from_str(text);
@@ -146,6 +219,15 @@ pub(crate) fn set_native_text(widget_id: u64, text: &str) {
         // the latter returns `id`, and objc2 validates the declared return type,
         // so declaring `()` made every call panic at runtime with
         // "expected return to have type code '@', but found 'v'".
+        //
+        // A window's title uses `setTitle:`; controls use `setStringValue:`;
+        // anything else falls back to the accessibility label. Each branch is
+        // guarded by `respondsToSelector:` so no unsupported selector is sent.
+        let is_window: bool = msg_send![object, isKindOfClass: class!(NSWindow)];
+        if is_window {
+            let _: () = msg_send![object, setTitle: &*value];
+            return;
+        }
         for selector in [sel!(setStringValue:), sel!(setTitle:), sel!(setAccessibilityLabel:)] {
             let responds: bool = msg_send![object, respondsToSelector: selector];
             if !responds {
@@ -167,11 +249,21 @@ pub(crate) fn set_native_menu_shortcut(widget_id: u64, key: &str, modifier_mask:
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    // `NSMenuItem` key-equivalent mutations must happen on the main thread.
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let item = ptr as *mut AnyObject;
         let key = NSString::from_str(key);
-        let _: () = msg_send![item, setKeyEquivalent: &*key];
-        let _: () = msg_send![item, setKeyEquivalentModifierMask: modifier_mask];
+        // Guard with `respondsToSelector:`: only NSMenuItem implements these,
+        // and a wrong receiver would otherwise raise a method-not-found abort.
+        if msg_send![item, respondsToSelector: sel!(setKeyEquivalent:)] {
+            let _: () = msg_send![item, setKeyEquivalent: &*key];
+        }
+        if msg_send![item, respondsToSelector: sel!(setKeyEquivalentModifierMask:)] {
+            let _: () = msg_send![item, setKeyEquivalentModifierMask: modifier_mask];
+        }
     }
 }
 

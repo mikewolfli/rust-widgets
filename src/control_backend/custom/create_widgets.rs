@@ -44,5 +44,22 @@ impl ControlBackend for super::CustomPaintControlBackend {
     fn create_qrcode(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.create_qr_code(parent, x, y, width, height)
     }
+
+    /// Drop every piece of per-widget state the custom backend keeps.
+    ///
+    /// The backend stores one entry per widget across six maps; without this
+    /// method a create/discard UI churn grew all six without bound.
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // `widget_properties` is populated for every created widget, so its
+        // presence is the authoritative "did this widget exist" signal.
+        let existed = state.widget_properties.remove(&widget_id).is_some();
+        state.texts.remove(&widget_id);
+        state.enabled.remove(&widget_id);
+        state.visible.remove(&widget_id);
+        state.ime_enabled.remove(&widget_id);
+        state.accessibility_names.remove(&widget_id);
+        existed
+    }
     impl_helpers!();
 }

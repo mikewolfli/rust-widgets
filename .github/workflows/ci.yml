@@ -55,6 +55,12 @@ jobs:
           chmod +x tools/check_abi.sh
           ./tools/check_abi.sh
 
+      - name: Run documentation count consistency gate
+        shell: bash
+        run: |
+          chmod +x tools/check_widget_kind_count.sh
+          ./tools/check_widget_kind_count.sh
+
       - name: Run signal-first event model gate
         shell: bash
         run: |
@@ -350,11 +356,14 @@ jobs:
 
       # 1. macOS AppKit: main-thread probe must create real NSWindow/NSMenu and
       #    assert the live AppKit objects, for both backends.
+      - name: Apple native static gate (FFI thread-safety + selector guards)
+        run: bash tools/check_apple_thread_safety.sh
+
       - name: AppKit probe (cocoa-legacy backend)
         run: cargo run --example apple_appkit_probe --features desktop
 
       - name: AppKit probe (objc2 backend)
-        run: cargo run --example apple_appkit_probe --features macos
+        run: cargo run --example apple_appkit_probe_objc2 --no-default-features --features "macos,serde,serde_json"
 
       # 2. macOS-lib regression with both Apple backends selected.
       - name: Cargo test (macos backend)
@@ -376,7 +385,7 @@ jobs:
       - name: Build iOS Simulator test app
         run: bash tools/build_ios_testapp.sh
 
-      - name: Run iOS Simulator probe
+      - name: iOS Simulator probe
         run: |
           SKIP_BUILD=1 IOS_SIM_DEVICE="$(xcrun simctl list devices | sed -nE 's/^[[:space:]]*(iPhone[^(]*) \([0-9A-F-]+\).*/\1/p' | head -1)" \
             bash tools/run_ios_testapp.sh

@@ -30,11 +30,17 @@ use objc2_ui_kit::{
 
 // ─── Native view pointer storage ───
 
-/// Wrapper around `*mut c_void` that implements Send and Sync.
+/// Wrapper around `*mut c_void` that implements `Send` only.
+///
+/// `Send` is required because the pointer is stored in a process-global
+/// `Mutex<HashMap<..>>`. `Sync` is deliberately NOT implemented: UIKit objects
+/// are main-thread-owned, and `unsafe impl Sync` would allow `&NativePtr` to be
+/// shared across threads, weakening the compiler's guard against off-main
+/// UIKit access. The native helpers still re-check the thread themselves; this
+/// just keeps the unsafe surface as small as the code actually needs.
 #[derive(Clone, Copy)]
 struct NativePtr(*mut std::ffi::c_void);
 unsafe impl Send for NativePtr {}
-unsafe impl Sync for NativePtr {}
 
 /// Thread-safe storage for native widget handles.
 static NATIVE_VIEWS: LazyLock<Mutex<HashMap<u64, NativePtr>>> =
@@ -87,6 +93,11 @@ pub(crate) fn set_native_frame(widget_id: u64, x: i32, y: i32, width: u32, heigh
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    // UIKit view mutations must happen on the main thread; off-main the backend
+    // state (already updated by the caller) is the only safe record.
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     let frame = make_rect(x, y, width, height);
     unsafe {
         let view: *mut AnyObject = ptr as *mut AnyObject;
@@ -99,6 +110,9 @@ pub(crate) fn set_native_hidden(widget_id: u64, hidden: bool) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let view: *mut AnyObject = ptr as *mut AnyObject;
         let _: () = msg_send![view, setHidden: hidden];
@@ -110,6 +124,9 @@ pub(crate) fn set_native_enabled(widget_id: u64, enabled: bool) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     unsafe {
         let view: *mut AnyObject = ptr as *mut AnyObject;
         let selector = sel!(setEnabled:);
@@ -125,15 +142,32 @@ pub(crate) fn set_native_text(widget_id: u64, text: &str) {
     let Some(ptr) = get_native_view(widget_id) else {
         return;
     };
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
     let value = NSString::from_str(text);
     unsafe {
         let view: *mut AnyObject = ptr as *mut AnyObject;
-        for selector in [sel!(setText:), sel!(setTitle:forState:), sel!(setAccessibilityLabel:)] {
-            let responds: bool = msg_send![view, respondsToSelector: selector];
-            if responds {
-                let _: () = msg_send![view, performSelector: selector, withObject: &*value];
-                return;
-            }
+        // Dispatch with typed messages instead of `performSelector:withObject:`:
+        //   * `setTitle:forState:` takes TWO arguments, so a 1-argument
+        //     `respondsToSelector:` probe never reported it — the old loop fell
+        //     through to `setAccessibilityLabel:` and the visible button title
+        //     was never updated (this was a silent no-op, not a crash).
+        //   * `performSelector:withObject:` returns `id`, and objc2 validates the
+        //     declared return type, so declaring `()` would abort.
+        let set_title_selector = sel!(setTitle:forState:);
+        if msg_send![view, respondsToSelector: set_title_selector] {
+            let _: () = msg_send![view, setTitle: &*value, forState: UIControlState::Normal.0];
+            return;
+        }
+        let set_text_selector = sel!(setText:);
+        if msg_send![view, respondsToSelector: set_text_selector] {
+            let _: () = msg_send![view, setText: &*value];
+            return;
+        }
+        let set_label_selector = sel!(setAccessibilityLabel:);
+        if msg_send![view, respondsToSelector: set_label_selector] {
+            let _: () = msg_send![view, setAccessibilityLabel: &*value];
         }
     }
 }

@@ -69,6 +69,61 @@ impl Platform for LinuxPlatform {
             gtk::main_quit();
         }
     }
+
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Beyond the authoritative `BackendState` record, the Linux backend keeps
+    /// per-widget entries in three places: the shared list storage (`list_data`,
+    /// used by ComboBox/ListBox), the menu bookkeeping (`menus`, covering the
+    /// attachment map, the menu tree and the queued triggers) and — under
+    /// `gtk-native` — the native GTK registries in `native` (plus the
+    /// `widget_parent` link used for geometry updates). All must be purged,
+    /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
+    /// discarded widget. Every lock is scoped to its own statement so no two
+    /// guards are ever held at the same time.
+    ///
+    /// Only the library's own bookkeeping is released here: no GTK call is made,
+    /// and the native objects are dropped when their registry entries are removed
+    /// (GTK keeps its own reference for objects still attached to a parent).
+    fn destroy_widget(&self, widget_id: u64) -> bool {
+        self.list_data.lock().expect("linux list data lock poisoned").remove(&widget_id);
+
+        {
+            let mut menus = self.menus.lock().expect("linux menu lock poisoned");
+            // The widget may be an attached menu bar (keyed by window id) or a
+            // window owning one, so both directions are cleared.
+            menus.attached_menu_bar.remove(&widget_id);
+            menus.attached_menu_bar.retain(|_, bar| *bar != widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+            menus.widget_parent.remove(&widget_id);
+            // Drop queued triggers that reference a widget that no longer exists.
+            menus.pending_menu_events.retain(|queued| *queued != widget_id);
+            menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+        }
+
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let mut native = self.native.lock_guard();
+            native.windows.remove(&widget_id);
+            native.root_boxes.remove(&widget_id);
+            native.content_fixed.remove(&widget_id);
+            native.widgets.remove(&widget_id);
+            native.menu_bars.remove(&widget_id);
+            native.menus.remove(&widget_id);
+            native.dialogs.remove(&widget_id);
+            native.color_choosers.remove(&widget_id);
+            native.font_choosers.remove(&widget_id);
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]

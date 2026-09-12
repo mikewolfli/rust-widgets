@@ -110,6 +110,18 @@ pub extern "C" fn rw_quit() {
         crate::quit();
     })
 }
+
+/// Destroy a widget created by any `rw_create_*` call.
+///
+/// Returns `CBool::TRUE` when the widget existed and was torn down. Releases the
+/// backend's state record and every registry entry it holds for the widget, so a
+/// long-running application can rebuild its UI without accumulating registrations.
+///
+/// Passing an unknown or already-destroyed id is safe and returns `false`.
+#[no_mangle]
+pub extern "C" fn rw_destroy_widget(widget_id: u64) -> CBool {
+    c_try!({ get_control_backend().destroy_widget(widget_id) })
+}
 #[no_mangle]
 pub extern "C" fn rw_create_window(
     title: *const c_char,

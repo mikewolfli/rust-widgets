@@ -49,6 +49,36 @@ impl Platform for HarmonyPlatform {
     fn quit(&self) {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
+
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Harmony keeps two per-widget side tables beyond the authoritative
+    /// `BackendState` record: the shared list storage (`list_data`, used by
+    /// ComboBox/ListBox) and the menu bookkeeping (`menus`). Both plus any queued
+    /// trigger that references the widget must be purged, otherwise a UI rebuilt
+    /// in a create/destroy loop would leak one entry per discarded widget. Each
+    /// lock is scoped to its own statement so no two guards are ever held at the
+    /// same time.
+    fn destroy_widget(&self, widget_id: u64) -> bool {
+        self.list_data.lock_guard().remove(&widget_id);
+
+        {
+            let mut menus = self.menus.lock_guard();
+            menus.attached_menu_bar.remove(&widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+            // Drop queued triggers that reference a widget that no longer exists.
+            menus.pending_menu_events.retain(|queued| *queued != widget_id);
+            menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }

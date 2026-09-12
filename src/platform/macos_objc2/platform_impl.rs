@@ -48,6 +48,52 @@ impl Platform for MacOSObjc2Platform {
     fn quit(&self) {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        // Capture the kind before the state record is removed so the kind-specific
+        // native registries can be released as well.
+        let kind = self.state.kind_of(widget_id);
+        let existed = self.state.destroy_widget(widget_id);
+
+        // Release the retained AppKit objects. `remove_native_view` releases the
+        // object stored under the widget id and drops its parent-map entry; a
+        // `Menu` widget additionally owns an `NSMenu` submenu stored under a
+        // derived id that is not released anywhere else.
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if matches!(kind, Some(MacObjc2HandleKind::Menu)) {
+                super::native::remove_native_view(super::types::submenu_id(widget_id));
+            }
+            super::native::remove_native_view(widget_id);
+        }
+
+        // Drop the per-widget ComboBox/ListBox list storage. The guard is
+        // released at the end of this statement, before the menu lock below.
+        self.list_data.lock().expect("mac objc2 list data lock poisoned").remove(&widget_id);
+
+        // Drop every menu bookkeeping entry that names this widget: ownership as
+        // an attached menu bar of any window, membership in a parent menu's
+        // child list, its shortcut table entry, and any queued trigger events
+        // that would otherwise fire for a widget that no longer exists.
+        let mut menus = self.menus.lock().expect("mac objc2 menu lock poisoned");
+        menus.attached_menu_bar.retain(|_window, menu_bar| *menu_bar != widget_id);
+        let destroyed_children = menus.menu_children.remove(&widget_id);
+        menus.menu_children.retain(|_parent, children| {
+            children.retain(|child| *child != widget_id);
+            !children.is_empty()
+        });
+        menus.menu_item_shortcuts.remove(&widget_id);
+        menus.pending_menu_events.retain(|queued| *queued != widget_id);
+        menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+        drop(menus);
+
+        // A destroyed `Menu` owns child menu items that were only reachable
+        // through it; cascade the teardown so those items are not orphaned.
+        for child in destroyed_children.into_iter().flatten() {
+            self.destroy_widget(child);
+        }
+
+        existed
+    }
 
     // ---- Window creation ----
     /// Create a new window with the given title and geometry.

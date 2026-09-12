@@ -17,21 +17,33 @@
 //!
 //! Exit code 0 means every assertion held; any failure prints the failing check
 //! and exits non-zero.
+//!
+//! This variant targets the **cocoa-legacy** backend (`cocoa` + `objc`), which
+//! `desktop` selects on macOS:
+//! ```text
+//! cargo run --example apple_appkit_probe --features desktop
+//! ```
+//! The objc2 backend is covered by the sibling `apple_appkit_probe_objc2`
+//! example (it uses a different Objective-C binding crate). The probe compiles
+//! to a no-op notice when the required feature is absent, so it never breaks
+//! the `--examples` build of unrelated profiles.
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "cocoa-legacy", not(feature = "mini")))]
 fn main() {
     std::process::exit(run());
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "cocoa-legacy", not(feature = "mini"))))]
 fn main() {
-    println!("apple_appkit_probe: skipped (host is not macOS)");
+    println!(
+        "apple_appkit_probe: skipped (needs macOS, the `cocoa-legacy` feature, and no `mini` profile)"
+    );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "cocoa-legacy", not(feature = "mini")))]
 fn run() -> i32 {
-    use cocoa::appkit::NSApplication;
     use cocoa::base::{id, nil};
+    use cocoa::foundation::NSRect;
     use objc::{class, msg_send, sel, sel_impl};
     use rust_widgets::platform::{get_platform, Platform};
 
@@ -43,7 +55,8 @@ fn run() -> i32 {
             failures.push(name.to_string());
         }
     };
-    const TOTAL_CHECKS: usize = 7;
+    // Number of `check(...)` invocations below; kept in sync manually.
+    const TOTAL_CHECKS: usize = 12;
 
     let platform = get_platform();
     let backend = platform.backend_name();
@@ -58,9 +71,11 @@ fn run() -> i32 {
     // 2. Native bootstrap (NSApplication sharedApplication + finishLaunching).
     platform.init();
 
-    // SAFETY: `NSApp()`/`sharedApplication` is the documented AppKit singleton,
-    // safe to message on the main thread after init().
-    let app: id = unsafe { NSApplication::sharedApplication(nil) };
+    // SAFETY: `+[NSApplication sharedApplication]` is the documented AppKit
+    // singleton accessor, safe to message on the main thread after init().
+    // Called via `msg_send!` rather than a wrapper so the probe does not depend
+    // on the `cocoa` crate (which only the `cocoa-legacy` backend pulls in).
+    let app: id = unsafe { msg_send![class!(NSApplication), sharedApplication] };
     check("ns_application", app != nil, format!("NSApplication::sharedApplication = {app:p}"));
 
     // 3. A window created on the main thread must be a *real* NSWindow, i.e.
@@ -153,7 +168,62 @@ fn run() -> i32 {
         format!("alert={alert} file={file_dlg} color={color_dlg} font={font_dlg}"),
     );
 
-    // 9. Geometry / visibility round-trips must not disturb the live window.
+    // 9. Geometry / visibility must not disturb the live window, and must reach
+    //    the *native* window: this distinguishes a real FFI wiring from a
+    //    state-only stub (the F-5 class of silent no-op).
+    Platform::set_widget_geometry(platform, window, 60, 70, 400, 300);
+    let window_frame_ok: bool = if windows == nil {
+        false
+    } else {
+        // SAFETY: NSApplication.windows is an NSArray of NSWindow; index 0 is a
+        // window instance (the FFI-created one when no other exists).
+        let first: id = unsafe { msg_send![windows, firstObject] };
+        if first == nil {
+            false
+        } else {
+            let frame: NSRect = unsafe { msg_send![first, frame] };
+            (frame.size.width - 400.0).abs() < 0.5 && (frame.size.height - 300.0).abs() < 0.5
+        }
+    };
+    check(
+        "native_window_frame_applied",
+        window_frame_ok,
+        format!("NSWindow frame updated to 400x300 = {window_frame_ok}"),
+    );
+
+    // 9b. Hiding the window must actually order it out of the window list.
+    Platform::hide_widget(platform, window);
+    let visible_after_hide: bool = if windows == nil {
+        false
+    } else {
+        let first: id = unsafe { msg_send![windows, firstObject] };
+        if first == nil {
+            false
+        } else {
+            // SAFETY: `-[NSWindow isVisible]` returns a BOOL.
+            let v: bool = unsafe { msg_send![first, isVisible] };
+            v
+        }
+    };
+    Platform::show_widget(platform, window);
+    let visible_after_show: bool = if windows == nil {
+        false
+    } else {
+        let first: id = unsafe { msg_send![windows, firstObject] };
+        if first == nil {
+            false
+        } else {
+            let v: bool = unsafe { msg_send![first, isVisible] };
+            v
+        }
+    };
+    check(
+        "native_window_visibility",
+        !visible_after_hide && visible_after_show,
+        format!("after_hide={visible_after_hide} after_show={visible_after_show}"),
+    );
+
+    // 10. Geometry / visibility round-trip on a control (state view).
     Platform::set_widget_geometry(platform, button, 30, 30, 140, 36);
     Platform::hide_widget(platform, button);
     let hidden = !Platform::is_widget_visible(platform, button);

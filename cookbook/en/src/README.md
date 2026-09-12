@@ -166,7 +166,7 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 1.1.1 |
+| **Version** | 1.1.2 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **Tests** | 3400+ |

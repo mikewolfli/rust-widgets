@@ -40,9 +40,20 @@ asserts the probe's `RESULT: PASS`:
 [PASS] native_view_ids: button=2 label=3 line_edit=4
 [PASS] native_uikit_subviews: UIButton=0x10e007030 UILabel=0x10e008e40 UITextField=0x10d02f000
 [PASS] text_roundtrip: rw_get_widget_text = Tapped
+[PASS] native_text_applied: UIButton title = Tapped
 [PASS] visibility_geometry: hidden_reported=1 shown_reported=1
 [PASS] native_frame_applied: UIButton.frame = {{20, 60}, {140, 44}}
 ```
+
+> Fixed 2026-09-11: `native::set_native_text` probed `setTitle:forState:` with a
+> one-argument `respondsToSelector:`, which always returns `false` for a
+> two-argument selector. The loop therefore fell through to
+> `setAccessibilityLabel:`, so `rw_set_widget_text` updated the Rust state but
+> **never changed the visible `UIButton` title** — a silent no-op, not a crash.
+> It now dispatches typed `setTitle:forState:` / `setText:` /
+> `setAccessibilityLabel:` messages. The `native_text_applied` check
+> (`UIButton.titleForState == "Tapped"`) was added to make this class of
+> "state-only fake fix" impossible to miss.
 
 Reproduce:
 

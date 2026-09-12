@@ -141,6 +141,38 @@ impl Platform for AndroidMobilePlatform {
     fn quit(&self) {
         log::info!("[mobile] AndroidMobilePlatform quit");
     }
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Besides the authoritative `BackendState` record the mobile backend keeps
+    /// five per-widget side tables: the menu bookkeeping (`menus`) plus the
+    /// combo-box item/index and list-box item/index maps. All of them must be
+    /// purged, otherwise a UI rebuilt in a create/destroy loop would leak one
+    /// entry per discarded widget. Each lock is scoped to its own statement so no
+    /// two guards are ever held at the same time.
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        {
+            let mut menus = self.menus.lock().expect("mobile menu lock poisoned");
+            menus.attached_menu_bar.remove(&widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+        }
+
+        self.combo_items.lock().expect("mobile combo lock poisoned").remove(&widget_id);
+        self.combo_current_index
+            .lock()
+            .expect("mobile combo index lock poisoned")
+            .remove(&widget_id);
+
+        self.list_items.lock().expect("mobile list lock poisoned").remove(&widget_id);
+        self.list_current_index.lock().expect("mobile list index lock poisoned").remove(&widget_id);
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)
     }

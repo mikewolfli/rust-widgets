@@ -206,6 +206,38 @@ impl Platform for AndroidPlatform {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
 
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// Android keeps three per-widget side tables beyond the authoritative
+    /// `BackendState` record: the shared list storage (`list_data`, used by
+    /// ComboBox/ListBox), the native-view id mapping (`native_views`, only under
+    /// `android-jni`) and menu bookkeeping (`menus`). All of them must be purged,
+    /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
+    /// discarded widget. Each lock is scoped to its own statement so no two
+    /// guards are ever held at the same time, and no JNI call is made here.
+    fn destroy_widget(&self, widget_id: u64) -> bool {
+        self.list_data.lock().expect("android list data lock poisoned").remove(&widget_id);
+
+        #[cfg(feature = "android-jni")]
+        self.native_views.lock().expect("android native views lock poisoned").remove(&widget_id);
+
+        {
+            let mut menus = self.menus.lock().expect("android menus lock poisoned");
+            menus.attached_menu_bar.remove(&widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+            // Drop queued triggers that reference a widget that no longer exists.
+            menus.pending_menu_events.retain(|queued| *queued != widget_id);
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     // ─── Widget creation ─────────────────────────────────────────────────
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {

@@ -89,6 +89,12 @@ pub mod types;
 /// Pure Win32 notification-code semantics (host-compilable, no OS calls).
 pub mod windows_notify;
 
+/// Cross-backend behavioural contract tests.
+#[cfg(all(test, not(feature = "mini")))]
+mod contract_tests;
+/// Widget teardown (`Platform::destroy_widget`) regression tests.
+#[cfg(all(test, not(feature = "mini")))]
+mod teardown_tests;
 #[cfg(all(test, not(feature = "mini")))]
 mod tests;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).

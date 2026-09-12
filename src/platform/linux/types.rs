@@ -121,11 +121,22 @@ pub(crate) struct LinuxNativeState {
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 unsafe impl Send for LinuxNativeState {}
 
+// SAFETY: `LinuxPlatform` is only ever driven from the UI thread. The GTK
+// widgets in `native` (`Mutex<LinuxNativeState>`) are `!Send + !Sync`, and GTK
+// itself requires all calls to happen on the thread that called `gtk::init`.
+//
+// `Send` is required because the platform handle is stored in the crate's
+// process-global registry; it does NOT permit concurrent GTK access, because
+// every native entry point re-checks `gtk::is_initialized_main_thread()` before
+// touching GTK (see `platform_impl.rs`).
+//
+// `Sync` is deliberately NOT implemented: nothing requires it, and the `gtk`
+// types are `!Sync`, so a hand-written `unsafe impl Sync` would be an
+// unnecessary promise that `&LinuxPlatform` is safe to share across threads.
+
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 unsafe impl Send for LinuxPlatform {}
 
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
-unsafe impl Sync for LinuxPlatform {}
 impl LinuxPlatform {
     /// Creates a new Linux platform adapter.
     pub fn new() -> Self {

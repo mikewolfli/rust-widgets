@@ -127,6 +127,35 @@ impl Platform for WasmPlatform {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
 
+    /// Release every registry entry the backend holds for `widget_id`.
+    ///
+    /// The WASM backend keeps its side tables in process-wide statics: the shared
+    /// list storage (`LIST_DATA`, used by ComboBox/ListBox) and the menu bookkeeping
+    /// (`MENU_STATE`). Both plus any queued trigger that references the widget must
+    /// be purged, otherwise a UI rebuilt in a create/destroy loop would leak one
+    /// entry per discarded widget. Each lock is scoped to its own statement so no
+    /// two guards are ever held at the same time.
+    fn destroy_widget(&self, widget_id: u64) -> bool {
+        LIST_DATA.lock().expect("wasm list data lock poisoned").remove(&widget_id);
+
+        {
+            let mut menus = MENU_STATE.lock().expect("wasm menu state lock poisoned");
+            menus.attached_menu_bar.remove(&widget_id);
+            // The widget may be a container in the menu tree: drop both the
+            // children it owned and the child entry under its own parent.
+            menus.menu_children.remove(&widget_id);
+            for children in menus.menu_children.values_mut() {
+                children.retain(|child| *child != widget_id);
+            }
+            // Drop queued triggers that reference a widget that no longer exists.
+            menus.pending_menu_events.retain(|queued| *queued != widget_id);
+            menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+        }
+
+        // The state record is the authority on whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
+
     // ─── Widget creation helpers ───────────────────────────────────────────────
     // Each widget factory validates the parent, inserts a state record, registers
     // a parent relationship, and optionally creates a native DOM element.

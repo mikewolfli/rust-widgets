@@ -132,7 +132,7 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 
 ## 控件库
 
-### 桌面/平板/手机（80+ 控件）
+### 桌面/平板/手机（167 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 

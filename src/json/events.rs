@@ -18,9 +18,22 @@ pub struct EventHandlerContext {
     pub user_data: Option<*mut std::ffi::c_void>,
 }
 
-// SAFETY: EventHandlerContext is only used on the main thread.
+// SAFETY: raw pointers are `!Send + !Sync`, so these impls textually widen the
+// auto-traits. They are here because the signal closures in `json/loader.rs`
+// store a `ButtonHandle` callback that constructs an `EventHandlerContext` on
+// the stack and passes it by reference to `invoke_global_handler`; that closure
+// must satisfy the registry's `Send` bound.
+//
+// `Send`: the context never crosses threads. It is created inside the callback,
+// used within that same call, and dropped before the callback returns.
+//
+// `Sync`: deliberately NOT implemented. Nothing in the library requires it, and
+// `user_data<T>()` hands out `&T` derived from an unowned, untyped pointer. If
+// the pointee is ever mutated through the unsafe `user_data_mut` path while
+// another thread holds an `&T` from `user_data()`, that is a data race. Omitting
+// `Sync` keeps that aliasing impossible to construct across threads and costs
+// nothing, because no API asks for it.
 unsafe impl Send for EventHandlerContext {}
-unsafe impl Sync for EventHandlerContext {}
 
 impl EventHandlerContext {
     /// Create a new event handler context.

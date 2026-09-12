@@ -82,6 +82,34 @@ impl Platform for MacOSPlatform {
             NSApp().stop_(nil);
         }
     }
+    fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        // Teardown is safe on any thread: nothing here messages AppKit. The
+        // retained native objects (NSWindow/NSView instances) stay referenced by
+        // the AppKit view hierarchy, which releases them when the window closes.
+        // Off-main the backend never constructed a native object at all (it
+        // registered a state-only handle), so the state record and side tables
+        // are the only per-widget resources in either case.
+        //
+        // Each lock guard is released at the end of its own statement so that no
+        // two of the backend's mutexes are ever held at the same time.
+        self.handles.lock().expect("macos handle lock poisoned").remove(&widget_id);
+        // Drop the per-widget accessibility registration that `register_handle` added.
+        self.a11y_bridge.unregister_handle(widget_id);
+        // Drop the ComboBox/ListBox side tables. `create_combo_box` and
+        // `create_list_box` insert an entry for every one of those widgets.
+        self.combo_box_items.lock().expect("macos combo item lock poisoned").remove(&widget_id);
+        self.combo_box_selection
+            .lock()
+            .expect("macos combo selection lock poisoned")
+            .remove(&widget_id);
+        self.list_box_items.lock().expect("macos list item lock poisoned").remove(&widget_id);
+        self.list_box_selection
+            .lock()
+            .expect("macos list selection lock poisoned")
+            .remove(&widget_id);
+        // The state record is the authority for whether the widget existed.
+        self.state.destroy_widget(widget_id)
+    }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         // Off-main (e.g. the C ABI called from a worker thread or unit tests),
         // never construct `NSWindow`: AppKit raises a foreign exception that
@@ -1684,32 +1712,44 @@ impl Platform for MacOSPlatform {
     }
     fn create_spin_box(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        // Match the contract every other backend follows: a child control needs
+        // an existing parent, otherwise the caller gets `0` rather than a widget
+        // that silently has no parent.
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(HandleKind::SpinBox, "spin_box", x, y, width, height)
     }
     fn create_list_view(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(HandleKind::ListView, "list_view", x, y, width, height)
     }
     fn create_scroll_area(
         &self,
-        _parent: ObjectId,
+        parent: ObjectId,
         x: i32,
         y: i32,
         width: u32,
         height: u32,
     ) -> ObjectId {
+        if self.state.kind_of(parent).is_none() {
+            return 0;
+        }
         self.state.create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
     }
     fn create_group_box(

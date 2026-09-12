@@ -163,9 +163,15 @@ impl<T: Clone + Send + 'static> TwoWayListener<T> {
 
 impl<T: Clone + Send + 'static + PartialEq> BindingListener for TwoWayListener<T> {
     fn on_value_changed(&mut self, _key: &str, _operation: &str) {
+        // Re-entrancy guard: the first thread in wins, and the flag is cleared by
+        // the RAII guard below on **every** exit — including a panic from
+        // `set_no_notify`. A bare `store(false)` at the end of the body would be
+        // skipped if anything panicked, leaving `syncing` stuck at `true` and
+        // silently disabling this two-way binding forever.
         if self.syncing.swap(true, Ordering::SeqCst) {
             return;
         }
+        let _reset = SyncingGuard { flag: &self.syncing };
 
         // Read value from source, then release source's Mutex lock BEFORE
         // locking the target.  This avoids a re-entrant-Mutex deadlock when
@@ -181,8 +187,18 @@ impl<T: Clone + Send + 'static + PartialEq> BindingListener for TwoWayListener<T
                 target.lock().unwrap_or_else(|e| e.into_inner()).set_no_notify(val);
             }
         }
+    }
+}
 
-        self.syncing.store(false, Ordering::SeqCst);
+/// Clears the `syncing` flag when dropped, so the re-entrancy guard cannot be
+/// left armed by an unwinding panic.
+struct SyncingGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for SyncingGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
     }
 }
 
@@ -198,6 +214,68 @@ mod tests {
         assert_eq!(b.get(), 42);
         b.set(100);
         assert_eq!(b.get(), 100);
+    }
+
+    /// A panic while propagating must not leave the two-way re-entrancy guard
+    /// permanently armed.
+    ///
+    /// `TwoWayListener` raises `syncing` on entry to suppress the echo from the
+    /// reverse direction. If the propagation body panicked, the old code's final
+    /// `store(false)` was skipped, so `syncing` stayed `true` and the binding
+    /// silently stopped syncing forever. `SyncingGuard` resets it on every exit,
+    /// which this test pins down by unwinding through the guarded section.
+    #[test]
+    fn syncing_guard_clears_flag_on_panic() {
+        let flag = AtomicBool::new(false);
+        assert!(!flag.swap(true, Ordering::SeqCst), "flag starts unset");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _reset = SyncingGuard { flag: &flag };
+            panic!("boom inside the guarded section");
+        }));
+
+        assert!(result.is_err(), "the probe must panic");
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "the guard must clear `syncing` while unwinding, otherwise the binding is dead forever"
+        );
+    }
+
+    /// The guard clears the flag on the normal (non-panicking) path as well.
+    #[test]
+    fn syncing_guard_clears_flag_on_normal_exit() {
+        let flag = AtomicBool::new(false);
+        flag.store(true, Ordering::SeqCst);
+        {
+            let _reset = SyncingGuard { flag: &flag };
+        }
+        assert!(!flag.load(Ordering::SeqCst), "the guard must clear `syncing` on drop");
+    }
+
+    /// A two-way binding still synchronises after its listener ran once.
+    #[test]
+    fn two_way_listener_propagates_and_rearms() {
+        let syncing = Arc::new(AtomicBool::new(false));
+        let source: Arc<Mutex<BindingInner<i32>>> =
+            Arc::new(Mutex::new(BindingInner { value: 7, listeners: HashMap::new() }));
+        let target: Arc<Mutex<BindingInner<i32>>> =
+            Arc::new(Mutex::new(BindingInner { value: 0, listeners: HashMap::new() }));
+
+        let mut listener = TwoWayListener::new(
+            Arc::clone(&syncing),
+            Arc::downgrade(&source),
+            Arc::downgrade(&target),
+        );
+
+        listener.on_value_changed("k", "set");
+        assert_eq!(target.lock().unwrap().value, 7, "the value must propagate source -> target");
+        assert!(!syncing.load(Ordering::SeqCst), "the guard must re-arm the listener");
+
+        // A second call must still work (the guard did not get stuck).
+        source.lock().unwrap().value = 9;
+        listener.on_value_changed("k", "set");
+        assert_eq!(target.lock().unwrap().value, 9, "a later change must still propagate");
+        assert!(!syncing.load(Ordering::SeqCst));
     }
 
     #[test]

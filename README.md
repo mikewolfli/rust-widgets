@@ -133,7 +133,7 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (80+ widgets)
+### Desktop/Tablet/Mobile (167 widget kinds)
 
 **Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 
