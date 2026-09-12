@@ -80,17 +80,66 @@ impl ShortcutManager {
         self.entries.contains_key(action_id)
     }
     /// Handles a key event and triggers the associated action if a shortcut matches.
+    ///
+    /// # Matching rule
+    ///
+    /// A key event's [`Modifiers::PRIMARY`] bit means "the platform's primary
+    /// accelerator". The physical Control bit that macOS also reports alongside
+    /// Command is **not** part of the command's identity, so it is cleared before
+    /// the lookup. On Windows/Linux a Control press is lifted the other way, into
+    /// PRIMARY, so `Shortcut::primary` bindings answer to Ctrl as the platform
+    /// convention requires. Physical-Control bindings (`Shortcut::ctrl`) are
+    /// deliberately left alone on macOS: there Command and Control are different
+    /// keys, and collapsing them would fire `⌘C` for a `Control+C` binding.
     pub fn handle_key_event(&mut self, key: Key, modifiers: Modifiers) -> bool {
-        let shortcut = Shortcut::new(key, modifiers);
-        if let Some(action_id) = self.shortcuts.get(&shortcut) {
-            if let Some(entry) = self.entries.get(action_id) {
-                if entry.enabled {
-                    self.shortcut_triggered.emit(action_id.clone());
-                    return true;
-                }
+        let Some(action_id) = self.lookup(key, modifiers) else {
+            return false;
+        };
+        let Some(entry) = self.entries.get(&action_id) else {
+            return false;
+        };
+        if !entry.enabled {
+            return false;
+        }
+        self.shortcut_triggered.emit(action_id);
+        true
+    }
+
+    /// Resolves the action registered for a key press, applying the matching
+    /// rule documented on [`ShortcutManager::handle_key_event`].
+    fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
+        let normalized = Self::normalize_event_modifiers(modifiers);
+        if let Some(action_id) = self.shortcuts.get(&Shortcut::new(key, normalized)) {
+            return Some(action_id.clone());
+        }
+        // Windows/Linux: the OS shortcut convention is Control, so a
+        // `Shortcut::primary` binding resolves against a Control press there.
+        if cfg!(not(any(target_os = "macos", target_os = "ios")))
+            && normalized.contains(Modifiers::CTRL)
+            && !normalized.contains(Modifiers::PRIMARY)
+        {
+            let as_primary =
+                Shortcut::new(key, normalized.without(Modifiers::CTRL) | Modifiers::PRIMARY);
+            if let Some(action_id) = self.shortcuts.get(&as_primary) {
+                return Some(action_id.clone());
             }
         }
-        false
+        None
+    }
+
+    /// Removes the Control bit that macOS reports alongside Command.
+    ///
+    /// `⌘C` and `⌃C` are different chords, but AppKit sets the Control flag on
+    /// some Command events; leaving it in place would make `Shortcut::primary`
+    /// bindings unreachable. On other platforms the input is already canonical.
+    fn normalize_event_modifiers(modifiers: Modifiers) -> Modifiers {
+        if cfg!(any(target_os = "macos", target_os = "ios"))
+            && modifiers.contains(Modifiers::PRIMARY)
+            && modifiers.contains(Modifiers::CTRL)
+        {
+            return modifiers.without(Modifiers::CTRL);
+        }
+        modifiers
     }
     /// Handles a framework event and triggers a shortcut when it is a key press.
     pub fn handle_event(&mut self, event: &Event) -> bool {

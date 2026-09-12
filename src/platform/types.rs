@@ -216,6 +216,99 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// Mounts a **self-drawn** widget into a native window.
+    ///
+    /// # Why this is one method and not one per widget kind
+    ///
+    /// The native `create_*` methods each map onto a real OS control. Widgets
+    /// that paint themselves through [`crate::widget::Draw`] have no OS control
+    /// to map to, so there is nothing for a per-kind constructor to do. What the
+    /// backend owes such a widget is exactly one thing: a native surface that
+    /// calls back into the process-wide widget registry whenever the OS wants a
+    /// repaint. `mount_self_drawn` is that surface.
+    ///
+    /// The caller registers the widget first
+    /// ([`crate::widget::runtime::register`]) and passes the resulting id here
+    /// together with the parent window and the desired rectangle. The backend
+    /// must not take ownership of the widget: it lives in the registry for as
+    /// long as the mount exists.
+    ///
+    /// # Return value
+    ///
+    /// `true` when a native surface was created and will be repainted from the
+    /// registry. `false` when this backend cannot display self-drawn content —
+    /// the default below. Callers must treat `false` as "cannot display here"
+    /// and say so, rather than showing an empty window.
+    ///
+    /// # Backends
+    ///
+    /// * macOS (`cocoa`) — an `NSView` subclass whose `drawRect:` blits a frame.
+    /// * Windows (`winapi`) — a child `HWND` painted from `WM_PAINT`.
+    /// * Linux (`gtk-native`) — a `gtk::DrawingArea` painted from `connect_draw`.
+    /// * HarmonyOS — awaits the OpenHarmony SDK; returns `false` until then.
+    fn mount_self_drawn(&self, _parent: ObjectId, _id: ObjectId, _rect: crate::core::Rect) -> bool {
+        false
+    }
+
+    /// Updates the rectangle of a previously mounted self-drawn widget.
+    ///
+    /// Returns `false` when `id` is not mounted on this backend.
+    fn resize_self_drawn(&self, _id: ObjectId, _rect: crate::core::Rect) -> bool {
+        false
+    }
+
+    /// Unmounts a self-drawn widget and releases its native surface.
+    ///
+    /// The widget stays in the process-wide registry; the caller decides when to
+    /// drop it via [`crate::widget::runtime::unregister`].
+    ///
+    /// Returns `false` when `id` is not mounted on this backend.
+    fn unmount_self_drawn(&self, _id: ObjectId) -> bool {
+        false
+    }
+
+    /// Marks a mounted self-drawn widget as needing a repaint.
+    ///
+    /// Returns `false` when `id` is not mounted on this backend. Backends that
+    /// do not implement it keep the default so unmounted ids stay a no-op.
+    fn repaint_self_drawn(&self, _id: ObjectId) -> bool {
+        false
+    }
+
+    /// Returns `true` when this backend can display self-drawn widgets.
+    ///
+    /// Backends report `true` only once [`Platform::mount_self_drawn`] is
+    /// actually implemented, so hosts can ask before building a UI that they
+    /// would not be able to display.
+    fn supports_self_drawn(&self) -> bool {
+        false
+    }
+
+    /// Renders a shortcut in the notation this operating system uses in menus.
+    ///
+    /// macOS returns `⌘⇧Z`; Windows and Linux return `Ctrl+Shift+Z`. Callers use
+    /// this for menu labels and tooltips so a single shortcut table reads
+    /// natively everywhere, with no `cfg` in application code.
+    ///
+    /// This covers *display* only. Whether the accelerator is actually wired up
+    /// to fire is [`Platform::menu_add_item`]'s responsibility.
+    fn format_shortcut(&self, shortcut: &crate::shortcut::Shortcut) -> String {
+        crate::shortcut::format_shortcut_for_platform(
+            shortcut,
+            crate::shortcut::PlatformShortcutStyle::current(),
+        )
+    }
+
+    /// Translates a shortcut into the backend's own accelerator representation.
+    ///
+    /// Returns `None` when this backend has no accelerator support, or when the
+    /// shortcut uses a key the backend cannot express. Backends override this
+    /// only when registering a menu item needs a representation other than the
+    /// displayed text (for example a Win32 `ACCEL` table entry).
+    fn parse_shortcut(&self, _shortcut: &crate::shortcut::Shortcut) -> Option<String> {
+        None
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
     fn create_button(
         &self,
@@ -319,7 +412,30 @@ pub trait Platform: Send + Sync {
         height: u32,
     ) -> ObjectId;
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool;
+    /// Adds an item to a menu.
+    ///
+    /// # `shortcut`
+    ///
+    /// This parameter is the shortcut **as it should be displayed**:
+    /// `"⌘⇧Z"` on macOS, `"Ctrl+Shift+Z"` on Windows and Linux. Passing `None`
+    /// (or `""`) adds a plain item with no accelerator.
+    ///
+    /// Note the asymmetry with the rest of this crate, where an application
+    /// action is declared once with a typed [`crate::shortcut::Shortcut`] and the
+    /// platform decides its notation. A display string is the right contract for
+    /// *this* method because the text is bound to a concrete menu item on one
+    /// concrete OS: building it here keeps the platform-specific spelling out of
+    /// the caller, and lets platforms that register accelerators separately (for
+    /// example a Win32 `ACCEL` table) parse the text instead of re-deriving it.
     fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId;
+    /// Returns the accelerator display text bound to a menu item.
+    ///
+    /// `None` when the id is not a menu item or it has no accelerator. Useful to
+    /// assert that a shortcut was actually registered, rather than only rendered
+    /// into a label.
+    fn menu_item_shortcut(&self, _menu_item: ObjectId) -> Option<String> {
+        None
+    }
     fn poll_menu_triggered(&self) -> Option<ObjectId>;
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool;
     fn poll_widget_triggered(&self) -> Option<ObjectId>;

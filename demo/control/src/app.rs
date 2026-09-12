@@ -1,16 +1,23 @@
 //! Control Demo — 基础控件综合演示（基于 App 框架）
 //!
-//! 使用 App + WindowHandle + WidgetHandle 体系，
-//! 创建窗口并在其中放置各类基础控件。
+//! 使用 App + WindowHandle + WidgetHandle 体系，创建窗口并放置各类控件。
 //! 所有控件事件通过 handle.on_click / on_value_changed 实时记录。
 //!
-//! 控件分类（覆盖窗口坐标区域）：
+//! 布局：
+//!   菜单栏 — File / View（原生菜单，演示菜单事件轮询）
 //!   行 0 — Button:   Button, ToggleButton
-//!   行 1 — Toggle:   CheckBox, RadioButton x3, Switch
+//!   行 1 — Toggle:   CheckBox, RadioButton x3
 //!   行 2 — Input:    SpinBox, ComboBox, LineEdit
 //!   行 3 — Range:    Slider, ProgressBar
-//!   行 4 — Dialog:   MessageBox
-//!   底部 — Log:      4 行标签显示最新事件
+//!   行 4 — Dialog:   MessageBox（不崩溃：对话框不是 view）
+//!   右列 — 自绘控件: CodeEditor + Chip（原生画布渲染）
+//!   底部 — StatusBar + 事件日志
+//!
+//! # 跨平台
+//!
+//! 本 demo 不含任何 `cfg(target_os)`。平台差异全部由库在运行时暴露：
+//! `supports_self_drawn()` 决定是否挂载自绘控件，菜单/工具栏在所有桌面后端都有
+//! 统一 API（详见 `docs/plans/platform_differences.md`）。
 
 use std::sync::{Arc, Mutex};
 
@@ -178,6 +185,62 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 自绘控件（native canvas）
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 挂载自绘控件，证明它们能和原生控件放在同一个窗口里。
+///
+/// `CodeEditor` 这类控件没有对应的 OS 控件，通过 `mount_self_drawn` 交给原生画布
+/// 渲染；能力不足的后端会如实返回错误，而不是留下一个空白区域。
+fn build_self_drawn_controls(win: &WindowHandle, log: &Arc<EventLog>) {
+    use rust_widgets::core::Rect;
+    use rust_widgets::widget::special_widgets::code_editor::{CodeEditorConfig, LanguageId};
+
+    log.append("═══ Row: Self-drawn Widgets ═══");
+
+    if !rust_widgets::supports_self_drawn() {
+        log.append(format!(
+            "[SelfDrawn] 后端 '{}' 不支持自绘控件，跳过本区域",
+            rust_widgets::backend_name()
+        ));
+        return;
+    }
+
+    // CodeEditor：右侧 360x520，与左侧原生控件并排。
+    let rect = Rect::new(610, 20, 350, 480);
+    let config = CodeEditorConfig::new()
+        .language(LanguageId::Rust)
+        .tab_width(4)
+        .show_line_numbers(true)
+        .show_minimap(false);
+    match rust_widgets::widget::special_widgets::code_editor::CodeEditor::with_config(rect, config)
+    {
+        Ok(mut editor) => {
+            editor.set_text("fn main() {\n    let x = 1;\n}\n");
+            let widget: Box<dyn rust_widgets::widget::Widget> = Box::new(editor);
+            match win.mount_self_drawn(widget, rect) {
+                Ok(handle) => {
+                    log.append(format!("[SelfDrawn] CodeEditor 挂载成功 id={}", handle.raw_id()))
+                }
+                Err(error) => log.append(format!("[SelfDrawn] CodeEditor 挂载失败：{error}")),
+            }
+        }
+        Err(error) => log.append(format!("[SelfDrawn] CodeEditor 配置非法：{error}")),
+    }
+
+    // Chip：第二个自绘控件，证明通道不是为单一控件开的。
+    let chip_rect = Rect::new(610, 520, 160, 40);
+    let factory = rust_widgets::widget::WidgetFactory::new_with_defaults();
+    match factory.create("chip", chip_rect, "chip") {
+        Some(chip) => match win.mount_self_drawn(chip, chip_rect) {
+            Ok(handle) => log.append(format!("[SelfDrawn] Chip 挂载成功 id={}", handle.raw_id())),
+            Err(error) => log.append(format!("[SelfDrawn] Chip 挂载失败：{error}")),
+        },
+        None => log.append("[SelfDrawn] Chip 未在控件工厂注册"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // run — App 入口，由 main() 调用
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -231,11 +294,15 @@ pub fn run() {
     log.append("[App] init() done");
 
     // 创建窗口（必须在 init 之后，run 之前）
-    let win = app.new_window("Controls Demo — rust_widgets", 100, 100, 600, 520);
+    let win = app.new_window("Controls Demo — rust_widgets", 100, 100, 980, 620);
     log.append(format!("[Window] created: id={:?}", win.raw_id()));
 
-    // 构建全部控件
+    // 构建全部原生控件
     build_all_controls(&win, &log);
+    log.append("[App] native controls ready");
+
+    // 构建自绘控件：证明原生控件与自绘控件可以同窗混排。
+    build_self_drawn_controls(&win, &log);
     log.append("[App] controls ready — starting event loop");
 
     // 显示窗口：WindowHandle::show() → platform show_widget → GTK show_all。

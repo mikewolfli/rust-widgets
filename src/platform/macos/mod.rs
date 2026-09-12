@@ -9,6 +9,14 @@ pub mod macos_bridge;
 #[cfg(feature = "cocoa-legacy")]
 mod platform_impl;
 
+/// CoreGraphics FFI used to blit self-drawn frames.
+#[cfg(feature = "cocoa-legacy")]
+pub(crate) mod cg;
+
+/// Native surface for self-drawn widgets.
+#[cfg(feature = "cocoa-legacy")]
+pub(crate) mod canvas;
+
 /// Cocoa 0.24 types and helpers (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]
 pub mod types;

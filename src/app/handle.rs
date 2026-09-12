@@ -74,6 +74,177 @@ pub type ClickCallback = Rc<RefCell<dyn FnMut()>>;
 pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(String)>>;
 
 // ═══════════════════════════════════════════════════════════════
+// Self-drawn widget mounting
+// ═══════════════════════════════════════════════════════════════
+
+/// Why a self-drawn widget could not be mounted into a window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelfDrawnMountError {
+    /// The calling thread has no widget registry — mounting must happen on the
+    /// thread that drives the UI.
+    NoRegistryOnThread,
+    /// This backend has no self-drawn surface (`Platform::supports_self_drawn`
+    /// returned `false`). Carries the backend name for the message.
+    UnsupportedByBackend(&'static str),
+    /// The backend claims support but refused this particular mount (unknown
+    /// parent, wrong parent kind, allocation failure). Carries the backend name.
+    RejectedByBackend(&'static str),
+    /// `mount_widget_by_name` was given a name the widget factory does not know.
+    UnknownWidgetName,
+}
+
+impl core::fmt::Display for SelfDrawnMountError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoRegistryOnThread => write!(
+                f,
+                "self-drawn widgets must be mounted on the UI thread (no registry on this thread)"
+            ),
+            Self::UnsupportedByBackend(backend) => write!(
+                f,
+                "backend '{backend}' cannot display self-drawn widgets; \
+                 it has no native canvas surface"
+            ),
+            Self::RejectedByBackend(backend) => {
+                write!(f, "backend '{backend}' refused the mount (see logs for the reason)")
+            }
+            Self::UnknownWidgetName => {
+                write!(f, "the widget factory has no widget registered under that name")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SelfDrawnMountError {}
+
+/// Handle to a self-drawn widget mounted in a window.
+///
+/// Keeps the widget's registry id so the caller can move or unmount it. Dropping
+/// the handle is **not** enough to remove the widget: the window still owns it,
+/// because the native surface outlives any single Rust value. Call
+/// [`SelfDrawnHandle::unmount`] for that; `Drop` only detaches this handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfDrawnHandle {
+    id: ObjectId,
+}
+
+impl SelfDrawnHandle {
+    /// Wraps a registry id.
+    pub fn from_raw(id: ObjectId) -> Self {
+        Self { id }
+    }
+
+    /// Returns the widget registry id.
+    pub fn raw_id(&self) -> ObjectId {
+        self.id
+    }
+
+    /// Returns the widget's current geometry.
+    pub fn geometry(&self) -> Option<Rect> {
+        crate::widget::runtime::geometry_of(self.id)
+    }
+
+    /// Moves and/or resizes the mounted widget.
+    ///
+    /// Returns `false` when the widget is no longer mounted.
+    pub fn set_geometry(&self, rect: Rect) -> bool {
+        crate::resize_self_drawn(self.id, rect)
+    }
+
+    /// Removes the widget from its window and drops it.
+    ///
+    /// Returns `false` when it was already unmounted.
+    pub fn unmount(&self) -> bool {
+        let removed = crate::unmount_self_drawn(self.id);
+        crate::widget::runtime::unregister(self.id);
+        removed
+    }
+
+    /// Runs `f` against the mounted widget, then repaints it if `f` reports a change.
+    ///
+    /// # Why this exists
+    ///
+    /// A self-drawn widget owns its own interaction model, so a native menu item
+    /// or tool-bar button cannot drive it through the platform event queue —
+    /// there is no OS control to send a command to. This is the generic bridge:
+    /// the caller decides what to do with the widget, and this method guarantees
+    /// the change becomes visible.
+    ///
+    /// `f` returns whether it changed anything; returning `false` skips the
+    /// repaint. Returns `None` when the widget is no longer mounted.
+    ///
+    /// ```no_run
+    /// use rust_widgets::app::{App, WidgetHandle};
+    /// use rust_widgets::core::Rect;
+    /// use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
+    ///
+    /// let mut app = App::new();
+    /// app.init();
+    /// let win = app.new_window("Editor", 0, 0, 800, 600);
+    /// let editor = win
+    ///     .mount_widget_by_name("code_editor", Rect::new(0, 0, 800, 600), "")
+    ///     .expect("backend supports self-drawn widgets");
+    ///
+    /// // Downcast to the concrete widget and drive it directly.
+    /// editor.update(|widget| {
+    ///     let Some(editor) = (widget as &mut dyn std::any::Any).downcast_mut::<CodeEditor>()
+    ///     else {
+    ///         return false;
+    ///     };
+    ///     editor.undo()
+    /// });
+    /// ```
+    pub fn update(&self, f: impl FnOnce(&mut dyn crate::widget::Widget) -> bool) -> Option<bool> {
+        let changed = crate::widget::runtime::with_widget_mut(self.id, f)?;
+        if changed {
+            crate::widget::runtime::request_repaint(self.id);
+        }
+        Some(changed)
+    }
+
+    /// Reads state from the mounted widget without repainting.
+    ///
+    /// Returns `None` when the widget is no longer mounted.
+    pub fn read<R>(&self, f: impl FnOnce(&dyn crate::widget::Widget) -> R) -> Option<R> {
+        crate::widget::runtime::with_widget(self.id, f)
+    }
+}
+
+impl WidgetHandle for SelfDrawnHandle {
+    fn raw_id(&self) -> ObjectId {
+        self.id
+    }
+
+    fn from_raw(id: ObjectId) -> Self {
+        Self { id }
+    }
+
+    /// Self-drawn widgets route input into themselves.
+    ///
+    /// A `CodeEditor` handles its own clicks, keys and IME commits through
+    /// `EventHandler`; there is no separate platform control to attach a
+    /// click callback to. This deliberately does **not** register a callback
+    /// that would never fire — read the widget's own signals instead (for the
+    /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
+    fn on_click<F: FnMut() + 'static>(&self, _f: F) {
+        log::debug!(
+            "SelfDrawnHandle::on_click ignored for id={}: self-drawn widgets emit their own \
+             signals rather than a platform click callback",
+            self.id
+        );
+    }
+
+    /// See [`SelfDrawnHandle::on_click`]; the same reasoning applies.
+    fn on_value_changed<F: FnMut(String) + 'static>(&self, _f: F) {
+        log::debug!(
+            "SelfDrawnHandle::on_value_changed ignored for id={}: self-drawn widgets emit \
+             their own signals",
+            self.id
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // WidgetHandle trait – shared behaviour for all handles
 // ═══════════════════════════════════════════════════════════════
 
@@ -338,6 +509,84 @@ impl WindowHandle {
         ProgressBarHandle::from_raw(crate::create_progress_bar(self.id, x, y, w, h))
     }
 
+    /// Mount a **self-drawn** widget into this window.
+    ///
+    /// # What this is for
+    ///
+    /// Widgets that paint themselves through `Draw` (`CodeEditor`, `ColorPicker`,
+    /// `GanttWidget`, `TerminalView`, …) have no OS control to map onto, so the
+    /// `new_*` factory methods above cannot host them. This method hands the
+    /// widget to a native canvas surface that repaints it whenever the window
+    /// is invalidated, and forwards pointer/keyboard input back into the widget.
+    ///
+    /// # Ownership
+    ///
+    /// The window takes ownership through the process-wide widget registry; the
+    /// returned handle can move, resize and unmount it.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(handle)` when the backend mounted the widget, `Err(reason)` when it
+    /// could not — a backend without self-drawn support (see
+    /// `Platform::supports_self_drawn`), an off-UI-thread call, or an unknown
+    /// parent. Callers must surface the error rather than showing a blank window.
+    ///
+    /// ```no_run
+    /// use rust_widgets::app::{App, WidgetHandle};
+    /// use rust_widgets::core::Rect;
+    /// use rust_widgets::widget::special_widgets::code_editor::{CodeEditor, CodeEditorConfig};
+    ///
+    /// let mut app = App::new();
+    /// app.init();
+    /// let win = app.new_window("Editor", 0, 0, 900, 600);
+    /// let editor = CodeEditor::with_config(Rect::new(0, 0, 900, 600), CodeEditorConfig::new())
+    ///     .expect("valid config");
+    /// win.mount_self_drawn(Box::new(editor), Rect::new(0, 0, 900, 600))
+    ///     .expect("backend must support self-drawn widgets");
+    /// win.show();
+    /// app.run();
+    /// ```
+    pub fn mount_self_drawn(
+        &self,
+        widget: Box<dyn crate::widget::Widget>,
+        rect: Rect,
+    ) -> Result<SelfDrawnHandle, SelfDrawnMountError> {
+        // The widget must be registered before the backend can be asked to show
+        // it, because the backend looks it up by id on every repaint.
+        let id = crate::widget::runtime::register(widget)
+            .ok_or(SelfDrawnMountError::NoRegistryOnThread)?;
+        crate::widget::runtime::set_geometry(id, rect);
+
+        let mounted = crate::mount_self_drawn(self.id, id, rect);
+        if !mounted {
+            // Do not leave a widget stranded in the registry when the backend
+            // refused to show it. Dropping it here keeps the two in step.
+            crate::widget::runtime::unregister(id);
+            if !crate::supports_self_drawn() {
+                return Err(SelfDrawnMountError::UnsupportedByBackend(crate::backend_name()));
+            }
+            return Err(SelfDrawnMountError::RejectedByBackend(crate::backend_name()));
+        }
+        Ok(SelfDrawnHandle { id })
+    }
+
+    /// Mount a self-drawn widget, creating it from the widget factory by name.
+    ///
+    /// Convenience wrapper over [`WindowHandle::mount_self_drawn`] for callers
+    /// that already address widgets by their capability name (`"code_editor"`,
+    /// `"color_picker"`, …).
+    pub fn mount_widget_by_name(
+        &self,
+        name: &str,
+        rect: Rect,
+        text: &str,
+    ) -> Result<SelfDrawnHandle, SelfDrawnMountError> {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let widget =
+            factory.create(name, rect, text).ok_or(SelfDrawnMountError::UnknownWidgetName)?;
+        self.mount_self_drawn(widget, rect)
+    }
+
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
         let panel = PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h));
         PANEL_STATES.with(|map| {
@@ -357,6 +606,101 @@ impl WindowHandle {
 
     pub fn new_spin_box(&self, x: i32, y: i32, w: u32, h: u32) -> SpinBoxHandle {
         SpinBoxHandle::from_raw(crate::create_spin_box(self.id, x, y, w, h))
+    }
+
+    /// Create a native menu bar for this window.
+    ///
+    /// On macOS the bar also becomes the application's main menu when attached
+    /// with [`WindowHandle::attach_menu_bar`]. Menus are added with
+    /// [`WindowHandle::new_menu`] and items with
+    /// [`WindowHandle::new_menu_item`].
+    pub fn new_menu_bar(&self, x: i32, y: i32, w: u32, h: u32) -> MenuBarHandle {
+        MenuBarHandle::from_raw(crate::create_menu_bar(self.id, x, y, w, h))
+    }
+
+    /// Attach a menu bar to this window.
+    ///
+    /// Returns `false` when the backend cannot attach it.
+    pub fn attach_menu_bar(&self, menu_bar: &MenuBarHandle) -> bool {
+        crate::attach_menu_bar_to_window(self.id, menu_bar.raw_id())
+    }
+
+    /// Add a top-level menu to a menu bar.
+    ///
+    /// # Parent
+    ///
+    /// `menu_bar` must be the bar returned by [`WindowHandle::new_menu_bar`] —
+    /// **not** this window. A menu's parent is structurally its bar, and the
+    /// macOS backend only attaches the submenu when the parent is a
+    /// `HandleKind::MenuBar` (or a nested `Menu`); passing a window does nothing
+    /// and the menu silently never appears.
+    pub fn new_menu(
+        &self,
+        menu_bar: &MenuBarHandle,
+        text: &str,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    ) -> MenuHandle {
+        MenuHandle::from_raw(crate::create_menu(menu_bar.raw_id(), text, x, y, w, h))
+    }
+
+    /// Add an item to a menu, with a shortcut typed rather than spelled.
+    ///
+    /// This is the portable form: pass [`crate::shortcut::Shortcut::primary`] and
+    /// the item shows `⌘S` on macOS and `Ctrl+S` on Windows/Linux. Prefer it over
+    /// [`WindowHandle::new_menu_item`], which takes an already-formatted display
+    /// string and therefore cannot adapt to the host's notation.
+    ///
+    /// ```rust,no_run
+    /// use rust_widgets::app::{App, WidgetHandle};
+    /// use rust_widgets::shortcut::{Key, Shortcut};
+    ///
+    /// let mut app = App::new();
+    /// app.init();
+    /// let win = app.new_window("Editor", 0, 0, 800, 600);
+    /// let bar = win.new_menu_bar(0, 0, 0, 0);
+    /// let file = win.new_menu(&bar, "File", 0, 0, 0, 0);
+    /// // One declaration, native spelling on every desktop OS.
+    /// let save = win.new_menu_item_with_shortcut(&file, "Save", Some(Shortcut::primary(Key::S)));
+    /// assert_ne!(save.raw_id(), 0);
+    /// ```
+    pub fn new_menu_item_with_shortcut(
+        &self,
+        menu: &MenuHandle,
+        text: &str,
+        shortcut: Option<crate::shortcut::Shortcut>,
+    ) -> MenuItemHandle {
+        let rendered = shortcut.map(|shortcut| crate::format_shortcut(&shortcut));
+        self.new_menu_item(menu, text, rendered.as_deref())
+    }
+
+    /// Add an item to a menu, optionally with a keyboard shortcut such as
+    /// `"Cmd+Z"`. Returns the item handle, whose id can be fed to
+    /// `Platform::poll_menu_triggered` to detect activation.
+    ///
+    /// The shortcut is the **display text**: what the user sees is what you pass.
+    /// Use [`WindowHandle::new_menu_item_with_shortcut`] when you want the host
+    /// OS to choose the notation from a typed
+    /// [`crate::shortcut::Shortcut`].
+    pub fn new_menu_item(
+        &self,
+        menu: &MenuHandle,
+        text: &str,
+        shortcut: Option<&str>,
+    ) -> MenuItemHandle {
+        MenuItemHandle::from_raw(crate::menu_add_item(menu.raw_id(), text, shortcut))
+    }
+
+    /// Create a tool bar strip for this window.
+    pub fn new_tool_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ToolBarHandle {
+        ToolBarHandle::from_raw(crate::create_tool_bar(self.id, x, y, w, h))
+    }
+
+    /// Create a status bar for this window.
+    pub fn new_status_bar(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> StatusBarHandle {
+        StatusBarHandle::from_raw(crate::create_status_bar(self.id, text, x, y, w, h))
     }
 
     pub fn new_list_view(&self, x: i32, y: i32, w: u32, h: u32) -> ListViewHandle {
@@ -514,6 +858,11 @@ impl_handle!(GridWidgetHandle, "Type-safe handle for a GridWidget (grid layout) 
 impl_handle!(FrameHandle, "Type-safe handle for a Frame widget.");
 impl_handle!(DialogHandle, "Type-safe handle for a generic Dialog widget.");
 impl_handle!(WebViewHandle, "Type-safe handle for a WebView (web content) widget.");
+impl_handle!(MenuBarHandle, "Type-safe handle for a native menu bar.");
+impl_handle!(MenuHandle, "Type-safe handle for a native menu (a menu-bar entry).");
+impl_handle!(MenuItemHandle, "Type-safe handle for a native menu item.");
+impl_handle!(ToolBarHandle, "Type-safe handle for a native tool bar.");
+impl_handle!(StatusBarHandle, "Type-safe handle for a native status bar.");
 
 // ═══════════════════════════════════════════════════════════════
 // MessageBoxHandle – custom, NOT from macro

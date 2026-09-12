@@ -61,6 +61,8 @@ pub(crate) enum HandleKind {
     TimePicker,
     DateTimePicker,
     ActivityIndicator,
+    /// A self-drawn widget mounted into a window (see `macos/canvas.rs`).
+    Canvas,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct CocoaHandle {
@@ -233,6 +235,75 @@ const MOD_SHIFT: u64 = 1 << 17;
 const MOD_CONTROL: u64 = 1 << 18;
 const MOD_OPTION: u64 = 1 << 19;
 const MOD_COMMAND: u64 = 1 << 20;
+/// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.
+///
+/// # Safety
+///
+/// `event` must be a live `NSEvent` instance, or `nil` (yielding `(0, 0)`).
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn translate_key_event(event: id) -> (u32, u32) {
+    if event == nil {
+        return (0, 0);
+    }
+    let key_code: u16 = msg_send![event, keyCode];
+    let flags: u64 = msg_send![event, modifierFlags];
+    map_key_modifiers(flags, key_code)
+}
+
+/// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.
+///
+/// Testable core of [`translate_key_event`]: takes the raw AppKit values so the
+/// mapping can be asserted without constructing an `NSEvent`.
+///
+/// # Modifier mapping
+///
+/// The widget layer uses a small fixed bitfield: shift = 1, control = 2,
+/// alt = 4, meta/command = 8 (see `Modifiers::from_event_bits`). This converts
+/// AppKit's `NSEventModifierFlag` bits into that layout, so a `KeyPress`
+/// arriving through a self-drawn canvas carries the same bits as one arriving
+/// through the regular event loop.
+///
+/// Command **must** be forwarded as bit 3: it is the macOS primary accelerator
+/// (`⌘Z`, `⌘S`, ...). Dropping it made every Command chord reach the widget as a
+/// bare key press, which is why application shortcuts never fired on macOS.
+///
+/// # Key code
+///
+/// AppKit's `keyCode` is a hardware layout code and is returned unchanged; the
+/// widget layer's key handling is written against exactly those codes for the
+/// non-printing keys (arrows, Enter, Escape, Backspace, Delete, Page Up/Down,
+/// Home/End). Printable characters travel as `Event::TextInput` and therefore
+/// never depend on this number.
+pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) {
+    const WIDGET_SHIFT: u32 = 1;
+    const WIDGET_CONTROL: u32 = 2;
+    const WIDGET_ALT: u32 = 4;
+    const WIDGET_META: u32 = 8;
+    let mut modifiers = 0u32;
+    if appkit_flags & MOD_SHIFT != 0 {
+        modifiers |= WIDGET_SHIFT;
+    }
+    if appkit_flags & MOD_CONTROL != 0 {
+        modifiers |= WIDGET_CONTROL;
+    }
+    if appkit_flags & MOD_OPTION != 0 {
+        modifiers |= WIDGET_ALT;
+    }
+    if appkit_flags & MOD_COMMAND != 0 {
+        modifiers |= WIDGET_META;
+    }
+    (key_code as u32, modifiers)
+}
+
+/// Parses a **displayed** accelerator (e.g. `"⌘Z"`, `"Ctrl+Shift+Z"`, `"F1"`)
+/// into a Cocoa key equivalent string plus its `NSEventModifierFlag` mask.
+///
+/// Both notations are accepted: the glyph form macOS renders (`⌘⇧Z`) and the
+/// spelled-out form used by Windows/Linux callers (`Ctrl+Shift+Z`). Accepting
+/// both keeps `menu_add_item` usable no matter which platform produced the text.
+///
+/// The returned key string is empty when `shortcut` is absent or unparseable, and
+/// callers treat an empty key as "no accelerator".
 pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
     // Parse textual accelerator into Cocoa key + modifier mask.
     let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
@@ -240,18 +311,75 @@ pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
     };
     let mut modifiers: u64 = 0;
     let mut key = String::new();
+    // The glyph forms are single characters rather than `+`-separated tokens, so
+    // scan for them before splitting on the separator.
+    for ch in raw.chars() {
+        match ch {
+            '⌘' => modifiers |= MOD_COMMAND,
+            '⌃' | '^' => modifiers |= MOD_CONTROL,
+            '⌥' => modifiers |= MOD_OPTION,
+            '⇧' => modifiers |= MOD_SHIFT,
+            _ => {}
+        }
+    }
     for part in raw.split('+') {
         let token = part.trim().to_lowercase();
+        // A token may still carry a leading glyph, so strip glyphs first.
+        let token = token.trim_start_matches(['⌘', '⌃', '^', '⌥', '⇧']).to_string();
         match token.as_str() {
-            "cmd" | "command" | "meta" => modifiers |= MOD_COMMAND,
+            // "Primary" is the portable spelling: on macOS it is Command.
+            "primary" | "cmdorctrl" | "cmd" | "command" | "meta" => modifiers |= MOD_COMMAND,
             "ctrl" | "control" => modifiers |= MOD_CONTROL,
             "alt" | "option" => modifiers |= MOD_OPTION,
             "shift" => modifiers |= MOD_SHIFT,
-            "cmdorctrl" => modifiers |= MOD_COMMAND,
+            // Named keys whose glyph/menu spelling has to become an AppKit key
+            // equivalent rather than a literal word.
+            "enter" | "return" => key = "\r".to_string(),
+            "tab" => key = "\t".to_string(),
+            "space" => key = " ".to_string(),
+            "delete" | "del" | "backspace" => key = "\u{8}".to_string(),
+            "esc" | "escape" => key = "\u{1b}".to_string(),
+            "left" => key = "\u{f702}".to_string(),
+            "right" => key = "\u{f703}".to_string(),
+            "up" => key = "\u{f700}".to_string(),
+            "down" => key = "\u{f701}".to_string(),
+            "pageup" | "pgup" => key = "\u{f72c}".to_string(),
+            "pagedown" | "pgdn" => key = "\u{f72d}".to_string(),
+            "home" => key = "\u{f729}".to_string(),
+            "end" => key = "\u{f72b}".to_string(),
+            "⌘" | "⌃" | "⌥" | "⇧" | "↩" | "⇥" | "⎋" | "⌫" | "←" | "→" | "↑" | "↓" | "⇞" | "⇟"
+            | "↖" | "↘" => {
+                // Glyphs were already folded into the mask above; a lone glyph
+                // token carries no key of its own.
+            }
             _ if !token.is_empty() => {
                 key = token;
             }
             _ => { /* Other keys are not relevant */ }
+        }
+    }
+    // The glyph form (`⌘↩`) arrives as a single token with no separator, so the
+    // loop above leaves `key` holding mixed glyphs. Reduce it to the key part.
+    if key.is_empty() {
+        let stripped: String =
+            raw.chars().filter(|ch| !matches!(ch, '⌘' | '⌃' | '^' | '⌥' | '⇧')).collect();
+        let stripped = stripped.trim().to_string();
+        if !stripped.is_empty() {
+            key = match stripped.as_str() {
+                "↩" => "\r".to_string(),
+                "⇥" => "\t".to_string(),
+                "⎋" => "\u{1b}".to_string(),
+                "⌫" => "\u{8}".to_string(),
+                "←" => "\u{f702}".to_string(),
+                "→" => "\u{f703}".to_string(),
+                "↑" => "\u{f700}".to_string(),
+                "↓" => "\u{f701}".to_string(),
+                "⇞" => "\u{f72c}".to_string(),
+                "⇟" => "\u{f72d}".to_string(),
+                "↖" => "\u{f729}".to_string(),
+                "↘" => "\u{f72b}".to_string(),
+                other => other.to_string(),
+            };
         }
     }
     if !key.is_empty() && modifiers == 0 {
@@ -447,5 +575,67 @@ impl MacOSPlatform {
             let ns_text = NSString::alloc(nil).init_str(&text);
             let _: () = msg_send![Self::as_id(handle), setStringValue: ns_text];
         }
+    }
+}
+
+#[cfg(test)]
+mod parse_shortcut_tests {
+    use super::{parse_shortcut, MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
+
+    /// No shortcut, or an empty one, must yield "no accelerator".
+    #[test]
+    fn absent_shortcut_produces_no_key() {
+        assert_eq!(parse_shortcut(None), (String::new(), 0));
+        assert_eq!(parse_shortcut(Some("")), (String::new(), 0));
+        assert_eq!(parse_shortcut(Some("   ")), (String::new(), 0));
+    }
+
+    /// The spelled-out form (what Windows/Linux callers pass) maps to Command.
+    #[test]
+    fn primary_spelling_maps_to_command() {
+        let (key, mask) = parse_shortcut(Some("Primary+S"));
+        assert_eq!(key, "s");
+        assert_eq!(mask, MOD_COMMAND);
+    }
+
+    /// The glyph form macOS itself renders must round-trip back to Command.
+    #[test]
+    fn glyph_form_maps_to_command() {
+        let (key, mask) = parse_shortcut(Some("⌘S"));
+        assert_eq!(key, "s");
+        assert_eq!(mask, MOD_COMMAND);
+    }
+
+    /// Ctrl and Shift keep their own flags rather than collapsing into Command.
+    #[test]
+    fn control_and_shift_are_distinct_from_command() {
+        let (key, mask) = parse_shortcut(Some("Ctrl+Shift+Z"));
+        assert_eq!(key, "z");
+        assert_eq!(mask, MOD_CONTROL | MOD_SHIFT);
+    }
+
+    /// A glyph-only combination must still recover the key that follows it.
+    #[test]
+    fn glyph_combo_recovers_named_key() {
+        // Shift+Command+Z, written the way a macOS menu displays it.
+        let (key, mask) = parse_shortcut(Some("⇧⌘Z"));
+        assert_eq!(key, "z");
+        assert_eq!(mask, MOD_SHIFT | MOD_COMMAND);
+    }
+
+    /// Option/Alt is its own flag.
+    #[test]
+    fn option_spelling_maps_to_option() {
+        let (key, mask) = parse_shortcut(Some("Alt+F4"));
+        assert_eq!(key, "f4");
+        assert_eq!(mask, MOD_OPTION);
+    }
+
+    /// A bare key with no modifier defaults to Command (macOS menu convention).
+    #[test]
+    fn bare_key_defaults_to_command() {
+        let (key, mask) = parse_shortcut(Some("F1"));
+        assert_eq!(key, "f1");
+        assert_eq!(mask, MOD_COMMAND);
     }
 }

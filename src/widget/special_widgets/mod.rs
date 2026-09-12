@@ -25,7 +25,7 @@ pub use breadcrumb::{Breadcrumb, BreadcrumbSegment};
 pub use canvas::Canvas;
 pub use chart::ChartWidget;
 pub use chip::{Chip, ChipItem};
-pub use code_editor::{CodeEditor, DiagnosticMarker, MarkerSeverity};
+pub use code_editor::{CodeEditor, DiagnosticMarker, MarkerSeverity, MultiCursor};
 pub use color_picker::ColorPicker;
 pub use command_palette::{CommandEntry, CommandPalette};
 pub use diff_viewer::{DiffKind, DiffLine, DiffViewer};

@@ -12,9 +12,10 @@ pub use app_core::{App, AppConfig};
 pub use handle::{
     dispatch_trigger, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, DialogHandle,
     EchoMode, FrameHandle, GridWidgetHandle, LabelHandle, LineEditHandle, ListBoxHandle, ListModel,
-    ListViewHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
-    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, TabWidgetHandle,
-    TextEditHandle, WebViewHandle, WidgetHandle, WindowHandle,
+    ListViewHandle, MenuBarHandle, MenuHandle, MenuItemHandle, MessageBoxHandle, PanelHandle,
+    ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle, ScrollBarHandle, SelectionMode,
+    SelfDrawnHandle, SelfDrawnMountError, SliderHandle, SpinBoxHandle, StatusBarHandle,
+    TabWidgetHandle, TextEditHandle, ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle,
 };
 pub use lifecycle::*;
 

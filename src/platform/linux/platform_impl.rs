@@ -35,6 +35,40 @@ impl Platform for LinuxPlatform {
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }
+
+    /// A self-drawn widget gets a `gtk::DrawingArea` inside the window's content
+    /// container; its `draw` signal blits a frame from `widget::runtime`.
+    /// See `linux/canvas.rs`.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn mount_self_drawn(
+        &self,
+        parent: crate::core::ObjectId,
+        id: crate::core::ObjectId,
+        rect: crate::core::Rect,
+    ) -> bool {
+        super::canvas::mount_canvas(self, parent, id, rect)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn resize_self_drawn(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+        super::canvas::resize_canvas(self, id, rect)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn unmount_self_drawn(&self, id: crate::core::ObjectId) -> bool {
+        super::canvas::unmount_canvas(self, id)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn supports_self_drawn(&self) -> bool {
+        true
+    }
+
+    /// Queue a redraw on the canvas's `DrawingArea`.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn repaint_self_drawn(&self, id: crate::core::ObjectId) -> bool {
+        super::canvas::repaint_canvas(self, id)
+    }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -395,6 +429,9 @@ impl Platform for LinuxPlatform {
     }
     fn menu_add_item(&self, parent_menu: u64, text: &str, shortcut: Option<&str>) -> u64 {
         self.menu_add_item_impl(parent_menu, text, shortcut)
+    }
+    fn menu_item_shortcut(&self, menu_item: u64) -> Option<String> {
+        self.menu_item_shortcut_impl(menu_item)
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
         self.poll_menu_triggered_impl()

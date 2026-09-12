@@ -7,4 +7,8 @@ pub mod types;
 pub mod widget_creation;
 pub mod widget_state;
 
+/// Native surface for self-drawn widgets (Linux/GTK).
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+pub(crate) mod canvas;
+
 pub use types::*;

@@ -2,6 +2,7 @@
 /target
 **/*.rs.bk
 **/*.rlib
+**/target
 
 # IDE/Editor files
 .idea/
@@ -46,6 +47,7 @@ __pycache__/
 lcov.info
 coverage/
 demo/control/target
+demo/code_editor/target
 
 # Test outputs
 **/test_output/

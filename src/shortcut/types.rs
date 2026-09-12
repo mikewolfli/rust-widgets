@@ -15,7 +15,33 @@ impl Shortcut {
     pub fn from_key(key: Key) -> Self {
         Self::new(key, Modifiers::empty())
     }
+    /// Creates a primary-modifier shortcut (`Cmd` on macOS, `Ctrl` elsewhere).
+    ///
+    /// Use this for every application command (Undo, Save, Copy, ...). Writing
+    /// `Modifiers::CTRL` directly would hard-code the `Ctrl` convention onto
+    /// macOS, where the platform-standard accelerator is `Command`.
+    ///
+    /// ```
+    /// use rust_widgets::shortcut::{Key, Shortcut};
+    ///
+    /// let undo = Shortcut::primary(Key::Z);
+    /// assert_eq!(undo.key, Key::Z);
+    /// ```
+    pub fn primary(key: Key) -> Self {
+        Self::new(key, Modifiers::PRIMARY)
+    }
+    /// Creates a primary + Shift shortcut (e.g. Redo on Windows/Linux).
+    pub fn primary_shift(key: Key) -> Self {
+        Self::new(key, Modifiers::PRIMARY | Modifiers::SHIFT)
+    }
+    /// Creates a primary + Alt shortcut.
+    pub fn primary_alt(key: Key) -> Self {
+        Self::new(key, Modifiers::PRIMARY | Modifiers::ALT)
+    }
     /// Creates a Ctrl+key shortcut.
+    ///
+    /// Prefer [`Shortcut::primary`] for application commands; `ctrl` remains for
+    /// shortcuts that genuinely need the physical Control key on every platform.
     pub fn ctrl(key: Key) -> Self {
         Self::new(key, Modifiers::CTRL)
     }
@@ -36,7 +62,14 @@ impl Shortcut {
         Self::new(key, Modifiers::CTRL | Modifiers::SHIFT)
     }
     /// Creates a shortcut from a string representation.
-    /// Supported formats: "Ctrl+A", "Alt+F4", "Ctrl+Shift+S", "F1".
+    ///
+    /// Supported formats: `"Ctrl+A"`, `"Alt+F4"`, `"Ctrl+Shift+S"`, `"F1"`.
+    ///
+    /// `primary`/`cmd`/`command` all produce [`Modifiers::PRIMARY`], which the
+    /// backends resolve to `Command` on macOS and `Ctrl` on Windows/Linux. That
+    /// keeps one shortcut declaration usable on every platform, and is also why
+    /// `"Cmd+Z"` and `"Ctrl+Z"` parse to the *same* value rather than two
+    /// different ones.
     pub fn from_string(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
         if parts.is_empty() {
@@ -46,10 +79,12 @@ impl Shortcut {
         let mut key_str = "";
         for part in &parts {
             match part.to_lowercase().as_str() {
-                "ctrl" | "control" => modifiers |= Modifiers::CTRL,
-                "alt" => modifiers |= Modifiers::ALT,
+                "primary" | "cmdorctrl" | "cmd" | "command" | "ctrl" | "control" => {
+                    modifiers |= Modifiers::PRIMARY
+                }
+                "alt" | "option" => modifiers |= Modifiers::ALT,
                 "shift" => modifiers |= Modifiers::SHIFT,
-                "meta" | "cmd" | "command" | "win" => modifiers |= Modifiers::META,
+                "meta" | "win" | "super" => modifiers |= Modifiers::META,
                 _ => key_str = part,
             }
         }
@@ -57,9 +92,17 @@ impl Shortcut {
         Some(Self::new(key, modifiers))
     }
     /// Returns a string representation of the shortcut.
+    ///
+    /// This is the **canonical, platform-independent** form: `PRIMARY` renders as
+    /// `Primary`. Use [`crate::platform::Platform::format_shortcut`] (or
+    /// [`crate::format_shortcut`]) to get the text a user should see on the
+    /// current OS — `⌘⇧Z` on macOS, `Ctrl+Shift+Z` on Windows and Linux.
     pub fn format_shortcut(&self) -> String {
         use std::fmt::Write;
         let mut result = String::new();
+        if self.modifiers.contains(Modifiers::PRIMARY) {
+            result.push_str("Primary");
+        }
         if self.modifiers.contains(Modifiers::CTRL) {
             if !result.is_empty() {
                 result.push('+');
@@ -444,6 +487,21 @@ impl Modifiers {
     pub const CTRL: Self = Self(1 << 1);
     pub const ALT: Self = Self(1 << 2);
     pub const META: Self = Self(1 << 3);
+    /// The platform's **primary** accelerator modifier.
+    ///
+    /// Resolves to `Command` on macOS and `Ctrl` on Windows/Linux. Declaring a
+    /// command as `Primary` instead of `Ctrl` is what lets a single shortcut
+    /// table drive every desktop platform without `cfg` in application code.
+    ///
+    /// Kept as its own bit (rather than aliasing [`Modifiers::CTRL`]) so that a
+    /// backend can still tell "primary" from "physical Control" — on macOS
+    /// those are genuinely different keys.
+    pub const PRIMARY: Self = Self(1 << 4);
+    /// Bit position of the meta/command modifier in the `Event::KeyPress`
+    /// convention (which predates this type and cannot be renumbered).
+    const EVENT_META: u8 = 0b1000;
+    /// Bit position of the control modifier in the event convention.
+    const EVENT_CTRL: u8 = 0b0010;
     /// Creates empty modifiers.
     pub const fn empty() -> Self {
         Self::NONE
@@ -457,9 +515,59 @@ impl Modifiers {
         (self.0 & other.0) == other.0
     }
 
+    /// Returns a copy with `other`'s bits cleared.
+    ///
+    /// Written as an explicit method (rather than `Not`/`Sub`) because clearing
+    /// bits is the only inverse operation callers need, and an expressive name
+    /// keeps the intent readable at call sites such as modifier translation.
+    pub const fn without(&self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Converts the framework modifier bitmask used by `Event::KeyPress`.
+    ///
+    /// Meta becomes [`Modifiers::PRIMARY`]: a key event carrying Command matches
+    /// a shortcut declared with `Shortcut::primary`.
     pub const fn from_event_bits(bits: u32) -> Self {
-        Self((bits as u8) & 0b1111)
+        Self::from_raw_event_bits(bits)
+    }
+
+    /// Converts an event bitmask where the **control** bit means the primary
+    /// accelerator rather than the physical Control key.
+    ///
+    /// Windows is the reason this exists: it has no Command key, so the OS
+    /// shortcut convention (`Ctrl+Z`, `Ctrl+S`) is expressed with Control, and a
+    /// `Shortcut::primary` binding has to resolve against it. It is a distinct
+    /// entry point rather than the default so the difference from macOS stays
+    /// visible at the call site instead of hiding inside a shared helper.
+    pub const fn from_event_bits_primary_is_ctrl(bits: u32) -> Self {
+        let translated = if bits & Self::EVENT_META as u32 != 0 {
+            // A Command bit still means PRIMARY; drop the raw Control bit so it
+            // is not counted twice.
+            (bits & !(Self::EVENT_CTRL as u32)) | Self::EVENT_META as u32
+        } else {
+            bits
+        };
+        Self::from_raw_event_bits(translated)
+    }
+
+    /// Shared bit-unpacking used by both event conversions above.
+    const fn from_raw_event_bits(bits: u32) -> Self {
+        let raw = bits as u8;
+        // Event bits 0..=2 map 1:1 onto SHIFT/CTRL/ALT.
+        let mut modifiers = Self(raw & (Self::SHIFT.0 | Self::CTRL.0 | Self::ALT.0));
+        if raw & Self::EVENT_META != 0 {
+            // The event's Command bit is the portable "primary accelerator"
+            // signal, so it lands on PRIMARY. It also implies physical Control
+            // on macOS, which is why CTRL is set alongside it: `Control+C` and
+            // `Command+C` both mean "copy" at the widget layer.
+            modifiers = Self(modifiers.0 | Self::PRIMARY.0 | Self::CTRL.0);
+        }
+        modifiers
+    }
+    /// Returns the raw bit pattern, for backends that need to translate it.
+    pub const fn bits(&self) -> u8 {
+        self.0
     }
 }
 impl std::ops::BitOr for Modifiers {
@@ -484,4 +592,119 @@ pub struct ShortcutEntry {
     pub shortcut: Shortcut,
     /// Whether the shortcut is currently enabled.
     pub enabled: bool,
+}
+
+/// How a platform writes the glyphs of a keyboard shortcut.
+///
+/// Menu accelerators are not spelled the same way everywhere: macOS uses symbol
+/// glyphs joined without separators (`⌘⇧Z`), while Windows and Linux spell the
+/// modifiers out and join them with `+` (`Ctrl+Shift+Z`).
+///
+/// Keeping this as a plain value type (rather than `cfg`-gated code) means the
+/// formatting rules are unit-testable for *every* platform on any host — the
+/// tests do not need a Windows or a Mac to assert what Windows or macOS shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlatformShortcutStyle {
+    /// `⌘`, `⌥`, `⌃`, `⇧` — macOS AppKit convention.
+    Mac,
+    /// `Ctrl+`, `Alt+`, `Shift+` — Windows Win32 / GTK convention.
+    Desktop,
+}
+
+impl PlatformShortcutStyle {
+    /// The style used by the operating system the library is compiled for.
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
+            Self::Mac
+        } else {
+            Self::Desktop
+        }
+    }
+
+    /// Renders `shortcut` in this platform's notation.
+    ///
+    /// [`Modifiers::PRIMARY`] resolves to `⌘`/`Command` on [`Self::Mac`] and to
+    /// `Ctrl` on [`Self::Desktop`], which is the whole point of the modifier: the
+    /// caller writes one shortcut and every platform shows its own idiom.
+    pub fn format(self, shortcut: &Shortcut) -> String {
+        let modifiers = shortcut.modifiers;
+        let key = shortcut.key.format_key();
+        match self {
+            Self::Mac => {
+                // AppKit orders modifiers as Control, Option, Shift, Command.
+                let mut rendered = String::new();
+                if modifiers.contains(Modifiers::CTRL) {
+                    rendered.push('⌃');
+                }
+                if modifiers.contains(Modifiers::ALT) {
+                    rendered.push('⌥');
+                }
+                if modifiers.contains(Modifiers::SHIFT) {
+                    rendered.push('⇧');
+                }
+                if modifiers.contains(Modifiers::PRIMARY) || modifiers.contains(Modifiers::META) {
+                    rendered.push('⌘');
+                }
+                rendered.push_str(&Self::mac_key_label(shortcut.key));
+                rendered
+            }
+            Self::Desktop => {
+                let mut parts: Vec<&str> = Vec::new();
+                if modifiers.contains(Modifiers::PRIMARY) {
+                    parts.push("Ctrl");
+                }
+                if modifiers.contains(Modifiers::ALT) {
+                    parts.push("Alt");
+                }
+                if modifiers.contains(Modifiers::SHIFT) {
+                    parts.push("Shift");
+                }
+                if modifiers.contains(Modifiers::CTRL) {
+                    // A physical-Control shortcut on Windows/Linux still reads
+                    // "Ctrl"; it is only distinct from PRIMARY on macOS.
+                    if !modifiers.contains(Modifiers::PRIMARY) {
+                        parts.push("Ctrl");
+                    }
+                }
+                if modifiers.contains(Modifiers::META) {
+                    parts.push("Win");
+                }
+                if parts.is_empty() {
+                    return key.to_string();
+                }
+                format!("{}+{key}", parts.join("+"))
+            }
+        }
+    }
+
+    /// Mac label for a key, substituting the glyphs macOS uses in menus.
+    fn mac_key_label(key: Key) -> String {
+        match key {
+            Key::Enter => "↩".to_string(),
+            Key::Tab => "⇥".to_string(),
+            Key::Escape => "⎋".to_string(),
+            Key::Space => "Space".to_string(),
+            Key::Delete => "⌫".to_string(),
+            Key::Backspace => "⌫".to_string(),
+            Key::Insert => "Help".to_string(),
+            Key::Left => "←".to_string(),
+            Key::Right => "→".to_string(),
+            Key::Up => "↑".to_string(),
+            Key::Down => "↓".to_string(),
+            Key::PageUp => "⇞".to_string(),
+            Key::PageDown => "⇟".to_string(),
+            Key::Home => "↖".to_string(),
+            Key::End => "↘".to_string(),
+            other => other.format_key().to_string(),
+        }
+    }
+}
+
+/// Renders a shortcut using `style`'s notation.
+///
+/// Prefer [`crate::format_shortcut`], which picks the style of the host OS; this
+/// entry point exists so callers (and tests) can render the *other* platforms'
+/// notation explicitly.
+pub fn format_shortcut_for_platform(shortcut: &Shortcut, style: PlatformShortcutStyle) -> String {
+    style.format(shortcut)
 }

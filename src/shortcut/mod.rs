@@ -7,4 +7,6 @@ mod manager;
 mod tests;
 mod types;
 pub use manager::ShortcutManager;
-pub use types::{Key, Modifiers, Shortcut, ShortcutEntry};
+pub use types::{
+    format_shortcut_for_platform, Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry,
+};

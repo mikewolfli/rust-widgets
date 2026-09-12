@@ -97,6 +97,49 @@ where
         height: u32,
     ) -> ObjectId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.insert_widget(id, kind, text, x, y, width, height);
+        id
+    }
+
+    /// Insert one widget record under a **caller-chosen** id.
+    ///
+    /// Used by self-drawn mounts: the id originates in
+    /// [`crate::widget::runtime`], which owns the widget, so the backend state
+    /// has to adopt it rather than allocate its own. Also advances the internal
+    /// allocator past `id` so a later `create_widget` cannot collide with it.
+    pub fn register_widget_with_id(
+        &self,
+        id: ObjectId,
+        kind: K,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) {
+        self.insert_widget(id, kind, text, x, y, width, height);
+        // Keep the allocator ahead of any externally supplied id.
+        let mut next = self.next_id.load(Ordering::Relaxed);
+        while next <= id {
+            match self.next_id.compare_exchange(next, id + 1, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => next = current,
+            }
+        }
+    }
+
+    /// Shared insert used by both creation paths.
+    fn insert_widget(
+        &self,
+        id: ObjectId,
+        kind: K,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) {
         self.widgets.lock().expect("backend state widget lock poisoned").insert(
             id,
             WidgetRecord {
@@ -112,7 +155,6 @@ where
                 height,
             },
         );
-        id
     }
     /// Return `true` when widget exists.
     pub fn contains_widget(&self, widget_id: ObjectId) -> bool {

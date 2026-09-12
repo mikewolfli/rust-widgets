@@ -164,6 +164,40 @@ pub trait Widget: EventHandler + Any {
     fn dpi_scale(&self) -> f32 {
         self.base().dpi_scale()
     }
+
+    /// Returns this widget as a [`Draw`] implementor, when it paints itself.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Widget`] does not require [`Draw`], because many widgets delegate to a
+    /// real OS control. But the rendering pipeline holds widgets as
+    /// `&mut dyn Widget` and still needs to ask "can *you* paint yourself?".
+    /// Without this bridge the only way to reach `Draw::draw` was a concrete
+    /// generic bound (`W: Draw + Widget`), which no `Box<dyn Widget>` satisfies —
+    /// so self-drawn widgets could never be painted generically, and mounting
+    /// one into a native window produced an empty surface.
+    ///
+    /// # Contract
+    ///
+    /// Return `Some(self)` from every widget that implements [`Draw`]. The
+    /// default returns `None`, which is the honest answer for OS-backed widgets
+    /// and keeps existing implementors compiling unchanged.
+    ///
+    /// ```
+    /// use rust_widgets::core::Rect;
+    /// use rust_widgets::render::RenderContext;
+    /// use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
+    /// use rust_widgets::widget::{Draw, Widget};
+    ///
+    /// let mut editor = CodeEditor::new(Rect::new(0, 0, 100, 50));
+    /// assert!(editor.as_draw_mut().is_some());
+    ///
+    /// let widget: &mut dyn Widget = &mut editor;
+    /// assert!(widget.as_draw_mut().is_some());
+    /// ```
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        None
+    }
     fn set_dpi_scale(&mut self, scale: f32) {
         self.base_mut().set_dpi_scale(scale);
     }

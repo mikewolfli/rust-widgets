@@ -27,6 +27,29 @@ impl Platform for MacOSPlatform {
     fn backend_name(&self) -> &'static str {
         "cocoa"
     }
+
+    /// A self-drawn widget gets an `NSView` subclass whose `drawRect:` blits a
+    /// frame out of `widget::runtime`. See `macos/canvas.rs`.
+    fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.mount_self_drawn_impl(parent, id, rect)
+    }
+
+    fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.resize_self_drawn_impl(id, rect)
+    }
+
+    fn unmount_self_drawn(&self, id: ObjectId) -> bool {
+        self.unmount_self_drawn_impl(id)
+    }
+
+    fn supports_self_drawn(&self) -> bool {
+        true
+    }
+
+    /// Mark the canvas view as needing display, which schedules `drawRect:`.
+    fn repaint_self_drawn(&self, id: ObjectId) -> bool {
+        self.repaint_self_drawn_impl(id)
+    }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }
@@ -711,7 +734,19 @@ impl Platform for MacOSPlatform {
                                 msg_send![parent_submenu, setSubmenu: submenu forItem: menu_item];
                         }
                     }
-                    HandleKind::Window => {}
+                    HandleKind::Window => {
+                        // A menu's parent is its bar, not a window. Attaching a
+                        // submenu to a window is meaningless; before this branch
+                        // was made explicit, callers passing a window got silence
+                        // and a menu that never appeared.
+                        log::error!(
+                            "[macos] create_menu: parent {} is a Window; a menu's parent must be \
+                             the MenuBar (use WindowHandle::new_menu(&bar, ..))",
+                            parent
+                        );
+                        pool.drain();
+                        return 0;
+                    }
                     // Other handle types need no special handling
                     _ => {}
                 }
@@ -1302,6 +1337,14 @@ impl Platform for MacOSPlatform {
                 match handle.kind {
                     HandleKind::Window => NSWindow::makeKeyAndOrderFront_(native, nil),
                     HandleKind::MenuBar => {}
+                    // Dialogs are not views: an NSAlert has no `setHidden:`. Sending
+                    // it raises a foreign exception that aborts the process, so the
+                    // state record above is the whole effect for them. A host runs a
+                    // dialog explicitly with `show_modal`.
+                    HandleKind::MessageBox
+                    | HandleKind::FileDialog
+                    | HandleKind::ColorDialog
+                    | HandleKind::FontDialog => {}
                     _ => {
                         let _: () = msg_send![native, setHidden: NO];
                     }
@@ -1324,6 +1367,12 @@ impl Platform for MacOSPlatform {
                 match handle.kind {
                     HandleKind::Window => NSWindow::orderOut_(native, nil),
                     HandleKind::MenuBar => {}
+                    // See `show_widget`: dialogs are not views and have no
+                    // `setHidden:`.
+                    HandleKind::MessageBox
+                    | HandleKind::FileDialog
+                    | HandleKind::ColorDialog
+                    | HandleKind::FontDialog => {}
                     _ => {
                         let _: () = msg_send![native, setHidden: YES];
                     }
@@ -1352,6 +1401,12 @@ impl Platform for MacOSPlatform {
                         );
                     }
                     HandleKind::MenuBar | HandleKind::Menu | HandleKind::MenuItem => {}
+                    // Dialogs are not views and have no `setFrame:`. Geometry for
+                    // them is recorded in state; the panel positions itself.
+                    HandleKind::MessageBox
+                    | HandleKind::FileDialog
+                    | HandleKind::ColorDialog
+                    | HandleKind::FontDialog => {}
                     _ => {
                         let _: () =
                             msg_send![native, setFrame: Self::make_rect(x, y, width, height)];
@@ -1407,6 +1462,15 @@ impl Platform for MacOSPlatform {
                     }
                     HandleKind::Menu | HandleKind::MenuItem => {
                         let _: () = msg_send![native, setTitle: ns_text];
+                    }
+                    // An NSAlert is not an NSControl: it has `setMessageText:`, not
+                    // `setTitle:`. Without this arm the catch-all below messaged it
+                    // as an NSButton, and AppKit raised `NSInvalidArgumentException`
+                    // — a foreign exception that aborts the process rather than
+                    // unwinding, so calling `set_title` on a message box killed the
+                    // application instead of returning an error.
+                    HandleKind::MessageBox => {
+                        let _: () = msg_send![native, setMessageText: ns_text];
                     }
                     _ => NSButton::setTitle_(native, ns_text),
                 }

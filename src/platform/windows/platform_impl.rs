@@ -159,6 +159,61 @@ impl Platform for WindowsPlatform {
     fn backend_name(&self) -> &'static str {
         "WindowsPlatform"
     }
+
+    /// A self-drawn widget gets a child `HWND` of its own class; `WM_PAINT`
+    /// blits a frame from `widget::runtime`. See `windows/canvas.rs`.
+    #[cfg(target_os = "windows")]
+    fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        let Some(parent_hwnd) = self.get_native_handle(parent) else {
+            log::error!("[windows] mount_self_drawn: unknown parent window {parent}");
+            return false;
+        };
+        let Some(hwnd) = super::canvas::mount_canvas(parent_hwnd, id, rect) else {
+            return false;
+        };
+        self.bind_native_handle(id, hwnd);
+        crate::widget::runtime::set_geometry(id, rect);
+        true
+    }
+
+    #[cfg(target_os = "windows")]
+    fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
+            log::error!("[windows] resize_self_drawn: id={id} is not mounted");
+            return false;
+        };
+        if !super::canvas::resize_canvas(hwnd, rect) {
+            return false;
+        }
+        crate::widget::runtime::set_geometry(id, rect);
+        true
+    }
+
+    #[cfg(target_os = "windows")]
+    fn unmount_self_drawn(&self, id: ObjectId) -> bool {
+        let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
+            log::error!("[windows] unmount_self_drawn: id={id} is not mounted");
+            return false;
+        };
+        super::canvas::unmount_canvas(hwnd)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn supports_self_drawn(&self) -> bool {
+        true
+    }
+
+    /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
+    #[cfg(target_os = "windows")]
+    fn repaint_self_drawn(&self, id: ObjectId) -> bool {
+        match super::canvas::hwnd_for_widget(id) {
+            Some(hwnd) => {
+                super::canvas::invalidate_canvas(hwnd);
+                true
+            }
+            None => false,
+        }
+    }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }
@@ -219,7 +274,8 @@ impl Platform for WindowsPlatform {
             use std::thread;
             use std::time::Duration;
             use winapi::um::winuser::{
-                DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+                DispatchMessageW, PeekMessageW, TranslateAcceleratorW, TranslateMessage, MSG,
+                PM_REMOVE, WM_QUIT,
             };
             self.runtime_running.store(true, Ordering::SeqCst);
             while self.runtime_running.load(Ordering::SeqCst) {
@@ -229,8 +285,16 @@ impl Platform for WindowsPlatform {
                         self.runtime_running.store(false, Ordering::SeqCst);
                         break;
                     }
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+                    // Accelerators must be offered to every window that has an
+                    // HACCEL table before normal dispatch: TranslateAcceleratorW
+                    // turns a matching key press into the item's WM_COMMAND, and
+                    // returns 0 for everything else so the message falls through
+                    // to TranslateMessage/DispatchMessageW unchanged.
+                    let translated = self.try_translate_accelerator(&msg);
+                    if !translated {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
                 }
                 if self.runtime_running.load(Ordering::SeqCst) {
                     thread::sleep(Duration::from_millis(10));
@@ -263,9 +327,13 @@ impl Platform for WindowsPlatform {
     /// Only the library's own bookkeeping is released here: no Win32 message is
     /// sent and no window is destroyed — the process-wide HWND may still be owned
     /// elsewhere, so `DestroyWindow` is deliberately not called.
+    ///
+    /// A window's accelerator table is released with it, otherwise each
+    /// create/destroy cycle would leak an `HACCEL`.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         #[cfg(target_os = "windows")]
         {
+            crate::platform::windows::accel::release_accelerator_table(widget_id);
             if let Ok(mut handles) = self.menu_state.handles.lock() {
                 handles.remove(&widget_id);
             } else {
@@ -1189,12 +1257,7 @@ impl Platform for WindowsPlatform {
             false
         }
     }
-    fn menu_add_item(
-        &self,
-        parent_menu: ObjectId,
-        text: &str,
-        _shortcut: Option<&str>,
-    ) -> ObjectId {
+    fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winuser::{AppendMenuW, DrawMenuBar, MF_STRING};
@@ -1220,7 +1283,13 @@ impl Platform for WindowsPlatform {
                 }
             };
             let command_id = self.menu_state.next_command_id.fetch_add(1, Ordering::SeqCst) as u32;
-            let text_wide = Self::to_wide(text);
+            // Win32 shows a shortcut by convention as "Label\tAccelerator" in the
+            // menu text; the accelerator itself is registered separately below.
+            let label = match shortcut.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(chord) => format!("{text}\t{chord}"),
+                None => text.to_string(),
+            };
+            let text_wide = Self::to_wide(&label);
             let append_ok = unsafe {
                 AppendMenuW(
                     parent_handle as HMENU,
@@ -1248,6 +1317,29 @@ impl Platform for WindowsPlatform {
                     None
                 }
             };
+            // Register a real accelerator so the chord is translated by the
+            // message loop into a WM_COMMAND for this item. Without this the
+            // shortcut would only be printed in the label.
+            if let (Some(chord), Some(window_id)) = (shortcut, owner_window) {
+                match crate::platform::windows::accel::parse_accelerator(Some(chord)) {
+                    Some(accel) => {
+                        crate::platform::windows::accel::install_accelerator(
+                            accel, command_id, window_id,
+                        );
+                        if let Ok(mut shortcuts) = self.menu_state.accel_shortcuts.lock() {
+                            shortcuts.insert(command_id, chord.to_string());
+                        }
+                    }
+                    None => {
+                        // Not fatal: the item still works when clicked. It is
+                        // logged so an unusable chord is not silently accepted.
+                        log::warn!(
+                            "[rust_widgets][windows] menu_add_item: shortcut {chord:?} could not \
+                             be translated into a Win32 accelerator; the item will have no chord"
+                        );
+                    }
+                }
+            }
             if let Some(window_id) = owner_window {
                 if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
                     owners.insert(item_id, window_id);
@@ -1262,8 +1354,25 @@ impl Platform for WindowsPlatform {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (parent_menu, text);
+            let _ = (parent_menu, text, shortcut);
             0
+        }
+    }
+    /// Returns the accelerator text registered for a Win32 menu item.
+    fn menu_item_shortcut(&self, menu_item: ObjectId) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            let command_id = {
+                let map = self.menu_state.menu_command_to_item.lock().ok()?;
+                map.iter().find(|(_, item)| **item == menu_item).map(|(id, _)| *id)?
+            };
+            let shortcuts = self.menu_state.accel_shortcuts.lock().ok()?;
+            return shortcuts.get(&command_id).cloned();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = menu_item;
+            None
         }
     }
     fn poll_menu_triggered(&self) -> Option<ObjectId> {
@@ -2279,5 +2388,43 @@ impl Platform for WindowsPlatform {
     #[cfg(target_os = "windows")]
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         Some(&self.a11y_bridge)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsPlatform {
+    /// Offers a message to the accelerator table of the currently active window.
+    ///
+    /// Returns `true` when an accelerator matched, in which case the message has
+    /// been consumed and Win32 has posted the item's `WM_COMMAND` instead.
+    ///
+    /// This is an inherent method rather than a `Platform` trait method: it is
+    /// called only from [`Platform::run`]'s message pump, and putting it on the
+    /// trait would invite other backends to implement a concept that does not
+    /// exist on them.
+    ///
+    /// Only the active window is consulted. Accelerators belong to the focused
+    /// window, so a background window must not swallow a chord typed into the
+    /// foreground one.
+    pub(crate) fn try_translate_accelerator(&self, msg: &winapi::um::winuser::MSG) -> bool {
+        use winapi::um::winuser::{GetActiveWindow, TranslateAcceleratorW};
+        // SAFETY: GetActiveWindow is a side-effect-free query; it returns a live
+        // HWND for this thread or null.
+        let active = unsafe { GetActiveWindow() };
+        if active.is_null() {
+            return false;
+        }
+        let Some(window_id) = self.widget_id_by_native_handle(active) else {
+            return false;
+        };
+        let Some(table) = crate::platform::windows::accel::accel_table_for(window_id) else {
+            return false;
+        };
+        // SAFETY: `active` is a live window for this process, `table` is an
+        // HACCEL created by `accel::install_accelerator`, and `msg` is the message
+        // being dispatched. TranslateAcceleratorW only reads it and posts
+        // WM_COMMAND, so `msg` does not need to outlive the call.
+        let translated = unsafe { TranslateAcceleratorW(active, table, msg as *const _ as *mut _) };
+        translated != 0
     }
 }

@@ -575,6 +575,85 @@ pub fn create_scroll_area(
 ) -> crate::core::ObjectId {
     platform::get_platform().create_scroll_area(parent, x, y, width, height)
 }
+/// Mounts a self-drawn widget into a native window.
+///
+/// `id` must already be registered in [`widget::runtime`]. Prefer the
+/// higher-level [`app::WindowHandle::mount_self_drawn`], which performs the
+/// registration for you and reports failures as a `Result`.
+///
+/// Returns `false` when the backend has no self-drawn surface, or when it
+/// refuses this particular mount. Backends that cannot display self-drawn
+/// content log why.
+#[cfg(not(feature = "mini"))]
+pub fn mount_self_drawn(
+    parent: crate::core::ObjectId,
+    id: crate::core::ObjectId,
+    rect: crate::core::Rect,
+) -> bool {
+    platform::get_platform().mount_self_drawn(parent, id, rect)
+}
+
+/// Moves and resizes a mounted self-drawn widget.
+#[cfg(not(feature = "mini"))]
+pub fn resize_self_drawn(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    platform::get_platform().resize_self_drawn(id, rect)
+}
+
+/// Unmounts a self-drawn widget from its window.
+#[cfg(not(feature = "mini"))]
+pub fn unmount_self_drawn(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().unmount_self_drawn(id)
+}
+
+/// Marks a mounted self-drawn widget as needing a repaint.
+///
+/// Returns `false` when the id is not a self-drawn widget mounted on the active
+/// backend.
+#[cfg(not(feature = "mini"))]
+pub fn request_self_drawn_repaint(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().repaint_self_drawn(id)
+}
+
+/// Returns `true` when the active backend can display self-drawn widgets.
+#[cfg(not(feature = "mini"))]
+pub fn supports_self_drawn() -> bool {
+    platform::get_platform().supports_self_drawn()
+}
+
+/// Stub for mini mode (no platform runtime, no windows).
+#[cfg(feature = "mini")]
+pub fn mount_self_drawn(
+    _parent: crate::core::ObjectId,
+    _id: crate::core::ObjectId,
+    _rect: crate::core::Rect,
+) -> bool {
+    false
+}
+
+/// Stub for mini mode.
+#[cfg(feature = "mini")]
+pub fn resize_self_drawn(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
+    false
+}
+
+/// Stub for mini mode.
+#[cfg(feature = "mini")]
+pub fn unmount_self_drawn(_id: crate::core::ObjectId) -> bool {
+    false
+}
+
+/// Stub for mini mode.
+#[cfg(feature = "mini")]
+pub fn request_self_drawn_repaint(_id: crate::core::ObjectId) -> bool {
+    false
+}
+
+/// Stub for mini mode.
+#[cfg(feature = "mini")]
+pub fn supports_self_drawn() -> bool {
+    false
+}
+
 /// Show a widget by its object id.
 ///
 /// This is a convenience wrapper around `platform::get_platform().show_widget()`.
@@ -766,9 +845,42 @@ pub fn menu_add_item(
 ) -> crate::core::ObjectId {
     platform::get_platform().menu_add_item(parent_menu, text, shortcut)
 }
+/// Renders a shortcut the way the current operating system writes it.
+///
+/// macOS returns `⌘⇧Z`-style glyphs; Windows and Linux return
+/// `Ctrl+Shift+Z`. Use this for any label the user reads (menu text, tooltips,
+/// the shortcut column of a command palette) so one shortcut declaration reads
+/// natively on every platform.
+///
+/// For the host-independent notation (useful in serialized keymaps and tests),
+/// use [`crate::shortcut::Shortcut::format_shortcut`] together with
+/// [`crate::shortcut::format_shortcut_for_platform`] instead.
+///
+/// ```
+/// use rust_widgets::shortcut::{Key, Shortcut};
+///
+/// let shown = rust_widgets::format_shortcut(&Shortcut::primary(Key::Z));
+/// #[cfg(target_os = "macos")]
+/// assert_eq!(shown, "⌘Z");
+/// #[cfg(not(target_os = "macos"))]
+/// assert_eq!(shown, "Ctrl+Z");
+/// ```
+#[cfg(not(feature = "mini"))]
+pub fn format_shortcut(shortcut: &crate::shortcut::Shortcut) -> String {
+    platform::get_platform().format_shortcut(shortcut)
+}
 #[cfg(not(feature = "mini"))]
 pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
     platform::get_platform().poll_menu_triggered()
+}
+/// Returns the accelerator text bound to a menu item, if any.
+///
+/// Lets a host verify that a shortcut was genuinely registered with the platform
+/// (and not merely drawn into a label). Returns `None` for a non-menu-item id or
+/// an item created without a shortcut.
+#[cfg(not(feature = "mini"))]
+pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
+    platform::get_platform().menu_item_shortcut(menu_item)
 }
 #[cfg(not(feature = "mini"))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {

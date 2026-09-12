@@ -102,6 +102,11 @@ impl Widget for TerminalView {
         &mut self.base
     }
 
+    /// Paints itself, so it can be mounted into a native window.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(600, 300)
     }

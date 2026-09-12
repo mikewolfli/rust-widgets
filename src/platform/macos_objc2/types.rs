@@ -171,11 +171,6 @@ impl MacOSObjc2Platform {
     }
 }
 
-const MOD_SHIFT: u64 = 1 << 17;
-const MOD_CONTROL: u64 = 1 << 18;
-const MOD_OPTION: u64 = 1 << 19;
-const MOD_COMMAND: u64 = 1 << 20;
-
 /// Derives the native-view registry id used to store the `NSMenu` submenu that
 /// backs a `Menu` widget.
 ///
@@ -191,28 +186,13 @@ pub(crate) fn submenu_id(widget_id: u64) -> u64 {
     widget_id.wrapping_add(SUBMENU_ID_OFFSET)
 }
 
+/// Parses a displayed accelerator into a Cocoa key equivalent and modifier mask.
+///
+/// Delegates to the legacy backend's parser so the two macOS implementations
+/// cannot drift apart: a shortcut that works in one must work in the other.
+/// See [`crate::platform::macos::types::parse_shortcut`] for the accepted forms.
 pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
-    let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        return (String::new(), 0);
-    };
-    let mut modifiers = 0;
-    let mut key = String::new();
-    for part in raw.split('+') {
-        let token = part.trim().to_lowercase();
-        match token.as_str() {
-            "cmd" | "command" | "meta" => modifiers |= MOD_COMMAND,
-            "ctrl" | "control" => modifiers |= MOD_CONTROL,
-            "alt" | "option" => modifiers |= MOD_OPTION,
-            "shift" => modifiers |= MOD_SHIFT,
-            "cmdorctrl" => modifiers |= MOD_COMMAND,
-            _ if !token.is_empty() => key = token,
-            _ => {}
-        }
-    }
-    if !key.is_empty() && modifiers == 0 {
-        modifiers = MOD_COMMAND;
-    }
-    (key, modifiers)
+    crate::platform::macos::types::parse_shortcut(shortcut)
 }
 
 impl Default for MacOSObjc2Platform {

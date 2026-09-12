@@ -7,6 +7,8 @@ pub mod draw;
 #[cfg(feature = "image")]
 pub mod image;
 pub mod kind;
+#[cfg(not(feature = "mini"))]
+pub mod runtime;
 pub mod widget_trait;
 // Widget subfolders
 #[cfg(all(

@@ -63,6 +63,12 @@ pub(crate) struct LinuxMenuState {
     pub(crate) pending_menu_events: VecDeque<u64>,
     /// FIFO queue for typed widget triggers.
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
+    /// Display text of each menu item's accelerator, keyed by item id.
+    ///
+    /// Kept separately from the GTK label because a host running without a
+    /// usable GTK runtime (or querying before the widget is realised) must still
+    /// be able to inspect which chord was bound.
+    pub(crate) menu_item_shortcuts: HashMap<u64, String>,
 }
 /// Internal list data storage for ComboBox and ListBox widgets.
 #[derive(Default)]
@@ -116,6 +122,19 @@ pub(crate) struct LinuxNativeState {
     pub(crate) color_choosers: HashMap<u64, gtk::ColorChooser>,
     /// Native GTK font selection widgets for `create_font_dialog`.
     pub(crate) font_choosers: HashMap<u64, gtk::FontChooser>,
+    /// Native `DrawingArea`s hosting self-drawn widgets, indexed by the widget
+    /// registry id they paint (see `linux/canvas.rs`).
+    pub(crate) canvases: HashMap<u64, gtk::DrawingArea>,
+    /// Window accelerator group. Menu item accelerators are registered against
+    /// it so that a bound chord actually fires the item, instead of only being
+    /// printed in the label (see `menu_add_item_impl`).
+    pub(crate) accel_groups: HashMap<u64, gtk::AccelGroup>,
+    /// Menus whose accelerator group has already received this item.
+    ///
+    /// `gtk_menu_item_set_accel_path` is global per item, so re-adding the same
+    /// item to a second group would be ignored by GTK; tracking it keeps the
+    /// bookkeeping explicit rather than relying on that silent no-op.
+    pub(crate) accel_paths: HashMap<u64, String>,
 }
 
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
