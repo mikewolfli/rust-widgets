@@ -162,7 +162,11 @@ impl Platform for WindowsPlatform {
 
     /// A self-drawn widget gets a child `HWND` of its own class; `WM_PAINT`
     /// blits a frame from `widget::runtime`. See `windows/canvas.rs`.
-    #[cfg(target_os = "windows")]
+    ///
+    /// Gated on the same profile conditions as `canvas.rs`: without a widget
+    /// registry there is no frame to render, so the trait defaults apply and
+    /// `supports_self_drawn()` reports `false`.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(parent_hwnd) = self.get_native_handle(parent) else {
             log::error!("[windows] mount_self_drawn: unknown parent window {parent}");
@@ -176,7 +180,7 @@ impl Platform for WindowsPlatform {
         true
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
             log::error!("[windows] resize_self_drawn: id={id} is not mounted");
@@ -189,7 +193,7 @@ impl Platform for WindowsPlatform {
         true
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn unmount_self_drawn(&self, id: ObjectId) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
             log::error!("[windows] unmount_self_drawn: id={id} is not mounted");
@@ -198,13 +202,14 @@ impl Platform for WindowsPlatform {
         super::canvas::unmount_canvas(hwnd)
     }
 
-    #[cfg(target_os = "windows")]
+    /// `true` only when the self-drawn surface exists for this profile.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn supports_self_drawn(&self) -> bool {
         true
     }
 
     /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
-    #[cfg(target_os = "windows")]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn repaint_self_drawn(&self, id: ObjectId) -> bool {
         match super::canvas::hwnd_for_widget(id) {
             Some(hwnd) => {
@@ -274,8 +279,7 @@ impl Platform for WindowsPlatform {
             use std::thread;
             use std::time::Duration;
             use winapi::um::winuser::{
-                DispatchMessageW, PeekMessageW, TranslateAcceleratorW, TranslateMessage, MSG,
-                PM_REMOVE, WM_QUIT,
+                DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
             };
             self.runtime_running.store(true, Ordering::SeqCst);
             while self.runtime_running.load(Ordering::SeqCst) {
@@ -1326,9 +1330,7 @@ impl Platform for WindowsPlatform {
                         crate::platform::windows::accel::install_accelerator(
                             accel, command_id, window_id,
                         );
-                        if let Ok(mut shortcuts) = self.menu_state.accel_shortcuts.lock() {
-                            shortcuts.insert(command_id, chord.to_string());
-                        }
+                        crate::platform::windows::accel::record_shortcut_text(command_id, chord);
                     }
                     None => {
                         // Not fatal: the item still works when clicked. It is
@@ -1366,8 +1368,7 @@ impl Platform for WindowsPlatform {
                 let map = self.menu_state.menu_command_to_item.lock().ok()?;
                 map.iter().find(|(_, item)| **item == menu_item).map(|(id, _)| *id)?
             };
-            let shortcuts = self.menu_state.accel_shortcuts.lock().ok()?;
-            return shortcuts.get(&command_id).cloned();
+            crate::platform::windows::accel::shortcut_text_for(command_id)
         }
         #[cfg(not(target_os = "windows"))]
         {

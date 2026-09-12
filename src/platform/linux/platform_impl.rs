@@ -39,7 +39,11 @@ impl Platform for LinuxPlatform {
     /// A self-drawn widget gets a `gtk::DrawingArea` inside the window's content
     /// container; its `draw` signal blits a frame from `widget::runtime`.
     /// See `linux/canvas.rs`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    ///
+    /// Gated on the same profile conditions as `canvas.rs`: `mini`/`embedded`
+    /// have no widget registry, so the trait defaults apply and
+    /// `supports_self_drawn()` honestly reports `false`.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn mount_self_drawn(
         &self,
         parent: crate::core::ObjectId,
@@ -49,23 +53,24 @@ impl Platform for LinuxPlatform {
         super::canvas::mount_canvas(self, parent, id, rect)
     }
 
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn resize_self_drawn(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::resize_canvas(self, id, rect)
     }
 
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn unmount_self_drawn(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::unmount_canvas(self, id)
     }
 
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    /// `true` only when the self-drawn surface exists for this profile.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn supports_self_drawn(&self) -> bool {
         true
     }
 
     /// Queue a redraw on the canvas's `DrawingArea`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn repaint_self_drawn(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }

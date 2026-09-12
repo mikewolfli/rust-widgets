@@ -11,8 +11,16 @@
 //! This module compiles only with `gtk-native`; without it the platform keeps
 //! the trait's `false` defaults and callers get an explicit "cannot display
 //! here" instead of an empty window.
+//!
+//! `mini`/`embedded` are excluded too: the frame comes from
+//! `crate::widget::runtime`, which those profiles do not compile (see
+//! `src/widget/mod.rs`).
 
-#![cfg(all(target_os = "linux", feature = "gtk-native"))]
+#![cfg(all(
+    target_os = "linux",
+    feature = "gtk-native",
+    not(any(feature = "mini", feature = "embedded"))
+))]
 
 use super::types::LinuxPlatform;
 use crate::core::{Color, ObjectId, Point, Rect, Size};

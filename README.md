@@ -49,6 +49,20 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 
 ### Device Profiles
 
+**Pick exactly one.** The device profiles are mutually exclusive: `mini`/`embedded`
+compile parts of the crate *out*, so combining one with `desktop` is not a
+"lowest common denominator" — it breaks the build.
+
+```bash
+# ✅ correct
+cargo check                                        # desktop (default)
+cargo check --no-default-features --features mini
+cargo check --no-default-features --features embedded
+
+# ❌ wrong: desktop stays on, so mobile-profile modules are still compiled
+cargo check --features mini
+```
+
 | Profile | Command | Backend | Widgets | i18n | GPU |
 |---------|---------|---------|---------|------|-----|
 | Desktop | `cargo check` | Native OS | Full widget set | ✅ | ✅ (wgpu enabled by desktop) |
@@ -56,6 +70,60 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 | Mobile | `--no-default-features --features mobile` | Mobile API | Full widget set | ✅ | ✅ (wgpu enabled by mobile) |
 | Embedded | `--no-default-features --features embedded` | Software | Core widget set | — | — |
 | **Mini** | `--no-default-features --features mini` | **reduced std** + alloc | **Core widget set** | — | — |
+
+#### What each profile turns off
+
+The API is the same across profiles; what differs is which capabilities *exist*.
+Only profiles that include a native OS backend **and** keep `widget::runtime` can
+host a self-drawn surface:
+
+| Capability | Desktop | Embedded | Mini |
+|------------|:-------:|:--------:|:----:|
+| `widget::runtime` (widget registry) | ✅ | — | — |
+| Self-drawn widgets (`mount_self_drawn`) | ✅ | — | — |
+| `supports_self_drawn()` | `true` | `false` | `false` |
+| Menus / tool bars / status bars | ✅ | ✅ | ✅ |
+| Menu shortcuts (displayed) | ✅ | ✅ | ✅ |
+| Menu shortcuts (actually fire) | ✅ | ✅ | ✅ |
+
+Where the table shows `—` the capability is **absent, not degraded**: the module
+is compiled out, so `supports_self_drawn()` reports `false` and callers are
+expected to refuse the operation rather than mount into a blank window (see
+`demo/code_editor`'s startup check).
+
+Menus and shortcuts are deliberately *not* affected: their code carries no
+`mini` gate, so a `mini` build is best described as **"no self-drawn surface, but
+fully working menus"**.
+
+> The `cargo test --all-features` CI command deliberately turns every feature on,
+> which includes `desktop` **and** `mini` at once. That combination is the
+> regression tripwire for this constraint; see
+> [`docs/plans/platform_differences.md`](docs/plans/platform_differences.md) for
+the full rationale and the verification matrix.
+
+#### `tablet` / `mobile` need an explicit OS backend
+
+Unlike `desktop`, the `tablet` and `mobile` profiles do **not** pull in an OS
+backend by themselves — their only backend entry is `os-auto`, which is currently
+an empty feature. Build them with a backend named explicitly:
+
+```bash
+# ⚠️ resolves to a stub backend on every OS: no native widgets, no self-drawn surface
+cargo check --no-default-features --features tablet
+
+# ✅ real backend
+cargo check --no-default-features --features "tablet,macos"
+```
+
+Two consequences worth knowing before you rely on these profiles:
+
+* Without a backend feature you silently get `macos-fallback-stub` (or the
+  per-OS equivalent) rather than an error. Check
+  `rust_widgets::backend_name()` if you are unsure which one you built.
+* On macOS, `tablet`/`mobile` select the **objc2 preview** backend, which does
+  *not* implement self-drawn widgets. Self-drawn hosting on macOS currently
+  requires the `desktop` profile (the `cocoa` backend). Query
+  `supports_self_drawn()` rather than assuming.
 
 ### OS Backends
 

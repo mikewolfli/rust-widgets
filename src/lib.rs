@@ -882,6 +882,20 @@ pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
 pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().menu_item_shortcut(menu_item)
 }
+/// Returns the backend's native handle for a widget, when it has one.
+///
+/// The value is opaque: it is the platform's own object pointer or handle (an
+/// `NSView*` on macOS, an `HWND` on Windows, ...), and its meaning is entirely
+/// backend-specific. It exists so host code and integration tests can reach the
+/// underlying control for things the cross-platform API does not model.
+///
+/// Returns `None` when the widget is unknown, or when the backend created it in
+/// state-only mode (for example off the UI thread) and therefore has no native
+/// object to return.
+#[cfg(not(feature = "mini"))]
+pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
+    platform::get_platform().get_native_handle(widget)
+}
 #[cfg(not(feature = "mini"))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
     platform::get_platform().inject_menu_trigger(menu_item_id)

@@ -97,9 +97,11 @@ def main() -> int:
     src = io.open(SOURCE, encoding="utf-8").read()
 
     # 1. Drop the crate-internal cfg gate.
-    src = src.replace(
-        '#![cfg(all(target_os = "linux", feature = "gtk-native"))]\n', ""
-    )
+    #
+    # Match the whole `#![cfg(all(...))]` inner attribute rather than one exact
+    # line: the gate lists the profile conditions too, and hard-coding its text
+    # here would silently stop stripping it the next time the lists are reordered.
+    src = re.sub(r"#!\[cfg\(all\(.*?\)\)\]\n", "", src, count=1, flags=re.DOTALL)
 
     # 2. Point the crate imports at the shim.
     src = src.replace("use super::types::LinuxPlatform;\n", "")

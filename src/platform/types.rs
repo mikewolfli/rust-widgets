@@ -436,6 +436,18 @@ pub trait Platform: Send + Sync {
     fn menu_item_shortcut(&self, _menu_item: ObjectId) -> Option<String> {
         None
     }
+    /// Returns the backend's native handle for a widget, if it has one.
+    ///
+    /// The value is opaque and backend-specific: it is the platform's own object
+    /// pointer or handle (`NSView*` on macOS, `HWND` on Windows, ...), not a
+    /// cross-platform type. Backends that keep only logical state return `None`,
+    /// which is also the answer for widgets created off the UI thread.
+    ///
+    /// This is the escape hatch for host code and integration tests that need to
+    /// reach the underlying control; it must not be used for routine widget work.
+    fn get_native_handle(&self, _widget: ObjectId) -> Option<usize> {
+        None
+    }
     fn poll_menu_triggered(&self) -> Option<ObjectId>;
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool;
     fn poll_widget_triggered(&self) -> Option<ObjectId>;

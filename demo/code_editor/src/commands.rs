@@ -20,6 +20,7 @@
 //! ```
 
 use rust_widgets::app::SelfDrawnHandle;
+use rust_widgets::shortcut::{Key, Modifiers, Shortcut};
 use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
 
 /// An action this demo exposes in its menus and tool bar.
@@ -105,41 +106,62 @@ impl Command {
         }
     }
 
-    /// Keyboard hint shown next to a menu item, or `None` when there is no
+    /// Keyboard shortcut shown next to a menu item, or `None` when there is no
     /// single conventional binding.
-    pub fn shortcut(self) -> Option<&'static str> {
+    ///
+    /// Declared with [`Shortcut::primary`] rather than a spelled-out string, so
+    /// **one** table produces the native notation on every desktop OS: macOS
+    /// renders `⌘⇧Z` where Windows and Linux render `Ctrl+Shift+Z`. Writing
+    /// `"Cmd+Z"` here would have shown a Command glyph on Windows too.
+    pub fn shortcut(self) -> Option<Shortcut> {
         use Command::*;
+        use Key::*;
         match self {
-            Undo => Some("Cmd+Z"),
-            Redo => Some("Cmd+Shift+Z"),
-            Copy => Some("Cmd+C"),
-            Cut => Some("Cmd+X"),
-            Paste => Some("Cmd+V"),
-            SelectAll => Some("Cmd+A"),
-            DuplicateLine => Some("Cmd+Shift+D"),
-            DeleteLine => Some("Cmd+Shift+K"),
-            JoinLines => Some("Cmd+J"),
-            ToggleComment => Some("Cmd+/"),
-            Indent => Some("Cmd+I"),
-            Outdent => Some("Cmd+["),
-            MoveLineUp => Some("Alt+Up"),
-            MoveLineDown => Some("Alt+Down"),
-            AddCursorAbove => Some("Alt+Shift+Up"),
-            AddCursorBelow => Some("Alt+Shift+Down"),
-            SelectNextOccurrence => Some("Cmd+D"),
-            SelectAllOccurrences => Some("Cmd+Shift+L"),
-            CollapseCursors => Some("Esc"),
-            FoldBlock => Some("Cmd+Alt+["),
-            UnfoldAll => Some("Cmd+Alt+]"),
-            OpenFind => Some("Cmd+F"),
-            OpenReplace => Some("Cmd+H"),
-            CloseFind => Some("Esc"),
-            FindNext => Some("Enter"),
-            TriggerCompletion => Some("Ctrl+Space"),
-            PageUp => Some("PgUp"),
-            PageDown => Some("PgDn"),
-            SortLines | TrimTrailingWhitespace | ReplaceAll => None,
+            Undo => Some(Shortcut::primary(Z)),
+            // Redo is `⇧⌘Z` on macOS and `Ctrl+Shift+Z` on Windows/Linux — the
+            // same declaration covers both.
+            Redo => Some(Shortcut::primary_shift(Z)),
+            Copy => Some(Shortcut::primary(C)),
+            Cut => Some(Shortcut::primary(X)),
+            Paste => Some(Shortcut::primary(V)),
+            SelectAll => Some(Shortcut::primary(A)),
+            DuplicateLine => Some(Shortcut::new(D, Modifiers::PRIMARY | Modifiers::SHIFT)),
+            DeleteLine => Some(Shortcut::new(K, Modifiers::PRIMARY | Modifiers::SHIFT)),
+            JoinLines => Some(Shortcut::primary(J)),
+            ToggleComment => Some(Shortcut::primary(Slash)),
+            Indent => Some(Shortcut::primary(I)),
+            Outdent => Some(Shortcut::primary(LeftBracket)),
+            MoveLineUp => Some(Shortcut::alt(Up)),
+            MoveLineDown => Some(Shortcut::alt(Down)),
+            AddCursorAbove => Some(Shortcut::new(Up, Modifiers::ALT | Modifiers::SHIFT)),
+            AddCursorBelow => Some(Shortcut::new(Down, Modifiers::ALT | Modifiers::SHIFT)),
+            SelectNextOccurrence => Some(Shortcut::primary(D)),
+            SelectAllOccurrences => Some(Shortcut::new(L, Modifiers::PRIMARY | Modifiers::SHIFT)),
+            CollapseCursors => Some(Shortcut::from_key(Escape)),
+            FoldBlock => Some(Shortcut::new(LeftBracket, Modifiers::PRIMARY | Modifiers::ALT)),
+            UnfoldAll => Some(Shortcut::new(RightBracket, Modifiers::PRIMARY | Modifiers::ALT)),
+            OpenFind => Some(Shortcut::primary(F)),
+            OpenReplace => Some(Shortcut::primary(H)),
+            CloseFind => Some(Shortcut::from_key(Escape)),
+            FindNext => Some(Shortcut::from_key(Enter)),
+            // Ctrl+Space is the completion chord on every platform, so it stays
+            // a physical Control binding rather than becoming the primary one
+            // (which would read `⌘Space` on macOS and mean Spotlight).
+            TriggerCompletion => Some(Shortcut::ctrl(Space)),
+            // `PageUp`/`PageDown` exist on both `Command` and `Key`, so the arms
+            // are qualified to keep the pattern unambiguous.
+            Command::PageUp => Some(Shortcut::from_key(Key::PageUp)),
+            Command::PageDown => Some(Shortcut::from_key(Key::PageDown)),
+            // `None` must be spelled `std::option::Option::None`: the `Key::None`
+            // variant is glob-imported into this scope and would shadow it.
+            SortLines | TrimTrailingWhitespace | ReplaceAll => std::option::Option::None,
         }
+    }
+
+    /// Renders this command's shortcut for the host OS, or `None` when it has no
+    /// shortcut. `Esc`/`Enter`-style hints are shown for all platforms.
+    pub fn shortcut_label(self) -> Option<String> {
+        self.shortcut().map(|shortcut| rust_widgets::format_shortcut(&shortcut))
     }
 
     /// Applies the command to `editor`, returning whether anything changed.
@@ -402,10 +424,57 @@ mod tests {
     }
 
     #[test]
-    fn every_command_has_a_label_and_at_most_one_shortcut() {
+    fn every_command_has_a_label() {
         for command in ALL_COMMANDS {
             assert!(!command.label().is_empty(), "{command:?} needs a label");
         }
+    }
+
+    /// Two different commands must never claim the same chord, otherwise one of
+    /// them is unreachable from the keyboard.
+    #[test]
+    fn shortcuts_do_not_collide() {
+        let mut seen: Vec<(Key, Modifiers)> = Vec::new();
+        for command in ALL_COMMANDS {
+            let Some(shortcut) = command.shortcut() else {
+                continue;
+            };
+            // `Esc` is legitimately shared (collapse cursors / close find), and
+            // both are only reachable in their own mode.
+            if shortcut.key == Key::Escape {
+                continue;
+            }
+            let pair = (shortcut.key, shortcut.modifiers);
+            assert!(!seen.contains(&pair), "{command:?} reuses the chord {:?}", shortcut);
+            seen.push(pair);
+        }
+    }
+
+    /// Application commands are declared with `PRIMARY`, not `CTRL`, so they
+    /// render natively on every desktop OS.
+    #[test]
+    fn editing_commands_use_the_primary_modifier() {
+        for command in [Command::Undo, Command::Copy, Command::Paste, Command::OpenFind] {
+            let shortcut = command.shortcut().expect("command has a shortcut");
+            assert!(
+                shortcut.modifiers.contains(Modifiers::PRIMARY),
+                "{command:?} should use PRIMARY so it renders natively per platform"
+            );
+        }
+    }
+
+    /// Rendered labels must match the host's notation, not a fixed convention.
+    #[test]
+    fn shortcut_labels_render_for_the_host_os() {
+        let undo = Command::Undo.shortcut_label().expect("Undo has a shortcut");
+        if cfg!(target_os = "macos") {
+            assert_eq!(undo, "⌘Z");
+        } else {
+            assert_eq!(undo, "Ctrl+Z");
+        }
+
+        // Commands with no conventional binding must not invent one.
+        assert!(Command::SortLines.shortcut_label().is_none());
     }
 
     #[test]

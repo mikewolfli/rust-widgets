@@ -8,6 +8,10 @@ use gtk::prelude::*;
 use std::sync::Arc;
 
 /// A parsed menu accelerator: the GTK key binding plus the text to display.
+///
+/// Gated on `gtk-native` because it names `gdk` types: off that feature there is
+/// no GTK to bind against, and `menu_add_item_impl` records the display text only.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
 struct ParsedAccelerator {
     /// GTK key value and modifier mask, present when the chord can be bound.
     ///
@@ -18,11 +22,32 @@ struct ParsedAccelerator {
     display: Option<String>,
 }
 
+/// A parsed menu accelerator when GTK is not compiled in.
+///
+/// Without `gtk-native` there is nothing to register the chord with, so only the
+/// display text is carried. Keeping the same shape means `menu_add_item_impl`
+/// needs no `cfg` around its bookkeeping.
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+struct ParsedAccelerator {
+    /// Always `None` without GTK: no accelerator can be bound.
+    binding: Option<(u32, u32)>,
+    /// Text to show next to the label; `None` when nothing was supplied.
+    display: Option<String>,
+}
+
+/// Resolves a key token to a GDK keyval.
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+fn keyval_for_token(_token: &str) -> Option<u32> {
+    // No GTK means no keyval table; the shortcut becomes display text only.
+    None
+}
+
 /// Resolves a key token to a GDK keyval.
 ///
 /// Handles the named keys whose spelling differs between the framework and GDK,
 /// then falls back to GDK's own name lookup (`"F1"`, `"Home"`, single letters),
 /// so a token does not need a hand-written arm just to become a keyval.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
 fn keyval_for_token(token: &str) -> Option<u32> {
     use gdk::keys::constants as gdk_key;
     let named = match token {
@@ -65,6 +90,7 @@ fn keyval_for_token(token: &str) -> Option<u32> {
 /// text produced by `Platform::format_shortcut` on any host can be passed
 /// straight through. Modifier name mismatches ("Cmd" on Linux) resolve to
 /// Control, matching what the desktop style displays.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
 fn parse_accelerator(shortcut: Option<&str>) -> ParsedAccelerator {
     let Some(raw) = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         return ParsedAccelerator { binding: None, display: None };
@@ -111,10 +137,46 @@ fn parse_accelerator(shortcut: Option<&str>) -> ParsedAccelerator {
     }
 }
 
+/// Parses displayed accelerator text when GTK is not compiled in.
+///
+/// Without a GTK runtime there is no keyval table to resolve names against, so
+/// only the display text is produced. The chord still shows in the label; it just
+/// cannot be bound. This is the honest outcome rather than a silent no-op.
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+fn parse_accelerator(shortcut: Option<&str>) -> ParsedAccelerator {
+    let display = shortcut.map(|s| s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
+    ParsedAccelerator { binding: None, display }
+}
+
 /// Returns the accelerator display text, or an empty string when absent.
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 fn display_or_empty(parsed: &ParsedAccelerator) -> String {
     parsed.display.clone().unwrap_or_default()
+}
+
+/// Mirror of the accelerator-installation block in `menu_add_item_impl`.
+///
+/// `tools/gtk_accel_check.py` extracts this function and compiles it against the
+/// real `gtk`/`gdk` crates on any host, so the accelerator API calls
+/// (`add_accelerator` argument types in particular) are type-checked rather than
+/// assumed. Keep the calls below identical to the ones in `menu_add_item_impl`;
+/// only the surrounding widget bookkeeping is omitted.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[allow(dead_code)]
+fn install_accelerator_for_check(
+    item: &gtk::MenuItem,
+    group: &gtk::AccelGroup,
+    parsed: &ParsedAccelerator,
+) {
+    if let Some((keyval, modifiers)) = parsed.binding {
+        item.add_accelerator("activate", group, keyval, modifiers, gtk::AccelFlags::VISIBLE);
+        // The label is set explicitly so the notation matches what the host
+        // wrote (e.g. "Ctrl+Shift+Z" rather than GTK's own abbreviation).
+        if let Some(display) = parsed.display.as_deref() {
+            item.set_label(&format!("Item\t{display}"));
+        }
+        let _ = display_or_empty(parsed);
+    }
 }
 
 impl LinuxPlatform {

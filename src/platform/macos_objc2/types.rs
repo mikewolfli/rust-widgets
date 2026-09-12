@@ -188,11 +188,12 @@ pub(crate) fn submenu_id(widget_id: u64) -> u64 {
 
 /// Parses a displayed accelerator into a Cocoa key equivalent and modifier mask.
 ///
-/// Delegates to the legacy backend's parser so the two macOS implementations
-/// cannot drift apart: a shortcut that works in one must work in the other.
-/// See [`crate::platform::macos::types::parse_shortcut`] for the accepted forms.
+/// Delegates to the shared parser so the two macOS implementations cannot drift
+/// apart: a shortcut that works in one must work in the other. The parser lives
+/// in `macos/accelerator.rs`, not in `macos/types.rs`, because the latter is
+/// gated on `cocoa-legacy` while this backend is selected by `macos`.
 pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
-    crate::platform::macos::types::parse_shortcut(shortcut)
+    crate::platform::macos::accelerator::parse_shortcut(shortcut)
 }
 
 impl Default for MacOSObjc2Platform {

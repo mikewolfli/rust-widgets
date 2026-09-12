@@ -6,8 +6,16 @@
 //! canvas message path stays independent of menu/control command routing.
 //!
 //! See `docs/plans/self_drawn_mounting.md`.
+//!
+//! # Feature gate
+//!
+//! This module renders through `crate::widget::runtime`, which `mini`/`embedded`
+//! do not compile (see `src/widget/mod.rs`). The gate is applied here as well as
+//! on the `target_os` so those profiles build without a widget registry, and
+//! `supports_self_drawn()` reports `false` instead of promising a surface that
+//! cannot be painted.
 
-#![cfg(target_os = "windows")]
+#![cfg(all(target_os = "windows", not(any(feature = "mini", feature = "embedded"))))]
 
 use crate::core::{ObjectId, Point, Rect};
 use crate::event::Event;

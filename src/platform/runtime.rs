@@ -28,7 +28,11 @@ use crate::platform::linux::LinuxPlatform;
     not(feature = "mini"),
     target_os = "macos",
     not(feature = "embedded"),
-    any(feature = "macos", feature = "macos-legacy")
+    any(feature = "macos", feature = "macos-legacy"),
+    // Must mirror the `create_native_platform` gate below exactly: this import has
+    // no other user, so if the two ever diverge the build warns about an unused
+    // import (or fails outright).
+    not(feature = "harmony")
 ))]
 use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 #[cfg(all(not(feature = "embedded"), feature = "mobile-api"))]
@@ -42,7 +46,13 @@ pub use crate::platform::types::*;
     not(feature = "harmony")
 ))]
 use crate::platform::wayland::WaylandPlatform;
-#[cfg(all(not(feature = "mini"), target_os = "windows", not(feature = "embedded")))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "windows",
+    not(feature = "embedded"),
+    // Must mirror its only user, `create_native_platform`, exactly.
+    not(feature = "harmony")
+))]
 use crate::platform::windows::WindowsPlatform;
 
 // ---------------------------------------------------------------------------
@@ -81,7 +91,14 @@ fn create_native_platform() -> Box<dyn Platform> {
     ))
 }
 
-#[cfg(all(not(feature = "mini"), target_os = "windows", not(feature = "embedded")))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "windows",
+    not(feature = "embedded"),
+    // Mirrors the macOS/Linux/iOS arms: the `harmony` preview backend must win on
+    // any host, otherwise `--features full` defines this function twice.
+    not(feature = "harmony")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(WindowsPlatform::new())
 }
@@ -154,7 +171,14 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// Android platform backend (state-driven, optionally JNI-backed).
-#[cfg(all(not(feature = "mini"), target_os = "android", not(feature = "embedded")))]
+#[cfg(all(
+    not(feature = "mini"),
+    target_os = "android",
+    not(feature = "embedded"),
+    // Mirrors the HarmonyOS arm's own `not(target_os = "android")` exclusion, and
+    // keeps the two mutually exclusive when the feature is set on an Android host.
+    not(feature = "harmony")
+))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(AndroidPlatform::new())
 }

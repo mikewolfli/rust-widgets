@@ -46,13 +46,45 @@ def extract_block(text: str, start_marker: str) -> str:
     raise ValueError("unbalanced braces for " + start_marker)
 
 
+def extract_nth_block(text: str, start_marker: str, occurrence: int) -> str:
+    """Return the `occurrence`-th (1-based) brace-balanced block for a marker.
+
+    `parse_accelerator` and `keyval_for_token` each appear twice: once behind
+    `cfg(feature = "gtk-native")` and once as a no-GTK fallback. The harness needs
+    the GTK variant (the first), which is the one that does real resolution.
+    """
+    search_from = 0
+    for _ in range(occurrence - 1):
+        found = text.index(start_marker, search_from)
+        search_from = found + 1
+    return extract_block(text[search_from:], start_marker)
+
+
 def main() -> int:
     with open(SOURCE, "r", encoding="utf-8") as fh:
         source = fh.read()
 
-    struct_block = extract_block(source, "struct ParsedAccelerator")
-    keyval_block = extract_block(source, "fn keyval_for_token")
-    parse_block = extract_block(source, "fn parse_accelerator")
+    # The GTK-backed definitions, not the no-GTK fallbacks. For each pair the
+    # `gtk-native` variant is declared first in the source file.
+    struct_block = extract_nth_block(source, "struct ParsedAccelerator", 1)
+    keyval_block = extract_nth_block(source, "fn keyval_for_token", 2)
+    parse_block = extract_nth_block(source, "fn parse_accelerator", 1)
+    # The real accelerator installation body, so the GTK calls around it are
+    # type-checked too rather than only the parsing half.
+    install_body = extract_block(source, "fn install_accelerator_for_check")
+    display_block = extract_block(source, "fn display_or_empty")
+
+    # Strip the `cfg` gates: the harness compiles unconditionally, and the gtk
+    # crate is already a direct dependency of the scratch crate.
+    def ungated(block: str) -> str:
+        lines = [line for line in block.splitlines() if not line.strip().startswith("#[cfg(")]
+        return "\n".join(lines)
+
+    struct_block = ungated(struct_block)
+    keyval_block = ungated(keyval_block)
+    parse_block = ungated(parse_block)
+    install_body = ungated(install_body)
+    display_block = ungated(display_block)
 
     main_rs = "\n".join(
         [
@@ -64,6 +96,10 @@ def main() -> int:
             keyval_block,
             "",
             parse_block,
+            "",
+            install_body,
+            "",
+            display_block,
             "",
             "/// Exercises the parsing plus the exact GTK binding calls used by",
             "/// `menu_add_item_impl`, so an API mismatch fails the build.",
@@ -98,7 +134,13 @@ def main() -> int:
             "        let parsed = parse_accelerator(case);",
             "        assert!(parsed.binding.is_none(), \"blank input must not bind\");",
             "    }",
-            "    println!(\"all {} accelerators bound\", cases.len());",
+            "",
+            "    // Exercise the real installation path for every case.",
+            "    for case in cases {",
+            "        let parsed = parse_accelerator(Some(case));",
+            "        install_accelerator_for_check(&item, &group, &parsed);",
+            "    }",
+            "    println!(\"all {} accelerators bound and installed\", cases.len());",
             "}",
             "",
         ]

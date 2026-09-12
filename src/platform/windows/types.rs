@@ -222,15 +222,6 @@ pub struct Win32MenuState {
     pub(crate) pending_menu_events: Mutex<VecDeque<WidgetTriggerEvent>>,
     pub(crate) pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
     pub(crate) next_command_id: AtomicU64,
-    /// `ACCEL` table handles keyed by command id, so a menu item's accelerator
-    /// can be rewritten or released without rebuilding the whole table.
-    ///
-    /// Win32 has no per-item accelerator API: chords live in one `HACCEL` table
-    /// owned by a window and are dispatched from the message loop. One table is
-    /// therefore kept per owning window.
-    pub(crate) accel_tables: Mutex<HashMap<u64, usize>>,
-    /// Accelerator descriptions keyed by command id, for introspection.
-    pub(crate) accel_shortcuts: Mutex<HashMap<u32, String>>,
 }
 #[cfg(target_os = "windows")]
 impl Win32MenuState {
@@ -243,8 +234,6 @@ impl Win32MenuState {
             pending_menu_events: Mutex::new(VecDeque::new()),
             pending_widget_events: Mutex::new(VecDeque::new()),
             next_command_id: AtomicU64::new(1000),
-            accel_tables: Mutex::new(HashMap::new()),
-            accel_shortcuts: Mutex::new(HashMap::new()),
         }
     }
 }

@@ -12,7 +12,18 @@
 //!
 //! Every declaration below is copied from Apple's headers. All functions take
 //! and return plain pointers; the raw handle type is [`CGContextRef`].
+//!
+//! # Feature gate
+//!
+//! Only `macos/canvas.rs` uses this module, and that module is compiled out of
+//! the `mini`/`embedded` profiles. The same gate is applied here so those
+//! profiles do not carry a `cg` module nothing can reach.
 
+#![cfg(all(
+    target_os = "macos",
+    feature = "cocoa-legacy",
+    not(any(feature = "mini", feature = "embedded"))
+))]
 #![allow(non_snake_case)] // names mirror the C ABI
 
 use std::os::raw::{c_int, c_void};

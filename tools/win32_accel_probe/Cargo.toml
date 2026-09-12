@@ -1,0 +1,12 @@
+[package]
+name = "win32_accel_probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Host-side test harness for the Win32 accelerator parser. The parser is gated
+# behind `cfg(target_os = "windows")` inside the library, so this probe re-declares
+# the Win32 constants and mirrors the parser so its rules can be exercised on any
+# platform. See src/lib.rs.
+[lib]
+path = "src/lib.rs"

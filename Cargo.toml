@@ -142,6 +142,12 @@ macos = [
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
     "dep:objc2-core-graphics",
+    # The objc2 backend's handle types derive Serialize/Deserialize and its state
+    # snapshot returns `serde_json::Error`, so these are hard requirements rather
+    # than optional extras. They were previously inherited from `desktop`, which
+    # made `--features macos` alone fail to compile.
+    "serde",
+    "serde_json",
 ]
 macos-legacy = ["dep:cocoa", "dep:objc", "dep:objc-foundation"]
 ios = [

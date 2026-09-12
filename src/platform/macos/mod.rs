@@ -5,16 +5,28 @@
 
 pub mod macos_bridge;
 
+/// Accelerator parsing shared by the objc2 and cocoa macOS backends.
+///
+/// Ungated on purpose: both backends need it, so it must not depend on
+/// `cocoa-legacy` (see the module docs for the failure that caused).
+#[cfg(target_os = "macos")]
+pub(crate) mod accelerator;
+
 /// Cocoa 0.24 platform implementation (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]
 mod platform_impl;
 
 /// CoreGraphics FFI used to blit self-drawn frames.
-#[cfg(feature = "cocoa-legacy")]
+///
+/// Gated with `canvas.rs`, its only consumer.
+#[cfg(all(feature = "cocoa-legacy", not(any(feature = "mini", feature = "embedded"))))]
 pub(crate) mod cg;
 
 /// Native surface for self-drawn widgets.
-#[cfg(feature = "cocoa-legacy")]
+///
+/// Compiled out for `mini`/`embedded`: those profiles have no `widget::runtime`
+/// (see `src/widget/mod.rs`), and this module is built on it.
+#[cfg(all(feature = "cocoa-legacy", not(any(feature = "mini", feature = "embedded"))))]
 pub(crate) mod canvas;
 
 /// Cocoa 0.24 types and helpers (legacy, behind `cocoa-legacy` feature).

@@ -48,6 +48,19 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 
 ### 设备配置
 
+**只能选一个。** 设备配置之间互斥：`mini`/`embedded` 会将部分模块**整体编译移除**，
+因此与 `desktop` 同时开启不是「取最小集」，而是直接构建失败。
+
+```bash
+# ✅ 正确
+cargo check                                        # desktop（默认）
+cargo check --no-default-features --features mini
+cargo check --no-default-features --features embedded
+
+# ❌ 错误：desktop 仍然生效，精简配置要移除的模块照样被编译
+cargo check --features mini
+```
+
 | 配置 | 命令 | 渲染后端 | 控件数 | i18n | GPU |
 |------|------|----------|--------|------|-----|
 | 桌面 | `cargo check` | 原生 OS | 完整控件集 | ✅ | ✅（desktop 默认启用 wgpu） |
@@ -55,6 +68,52 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
 | 手机 | `--no-default-features --features mobile` | 手机 API | 完整控件集 | ✅ | ✅（mobile 默认启用 wgpu） |
 | 嵌入式 | `--no-default-features --features embedded` | 软件 | 核心控件集 | — | — |
 | **Mini** | `--no-default-features --features mini` | **精简 std** + alloc | **核心控件集** | — | — |
+
+#### 各配置关闭了什么
+
+各配置的 API 完全一致，差别只在**能力是否存在**。只有同时具备原生后端且保留
+`widget::runtime` 的配置，才能承载自绘控件：
+
+| 能力 | 桌面 | 嵌入式 | Mini |
+|------|:----:|:------:|:----:|
+| `widget::runtime`（控件注册表） | ✅ | — | — |
+| 自绘控件（`mount_self_drawn`） | ✅ | — | — |
+| `supports_self_drawn()` | `true` | `false` | `false` |
+| 菜单 / 工具栏 / 状态栏 | ✅ | ✅ | ✅ |
+| 菜单快捷键（显示） | ✅ | ✅ | ✅ |
+| 菜单快捷键（真的能用） | ✅ | ✅ | ✅ |
+
+表中 `—` 表示能力**不存在，而非降级**：模块已被编译移除，因此
+`supports_self_drawn()` 返回 `false`，调用方应据此拒绝操作，而不是挂载后得到一个
+空白窗口（参见 `demo/code_editor` 的启动检查）。
+
+菜单与快捷键**刻意不受影响**：它们的代码没有 `mini` 门控。所以 `mini` 准确说是
+「**无自绘界面，但菜单完整可用**」。
+
+> CI 的 `cargo test --all-features` 会打开所有特性，即 `desktop` 与 `mini` **同时生效**。
+> 这个组合就是本约束的回归探针；完整论证与验证矩阵见
+> [`docs/plans/platform_differences.md`](docs/plans/platform_differences.md)。
+
+#### `tablet` / `mobile` 需显式指定操作系统后端
+
+与 `desktop` 不同，`tablet` 与 `mobile` 配置**自身不会选中任何 OS 后端** —— 它们唯一
+的后端入口是 `os-auto`，而该 feature 目前是空的。使用时必须显式指定后端：
+
+```bash
+# ⚠️ 在所有 OS 上都会落到 stub 后端：没有原生控件，也没有自绘界面
+cargo check --no-default-features --features tablet
+
+# ✅ 真实后端
+cargo check --no-default-features --features "tablet,macos"
+```
+
+依赖这两个配置前需要注意两点：
+
+* 不指定后端时**不会报错**，而是静默使用 `macos-fallback-stub`（其他 OS 同理）。
+  不确定时可调用 `rust_widgets::backend_name()` 确认。
+* 在 macOS 上，`tablet`/`mobile` 选中的是 **objc2 预览后端**，它**尚未实现自绘控件**。
+  目前 macOS 上要承载自绘控件需使用 `desktop` 配置（`cocoa` 后端）。请查询
+  `supports_self_drawn()` 而不要臆测。
 
 ### 操作系统支持
 

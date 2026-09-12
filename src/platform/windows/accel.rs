@@ -52,15 +52,46 @@ fn accel_tables() -> &'static Mutex<HashMap<u64, usize>> {
     TABLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// One accelerator entry: the chord plus the command id it activates.
+type AccelEntry = (Win32Accelerator, u32);
+
+/// Per-window accelerator entry list.
+type AccelEntries = HashMap<u64, Vec<AccelEntry>>;
+
 /// Entries accumulated per window, keyed by window id.
 ///
 /// `CreateAcceleratorTableW` is destructive only in the sense that rebuilding a
 /// table invalidates the previous handle, so the full entry list has to be kept
 /// to rebuild whenever an item is added.
-fn accel_entries() -> &'static Mutex<HashMap<u64, Vec<(Win32Accelerator, u32)>>> {
-    static ENTRIES: std::sync::OnceLock<Mutex<HashMap<u64, Vec<(Win32Accelerator, u32)>>>> =
-        std::sync::OnceLock::new();
+fn accel_entries() -> &'static Mutex<AccelEntries> {
+    static ENTRIES: std::sync::OnceLock<Mutex<AccelEntries>> = std::sync::OnceLock::new();
     ENTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The accelerator text registered for each command id, for introspection.
+///
+/// Kept separately from the `ACCEL` entries because the Win32 table only stores
+/// a virtual key code; the original spelling ("Ctrl+Shift+Z") cannot be
+/// recovered from it.
+fn accel_shortcuts() -> &'static Mutex<HashMap<u32, String>> {
+    static SHORTCUTS: std::sync::OnceLock<Mutex<HashMap<u32, String>>> = std::sync::OnceLock::new();
+    SHORTCUTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Records the display text bound to a command id.
+pub(crate) fn record_shortcut_text(command_id: u32, text: &str) {
+    match accel_shortcuts().lock() {
+        Ok(mut shortcuts) => {
+            shortcuts.insert(command_id, text.to_string());
+        }
+        Err(_) => log::error!("[windows] record_shortcut_text: shortcut registry mutex poisoned"),
+    }
+}
+
+/// Returns the display text bound to a command id, if any.
+pub(crate) fn shortcut_text_for(command_id: u32) -> Option<String> {
+    let shortcuts = accel_shortcuts().lock().ok()?;
+    shortcuts.get(&command_id).cloned()
 }
 
 /// Records an accelerator for `window_id` and installs the rebuilt table.
@@ -82,10 +113,11 @@ pub(crate) fn install_accelerator(accel: Win32Accelerator, command_id: u32, wind
     // count passed matches its length, which is what the API requires.
     let handle = unsafe { CreateAcceleratorTableW(raw.as_mut_ptr(), raw.len() as i32) };
     if handle.is_null() {
+        // SAFETY: GetLastError is a thread-local query with no preconditions.
+        let last_error = unsafe { winapi::um::errhandlingapi::GetLastError() };
         log::error!(
             "[windows] install_accelerator: CreateAcceleratorTableW failed \
-             (GetLastError={})",
-            winapi::um::errhandlingapi::GetLastError()
+             (GetLastError={last_error})"
         );
         return;
     }
@@ -114,8 +146,9 @@ pub(crate) fn accel_table_for(window_id: u64) -> Option<HACCEL> {
 
 /// Releases the accelerator table owned by a window.
 pub(crate) fn release_accelerator_table(window_id: u64) {
-    let table = accel_entries().lock().ok().and_then(|mut entries| entries.remove(&window_id));
-    let _ = table;
+    if let Ok(mut entries) = accel_entries().lock() {
+        entries.remove(&window_id);
+    }
     if let Ok(mut tables) = accel_tables().lock() {
         if let Some(handle) = tables.remove(&window_id) {
             // SAFETY: the handle came from CreateAcceleratorTableW and is being
@@ -178,7 +211,11 @@ fn virtual_key_for_token(token: &str) -> Option<u16> {
         VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
     };
     let named = match token {
-        "backspace" | "del" | "delete" => Some(VK_BACK as u16),
+        // Backspace and Delete are different keys: Backspace erases leftwards,
+        // Delete erases forwards. Mapping both to VK_BACK would make a "Delete"
+        // menu item silently behave like Backspace.
+        "backspace" | "back" => Some(VK_BACK as u16),
+        "delete" | "del" => Some(VK_DELETE as u16),
         "esc" | "escape" => Some(VK_ESCAPE as u16),
         "enter" | "return" => Some(VK_RETURN as u16),
         "space" => Some(VK_SPACE as u16),
@@ -234,6 +271,17 @@ mod tests {
         VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
     };
 
+    /// Backspace and Delete are distinct keys and must not be conflated: mapping
+    /// both to `VK_BACK` would make a "Delete" menu item behave like Backspace.
+    #[test]
+    fn backspace_and_delete_are_distinct() {
+        let backspace = parse_accelerator(Some("Ctrl+Backspace")).expect("Backspace must bind");
+        let delete = parse_accelerator(Some("Ctrl+Delete")).expect("Delete must bind");
+        assert_eq!(backspace.vk, VK_BACK as u16);
+        assert_eq!(delete.vk, VK_DELETE as u16);
+        assert_ne!(backspace.vk, delete.vk);
+    }
+
     /// Absent or blank text must not produce an accelerator.
     #[test]
     fn blank_input_produces_none() {
@@ -278,7 +326,7 @@ mod tests {
     #[test]
     fn alt_binds_alt_flag() {
         let accel = parse_accelerator(Some("Alt+F4")).expect("Alt+F4 must bind");
-        assert_eq!(accel.vk, VK_F1 + 3);
+        assert_eq!(accel.vk, VK_F1 as u16 + 3);
         assert_eq!(accel.modifiers, FVIRTKEY | FALT);
     }
 

@@ -7,8 +7,24 @@
 //!
 //! See `docs/plans/self_drawn_mounting.md` for why this is one capability rather
 //! than a `create_*` method per self-drawn widget kind.
+//!
+//! # Feature gate
+//!
+//! This module needs `crate::widget::runtime` to look widgets up by id and to
+//! render frames, and `widget::runtime` does not exist in `mini`/`embedded`
+//! builds (see `src/widget/mod.rs`). It is therefore gated on the same pair
+//! conditions — a profile that has no widget registry has no way to host a
+//! self-drawn surface, and `supports_self_drawn()` reports `false` accordingly.
+//!
+//! Without this gate the `mini` profile fails to build with seven errors about a
+//! missing `widget::runtime`, which is a worse outcome than simply not offering
+//! the capability.
 
-#![allow(deprecated)] // cocoa 0.25 fallback; mirrors the rest of the macOS backend
+#![cfg(all(
+    target_os = "macos",
+    feature = "cocoa-legacy",
+    not(any(feature = "mini", feature = "embedded"))
+))]
 
 use super::cg;
 use super::types::{self as macos_types, CocoaHandle, HandleKind, MacOSPlatform};

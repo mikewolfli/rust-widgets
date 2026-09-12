@@ -30,23 +30,36 @@ impl Platform for MacOSPlatform {
 
     /// A self-drawn widget gets an `NSView` subclass whose `drawRect:` blits a
     /// frame out of `widget::runtime`. See `macos/canvas.rs`.
+    ///
+    /// Gated on the same profile conditions as `canvas.rs`: `widget::runtime` is
+    /// absent from `mini`/`embedded`, so the fallback defaults below apply there
+    /// and `supports_self_drawn()` honestly reports `false`.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
         self.mount_self_drawn_impl(parent, id, rect)
     }
 
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         self.resize_self_drawn_impl(id, rect)
     }
 
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn unmount_self_drawn(&self, id: ObjectId) -> bool {
         self.unmount_self_drawn_impl(id)
     }
 
+    /// `true` only when the self-drawn surface actually exists for this profile.
+    ///
+    /// Reporting `true` in a build where `canvas.rs` is compiled out would be a
+    /// lie: a host would mount a widget and get an empty window with no error.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn supports_self_drawn(&self) -> bool {
         true
     }
 
     /// Mark the canvas view as needing display, which schedules `drawRect:`.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
     fn repaint_self_drawn(&self, id: ObjectId) -> bool {
         self.repaint_self_drawn_impl(id)
     }
@@ -1270,7 +1283,12 @@ impl Platform for MacOSPlatform {
             log::debug!(
                 "[macos] menu_add_item: state-only parent or not on the AppKit main thread; registering state-only item"
             );
-            return self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
+            let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
+            // The shortcut is still recorded. Returning an id that reports "no
+            // accelerator" would be a silent lie: the caller asked for one and
+            // cannot tell the difference from having requested none.
+            self.record_menu_item_shortcut(item_id, shortcut);
+            return item_id;
         }
         // SAFETY: Parent handle validated by kind match. NSMenuItem/NSMenu alloc/init
         // and configuration messages use valid selectors. Token NSNumber is retained.
@@ -1290,7 +1308,11 @@ impl Platform for MacOSPlatform {
             };
             let _: () = msg_send![container, setAutoenablesItems: NO];
             let item_id = self.state.create_widget(HandleKind::MenuItem, text, 0, 0, 0, 0);
-            let (key, modifier_mask) = parse_shortcut(shortcut);
+            let (key, modifier_mask) =
+                crate::platform::macos::accelerator::parse_shortcut(shortcut);
+            // Record the accelerator text so `menu_item_shortcut` can report which
+            // chord was installed on the NSMenuItem.
+            self.record_menu_item_shortcut(item_id, shortcut);
             let item: id = msg_send![class!(NSMenuItem), alloc];
             let item: id = msg_send![
                 item,
@@ -1312,6 +1334,19 @@ impl Platform for MacOSPlatform {
                 .insert(item_id, CocoaHandle { ptr: item as usize, kind: HandleKind::MenuItem });
             item_id
         }
+    }
+    fn menu_item_shortcut(&self, menu_item: ObjectId) -> Option<String> {
+        let shortcuts = self.menu_item_shortcuts.lock().ok()?;
+        shortcuts.get(&menu_item).cloned().filter(|text| !text.is_empty())
+    }
+    fn get_native_handle(&self, widget: ObjectId) -> Option<usize> {
+        // A handle with a null pointer means the widget exists only as logical
+        // state, so there is no native object to hand out.
+        let handle = self.get_handle(widget)?;
+        if handle.ptr == 0 {
+            return None;
+        }
+        Some(handle.ptr)
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
         let mut events = menu_events().lock().expect("menu event lock poisoned");

@@ -199,7 +199,10 @@ fn build_menu_bar(
             continue;
         }
         for command in *items {
-            let item = win.new_menu_item(&menu, command.label(), command.shortcut());
+            // Typed shortcut: the platform renders the host's own notation, so
+            // the menu reads `⌘Z` on macOS and `Ctrl+Z` on Windows/Linux from
+            // this one call site.
+            let item = win.new_menu_item_with_shortcut(&menu, command.label(), command.shortcut());
             if item.raw_id() == 0 {
                 log.append(format!("[MenuBar] ERROR: 菜单项 '{}' 创建失败", command.label()));
                 continue;
@@ -282,6 +285,15 @@ fn build_tool_bar(
                     *width as u32,
                     (TOOLBAR_H - 8) as u32,
                 );
+                // Record the shortcut next to the button in the event log. Native
+                // buttons expose no tooltip through the handle API yet, so the
+                // chord is surfaced here instead. It is rendered by the host OS,
+                // so it reads `⌘Z` or `Ctrl+Z` as appropriate.
+                match command.shortcut_label() {
+                    Some(chord) => log
+                        .append(format!("[ToolBar] {} button (shortcut {chord})", command.label())),
+                    None => log.append(format!("[ToolBar] {} button", command.label())),
+                }
                 let editor = editor.clone();
                 let log = Arc::clone(log);
                 let command = *command;
