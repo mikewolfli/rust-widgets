@@ -4,31 +4,28 @@ use crate::widget::WidgetKind;
 pub fn route_preference_for_widget_kind(kind: WidgetKind) -> ControlRoutePreference {
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
     {
-        // Windows-specific overrides. The dialogs still lack a dedicated native
-        // path in the default build, so they keep routing to the custom backend
-        // on Windows.
-        #[cfg(target_os = "windows")]
-        {
-            if matches!(
-                kind,
-                WidgetKind::MessageBox
-                    | WidgetKind::FileDialog
-                    | WidgetKind::ColorDialog
-                    | WidgetKind::FontDialog
-            ) {
-                return ControlRoutePreference::CustomRequired;
-            }
+        // Ask the active backend which native primitives it actually implements
+        // rather than testing `cfg(target_os)` here. On the Windows backend this
+        // promotes the kinds with real Win32 controls (`SpinBox` -> `UPDOWN_CLASS`,
+        // `ListView` -> `SysListView32`, `ScrollArea` -> a scrollable child window)
+        // that the global policy below would otherwise send to the custom backend.
+        // Backends publish this through `Platform::native_widget_kinds`, so this
+        // table needs no per-OS branch — see principle #36.
+        let native_kinds = crate::platform::platform_facts().native_widget_kinds();
+        if native_kinds.contains(&kind) {
+            return ControlRoutePreference::NativePreferred;
+        }
 
-            // These kinds have real Win32 implementations that would otherwise be
-            // discarded by the `CustomRequired` match below: `SpinBox` uses
-            // `UPDOWN_CLASS` (`msctls_updown32`), `ListView` uses `SysListView32`,
-            // and `ScrollArea` a `WS_HSCROLL | WS_VSCROLL` child window. Only
-            // Windows has these primitives, so the promotion is gated per-OS
-            // rather than listed in the global match. See
-            // `windows_native_controls_route_natively` below.
-            if matches!(kind, WidgetKind::SpinBox | WidgetKind::ListView | WidgetKind::ScrollArea) {
-                return ControlRoutePreference::NativePreferred;
-            }
+        // Dialogs still lack a dedicated native path in the default build, so they
+        // keep routing to the custom backend.
+        if matches!(
+            kind,
+            WidgetKind::MessageBox
+                | WidgetKind::FileDialog
+                | WidgetKind::ColorDialog
+                | WidgetKind::FontDialog
+        ) {
+            return ControlRoutePreference::CustomRequired;
         }
 
         match kind {
@@ -328,8 +325,10 @@ mod tests {
     /// that would discard the real Win32 implementations.
     ///
     /// This is the counterpart to the `#[cfg(not(target_os = "windows"))]` arm in
-    /// `custom_required_widget_kinds`; the two together pin the per-OS routing so
-    /// a future edit cannot silently drop a Win32 primitive.
+    /// `custom_required_widget_kinds`; the two together pin the routing so a
+    /// future edit cannot silently drop a Win32 primitive. The promotion itself
+    /// now comes from `WindowsPlatform::native_widget_kinds` rather than a
+    /// `cfg(target_os)` branch in the routing table (principle #36).
     #[cfg(all(not(any(feature = "mini", feature = "embedded")), target_os = "windows"))]
     #[test]
     fn windows_native_controls_route_natively() {

@@ -119,6 +119,35 @@ impl Platform for StubPlatform {
         self.family
     }
 
+    /// The stub has no OS to interrogate, so it reports an explicit `None` rather
+    /// than a made-up figure. Callers fall back to their conservative default.
+    fn total_memory_mb(&self) -> Option<u64> {
+        None
+    }
+
+    /// A stub host is treated as mains-powered, which selects the non-throttled
+    /// defaults.
+    fn is_on_battery(&self) -> bool {
+        false
+    }
+
+    /// No process accounting exists without an OS; `None` keeps the adaptive
+    /// monitor on its default instead of pretending the process is at 0%.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// Same reasoning as [`Platform::process_memory_utilization`].
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// The stub cannot reach a real spooler, and saying so is the point: demos
+    /// exercising the system print backend must see a truthful failure.
+    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
+        Err("stub platform has no print spooler".to_string())
+    }
+
     fn init(&self) {
         log::info!("[stub] StubPlatform init (testing backend)");
     }

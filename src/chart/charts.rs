@@ -22,6 +22,38 @@ pub struct CartesianLayout {
     legend_x: f32,
     legend_y: f32,
 }
+
+impl CartesianLayout {
+    /// Left edge of the plot area, in device pixels.
+    pub fn plot_x(&self) -> f32 {
+        self.plot_x
+    }
+
+    /// Top edge of the plot area, in device pixels.
+    pub fn plot_y(&self) -> f32 {
+        self.plot_y
+    }
+
+    /// Width of the plot area, in device pixels.
+    pub fn plot_w(&self) -> f32 {
+        self.plot_w
+    }
+
+    /// Height of the plot area, in device pixels.
+    pub fn plot_h(&self) -> f32 {
+        self.plot_h
+    }
+
+    /// Left edge of the legend column.
+    pub fn legend_x(&self) -> f32 {
+        self.legend_x
+    }
+
+    /// Top edge of the legend column.
+    pub fn legend_y(&self) -> f32 {
+        self.legend_y
+    }
+}
 pub fn compute_cartesian_layout(
     rect: Rect,
     has_x_label: bool,
@@ -185,6 +217,65 @@ pub fn truncate_legend_label(label: &str, max_chars: usize) -> String {
     let kept = max_chars - 3;
     let prefix = label.chars().take(kept).collect::<String>();
     format!("{prefix}...")
+}
+
+/// Builds the vertex ring approximating a pie/donut sector.
+///
+/// Shared by every pie renderer so the angular stepping and vertex ordering are
+/// defined once. Returns `outer.into_iter().chain(inner.rev())` — one closed
+/// polygon, wound consistently, which is what both the SVG backend and the
+/// widget rasterizer need.
+///
+/// * `start_angle`/`end_angle` are radians, measured clockwise from 3 o'clock
+///   (matching `cos`/`sin` and the convention already used by the widgets).
+/// * `inner_radius` of `0.0` produces a solid wedge (apex at the center, with a
+///   single vertex rather than a degenerate inner arc).
+/// * `steps` is clamped so a sliver still gets a visible edge and a full circle
+///   does not allocate unboundedly.
+pub fn sector_polygon(
+    center: Point,
+    outer_radius: f32,
+    inner_radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    steps: u32,
+) -> Vec<Point> {
+    let sweep = end_angle - start_angle;
+    if sweep.abs() < f32::EPSILON || outer_radius <= 0.0 {
+        return Vec::new();
+    }
+    let steps = steps.clamp(3, 180);
+    let cx = center.x as f32;
+    let cy = center.y as f32;
+
+    let point_at = |radius: f32, angle: f32| -> Point {
+        Point {
+            x: (cx + radius * angle.cos()).round() as i32,
+            y: (cy + radius * angle.sin()).round() as i32,
+        }
+    };
+
+    let mut vertices = Vec::with_capacity((steps as usize + 1) * 2);
+
+    // Outer arc, start -> end.
+    for step in 0..=steps {
+        let angle = start_angle + sweep * (step as f32 / steps as f32);
+        vertices.push(point_at(outer_radius, angle));
+    }
+
+    if inner_radius > 0.0 {
+        // Donut: return along the inner arc, end -> start, so the polygon closes.
+        for step in (0..=steps).rev() {
+            let angle = start_angle + sweep * (step as f32 / steps as f32);
+            vertices.push(point_at(inner_radius, angle));
+        }
+    } else {
+        // Solid wedge: the outer arc already returns to the center via the two
+        // end vertices, so a single apex vertex completes the shape.
+        vertices.push(Point { x: cx.round() as i32, y: cy.round() as i32 });
+    }
+
+    vertices
 }
 impl LineChart {
     /// Create a new line chart
@@ -536,24 +627,25 @@ impl Chart for PieChart {
                 // Pick a distinct color per sector from the palette
                 let sector_color = Self::palette_color(sector_index);
                 sector_index += 1;
-                // Draw pie arc segment as a filled polygon approximating the arc
+                // Sector geometry comes from the shared builder so the SVG path
+                // and the widget rasterizer cannot diverge.
                 let cx = center.x as f64;
                 let cy = center.y as f64;
                 let r = radius as f64;
-                let steps = (sweep.abs().ceil() as u32).clamp(3, 90);
-                let mut vertices = Vec::with_capacity((steps + 2) as usize);
-                // Center point
-                vertices.push(Point { x: cx as i32, y: cy as i32 });
-                // Arc boundary points
-                for i in 0..=steps {
-                    let angle = start_angle + sweep * (i as f64 / steps as f64);
-                    let rad = angle.to_radians();
-                    vertices.push(Point {
-                        x: (cx + rad.cos() * r) as i32,
-                        y: (cy + rad.sin() * r) as i32,
-                    });
+                let sweep_deg = sweep as f32;
+                let start_rad = (start_angle as f32).to_radians();
+                let end_rad = start_rad + sweep_deg.to_radians();
+                let vertices = sector_polygon(
+                    Point { x: cx as i32, y: cy as i32 },
+                    r as f32,
+                    0.0,
+                    start_rad,
+                    end_rad,
+                    (sweep.abs().ceil() as u32).clamp(3, 90),
+                );
+                if !vertices.is_empty() {
+                    context.draw_polygon(&vertices, sector_color);
                 }
-                context.draw_polygon(&vertices, sector_color);
                 start_angle += sweep;
             }
         }

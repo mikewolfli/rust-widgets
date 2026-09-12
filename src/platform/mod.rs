@@ -117,3 +117,38 @@ pub mod a11y_wiring;
 
 #[cfg(not(feature = "mini"))]
 pub use a11y_wiring::wire_focus_manager_to_a11y;
+
+/// Platform facts accessor usable in every profile, including `mini`.
+///
+/// Upper layers (print, GPU adaptation, menu hardware detection) need to ask the
+/// backend about OS facts — total memory, battery state, spooler availability.
+/// The `mini` profile is deliberately alloc-free and has **no platform
+/// singleton** (`get_platform` is `not(mini)`), so a direct call would fail to
+/// compile there.
+///
+/// `platform_facts()` closes that gap: outside `mini` it returns the real
+/// backend; inside `mini` it returns a zero-sized value whose *default* trait
+/// implementations report "unknown" for every capability. That is the honest
+/// answer for a profile with no OS integration, and it keeps the call sites free
+/// of `cfg` branching (principle #35).
+#[cfg(not(feature = "mini"))]
+pub fn platform_facts() -> &'static dyn Platform {
+    runtime::get_platform()
+}
+
+/// `mini` profile: no platform singleton exists, so capabilities are all absent.
+///
+/// Returns a `StubPlatform`, which already implements the full `Platform`
+/// surface (widget creation, menus, list/combo storage) and inherits the trait
+/// defaults for every optional capability. That yields "unknown" for total
+/// memory, `false` for battery and print support, and `None` for the web engine —
+/// the honest answer for a profile whose whole point is to omit OS integration.
+#[cfg(feature = "mini")]
+pub fn platform_facts() -> &'static dyn Platform {
+    use crate::compat::OnceLock;
+
+    static NO_FACTS: OnceLock<StubPlatform> = OnceLock::new();
+    NO_FACTS.get_or_init(|| {
+        StubPlatform::new("mini-no-platform", crate::core::PlatformFamily::Embedded)
+    })
+}

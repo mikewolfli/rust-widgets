@@ -43,6 +43,36 @@ impl Platform for WasmPlatform {
         PlatformFamily::Desktop
     }
 
+    /// Total memory is not exposed to the browser sandbox; the honest answer is
+    /// `None`, and callers keep their conservative default.
+    fn total_memory_mb(&self) -> Option<u64> {
+        None
+    }
+
+    /// Battery status requires the asynchronous `Battery Status API`, which has no
+    /// synchronous form here; reporting `false` keeps animations enabled, the safe
+    /// direction for a wrong answer.
+    fn is_on_battery(&self) -> bool {
+        false
+    }
+
+    /// Process memory is not observable from the browser sandbox.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// Browser printing is driven by `window.print()`, not by handing the page a
+    /// spooler file, so there is no job to submit here.
+    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
+        Err("WASM printing is driven by window.print(), not a spooler job file".to_string())
+    }
+
+    /// Browsers do not expose a spooler to script, so the print dialog must
+    /// decline rather than claim a job was queued.
+    fn has_print_support(&self) -> bool {
+        false
+    }
+
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]

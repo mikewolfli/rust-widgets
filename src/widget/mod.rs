@@ -11,70 +11,34 @@ pub mod kind;
 pub mod runtime;
 pub mod widget_trait;
 // Widget subfolders
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod advanced_widgets;
 pub mod base_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod chart_widgets;
 pub mod container_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod cupertino;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod dialog;
 pub mod display_widgets;
 pub mod input_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod media_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod menu_toolbar;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod misc_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod nav_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod overlay_widgets;
 pub mod registry;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod special_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod view_widgets;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub mod web_widgets;
 // Individual widget files (not in subfolders)
 pub mod svg;
@@ -205,201 +169,93 @@ pub use display_widgets::rating::Rating;
 pub use display_widgets::skeleton_loader::SkeletonLoader;
 pub use display_widgets::switch::Switch;
 // Re-export nav widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::adaptive_scaffold::AdaptiveScaffold;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::app_bar::AppBar;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::bottom_navigation_bar::BottomNavigationBar;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::bottom_navigation_bar::NavItem;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::navigation_drawer::NavigationDrawer;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::navigation_stack::NavigationEvent;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::navigation_stack::NavigationStack;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::tab_view::TabPage;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use nav_widgets::tab_view::TabView;
 // Re-export chart widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use chart_widgets::bar_chart::{BarChart, BarEntry};
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use chart_widgets::line_chart::LineChart;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use chart_widgets::pie_chart::{PieChart, PieSlice};
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use chart_widgets::sparkline::Sparkline;
 // Re-export media widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::camera_preview::CameraPreview;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::hero_animation::HeroAnimation;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::lottie_widget::LottieWidget;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::rive_widget::{RiveInput, RiveInputValue, RiveWidget};
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use media_widgets::video_player::VideoPlayer;
 // Re-export overlay widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use overlay_widgets::fab::FAB;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use overlay_widgets::refresh_control::RefreshControl;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type PullToRefresh = RefreshControl;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 // Re-export cupertino widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use cupertino::{
     core::CupertinoAlertDialog, core::CupertinoSlider, core::CupertinoSwitch,
     core::MaterialNavigationRail, core::MaterialSnackbar, core::RailItem, CupertinoDatePicker,
     CupertinoNavigationBar, CupertinoSegmentedControl,
 };
 // Re-export misc widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::avatar::Avatar;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::bezier_curve_editor::BezierCurveEditor;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::date_range_picker::DateRangePicker;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::mobile_date_picker::MobileDatePicker;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::qr_code::QRCode;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use misc_widgets::segmented_button::{Segment, SegmentedButton};
 // Re-export web widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use web_widgets::web_engine::WebEngine;
 /// Type alias for backward compatibility — `WebView` is now `WebEngineView`.
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type WebView = WebEngineView;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use web_widgets::{
     WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
     WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog,
     WebEngineSettings, WebEngineView, WebEngineWebChannel,
 };
 // Re-export advanced widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use advanced_widgets::{
     calendar::Calendar, date_edit::DateEdit, date_time_edit::DateTimeEdit, dial::Dial,
     key_sequence_edit::KeySequenceEdit, pie_menu::PieMenu, pie_menu::PieMenuItem,
@@ -407,10 +263,7 @@ pub use advanced_widgets::{
     tab_bar::TabBarTab, time_edit::TimeEdit,
 };
 // Re-export dialog widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use dialog::{
     bottom_sheet::BottomSheet,
     color_dialog::ColorDialog,
@@ -426,21 +279,12 @@ pub use dialog::{
     tooltip::Tooltip,
     wizard::{WizardDialog, WizardStep},
 };
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Dialog = PopupWindow;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type DirectoryDialog = FileDialog;
 // Re-export menu and toolbar widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use menu_toolbar::{
     action::Action,
     dropdown_menu::{DropdownItem, DropdownMenu},
@@ -451,26 +295,14 @@ pub use menu_toolbar::{
     tool_bar::ToolBar,
     tool_button::ToolButton,
 };
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type ContextMenu = Menu;
 // Re-export view widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use view_widgets::table_widget::TableModel;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use view_widgets::tree_view::TreeModel;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use view_widgets::{
     data_grid::{ColumnFilter, DataGrid, SortSpec},
     grid_table::GridTableWidget,
@@ -485,10 +317,7 @@ pub use view_widgets::{
     virtual_table::VirtualTable,
 };
 // Re-export special widgets
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub use special_widgets::{
     Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
     CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
@@ -497,84 +326,36 @@ pub use special_widgets::{
     SegmentItem, SegmentedControl, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
     TimelineWidget, ToastItem, ToastLevel, ToastStack,
 };
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type ActivityIndicator = ProgressBar;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type CheckListBox = ListBox;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Toolbox = ToolBox;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type DoubleSpinBox = SpinBox;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Wizard = WizardDialog;
 // ── P3-6: WidgetKind variant type aliases ──
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type DataView = VirtualList;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type ColumnView = TreeView;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type UndoView = ListView;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type DatePicker = DateEdit;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type TimePicker = TimeEdit;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type DateTimePicker = DateTimeEdit;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Grid = GridWidget;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Chart = ChartWidget;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type GridTable = GridTableWidget;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type Table = TableWidget;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(full_widgets)]
 pub type FreeformShape = FreeformShapeWidget;

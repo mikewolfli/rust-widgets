@@ -172,7 +172,13 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
     render_frame(id, Size::new(geometry.width, geometry.height), clear)
 }
 
-#[cfg(test)]
+/// Test module for the runtime registry and self-drawn frame rendering.
+///
+/// Runs only in `full_widgets` profiles: the tests exercise the self-drawn bridge
+/// through concrete widgets in `special_widgets`, which is itself gated on
+/// `full_widgets` (defined in `build.rs`). Gating on plain `test` alone would
+/// make a stripped-down profile try to resolve types that are compiled out.
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::core::{Color, Point};

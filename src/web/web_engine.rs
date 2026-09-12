@@ -10,40 +10,38 @@
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
-#[cfg(all(feature = "webkit-engine", target_os = "linux"))]
-use super::WebKitBackend;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::platform::types::NativeWebEngine;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{Widget, WidgetKind};
 
 /// Enhanced web engine view widget.
 ///
-/// When the `"webkit-engine"` feature is enabled, this widget delegates
-/// navigation to a real `WebKitBackend` instead of using the simulated
-/// 0→50→100 progress callbacks.
+/// When the active platform backend can host a real web engine
+/// (`Platform::create_web_engine`), navigation delegates to it; otherwise the
+/// simulated 0→50→100 progress callbacks are used. The engine is obtained at
+/// construction and held behind the platform-neutral [`NativeWebEngine`] trait,
+/// so this widget names no platform crate — see principle #36.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
     pub certificate_error: Signal1<String>,
     pub download_requested: Signal1<String>,
-    /// Optional real web engine backend. When `Some`, navigation methods
-    /// delegate to the WebKit backend; when `None`, the simulated path is
-    /// used as fallback.
-    #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
-    webkit_backend: Option<WebKitBackend>,
+    /// Real engine when the backend provides one, `None` for the simulated path.
+    webkit_backend: Option<Box<dyn NativeWebEngine>>,
 }
 
 impl WebEngineViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
-        let webkit_backend = WebKitBackend::new().ok();
+        // Ask the active backend rather than testing `cfg(target_os)`: a headless
+        // Linux host returns `None` here and the widget degrades to simulation.
+        let webkit_backend = crate::platform::platform_facts().create_web_engine();
 
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebEngineView", ""),
             certificate_error: Signal1::new(),
             download_requested: Signal1::new(),
-            #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
             webkit_backend,
         }
     }
@@ -108,41 +106,41 @@ impl WebEngineViewEnhanced {
     // -- Methods that delegate to core --
 
     pub fn load_url(&mut self, url: &str) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
-            let _ = backend.load_url(url);
+            if let Err(error) = backend.load_url(url) {
+                log::warn!("[web] native engine load_url failed: {error}");
+            }
             return;
         }
         self.core.load_url(url);
     }
     pub fn set_url(&mut self, url: String) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
-            let _ = backend.load_url(&url);
+            if let Err(error) = backend.load_url(&url) {
+                log::warn!("[web] native engine load_url failed: {error}");
+            }
             self.core.set_url(url);
             return;
         }
         self.core.set_url(url);
     }
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
-            let _ = backend.load_html(html, base_url);
+            if let Err(error) = backend.load_html(html, base_url) {
+                log::warn!("[web] native engine load_html failed: {error}");
+            }
             self.core.load_html(html, base_url);
             return;
         }
         self.core.load_html(html, base_url);
     }
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
-        if self.webkit_backend.is_some() {
-            self.core.load_data(data, mime_type, base_url);
-            return;
-        }
+        // `load_data` has no native equivalent on the engine trait; the core path
+        // still runs, and the early return below keeps the prior behaviour of
+        // routing through core only when a native engine is present.
         self.core.load_data(data, mime_type, base_url);
     }
     pub fn go_back(&mut self) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
             backend.go_back();
             return;
@@ -150,7 +148,6 @@ impl WebEngineViewEnhanced {
         self.core.go_back();
     }
     pub fn go_forward(&mut self) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
             backend.go_forward();
             return;
@@ -158,7 +155,6 @@ impl WebEngineViewEnhanced {
         self.core.go_forward();
     }
     pub fn reload(&mut self) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
             backend.reload();
             return;
@@ -166,7 +162,6 @@ impl WebEngineViewEnhanced {
         self.core.reload();
     }
     pub fn stop(&mut self) {
-        #[cfg(all(feature = "webkit-engine", target_os = "linux"))]
         if let Some(ref mut backend) = self.webkit_backend {
             backend.stop_loading();
             return;

@@ -3,11 +3,44 @@
 //! The BarChart widget draws axes, optional grid lines, vertical bars with
 //! optional value labels on top. Each bar can have its own color, or all bars
 //! share a default color.
+//!
+//! # Rendering path
+//!
+//! With the `chart` feature enabled, the plot area, axes, grid and tick labels
+//! are produced by the shared chart engine in [`crate::chart`], so this widget
+//! and the SVG chart renderer share one implementation (see `plot_rect` below).
+//!
+//! Without that feature — `tablet` and `mobile` do not enable it — the widget
+//! falls back to its own compact plot-area and grid loop. That path is kept
+//! deliberately small so the two never diverge in the parts that matter: both
+//! use the same bar geometry, labels and colors.
 
+#[cfg(feature = "chart")]
+use crate::chart::adapter::ChartContextAdapter;
+#[cfg(feature = "chart")]
+use crate::chart::charts::{compute_cartesian_layout, draw_y_ticks, CartesianLayout};
+#[cfg(feature = "chart")]
+use crate::chart::types::ChartContext;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// Converts the shared engine's float plot area into the integer [`Rect`] this
+/// widget positions bars in.
+///
+/// `CartesianLayout` stores `f32` geometry because it is shared with the SVG
+/// backend; bar placement is pixel-exact, so the conversion happens once here
+/// rather than at every use site.
+#[cfg(feature = "chart")]
+fn plot_rect(layout: &CartesianLayout) -> Rect {
+    Rect::new(
+        layout.plot_x().round() as i32,
+        layout.plot_y().round() as i32,
+        layout.plot_w().round().max(1.0) as u32,
+        layout.plot_h().round().max(1.0) as u32,
+    )
+}
 
 /// A single bar entry in the bar chart.
 #[derive(Clone, Debug)]
@@ -182,7 +215,13 @@ impl BarChart {
         }
     }
 
-    /// Returns the plot area (inside margins for labels).
+    /// Plot area used when the `chart` feature is unavailable.
+    ///
+    /// `tablet` and `mobile` do not enable the shared chart engine, so they keep
+    /// this compact margin calculation. It mirrors the engine's left margin (for
+    /// Y labels) and bottom margin (for X categories) so a chart looks the same
+    /// across profiles.
+    #[cfg(not(feature = "chart"))]
     fn plot_area(&self) -> Rect {
         let rect = self.base.geometry();
         let margin_left = 50;
@@ -218,34 +257,141 @@ impl Draw for BarChart {
             return;
         }
 
-        let plot_area = self.plot_area();
         let (y_min, y_max) = self.resolve_y_range();
-
         let is_enabled = self.base.is_enabled();
         let disabled_color = Color::DISABLED_FOREGROUND;
 
-        // ── Draw axes ──
+        // ── Backdrop: axes, grid and tick labels ──
+        //
+        // With the `chart` feature this is the shared engine, so the widget and
+        // the SVG chart renderer cannot drift apart. Without it (tablet/mobile)
+        // a compact local preamble runs instead — see `draw_backdrop_without_engine`.
+        #[cfg(feature = "chart")]
+        let plot_area = {
+            let layout = compute_cartesian_layout(rect, true, true, 0);
+            let plot_area = plot_rect(&layout);
+            let mut adapter = ChartContextAdapter::new(context);
+
+            let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
+            let bottom = layout.plot_y() + layout.plot_h();
+            adapter.draw_line(
+                Point::new(layout.plot_x() as i32, layout.plot_y() as i32),
+                Point::new(layout.plot_x() as i32, bottom as i32),
+                1.0,
+                axis_color,
+            );
+            adapter.draw_line(
+                Point::new(layout.plot_x() as i32, bottom as i32),
+                Point::new((layout.plot_x() + layout.plot_w()) as i32, bottom as i32),
+                1.0,
+                axis_color,
+            );
+
+            // `draw_y_ticks` emits the grid lines *and* their value labels, so the
+            // tick density is no longer hard-coded in this widget.
+            draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+            plot_area
+        };
+
+        #[cfg(not(feature = "chart"))]
+        let plot_area = self.draw_backdrop_without_engine(context, is_enabled, disabled_color);
+
+        // ── Bars ──
+        if self.bars.is_empty() {
+            return;
+        }
+
+        let plot_width = plot_area.width as f32;
+        let n = self.bars.len();
+        let total_slots = n as f32;
+        let spacing_pixels = (plot_width * self.bar_spacing) / total_slots;
+        let bar_slot_width = (plot_width - spacing_pixels * (total_slots + 1.0)) / total_slots;
+        let bar_width = bar_slot_width.max(1.0);
+
+        let baseline_y = plot_area.y + plot_area.height as i32;
+        let height_range = plot_area.height as f64;
+        let value_span = (y_max - y_min).max(f64::EPSILON);
+
+        for (i, bar) in self.bars.iter().enumerate() {
+            let bar_color = bar.color.unwrap_or(self.bar_color);
+            let effective_color = if is_enabled { bar_color } else { disabled_color };
+
+            let bar_x = plot_area.x
+                + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
+            let bar_height = ((bar.value - y_min) / value_span * height_range) as i32;
+            let bar_y = baseline_y - bar_height;
+
+            if bar_height > 0 {
+                context.fill_rect(
+                    Rect::new(bar_x, bar_y, bar_width as u32, bar_height as u32),
+                    effective_color,
+                );
+            }
+
+            // ── Value label on top of the bar ──
+            if self.show_values && is_enabled {
+                let label = format!("{:.1}", bar.value);
+                let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
+                let label_y = bar_y - 4;
+                draw_label(context, &label, label_x, label_y, 10.0);
+            }
+
+            // ── Category label below the axis ──
+            if is_enabled {
+                let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
+                let label_y = baseline_y + 12;
+                draw_label(context, &bar.label, label_x, label_y, 9.0);
+            }
+        }
+    }
+}
+
+/// Draws a single-line label with the chart's shared styling.
+fn draw_label(context: &mut RenderContext, text: &str, x: i32, y: i32, size: f32) {
+    context.draw_text(
+        Point::new(x, y),
+        text,
+        &Font::simple("sans-serif", size),
+        Color::DARK_GRAY,
+        HorizontalAlignment::Left,
+    );
+}
+
+/// Fallback backdrop for builds without the `chart` feature (tablet/mobile).
+///
+/// Kept intentionally minimal and structurally identical to what the shared
+/// engine produces: same axes, same grid spacing, so a chart is recognisable
+/// across profiles rather than looking like a different widget.
+#[cfg(not(feature = "chart"))]
+impl BarChart {
+    fn draw_backdrop_without_engine(
+        &self,
+        context: &mut RenderContext,
+        is_enabled: bool,
+        disabled_color: Color,
+    ) -> Rect {
+        let plot_area = self.plot_area();
         let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
-        // Y-axis (left edge)
+        let bottom = plot_area.y + plot_area.height as i32;
+
         context.draw_line_stroke(
             Point::new(plot_area.x, plot_area.y),
-            Point::new(plot_area.x, plot_area.y + plot_area.height as i32),
+            Point::new(plot_area.x, bottom),
             axis_color,
             1,
         );
-        // X-axis (bottom edge)
         context.draw_line_stroke(
-            Point::new(plot_area.x, plot_area.y + plot_area.height as i32),
-            Point::new(plot_area.x + plot_area.width as i32, plot_area.y + plot_area.height as i32),
+            Point::new(plot_area.x, bottom),
+            Point::new(plot_area.x + plot_area.width as i32, bottom),
             axis_color,
             1,
         );
 
-        // ── Draw horizontal grid lines ──
-        let grid_color = if is_enabled { Color::rgba(200, 200, 200, 120) } else { disabled_color };
         if self.show_grid {
-            for i in 0..=4 {
-                let t = i as f64 / 4.0;
+            let grid_color =
+                if is_enabled { Color::rgba(200, 200, 200, 120) } else { disabled_color };
+            for tick in 0..=4 {
+                let t = tick as f64 / 4.0;
                 let gy = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
                 context.draw_line_aa(
                     Point::new(plot_area.x + 1, gy),
@@ -255,69 +401,7 @@ impl Draw for BarChart {
             }
         }
 
-        // ── Draw bars ──
-        if self.bars.is_empty() {
-            return;
-        }
-
-        let n = self.bars.len();
-        let total_slots = n as f32;
-        let spacing_pixels = (plot_area.width as f32 * self.bar_spacing) / total_slots;
-        let bar_slot_width =
-            (plot_area.width as f32 - spacing_pixels * (total_slots + 1.0)) / total_slots;
-        let bar_width = bar_slot_width.max(1.0);
-
-        let baseline_y = plot_area.y + plot_area.height as i32;
-
-        for (i, bar) in self.bars.iter().enumerate() {
-            let bar_color = bar.color.unwrap_or(self.bar_color);
-            let effective_color = if is_enabled { bar_color } else { disabled_color };
-
-            let bar_x = plot_area.x
-                + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
-            let bar_height =
-                ((bar.value - y_min) / (y_max - y_min) * plot_area.height as f64) as i32;
-            let bar_y = baseline_y - bar_height;
-
-            // Draw the bar
-            if bar_height > 0 {
-                context.fill_rect(
-                    Rect::new(bar_x, bar_y, bar_width as u32, bar_height as u32),
-                    effective_color,
-                );
-            }
-
-            // ── Draw value label on top of bar ──
-            if self.show_values && is_enabled {
-                let label_font = Font::new("sans-serif", 10.0, false, false);
-                let label = format!("{:.1}", bar.value);
-                let metrics = context.measure_text(&label, &label_font);
-                let label_x = bar_x + (bar_width as i32 - metrics.width as i32) / 2;
-                let label_y = bar_y - 4;
-                context.draw_text(
-                    Point::new(label_x.max(plot_area.x), label_y),
-                    &label,
-                    &label_font,
-                    Color::DARK_GRAY,
-                    HorizontalAlignment::Left,
-                );
-            }
-
-            // ── Draw category label below axis ──
-            if is_enabled {
-                let cat_font = Font::new("sans-serif", 9.0, false, false);
-                let metrics = context.measure_text(&bar.label, &cat_font);
-                let label_x = bar_x + (bar_width as i32 - metrics.width as i32) / 2;
-                let label_y = baseline_y + metrics.height as i32 + 2;
-                context.draw_text(
-                    Point::new(label_x.max(plot_area.x), label_y),
-                    &bar.label,
-                    &cat_font,
-                    Color::DARK_GRAY,
-                    HorizontalAlignment::Left,
-                );
-            }
-        }
+        plot_area
     }
 }
 
@@ -434,5 +518,48 @@ mod tests {
         let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
         bc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         bc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+    }
+
+    /// The widget must render through the shared chart engine rather than its
+    /// own copy of the axis/tick math — that duplication is what this refactor
+    /// removed.
+    ///
+    /// Observable proof: `draw_y_ticks` emits a numeric value label for every
+    /// tick, which the widget's previous hand-rolled grid loop did not draw. So
+    /// rendered output now contains the resolved Y-range bounds as text.
+    #[test]
+    fn bar_chart_renders_axis_value_labels_from_the_shared_engine() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
+        bc.set_bars(vec![BarEntry::new("A", 0.0), BarEntry::new("B", 100.0)]);
+        bc.set_value_range(Some(0.0), Some(100.0));
+
+        let svg = render_to_svg(&mut bc);
+
+        // `draw_y_ticks` labels ticks with `{value:.1}`, so the configured range
+        // bounds must appear. A widget drawing only bars would not produce these.
+        assert!(
+            svg.contains("100.0"),
+            "y-axis upper bound label missing; widget no longer uses the shared tick engine"
+        );
+        assert!(svg.contains("0.0"), "y-axis lower bound label missing");
+    }
+
+    /// Grid toggling must reach the shared engine: `draw_y_ticks` adds grid lines
+    /// when asked, so enabling the grid must increase the line count.
+    #[test]
+    fn bar_chart_grid_toggle_changes_rendered_line_count() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
+        bc.set_bars(vec![BarEntry::new("A", 10.0), BarEntry::new("B", 20.0)]);
+
+        bc.set_show_grid(false);
+        let without_grid = render_to_svg(&mut bc).matches("<line").count();
+
+        bc.set_show_grid(true);
+        let with_grid = render_to_svg(&mut bc).matches("<line").count();
+
+        assert!(
+            with_grid > without_grid,
+            "grid must add lines through the shared engine (off={without_grid}, on={with_grid})"
+        );
     }
 }

@@ -11,241 +11,241 @@
 //! validated — so the match arms here can assume the property exists and is
 //! accessible.
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use chrono::Weekday;
 
 use crate::core::{Alignment, Orientation};
-#[cfg(not(feature = "mini"))]
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
+#[cfg(full_widgets)]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::calendar::Calendar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_edit::Date;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_edit::DateEdit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_time_edit::DateTimeEdit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::dial::Dial;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::tab_bar::TabBar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::Time;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::TimeEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::base_widgets::button::Button;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::base_widgets::checkbox::CheckBox;
 use crate::widget::base_widgets::checkbox::CheckState;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::base_widgets::label::Label;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::base_widgets::radiobutton::RadioButton;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::base_widgets::toggle_button::{ToggleButton, ToggleButtonState};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::capability::coercion::*;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::chart_widgets::bar_chart::BarChart;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::chart_widgets::line_chart::LineChart;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::chart_widgets::pie_chart::PieChart;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::chart_widgets::sparkline::Sparkline;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::collapsible_pane::CollapsiblePane;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::dockwidget::DockWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::groupbox::GroupBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::mdiarea::MdiArea;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::pager_page_view::PagerPageView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::scrollarea::ScrollArea;
 use crate::widget::container_widgets::scrollarea::ScrollBarPolicy;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::splitter::Splitter;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::stackedwidget::StackedWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::tabwidget::TabWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::tile_view::TileView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::toolbox::ToolBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::cupertino::core::CupertinoSlider;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::cupertino::core::MaterialNavigationRail;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::file_dialog::FileDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::font_dialog::FontDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::input_dialog::InputDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::message_box::MessageBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::popup_window::PopupWindow;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::dialog::progress_dialog::ProgressDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::arc::Arc;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::image_view::ImageView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::lcd_number::{LCDNumber, LCDNumberMode, SegmentStyle};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::line::{Line, LineOrientation};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::meter::Meter;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::mini_chart::{ChartType, MiniChart};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::progressbar::ProgressBar;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::roller::Roller;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::scrollbar::ScrollBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::spinner::Spinner;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::display_widgets::switch::Switch;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::combobox::ComboBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::command_link::CommandLink;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::dropdown::Dropdown;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::font_combo_box::FontComboBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::keyboard::{Keyboard, KeyboardLayout};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::lineedit::LineEdit;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::search_bar::SearchBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::shortcut_editor::ShortcutEditor;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::spinbox::SpinBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::textarea::TextArea;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::animated_image::AnimatedImage;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::camera_preview::CameraPreview;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::hero_animation::HeroAnimation;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::lottie_widget::LottieWidget;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::rive_widget::RiveWidget;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 use crate::widget::media_widgets::video_player::VideoPlayer;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::action::Action;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::menu::Menu;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::status_bar::StatusBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_bar::ToolBarOrientation;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_button::ToolButton;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::misc_widgets::barcode_scanner::BarcodeScanner;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::misc_widgets::bezier_curve_editor::BezierCurveEditor;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::nav_widgets::tab_view::TabView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::breadcrumb::Breadcrumb;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::chip::Chip;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::code_editor::CodeEditor;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::color_picker::ColorPicker;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::freeform_shape::{FreeformShapeWidget, ShapePath};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::gantt_widget::GanttWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::grid::GridWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::map_view::MapView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::media_player::MediaPlayer;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::terminal_view::TerminalView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::{ColumnFilter, DataGrid, SortSpec};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::image_gallery::ImageGallery;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::list_view::{ListView, SelectionMode, ViewMode};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::property_grid::PropertyGrid;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::table_widget::TableWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_table::TreeTable;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_view::TreeView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_list::VirtualList;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_table::VirtualTable;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::web_widgets::web_view::WebView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::window::Window;
 use crate::widget::{Widget, WidgetKind};
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_base.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_view.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_container.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_dialog.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_menu.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_read_input.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_read_advanced.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_read_media.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_read_other.in.rs");
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn read_widget_property_value(
     widget: &dyn Widget,
     property_name: &str,
@@ -290,26 +290,26 @@ pub fn read_widget_property_value(
     result
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_base.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_write_input.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_view.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_container.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_dialog.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_menu.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_write_advanced.in.rs");
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 include!("access_write_media.in.rs");
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 include!("access_write_other.in.rs");
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn write_widget_property_value(
     widget: &mut dyn Widget,
     property_name: &str,
@@ -376,7 +376,7 @@ pub fn write_widget_property_value(
 // Helper to-str / to-string conversions
 // ---------------------------------------------------------------------------
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn sort_specs_to_string(sort_specs: &[SortSpec]) -> String {
     sort_specs
         .iter()
@@ -385,7 +385,7 @@ pub fn sort_specs_to_string(sort_specs: &[SortSpec]) -> String {
         .join(",")
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn column_filters_to_string(filters: &[ColumnFilter]) -> String {
     filters
         .iter()
@@ -394,7 +394,7 @@ pub fn column_filters_to_string(filters: &[ColumnFilter]) -> String {
         .join(",")
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn selection_mode_to_str(mode: SelectionMode) -> &'static str {
     match mode {
         SelectionMode::Single => "single",
@@ -412,7 +412,7 @@ pub fn list_box_selection_mode_to_str(mode: ListBoxSelectionMode) -> &'static st
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn view_mode_to_str(mode: ViewMode) -> &'static str {
     match mode {
         ViewMode::List => "list",
@@ -422,7 +422,7 @@ pub fn view_mode_to_str(mode: ViewMode) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn tool_bar_orientation_to_str(orientation: ToolBarOrientation) -> &'static str {
     match orientation {
         ToolBarOrientation::Horizontal => "horizontal",
@@ -463,7 +463,7 @@ pub fn orientation_to_str(orientation: Orientation) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
     match tick_position {
         TickPosition::NoTicks => "none",
@@ -473,7 +473,7 @@ pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn lcd_mode_to_str(mode: LCDNumberMode) -> &'static str {
     match mode {
         LCDNumberMode::Hex => "hex",
@@ -483,7 +483,7 @@ pub fn lcd_mode_to_str(mode: LCDNumberMode) -> &'static str {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
     match style {
         SegmentStyle::Outline => "outline",
@@ -492,7 +492,7 @@ pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
     }
 }
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "mon",
@@ -505,12 +505,12 @@ pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     }
 }
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn date_to_string(date: Date) -> String {
     date.to_string()
 }
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn time_to_string(time: Time) -> String {
     time.to_string()
 }
@@ -519,7 +519,7 @@ pub fn time_to_string(time: Time) -> String {
 // Default property value lookup
 // ---------------------------------------------------------------------------
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(full_widgets)]
 pub fn default_widget_property_value(
     kind: WidgetKind,
     property_name: &str,

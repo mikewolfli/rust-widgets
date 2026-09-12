@@ -54,6 +54,46 @@ impl Platform for IosMobilePlatform {
         PlatformFamily::Mobile
     }
 
+    /// iOS exposes installed RAM through `sysctl hw.memsize`; the iOS runtime is
+    /// an XNU kernel and provides the same sysctl. Returns `None` when the sandbox
+    /// denies the call so callers keep their conservative default.
+    fn total_memory_mb(&self) -> Option<u64> {
+        let output =
+            std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let bytes = String::from_utf8_lossy(&output.stdout).trim().parse::<u64>().ok()?;
+        Some(bytes / (1024 * 1024))
+    }
+
+    /// iPhones and iPads run on battery by definition.
+    fn is_on_battery(&self) -> bool {
+        true
+    }
+
+    /// Process memory accounting is not reachable from the app sandbox through a
+    /// stable interface here, so this backend honestly reports `None`.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// CPU accounting likewise has no portable sandbox-visible source here.
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// iOS printing goes through `UIPrintInteractionController`, not a spooler
+    /// command, so this state backend cannot submit a job file.
+    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
+        Err("iOS printing requires UIPrintInteractionController (not bound)".to_string())
+    }
+
+    /// iOS uses the same AppKit-style accelerator symbols as macOS (`⌘⇧Z`).
+    fn shortcut_style(&self) -> crate::shortcut::PlatformShortcutStyle {
+        crate::shortcut::PlatformShortcutStyle::Mac
+    }
+
     #[cfg(feature = "mobile-api")]
     fn mobile_extension(&self) -> Option<&dyn crate::platform::types::MobilePlatformExtension> {
         Some(self)

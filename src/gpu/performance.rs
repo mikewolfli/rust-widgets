@@ -215,9 +215,11 @@ impl AdaptivePerformanceMonitor {
     ///
     /// Priority:
     /// 1. `RUST_WIDGETS_MEM_UTIL` env var override
-    /// 2. Linux: `/proc/self/status` → `VmRSS / VmSize`
-    /// 3. macOS: `ps` RSS vs estimated total memory
-    /// 4. Fallback: `0.0` with diagnostic log
+    /// 2. Active platform backend (`Platform::process_memory_utilization`)
+    /// 3. Fallback: `0.0` with diagnostic log
+    ///
+    /// The OS-specific probes (`/proc/self/status`, `ps`) live inside the
+    /// platform backends, not here — see principle #36.
     fn measure_memory_utilization(&self) -> f32 {
         // 1. Env-var override
         if let Ok(val) = std::env::var("RUST_WIDGETS_MEM_UTIL") {
@@ -226,45 +228,10 @@ impl AdaptivePerformanceMonitor {
             }
             log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{val}' is not a valid f32");
         }
-        // 2. Linux: /proc/self/status
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-                let mut vmrss_kb: u64 = 0;
-                let mut vmsize_kb: u64 = 0;
-                for line in status.lines() {
-                    if let Some(rest) = line.strip_prefix("VmRSS:") {
-                        vmrss_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
-                    } else if let Some(rest) = line.strip_prefix("VmSize:") {
-                        vmsize_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
-                    }
-                }
-                if vmsize_kb > 0 {
-                    let ratio = vmrss_kb as f32 / vmsize_kb as f32;
-                    log::debug!(
-                        "[performance] memory utilization from /proc/self/status: {ratio:.3}"
-                    );
-                    return ratio.clamp(0.0, 1.0);
-                }
-            }
-        }
-        // 3. macOS: ps RSS vs. estimated total
-        #[cfg(target_os = "macos")]
-        {
-            let pid = std::process::id().to_string();
-            if let Ok(output) =
-                std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid]).output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Ok(rss_kb) = stdout.trim().parse::<f64>() {
-                        // Estimate 8 GB as reasonable total for a typical macOS system
-                        let ratio = (rss_kb / (8.0 * 1024.0 * 1024.0)) as f32;
-                        log::debug!("[performance] memory utilization from ps: {ratio:.3}");
-                        return ratio.clamp(0.0, 1.0);
-                    }
-                }
-            }
+        // 2. Platform backend owns the OS probe
+        if let Some(ratio) = crate::platform::platform_facts().process_memory_utilization() {
+            log::debug!("[performance] memory utilization from platform backend: {ratio:.3}");
+            return ratio.clamp(0.0, 1.0);
         }
         log::debug!("[performance] measure_memory_utilization: no backend available");
         0.0
@@ -273,8 +240,10 @@ impl AdaptivePerformanceMonitor {
     ///
     /// Priority:
     /// 1. `RUST_WIDGETS_CPU_UTIL` env var override
-    /// 2. Linux: `/proc/self/status` → thread count / number of cores
+    /// 2. Active platform backend (`Platform::process_cpu_utilization`)
     /// 3. Fallback: `0.0` with diagnostic log
+    ///
+    /// As with memory, the OS-specific sampling lives in the backend.
     fn measure_cpu_utilization(&self) -> f32 {
         // 1. Env-var override
         if let Ok(val) = std::env::var("RUST_WIDGETS_CPU_UTIL") {
@@ -283,27 +252,10 @@ impl AdaptivePerformanceMonitor {
             }
             log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{val}' is not a valid f32");
         }
-        // 2. Linux: /proc/self/status → Threads:
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-                for line in status.lines() {
-                    if let Some(rest) = line.strip_prefix("Threads:") {
-                        if let Ok(threads) = rest.trim().parse::<f32>() {
-                            // Rough heuristic: threads / (available_cores * 2)
-                            // A well-utilized 4-core system might have ~8 active threads.
-                            let cores = std::thread::available_parallelism()
-                                .map(|n| n.get() as f32)
-                                .unwrap_or(4.0);
-                            let ratio = (threads / (cores * 2.0)).clamp(0.0, 1.0);
-                            log::debug!(
-                                "[performance] CPU utilization from /proc/self/status: {threads} threads / {cores} cores = {ratio:.3}"
-                            );
-                            return ratio;
-                        }
-                    }
-                }
-            }
+        // 2. Platform backend owns the OS probe
+        if let Some(ratio) = crate::platform::platform_facts().process_cpu_utilization() {
+            log::debug!("[performance] CPU utilization from platform backend: {ratio:.3}");
+            return ratio.clamp(0.0, 1.0);
         }
         log::debug!("[performance] measure_cpu_utilization: no backend available");
         0.0

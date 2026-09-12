@@ -8,10 +8,6 @@ use crate::core::{Rect, Size};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-// `Command` is only used by the macOS/Linux and Windows print backends; other
-// targets (e.g. iOS) would otherwise see an unused-import warning.
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Page ordering for multi-copy print jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,29 +250,11 @@ impl PrintDialog {
             self.pagination.collate,
         );
 
-        // Check if the platform has a native print command available.
-        // On Unix-like systems we look for `lp` or `lpr`; on Windows we check `print`.
-        // When a real native print dialog is available (e.g., Cocoa PrintPanel on macOS,
-        // PrintDlg on Windows, GtkPrintDialog on Linux) this method would present the
-        // platform-native dialog and return user choices.
-        let has_printer = if cfg!(target_os = "windows") {
-            std::process::Command::new("cmd")
-                .args(["/C", "print /? 2>NUL"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        } else {
-            std::process::Command::new("lp")
-                .arg("--version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-                || std::process::Command::new("lpr")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-        };
+        // Whether the OS has a print spooler is an OS fact. Ask the active
+        // platform backend instead of probing commands from this layer — principle
+        // #36. A backend with no spooler reports `false`, and the dialog honestly
+        // declines rather than pretending the document was queued.
+        let has_printer = crate::platform::platform_facts().has_print_support();
 
         if !has_printer {
             log::error!("PrintDialog::show() — no native print spooler detected on this system");
@@ -534,44 +512,10 @@ fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn run_print_command(path: &Path) -> Result<(), String> {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let lpr_status = Command::new("lpr").arg(path).status();
-        if let Ok(status) = lpr_status {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        let lp_status = Command::new("lp").arg(path).status();
-        if let Ok(status) = lp_status {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        Err("no available system print command succeeded (tried: lpr, lp)".to_string())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let status = Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(format!(
-                "Start-Process -FilePath '{}' -Verb Print -PassThru | Out-Null",
-                path.display()
-            ))
-            .status();
-        if let Ok(status) = status {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        Err("system print command failed on windows".to_string())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = path;
-        Err("system print backend is not supported on this platform".to_string())
-    }
+    // The OS-specific printing mechanism (lpr/lp on macOS and Linux, the shell
+    // `Print` verb on Windows) belongs behind the platform backend so this layer
+    // stays free of `cfg(target_os)` — see principle #36.
+    crate::platform::platform_facts().spawn_print_job(path)
 }
 // ────────────────────────────────────────────────────────────────
 // Print framework types (PrintOrientation, PrintSettings, PrintJob,
@@ -785,16 +729,24 @@ impl Default for PrintManager {
 }
 
 /// Console-based print confirmation for desktop platforms.
-/// On non-desktop platforms this returns an error message.
 ///
 /// There is no native/system print dialog integration yet: this function never
 /// opens a window. On an interactive terminal it asks for a y/n answer and
 /// returns `Ok(true)` only for an explicit "y"/"yes" reply.
 /// Without an interactive terminal it logs a warning and returns `Ok(false)`
 /// (cancel) so printing is never silently accepted.
+///
+/// Whether the host *has* a print subsystem at all is asked of the backend
+/// (`Platform::has_print_support`) rather than decided with `cfg(target_os)` here
+/// — principle #36. A host with no spooler gets an honest error instead of a
+/// prompt that could only lead to a discarded job.
+///
 /// Returns `Ok(true)` if accepted, `Ok(false)` if cancelled.
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn print_page_dialog() -> Result<bool, String> {
+    if !crate::platform::platform_facts().has_print_support() {
+        return Err("print dialog is not supported on this platform".to_string());
+    }
+
     log::info!("[print] print_page_dialog() — no system dialog available; console confirmation");
     // Check if we have an interactive terminal available.
     use std::io::IsTerminal;
@@ -817,18 +769,18 @@ pub fn print_page_dialog() -> Result<bool, String> {
     Ok(false)
 }
 
-/// Platform-specific: show a system print dialog (fallback for unsupported platforms).
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub fn print_page_dialog() -> Result<bool, String> {
-    Err("print dialog is not supported on this platform".to_string())
-}
-
-/// Platform-specific: submit rendered content to the system printer.
+/// Submits rendered content to the system printer.
 ///
 /// Writes content to a temporary file and submits via system print command.
 /// On error, includes the specific failure reason in the error message.
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+///
+/// Whether a spooler exists is asked of the backend rather than gated with
+/// `cfg(target_os)` — principle #36. The backend also supplies the submission
+/// mechanism itself (`Platform::spawn_print_job`).
 pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), String> {
+    if !crate::platform::platform_facts().has_print_support() {
+        return Err("system printer is not supported on this platform".to_string());
+    }
     if content.is_empty() {
         return Err("cannot print empty content".to_string());
     }
@@ -855,12 +807,6 @@ pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), S
         log::warn!("[print] failed to clean up temp file {}: {err}", path.display());
     }
     result
-}
-
-/// Platform-specific: submit rendered content to the system printer (fallback).
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub fn print_to_printer(_content: &str, _settings: &PrintSettings) -> Result<(), String> {
-    Err("system printer is not supported on this platform".to_string())
 }
 
 /// In-memory print context that records drawing commands.
@@ -1090,5 +1036,35 @@ mod tests {
         assert_eq!(page.command_count(), 2);
         assert_eq!(page.size.width, 800);
         assert_eq!(page.size.height, 600);
+    }
+
+    /// The print entry points must consult the backend rather than a
+    /// `cfg(target_os)` branch, so their availability follows the *host's actual
+    /// spooler*. On a host the backend reports as having print support, the call
+    /// must get past the capability check and only then judge the content; on a
+    /// host without one it must fail with the "not supported" reason.
+    ///
+    /// This pins the observable contract of the refactor: the gate is now
+    /// `Platform::has_print_support()`, not a compile-time OS list.
+    #[test]
+    fn print_entry_points_gate_on_backend_capability_not_target_os() {
+        let supported = crate::platform::platform_facts().has_print_support();
+
+        let result = print_to_printer("", &PrintSettings::new());
+        if supported {
+            // Capability check passed, so the empty-content guard is what fires.
+            assert_eq!(result, Err("cannot print empty content".to_string()));
+        } else {
+            assert_eq!(result, Err("system printer is not supported on this platform".to_string()));
+        }
+
+        // A host without a spooler must reject the dialog outright; a host with one
+        // proceeds to the (non-interactive, so cancelling) console prompt.
+        let dialog = print_page_dialog();
+        if supported {
+            assert_eq!(dialog, Ok(false), "no interactive terminal must cancel, not accept");
+        } else {
+            assert_eq!(dialog, Err("print dialog is not supported on this platform".to_string()));
+        }
     }
 }

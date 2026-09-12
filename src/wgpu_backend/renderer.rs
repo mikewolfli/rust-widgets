@@ -22,22 +22,54 @@ impl WgpuRenderer {
         pollster::block_on(Self::new_async())
     }
     async fn new_async() -> Result<Self, String> {
+        // Build the instance from the whole degradation ladder so a host with no
+        // primary driver can still reach the GL (OpenGL ES) rung, and report
+        // which tier we landed on rather than failing outright.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: crate::gpu::backend_ladder::instance_backends(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
         });
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|_| "wgpu adapter request failed".to_string())?;
+        let (adapter, tier) = crate::gpu::backend_ladder::select_adapter_with_gl_fallback(
+            &instance,
+            wgpu::PowerPreference::HighPerformance,
+            None,
+        )
+        .await
+        .ok_or_else(|| {
+            // Distinguish "this host has no GPU backend at all" from "you pinned
+            // a backend this host cannot provide". The second case is a user
+            // error worth naming, not a mystery to debug.
+            match crate::gpu::backend_ladder::backends_from_env() {
+                Some(pinned) => format!(
+                    "wgpu adapter request failed: WGPU_BACKEND pinned {pinned:?}, \
+                     which this host does not provide"
+                ),
+                None => "wgpu adapter request failed on every backend tier".to_string(),
+            }
+        })?;
+
+        let adapter_info = adapter.get_info();
+        if tier.is_degraded() {
+            // Surface the degradation once, at start-up, so a slow session is
+            // explainable instead of mysterious.
+            log::warn!(
+                "[wgpu] using degraded backend tier: {} ({:?}, adapter '{}')",
+                tier.label(),
+                adapter_info.backend,
+                adapter_info.name,
+            );
+        } else {
+            log::info!(
+                "[wgpu] using {} backend ({:?}, adapter '{}')",
+                tier.label(),
+                adapter_info.backend,
+                adapter_info.name,
+            );
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("rw_wgpu_device"),

@@ -4,6 +4,73 @@ use crate::core::{ObjectId, PlatformFamily};
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
 
+/// Whether the CUPS print clients (`lp` or `lpr`) are installed.
+///
+/// Shared by the Unix-oriented backends (macOS, Linux, Wayland) so the detection
+/// rule lives in exactly one place. iOS/Android/Harmony do not use it — they print
+/// through platform frameworks rather than a spooler command — and the WASM
+/// backend has no process to spawn at all.
+///
+/// The test is whether the binary can be **spawned**, not whether it exits zero:
+/// CUPS `lp` rejects `--version` with exit status 1 while still printing its
+/// usage text, so an exit-code check would wrongly report "no spooler" on a
+/// machine that has one. Only a spawn failure (`ErrorKind::NotFound`) means the
+/// binary is absent.
+///
+/// `allow(dead_code)` rather than a `cfg` gate: the callers live in
+/// `platform/{macos,macos_objc2,linux,wayland}`, which are individually
+/// `cfg`-gated. Enumerating those same conditions here would duplicate four
+/// separate gate expressions — exactly the drift that caused the `full_widgets`
+/// bug — so the helper stays available to all targets and simply goes unused on
+/// the rest.
+#[allow(dead_code)]
+pub(crate) fn unix_print_clients_available() -> bool {
+    ["lp", "lpr"].iter().any(|cmd| {
+        // Any `ExitStatus` at all proves the executable exists and ran.
+        std::process::Command::new(cmd).arg("--help").output().is_ok()
+    })
+}
+
+/// The shortcut notation matching the OS this crate is compiled for.
+///
+/// Apple platforms use AppKit glyphs (`⌘⇧Z`); everything else uses the spelled-out
+/// `Ctrl+Shift+Z` convention. This is the one place the compile target decides the
+/// notation, keeping the `cfg!` out of `src/shortcut/` (principle #36). Backends
+/// may override it through `Platform::shortcut_style`.
+pub const fn compile_target_shortcut_style() -> crate::shortcut::PlatformShortcutStyle {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+        crate::shortcut::PlatformShortcutStyle::Mac
+    } else {
+        crate::shortcut::PlatformShortcutStyle::Desktop
+    }
+}
+
+/// A backend-owned native web engine view.
+///
+/// Widgets in `src/web/` drive a real browser engine through this trait without
+/// naming any platform library. The concrete type (a `webkit2gtk::WebView` on the
+/// Linux GTK backend) is constructed by the backend and never appears in the
+/// widget layer — see principle #36.
+///
+/// All methods report failure through enums or `Result` rather than panicking:
+/// a headless CI host has no display, and that must surface as "no engine" so the
+/// caller can fall back to the simulated path.
+pub trait NativeWebEngine: Send {
+    /// Begins loading `url`.
+    fn load_url(&mut self, url: &str) -> Result<(), String>;
+    /// Begins loading `html`, optionally resolving relative references against
+    /// `base_url`.
+    fn load_html(&mut self, html: &str, base_url: Option<&str>) -> Result<(), String>;
+    /// Navigates back in the session history.
+    fn go_back(&mut self);
+    /// Navigates forward in the session history.
+    fn go_forward(&mut self);
+    /// Reloads the current document.
+    fn reload(&mut self);
+    /// Cancels an in-flight page load.
+    fn stop_loading(&mut self);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
     all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
@@ -293,10 +360,129 @@ pub trait Platform: Send + Sync {
     /// This covers *display* only. Whether the accelerator is actually wired up
     /// to fire is [`Platform::menu_add_item`]'s responsibility.
     fn format_shortcut(&self, shortcut: &crate::shortcut::Shortcut) -> String {
-        crate::shortcut::format_shortcut_for_platform(
-            shortcut,
-            crate::shortcut::PlatformShortcutStyle::current(),
-        )
+        crate::shortcut::format_shortcut_for_platform(shortcut, self.shortcut_style())
+    }
+
+    /// How this backend's operating system spells shortcut glyphs.
+    ///
+    /// Lets the notation follow the *backend* rather than a compile-time `cfg` in
+    /// the shortcut layer: the macOS backends answer `Mac` (`⌘⇧Z`) and every other
+    /// backend answers `Desktop` (`Ctrl+Shift+Z`). The default derives from the
+    /// build target so backends with no opinion — including out-of-tree ones — stay
+    /// correct.
+    ///
+    /// See principle #35: menu notation is presented through a runtime query, not a
+    /// `cfg!(target_os)` check in a middle layer.
+    fn shortcut_style(&self) -> crate::shortcut::PlatformShortcutStyle {
+        crate::shortcut::PlatformShortcutStyle::current()
+    }
+
+    /// Total physical memory installed on this machine, in mebibytes.
+    ///
+    /// Upper layers (menu/GPU adaptivity) need the *machine* memory to size
+    /// their caches, and that figure is only obtainable through the host OS:
+    /// `/proc/meminfo` on Linux, `sysctl hw.memsize` on macOS,
+    /// `GlobalMemoryStatusEx` on Windows. Probing it in a middle layer would
+    /// violate the platform-isolation rule (principle #36), so every backend
+    /// answers here instead.
+    ///
+    /// Returns `None` when this backend cannot determine the value. Callers
+    /// must treat `None` as "unknown" and degrade honestly — never substitute a
+    /// made-up constant such as `4096`.
+    fn total_memory_mb(&self) -> Option<u64> {
+        None
+    }
+
+    /// Whether the machine is currently drawing power from its battery.
+    ///
+    /// Desktop towers and servers report `false`. Backends on hardware without
+    /// a battery also report `false` — the question is "is a battery draining",
+    /// not "does a battery exist". Platforms that cannot tell return `false`,
+    /// which selects the *non*-throttled defaults; that is the safe direction,
+    /// because a wrong "on battery" would silently strip animations.
+    fn is_on_battery(&self) -> bool {
+        false
+    }
+
+    /// This process's resident memory as a fraction of its reserved address
+    /// space, clamped to `[0.0, 1.0]`.
+    ///
+    /// Used by the adaptive-quality monitor to decide when to shed caches. The
+    /// figure comes from OS process accounting — `/proc/self/status`
+    /// (`VmRSS`/`VmSize`) on Linux, `proc_pidinfo`/`ps` on macOS,
+    /// `GetProcessMemoryInfo` on Windows — so it is answered by the backend and
+    /// never probed from a middle layer (principle #36).
+    ///
+    /// Returns `None` when this backend has no process-memory source; callers
+    /// treat that as "unknown" rather than zero.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// This process's CPU utilization as a fraction `[0.0, 1.0]`.
+    ///
+    /// Like [`Platform::process_memory_utilization`], this is obtained from OS
+    /// process accounting and therefore lives behind the backend. Returns `None`
+    /// when the backend has no reliable source; callers must not interpret that
+    /// as an idle system.
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// Hands a rendered print job to the OS print subsystem.
+    ///
+    /// The job is passed as a file already serialized in the platform's own
+    /// job format. Each backend invokes whatever mechanism its OS provides:
+    /// `lpr`/`lp` on macOS and Linux, the shell `Print` verb on Windows. The
+    /// file's lifetime is owned by the caller, which deletes it after this
+    /// returns; the implementation must not retain the path.
+    ///
+    /// Returns `Err` with a human-readable reason when no print mechanism is
+    /// available or all of them failed, so the caller can report it instead of
+    /// pretending the job printed.
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        let _ = job_file;
+        Err("system print backend is not supported on this platform".to_string())
+    }
+
+    /// Whether the OS exposes a print spooler this backend can submit to.
+    ///
+    /// `PrintDialog::show` asks this before claiming a job can be printed, so a
+    /// host without a spooler gets a truthful `false` instead of a dialog that
+    /// silently discards the document. Probing for `lp`/`lpr`/`print` is an OS
+    /// concern and therefore lives in the backend (principle #36).
+    ///
+    /// The default is `false`; backends with a spooler override it.
+    fn has_print_support(&self) -> bool {
+        false
+    }
+
+    /// Native widget kinds this backend can construct as real OS controls.
+    ///
+    /// Control routing asks this instead of testing `cfg(target_os)`: a backend
+    /// reports the primitives it actually implements (`SysListView32` on Windows,
+    /// for instance), and everything not listed falls back to the custom-painted
+    /// backend. This keeps the routing table free of per-OS branches while still
+    /// letting a platform promote kinds as its native coverage grows
+    /// (principle #36).
+    ///
+    /// The default is empty: a backend that publishes nothing routes every kind
+    /// through the global policy table.
+    fn native_widget_kinds(&self) -> &'static [crate::widget::WidgetKind] {
+        &[]
+    }
+
+    /// Creates a native web engine view, when this backend can host one.
+    ///
+    /// Returns `None` on backends with no embeddable engine (or no display), which
+    /// tells `src/web/` to use its simulated navigation path. The concrete engine
+    /// type is a backend-private implementation detail; callers only ever see
+    /// [`NativeWebEngine`], so no platform crate is named above this layer
+    /// (principle #36).
+    ///
+    /// The default is `None`; backends with a real engine override it.
+    fn create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>> {
+        None
     }
 
     /// Translates a shortcut into the backend's own accelerator representation.

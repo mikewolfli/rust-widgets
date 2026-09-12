@@ -137,11 +137,9 @@ fn mac_style_uses_glyphs_for_named_keys() {
 /// The style the library picks by default must match the host it is built for.
 #[test]
 fn current_style_matches_host() {
-    let expected = if cfg!(target_os = "macos") {
-        PlatformShortcutStyle::Mac
-    } else {
-        PlatformShortcutStyle::Desktop
-    };
+    // The compile-target mapping lives in `src/platform/` (principle #36); this
+    // test only asserts that `current()` surfaces it faithfully.
+    let expected = crate::platform::types::compile_target_shortcut_style();
     assert_eq!(PlatformShortcutStyle::current(), expected);
 }
 

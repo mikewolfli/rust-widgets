@@ -38,8 +38,13 @@ impl WidgetFactory {
         self.register(mini_canvas_capability(), create_mini_canvas);
         self.register(tile_view_capability(), create_tile_view);
 
-        // ── Non-core widgets (desktop only) ─────────────────────────
-        #[cfg(not(feature = "mini"))]
+        // ── Non-core widgets ────────────────────────────────────────
+        //
+        // Gated on `full_widgets`, not `not(mini)`: every constructor in this
+        // block lives in a module that is itself profile-gated, so an
+        // embedded build must skip the whole block. Gating it on `not(mini)`
+        // alone left `embedded` referring to constructors that do not exist.
+        #[cfg(full_widgets)]
         {
             self.register(toggle_button_capability(), create_toggle_button);
             self.register(menu_capability(), create_menu);
@@ -68,7 +73,7 @@ impl WidgetFactory {
         }
 
         // ── Advanced widgets (not available in embedded or mini) ────
-        #[cfg(not(any(feature = "mini", feature = "embedded")))]
+        #[cfg(full_widgets)]
         {
             self.register(dial_capability(), create_dial);
             self.register(tab_bar_capability(), create_tab_bar);

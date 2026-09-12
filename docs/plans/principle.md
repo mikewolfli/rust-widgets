@@ -43,3 +43,39 @@
 32. **🦀 Builder 模式替代 varargs** — 不使用 C 的 `lv_style_set_*(style, value)` 函数簇。用 Rust 的 Builder 模式：`Style::new().bg_color(RED).pad_all(8).build()`。
 33. **🦀 Trait 替代回调函数指针** — 不使用 `lv_event_cb_t` 函数指针。用 `EventHandler` trait + `match event` 模式匹配。
 34. **🦀 编译期样式检查** — 样式属性的 setter 返回 `Result<_, StyleError>` 在测试中验证，而非运行时静默忽略。
+
+### 新增规则 — 平台隔离（操作系统无关原则）
+
+35. **🌍 控件创建与操作必须操作系统无关** — 所有控件的创建（`create_*`）、属性读写、事件分发，其**调用方**代码（widget / app / demo / layout / render / style / theme / core 等上层模块）不得出现任何 `cfg(target_os)`、`cfg(target_family)`、`cfg(unix)`、`cfg(windows)` 分支，也不得直接 import 平台原生库（`winapi` / `gtk::` / `objc` / `cocoa` / `webkit2gtk` 等）。平台差异只能通过**运行时** API 询问（如 `backend_name()`、`supports_self_drawn()`、`runtime_gui_mode()`、`Platform::*` trait 方法）。
+
+36. **🌍 操作系统相关的实现必须封装在 platform backend 底层** — 一切 OS 相关逻辑（原生控件创建、系统信息探测、剪贴板、IME、打印、文件系统路径约定、外部命令调用）都必须落在 `src/platform/` 各后端内，并通过 `Platform` trait（`src/platform/types.rs`）暴露统一的**语义化**方法。禁止在 `src/platform/` 之外出现：`#[cfg(target_os = ...)]`、读 `/proc` / `/sys`、`std::process::Command::new("ps" | "lpr" | "powershell")`、路径分隔符假设等。
+
+37. **🌍 中间层禁止自嗅探 OS，必须有 trait 兜底** — 上层模块需要平台事实（如总内存、是否电池供电、打印能力）时，**必须**定义 `Platform` trait 方法并在各后端实现；缺省实现应给出诚实的能力缺失（返回 `Option::None` 或 `false`），**禁止**硬编码假装的值（如 `4096`、`false`）来掩盖未实现。新增平台能力时，`src/platform/` 下每个已存在的后端都要么实现、要么显式继承默认值，不得留 OS 条件编译在调用点。
+
+38. **🌍 探测结果的判据必须经实测验证** — 用外部命令探测能力时（如是否存在打印客户端），判据是**能否 spawn**（`output().is_ok()`），而非退出码是否为 0。CUPS `lp --version` 以状态 1 退出但仍然打印用法，用 `status.success()` 判断会漏报已安装的打印系统。任何探测逻辑都要在目标主机上实跑验证，不得凭 API 名称推测行为。
+
+39. **🌍 原生类型只能出现在 platform 后端内部** — 平台原生类型（`webkit2gtk::WebView`、`gtk::Widget`、`HWND`、`NSView` 等）的持有者必须是 `src/platform/` 下的类型。上层模块需要能力时，在 `Platform` trait 上定义**语义化**方法并返回 `Box<dyn Trait>`，由后端构造具体类型。禁止把原生类型作为 widget 结构体字段，或在非 platform 层 `use` 平台库。
+
+40. **🌍 语言绑定层是唯一例外** — `src/bindings/`（C ABI / JNI / 其它语言桥）作为进程边界，允许直接依赖对应绑定库（如 `jni`），但必须满足：① 零 `cfg(target_os)`；② 零 OS 探测（`/proc`、`Command::new`）；③ 只向平台无关的 `rw_*` C ABI 转发，不内含平台分支。违反任一条即按普通分层违规处理。
+
+41. **🌍 `cfg(target_os)` 不得用于声明函数是否存在** — 禁止用「桌面 OS 列表」决定某个公共函数是真实实现还是返回错误的桉本（如 `#[cfg(any(target_os = "macos", "linux", "windows"))] fn print_to_printer` 与 `#[cfg(not(...))] fn print_to_printer -> Err`）。这种写法把 OS 知识固化成**两套函数体**，新增平台必须改代码。改为：**单一函数**在入口处询问 `Platform` 能力（如 `has_print_support()`），不支持时返回错误。
+
+42. **🌍 `cfg(target_arch)` 与 `cfg(target_os)` 区别对待** — `cfg(target_arch = "wasm32")` 描述的是**执行环境约束**（浏览器沙箱无法访问独立 GPU），不是 OS 分支，**不**在 #35/#36 的禁止范围。但必须满足：① 分支依据是架构固有的环境属性，而非“哪个 OS”；② 同一事实不得同时用 `target_os` 判定（如 “Windows 浏览器” 应用环境变量判定，而非 `cfg(target_os = "windows")`）。当 `cfg(target_os)` 与 `cfg(target_arch)` 交织时，优先保留后者。
+
+43. **🎯 交叉目标依赖配置必须在 Cargo.toml 中用 target 段声明，且经实构建验证** — 当某传递依赖在特定 target 上需要非默认 feature 才能编译（典型：`getrandom` 在 `wasm32-unknown-unknown` 需要 `js`/`wasm_js` 才能获取熵源），**修复位置是依赖图顶端的 `[target.'cfg(...)'.dependencies]`**，不得修改源码或改用 `build.rs` 绕过。① feature 名称必须先读该 crate 自身的 `Cargo.toml` 取证——不同大版本会改名（`getrandom` 0.2 叫 `js`，0.3 叫 `wasm_js`）；② 修复后必须实跑 `cargo check --target <triple>` 并对比修复前输出；③ 必须确认 CI 的 `wasm-check` 类作业**确实覆盖**了该 feature 组合，否则下次仍会静默回归。
+
+44. **🎯 用户配置目录必须用跨平台 API 解析，禁止手拼 `.config`** — 配置/数据/缓存目录的位置是 OS 约定：macOS 用 `~/Library/Application Support`，Windows 用 `%APPDATA%`，仅 Linux 用 `$XDG_CONFIG_HOME` 或 `~/.config`。禁止 `home.join(".config")` 这种手拼写法（会把配置写到 macOS/Windows 的错误位置）。必须用 `dirs::config_dir()` / `dirs::data_dir()` / `dirs::cache_dir()` 等跨平台 API，让 OS 知识留在 `dirs` crate 内部。同理：临时文件用 `std::env::temp_dir()`，不得硬编码 `/tmp`（测试夹具除外）。
+
+45. **🎯 GPU 后端必须按显式降级阶梯选择，且降级必须可见** — 禁止用 `wgpu::Backends::all()` 一把梭：这既无法得知实际落了哪一级，也让调用方无法上报“降级启动”。必须按有序阶梯逐个尝试：① `PRIMARY`（Vulkan/Metal/DX12/WebGPU）；② `GL`（OpenGL ES / WebGL / ANGLE）；③ CPU 软件回退（仅末级允许 `force_fallback_adapter`）。选中后必须能报出所处 tier（`GpuBackendTier`），且 `is_degraded()` 为非 Primary 时告警——不得静默降级。
+
+46. **🎯 环境变量 pin 必须被尊重，且不可用时必须诚实报错** — 当用户用 `WGPU_BACKEND` 显式指定后端时：① 选择逻辑必须真的按该后端过滤（用 `enumerate_adapters(pinned)`，不能只靠 `request_adapter`——后者会返回默认适配器而静默忽略 pin）；② 该后端不可用时必须返回明确的错误（含 pin 值），**绝不允许静默替换为其它后端**；③ 但 `Instance` 创建时应用阶梯∪pin的并集，以保证各 rung 可达（`wgpu` 仅在 `Instance` 创建时应用 `WGPU_BACKEND`，若直接收窄会让回退路径不可达）。
+
+47. **🧩 profile 门控必须用 build.rs 别名，禁止手写合取表达式** — 当门控条件是“有 device profile（desktop/tablet/mobile）且非 mini/embedded”这种合取时，**必须**在 `build.rs` 定义 `full_widgets` 别名（`cargo:rustc-cfg` + `cargo:rustc-check-cfg`），所有模块声明与引用统一用 `#[cfg(full_widgets)]`。理由：同一合取在 100+ 处复制必然漂移。注意 `not(any(mini, embedded))` **不等价**于 `full_widgets`——在 `--no-default-features --features gpu` 这类无 device profile 的构建下前者为 true、后者为 false，因此不能拿它当替代。
+
+48. **🧩 验证命令必须与 CI 对齐** — `default = ["desktop"]` 使得 `cargo check --features embedded` 会同时激活两个**互斥** device profile，得到一个不存在的混合配置。验证任何 profile **必须**用 `--no-default-features --features <profile>`，与 CI（`.github/workflows/ci.yml`）完全一致。**命令本身也是判据**：错误命令会把不存在的配置报成真缺陷，导致虚假的“未闭环项”。
+
+49. **🧩 同名不同层的类型必须写清分层注释，禁止同名死代码** — 当两个模块有同名的 `BarChart`/`PieChart` 等类型时，必须在两处模块文档中明确各自层级与职责（谁是控件层、谁是绘图引擎层）；零消费者的模块不得以“看起来是另一个实现”的形式长期存在（违反原则 #4）。
+
+50. **🧩 跨 trait 适配器必须显式处理单位与退化输入** — 桥接两个不同抽象（如 `f32` 几何 ↔ `i32` 像素）时必须：① 统一用 `round()` 而非 `as i32` 截断；② 亚像素尺寸钳到最小可见值（否则静默消失）；③ 退化输入（空集合/零尺寸）静默忽略而非 panic；④ 缺失原图元（弧/椭圆）时用折线/多边形逼近并让精度自适应尺寸。
+
+51. **🧩 共享抽象必须能带来真实消除才接入，否则保留并写明原因** — 当某控件与共享引擎看似同类时，**必须先 grep 取证“到底重复了什么”**。若无重复（如 sparkline 无轴/网格/刻度/边距），**不接入**，并在模块文档写明为何，避免后人“好心”迁移而引入无收益的间接层（原则 #28）。判定依据是实测的重复代码，不是名字相似。

@@ -78,15 +78,15 @@ use std::collections::HashMap;
 use crate::core::Rect;
 
 use super::{Widget, WidgetKind};
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::DataGrid;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::table_widget::TableWidget;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_table::TreeTable;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_view::TreeView;
-#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_table::VirtualTable;
 
 pub mod types;
@@ -277,17 +277,17 @@ impl WidgetFactory {
             let _ = canonical_name;
             true
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(full_widgets)]
         match canonical_name {
-            #[cfg(not(feature = "mini"))]
+            #[cfg(full_widgets)]
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
-            #[cfg(not(feature = "mini"))]
+            #[cfg(full_widgets)]
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
-            #[cfg(not(feature = "mini"))]
+            #[cfg(full_widgets)]
             "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
-            #[cfg(not(feature = "mini"))]
+            #[cfg(full_widgets)]
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
-            #[cfg(not(feature = "mini"))]
+            #[cfg(full_widgets)]
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             _ => true,
         }

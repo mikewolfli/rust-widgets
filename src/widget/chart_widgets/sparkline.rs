@@ -1,8 +1,22 @@
-//! Sparkline widget — a compact inline sparkline chart.
+//! Sparkline widget — a compact inline chart with no axes or labels.
 //!
-//! A sparkline is a small, word-sized line chart without axes, typically used
-//! to show trends or patterns in a compact space. This widget draws a mini
-//! line connecting data values with an optional last-point highlight.
+//! A sparkline is a small, word-sized line chart without axes, typically used to
+//! show trends or patterns in a compact space. This widget draws a mini line
+//! connecting data values with an optional last-point highlight.
+//!
+//! # Why this does not use the shared chart engine
+//!
+//! Unlike [`BarChart`](super::bar_chart) and [`LineChart`](super::line_chart),
+//! a sparkline is *defined* by having no chart chrome: no plot margins, no axes,
+//! no grid, no tick labels, no legend. Those are exactly the pieces
+//! [`crate::chart`] provides, so routing through it would add an adapter hop and
+//! reserve margins the sparkline must not have — cost with no shared logic to
+//! show for it.
+//!
+//! The only overlap is value-range resolution, and even that differs: a
+//! sparkline pads its own min/max and always spans the full widget rectangle,
+//! whereas the engine fits values into a padded plot area. Keeping the two
+//! separate is deliberate, not an oversight.
 
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

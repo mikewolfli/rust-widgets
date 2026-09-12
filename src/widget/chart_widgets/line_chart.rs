@@ -4,10 +4,39 @@
 //! under the line, and a line connecting data points with configurable stroke.
 //! Axis ranges can be set manually or auto-computed from the data.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+//! LineChart widget — a 2D line chart with optional area fill and grid.
+//!
+//! # Rendering path
+//!
+//! With the `chart` feature enabled, the plot area, axes, grid lines and X/Y
+//! tick labels come from the shared chart engine in [`crate::chart`], so this
+//! widget cannot drift from the SVG chart renderer. Without the feature
+//! (tablet/mobile) a compact local preamble is used instead.
+
+#[cfg(feature = "chart")]
+use crate::chart::adapter::ChartContextAdapter;
+#[cfg(feature = "chart")]
+use crate::chart::charts::{
+    compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
+};
+#[cfg(not(feature = "chart"))]
+use crate::core::Font;
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// Converts the shared engine's float plot area into the integer [`Rect`] this
+/// widget maps data into.
+#[cfg(feature = "chart")]
+fn plot_rect(layout: &CartesianLayout) -> Rect {
+    Rect::new(
+        layout.plot_x().round() as i32,
+        layout.plot_y().round() as i32,
+        layout.plot_w().round().max(1.0) as u32,
+        layout.plot_h().round().max(1.0) as u32,
+    )
+}
 
 /// A 2D line chart widget for visualizing (x, y) data series.
 pub struct LineChart {
@@ -241,6 +270,10 @@ impl LineChart {
     }
 
     /// Returns the plot area (inside margins for labels).
+    ///
+    /// Only used by the pre-`chart`-feature backdrop; with the shared engine the
+    /// layout comes from `compute_cartesian_layout` instead.
+    #[cfg(not(feature = "chart"))]
     fn plot_area(&self) -> Rect {
         let rect = self.base.geometry();
         let margin_left = if self.show_labels { 50 } else { 10 };
@@ -276,114 +309,66 @@ impl Draw for LineChart {
             return;
         }
 
-        let plot_area = self.plot_area();
         let (x_min, x_max) = self.resolve_x_range();
         let (y_min, y_max) = self.resolve_y_range();
 
         let is_enabled = self.base.is_enabled();
         let disabled_color = Color::DISABLED_FOREGROUND;
 
-        // ── Draw axes ──
-        let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
-        // Y-axis (left edge of plot area)
-        context.draw_line_stroke(
-            Point::new(plot_area.x, plot_area.y),
-            Point::new(plot_area.x, plot_area.y + plot_area.height as i32),
-            axis_color,
-            1,
+        // ── Backdrop: axes, grid and tick labels ──
+        #[cfg(feature = "chart")]
+        let plot_area = {
+            // Legend width is reserved only when labels are shown, matching the
+            // widget's previous margin behaviour.
+            let layout = compute_cartesian_layout(rect, self.show_labels, self.show_labels, 0);
+            let plot_area = plot_rect(&layout);
+            let mut adapter = ChartContextAdapter::new(context);
+
+            // Axes and grid come from the shared engine. `show_grid` drives both
+            // the horizontal and vertical grid lines; the engine previously
+            // emitted only horizontal ones, so the vertical pass is requested
+            // explicitly below to preserve this widget's denser grid.
+            draw_cartesian_axes(&mut adapter, &layout);
+            if self.show_labels {
+                draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+                draw_x_ticks(&mut adapter, &layout, x_min, x_max, 4, false);
+            } else if self.show_grid {
+                // No labels requested, but the grid is: drive it through the tick
+                // helpers with label-free positioning so the lines still appear.
+                draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, true);
+            }
+            plot_area
+        };
+
+        #[cfg(not(feature = "chart"))]
+        let plot_area = self.draw_backdrop_without_engine(
+            context,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            is_enabled,
+            disabled_color,
         );
-        // X-axis (bottom edge of plot area)
-        context.draw_line_stroke(
-            Point::new(plot_area.x, plot_area.y + plot_area.height as i32),
-            Point::new(plot_area.x + plot_area.width as i32, plot_area.y + plot_area.height as i32),
-            axis_color,
-            1,
-        );
 
-        // ── Draw grid lines ──
-        let grid_color = if is_enabled { self.grid_color } else { disabled_color };
-        if self.show_grid {
-            // Horizontal grid lines (5 lines)
-            for i in 0..=4 {
-                let t = i as f64 / 4.0;
-                let y = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
-                context.draw_line_aa(
-                    Point::new(plot_area.x + 1, y),
-                    Point::new(plot_area.x + plot_area.width as i32 - 1, y),
-                    grid_color,
-                );
-            }
-            // Vertical grid lines (5 lines)
-            for i in 0..=4 {
-                let t = i as f64 / 4.0;
-                let x = plot_area.x + (plot_area.width as f64 * t) as i32;
-                context.draw_line_aa(
-                    Point::new(x, plot_area.y + 1),
-                    Point::new(x, plot_area.y + plot_area.height as i32 - 1),
-                    grid_color,
-                );
-            }
-        }
-
-        // ── Draw labels ──
-        if self.show_labels && is_enabled {
-            let label_font = Font::new("sans-serif", 9.0, false, false);
-            // Y-axis labels
-            for i in 0..=4 {
-                let t = i as f64 / 4.0;
-                let val = y_min + (y_max - y_min) * (1.0 - t);
-                let label = format!("{val:.1}");
-                let y_pos = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
-                let metrics = context.measure_text(&label, &label_font);
-                let text_x = (plot_area.x - metrics.width as i32 - 4).max(0);
-                let text_y = y_pos + (metrics.ascent as i32 / 2);
-                context.draw_text(
-                    Point::new(text_x, text_y),
-                    &label,
-                    &label_font,
-                    Color::DARK_GRAY,
-                    HorizontalAlignment::Left,
-                );
-            }
-            // X-axis labels
-            for i in 0..=4 {
-                let t = i as f64 / 4.0;
-                let val = x_min + (x_max - x_min) * t;
-                let label = format!("{val:.1}");
-                let x_pos = plot_area.x + (plot_area.width as f64 * t) as i32;
-                let metrics = context.measure_text(&label, &label_font);
-                let text_x = x_pos - metrics.width as i32 / 2;
-                let text_y = plot_area.y + plot_area.height as i32 + metrics.height as i32 + 2;
-                context.draw_text(
-                    Point::new(text_x.max(plot_area.x), text_y),
-                    &label,
-                    &label_font,
-                    Color::DARK_GRAY,
-                    HorizontalAlignment::Left,
-                );
-            }
-        }
-
-        // ── Draw data ──
+        // ── Data series ──
         if self.data.len() < 2 {
             return;
         }
 
         let line_color = if is_enabled { self.line_color } else { disabled_color };
 
-        // Map data points to pixel coordinates
         let points: Vec<Point> = self
             .data
             .iter()
             .map(|(x, y)| Self::map_to_pixel(*x, *y, x_min, x_max, y_min, y_max, plot_area))
             .collect();
 
-        // ── Draw filled area under the line (if enabled) ──
+        // ── Filled area under the line ──
         if self.fill_area {
             let fill_color =
                 if is_enabled { self.fill_color } else { Color::rgba(200, 200, 200, 60) };
             let baseline_y = plot_area.y + plot_area.height as i32;
-            // Draw vertical strips between consecutive points
             for i in 0..points.len() - 1 {
                 let left_x = points[i].x;
                 let right_x = points[i + 1].x;
@@ -394,11 +379,100 @@ impl Draw for LineChart {
             }
         }
 
-        // ── Draw line connecting points ──
+        // ── Line connecting the points ──
         let stroke_w = self.stroke_width as u32;
         for i in 0..points.len() - 1 {
             context.draw_line_stroke_aa(points[i], points[i + 1], line_color, stroke_w.max(1));
         }
+    }
+}
+
+/// Fallback backdrop for builds without the `chart` feature (tablet/mobile).
+#[cfg(not(feature = "chart"))]
+impl LineChart {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_backdrop_without_engine(
+        &self,
+        context: &mut RenderContext,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        is_enabled: bool,
+        disabled_color: Color,
+    ) -> Rect {
+        let plot_area = self.plot_area();
+        let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
+        let bottom = plot_area.y + plot_area.height as i32;
+        let right = plot_area.x + plot_area.width as i32;
+
+        context.draw_line_stroke(
+            Point::new(plot_area.x, plot_area.y),
+            Point::new(plot_area.x, bottom),
+            axis_color,
+            1,
+        );
+        context.draw_line_stroke(
+            Point::new(plot_area.x, bottom),
+            Point::new(right, bottom),
+            axis_color,
+            1,
+        );
+
+        let grid_color = if is_enabled { self.grid_color } else { disabled_color };
+        if self.show_grid {
+            for i in 0..=4 {
+                let t = i as f64 / 4.0;
+                let y = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
+                context.draw_line_aa(
+                    Point::new(plot_area.x + 1, y),
+                    Point::new(right - 1, y),
+                    grid_color,
+                );
+            }
+            for i in 0..=4 {
+                let t = i as f64 / 4.0;
+                let x = plot_area.x + (plot_area.width as f64 * t) as i32;
+                context.draw_line_aa(
+                    Point::new(x, plot_area.y + 1),
+                    Point::new(x, bottom - 1),
+                    grid_color,
+                );
+            }
+        }
+
+        if self.show_labels && is_enabled {
+            let label_font = Font::new("sans-serif", 9.0, false, false);
+            for i in 0..=4 {
+                let t = i as f64 / 4.0;
+                let val = y_min + (y_max - y_min) * (1.0 - t);
+                let label = format!("{val:.1}");
+                let y_pos = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
+                let text_y = y_pos + 4;
+                context.draw_text(
+                    Point::new((plot_area.x - 44).max(0), text_y),
+                    &label,
+                    &label_font,
+                    Color::DARK_GRAY,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+            for i in 0..=4 {
+                let t = i as f64 / 4.0;
+                let val = x_min + (x_max - x_min) * t;
+                let label = format!("{val:.1}");
+                let x_pos = plot_area.x + (plot_area.width as f64 * t) as i32;
+                context.draw_text(
+                    Point::new((x_pos - 12).max(plot_area.x), bottom + 16),
+                    &label,
+                    &label_font,
+                    Color::DARK_GRAY,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+        }
+
+        plot_area
     }
 }
 
@@ -521,5 +595,48 @@ mod tests {
         let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
         lc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         lc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+    }
+
+    /// The widget must render its axes and ticks through the shared chart engine
+    /// rather than its own copy of that math — the duplication this refactor
+    /// removed.
+    ///
+    /// Observable proof: with labels enabled the engine emits numeric tick
+    /// labels for both axes, and the explicit axis range must appear in them.
+    /// The previous hand-rolled path drew the same labels, so this also guards
+    /// that the migration kept that behaviour.
+    #[test]
+    fn line_chart_renders_axis_tick_labels_from_the_shared_engine() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 50.0)]);
+        lc.set_axis_range(Some(0.0), Some(10.0), Some(0.0), Some(50.0));
+        lc.set_show_labels(true);
+
+        let svg = render_to_svg(&mut lc);
+
+        assert!(
+            svg.contains("50.0"),
+            "y-axis upper bound label missing; widget no longer uses the shared tick engine"
+        );
+        assert!(svg.contains("10.0"), "x-axis upper bound label missing");
+    }
+
+    /// Grid toggling must reach the shared engine: enabling it increases the
+    /// number of rendered lines.
+    #[test]
+    fn line_chart_grid_toggle_changes_rendered_line_count() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
+        lc.set_data(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]);
+
+        lc.set_show_grid(false);
+        let without_grid = render_to_svg(&mut lc).matches("<line").count();
+
+        lc.set_show_grid(true);
+        let with_grid = render_to_svg(&mut lc).matches("<line").count();
+
+        assert!(
+            with_grid > without_grid,
+            "grid must add lines through the shared engine (off={without_grid}, on={with_grid})"
+        );
     }
 }

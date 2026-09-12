@@ -8,6 +8,57 @@ fn test_menu_config_default() {
     assert!(config.max_visible_items() >= 5);
     assert!(!config.has_user_overrides());
 }
+
+/// The config directory must follow the host OS convention, which is why it is
+/// derived from `dirs::config_dir()` instead of a hand-built `~/.config` path.
+///
+/// On macOS that means `~/Library/Application Support`, on Windows `%APPDATA%`,
+/// and only on Linux `~/.config`. Asserting the OS-specific expectation keeps a
+/// future edit from collapsing back to the Linux-only layout.
+#[test]
+fn default_config_dir_follows_host_convention() {
+    let dir = ConfigPersistence::new().config_dir().to_path_buf();
+
+    // The application folder name is ours; the parent is the OS's choice.
+    assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("rust-widgets"));
+
+    let Some(base) = dirs::config_dir() else {
+        return; // No home directory (unusual CI): the fallback path applies.
+    };
+    assert_eq!(dir.parent(), Some(base.as_path()));
+
+    // On macOS `dirs::config_dir()` is Library/Application Support, never a
+    // literal `.config` segment. This is the exact regression the old code had.
+    #[cfg(target_os = "macos")]
+    {
+        let text = dir.to_string_lossy();
+        assert!(
+            text.contains("Library/Application Support"),
+            "macOS config dir must use Application Support, got {text}"
+        );
+        assert!(!text.contains("/.config/"), "macOS must not use the Linux XDG path: {text}");
+    }
+}
+
+/// Hardware detection must route through the platform backend, not sniff the OS
+/// from this layer (principle #36/#37). The delegation is observable: whatever
+/// the backend reports for battery state is what the config ends up holding.
+#[test]
+fn hardware_detection_delegates_to_platform_backend() {
+    let backend_on_battery = crate::platform::platform_facts().is_on_battery();
+    let config = MenuConfig::new();
+    assert_eq!(
+        config.hardware_caps().on_battery,
+        backend_on_battery,
+        "on_battery must come from Platform::is_on_battery",
+    );
+
+    // A backend reporting `None` must fall back to the documented conservative
+    // default rather than a fabricated figure derived from this host.
+    let reported = crate::platform::platform_facts().total_memory_mb();
+    let expected_ram = reported.unwrap_or(4096);
+    assert_eq!(config.hardware_caps().system_ram_mb, expected_ram);
+}
 #[test]
 fn test_user_overrides() {
     let mut config = MenuConfig::new();

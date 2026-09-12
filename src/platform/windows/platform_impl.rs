@@ -160,6 +160,111 @@ impl Platform for WindowsPlatform {
         "WindowsPlatform"
     }
 
+    /// Reads installed physical memory via `GlobalMemoryStatusEx`.
+    fn total_memory_mb(&self) -> Option<u64> {
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+            // SAFETY: `MEMORYSTATUSEX` is a plain C struct; zeroing it and setting
+            // `dwLength` is exactly what the API contract requires. The call only
+            // writes into our own stack value.
+            let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+            status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+            if ok != 0 {
+                return Some(status.ullTotalPhys / (1024 * 1024));
+            }
+        }
+        None
+    }
+
+    /// Reports `true` when the system is running on battery power.
+    ///
+    /// `GetSystemPowerStatus` sets `ACLineStatus` to 0 while discharging; 1 means
+    /// AC, and 255 means "unknown", which is treated as AC so a desktop is never
+    /// mistaken for a laptop on battery.
+    fn is_on_battery(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winbase::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+            // SAFETY: `SYSTEM_POWER_STATUS` is a plain C struct filled by the call
+            // from our own stack value.
+            let mut status: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+            let ok = unsafe { GetSystemPowerStatus(&mut status) };
+            if ok != 0 {
+                return status.ACLineStatus == 0;
+            }
+        }
+        false
+    }
+
+    /// Samples this process's working set against total physical memory.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::processthreadsapi::GetCurrentProcess;
+            use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+            // SAFETY: both structs are plain C layouts owned by this stack frame.
+            let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+            counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let ok =
+                unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+            if ok != 0 {
+                let total = self.total_memory_mb()? as f64 * 1024.0 * 1024.0;
+                if total > 0.0 {
+                    let ratio = (counters.WorkingSetSize as f64 / total) as f32;
+                    return Some(ratio.clamp(0.0, 1.0));
+                }
+            }
+        }
+        None
+    }
+
+    /// CPU load has no cheap, stable Win32 query here, so this backend reports
+    /// `None` and the adaptive monitor keeps its default.
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        None
+    }
+
+    /// Hands the job file to the shell's `Print` verb via PowerShell.
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        let status = std::process::Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "Start-Process -FilePath '{}' -Verb Print -PassThru | Out-Null",
+                job_file.display()
+            ))
+            .status();
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        Err("system print command failed on windows".to_string())
+    }
+
+    /// The shell `print` verb is always available on Windows.
+    fn has_print_support(&self) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "print /? 2>NUL"])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Win32 primitives this backend constructs natively.
+    ///
+    /// `SpinBox` uses `UPDOWN_CLASS` (`msctls_updown32`), `ListView` uses
+    /// `SysListView32`, and `ScrollArea` a `WS_HSCROLL | WS_VSCROLL` child window.
+    /// Publishing them here lets control routing promote them to
+    /// `NativePreferred` without any `cfg(target_os)` in the routing table.
+    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    fn native_widget_kinds(&self) -> &'static [crate::widget::WidgetKind] {
+        use crate::widget::WidgetKind;
+        &[WidgetKind::SpinBox, WidgetKind::ListView, WidgetKind::ScrollArea]
+    }
+
     /// A self-drawn widget gets a child `HWND` of its own class; `WM_PAINT`
     /// blits a frame from `widget::runtime`. See `windows/canvas.rs`.
     ///

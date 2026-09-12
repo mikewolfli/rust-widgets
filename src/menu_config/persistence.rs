@@ -17,9 +17,25 @@ impl ConfigPersistence {
     pub fn with_dir(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }
+
+    /// The directory this manager reads and writes `menu_config.json` in.
+    ///
+    /// Exposed so hosts can display or log where settings live; it is also what
+    /// lets the platform-convention test verify the path without touching disk.
+    pub fn config_dir(&self) -> &std::path::Path {
+        &self.config_dir
+    }
+    /// Resolves the per-user config directory for this application.
+    ///
+    /// Uses [`dirs::config_dir`] rather than appending `.config` to the home
+    /// directory by hand: the correct location is OS-specific (macOS
+    /// `~/Library/Application Support`, Windows `%APPDATA%`, Linux
+    /// `$XDG_CONFIG_HOME` or `~/.config`), and hand-rolling the Linux convention
+    /// would scatter this app's config into the wrong place on the other two
+    /// platforms. The OS knowledge stays inside the `dirs` crate (principle #36).
     fn default_config_dir() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".config").join("rust-widgets")
+        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        base.join("rust-widgets")
     }
     fn ensure_dir(&self) -> io::Result<()> {
         if !self.config_dir.exists() {

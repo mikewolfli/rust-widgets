@@ -29,6 +29,12 @@
 //! }
 //! ```
 pub mod adapter;
+/// Backend degradation ladder (`Primary` → OpenGL ES → software).
+///
+/// Gated on `gpu` because the module names `wgpu` types directly; builds without
+/// that feature inherit no GPU path at all, so there is nothing to select.
+#[cfg(feature = "gpu")]
+pub mod backend_ladder;
 pub mod buffer_pool;
 pub mod manager;
 pub mod performance;
@@ -37,6 +43,11 @@ pub mod texture_atlas;
 pub use adapter::{
     AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector, GpuAdapter,
     GpuDeviceType, GpuType,
+};
+#[cfg(feature = "gpu")]
+pub use backend_ladder::{
+    backends_from_env, instance_backends, ladder_for_target, select_adapter_with_gl_fallback,
+    GpuBackendSelection, GpuBackendTier, BACKEND_LADDER,
 };
 pub use buffer_pool::{
     GpuBufferAllocation, GpuBufferPoolStats, GpuMemoryProfile, GpuStagingBufferPool,

@@ -1,7 +1,10 @@
 // Build script for rust_widgets.
 //
-// Detects required system libraries at build time and prints
-// helpful installation instructions if they are missing.
+// Two jobs:
+//   1. Declare the `full_widgets` cfg alias, which is the single source of truth
+//      for "this profile has the complete widget set". See `main` for why.
+//   2. Detect required system libraries at build time and print helpful
+//      installation instructions if they are missing.
 //
 // Feature-specific system dependencies:
 //   audio-output  → libasound2-dev (Linux), CoreAudio (macOS), WASAPI (Windows)
@@ -9,7 +12,41 @@
 //   video-codecs  → libavcodec-dev, ... (Linux), brew ffmpeg (macOS), vcpkg (Windows)
 
 fn main() {
+    declare_cfg_aliases();
     check_system_dependencies();
+}
+
+/// Declares derived cfgs so gating conditions cannot drift apart.
+///
+/// `full_widgets` is true exactly when the build has the complete widget set:
+/// a real device profile **and** neither of the stripped-down profiles. Every
+/// module in `widget/` that holds profile-specific widgets is gated on it,
+/// and so is every reference to those modules.
+///
+/// Before this alias existed, `widget/mod.rs` used
+/// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
+/// `capability/*.rs` importers used only `not(mini)`. The two conditions are not
+/// equivalent under `embedded`, so those imports resolved to missing modules and
+/// the `embedded` profile failed to compile with 370 errors. Having one name
+/// makes that class of mismatch unrepresentable.
+fn declare_cfg_aliases() {
+    // `cargo:rustc-check-cfg` keeps `--check-cfg` quiet on recent toolchains.
+    println!("cargo:rustc-check-cfg=cfg(full_widgets)");
+
+    let has_profile =
+        ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
+    let is_stripped = ["mini", "embedded"].iter().any(|feature| feature_enabled(feature));
+
+    if has_profile && !is_stripped {
+        println!("cargo:rustc-cfg=full_widgets");
+    }
+
+    // Re-run when any of the inputs change; Cargo tracks feature changes itself,
+    // but the explicit list documents the dependency and keeps `cargo build`
+    // correct for out-of-tree invocations that set the env vars directly.
+    for feature in ["desktop", "tablet", "mobile", "mini", "embedded"] {
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{}", feature.to_uppercase());
+    }
 }
 
 fn feature_enabled(name: &str) -> bool {

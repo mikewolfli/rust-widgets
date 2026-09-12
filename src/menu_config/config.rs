@@ -91,23 +91,11 @@ impl MenuConfig {
         }
     }
     fn detect_system_memory() -> u64 {
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-                for line in content.lines() {
-                    if let Some(rest) = line.strip_prefix("MemTotal:") {
-                        let val_str: String = rest
-                            .chars()
-                            .take_while(|c| c.is_ascii_digit() || c.is_whitespace())
-                            .collect();
-                        if let Ok(kb) = val_str.trim().parse::<u64>() {
-                            return kb / 1024;
-                        }
-                    }
-                }
-            }
-        }
-        4096
+        // The machine's physical memory is an OS fact, so it is asked of the
+        // active platform backend rather than read from `/proc` here. `None`
+        // means this backend cannot report it; the caller then falls back to the
+        // conservative 4096 MB assumption. See principle #36/#37.
+        crate::platform::platform_facts().total_memory_mb().unwrap_or(4096)
     }
     fn estimate_cpu_performance() -> u32 {
         match std::thread::available_parallelism() {
@@ -124,20 +112,10 @@ impl MenuConfig {
         }
     }
     fn detect_battery_status() -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
-                for entry in entries.flatten() {
-                    let status_path = entry.path().join("status");
-                    if let Ok(status) = std::fs::read_to_string(&status_path) {
-                        if status.trim() == "Discharging" {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
+        // Whether a battery is draining is an OS fact; ask the backend instead of
+        // walking `/sys/class/power_supply` from this layer. The trait default is
+        // `false`, which selects the non-throttled defaults. See principle #36/#37.
+        crate::platform::platform_facts().is_on_battery()
     }
     fn apply_hardware_defaults(&mut self) {
         match self.hardware_caps.performance_level {

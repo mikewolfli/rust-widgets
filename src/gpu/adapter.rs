@@ -29,22 +29,25 @@ impl GpuType {
     /// Detects the primary GPU type from system
     #[cfg(feature = "gpu-wgpu")]
     pub fn detect_primary() -> Option<Self> {
+        // Walk the same degradation ladder the renderer uses, so detection and
+        // rendering never disagree about which adapter is in play. Without this, a
+        // host that only offers GL would report "no GPU" here while the renderer
+        // happily ran on OpenGL ES.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: crate::gpu::backend_ladder::instance_backends(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
         });
         let adapter =
-            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })) {
-                Ok(a) => a,
-                Err(_) => return None,
+            match pollster::block_on(crate::gpu::backend_ladder::select_adapter_with_gl_fallback(
+                &instance,
+                wgpu::PowerPreference::HighPerformance,
+                None,
+            )) {
+                Some((adapter, _tier)) => adapter,
+                None => return None,
             };
         let info = adapter.get_info();
         Some(GpuType::from(GpuDeviceType::from(info.device_type)))
@@ -232,6 +235,37 @@ impl AdapterInfo {
     pub fn supports_high_quality(&self) -> bool {
         self.device_type.performance_tier() >= 3
     }
+
+    /// The degradation tier this adapter belongs to.
+    ///
+    /// Lets a host ask whether it is running on the preferred primary backend or
+    /// on the OpenGL ES / software fallback, and warn accordingly. The mapping is
+    /// derived from the `backend` string because `AdapterInfo` is a plain data
+    /// type that also exists without the `gpu-wgpu` feature; the string values
+    /// come from `format!("{:?}", wgpu::Backend)` in [`Self::from_wgpu`].
+    ///
+    /// Gated on `gpu`: the tier vocabulary lives in the `backend_ladder` module,
+    /// which is itself only compiled when `wgpu` is available.
+    #[cfg(feature = "gpu")]
+    pub fn backend_tier(&self) -> crate::gpu::backend_ladder::GpuBackendTier {
+        use crate::gpu::backend_ladder::GpuBackendTier;
+        match self.backend.as_str() {
+            // Primary tier: the APIs `wgpu` supports first-class.
+            "Vulkan" | "Metal" | "Dx12" | "BrowserWebGpu" => GpuBackendTier::Primary,
+            // GL covers OpenGL ES (Linux/Android), WebGL (web) and desktop
+            // OpenGL through ANGLE (Windows/macOS).
+            "Gl" => GpuBackendTier::OpenGlEs,
+            // Everything else — `Noop`, or the synthetic "CPU" tag set by
+            // `cpu_fallback` — is the terminal software rung.
+            _ => GpuBackendTier::Software,
+        }
+    }
+
+    /// Whether this adapter is running below the primary backend tier.
+    #[cfg(feature = "gpu")]
+    pub fn is_degraded_backend(&self) -> bool {
+        self.backend_tier().is_degraded()
+    }
     /// Returns true if this adapter is suitable for the target quality
     pub fn is_suitable_for_quality(&self, quality: crate::quality::QualityLevel) -> bool {
         match quality {
@@ -278,16 +312,23 @@ impl AdapterSelector {
         self
     }
     /// Enumerates all available adapters with wgpu
+    ///
+    /// Uses [`instance_backends`](crate::gpu::backend_ladder::instance_backends)
+    /// rather than `Backends::all()` so enumeration covers exactly the backend
+    /// tiers the library knows how to use — every rung of the degradation ladder,
+    /// plus any explicit `WGPU_BACKEND` pin. This keeps discovery and selection
+    /// consistent: an adapter that enumeration reports can always be selected.
     #[cfg(feature = "gpu-wgpu")]
     pub async fn enumerate_adapters(&self) -> Vec<AdapterInfo> {
+        let backends = crate::gpu::backend_ladder::instance_backends();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
         });
-        let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+        let adapters = instance.enumerate_adapters(backends).await;
         adapters
             .into_iter()
             .map(|adapter| {
@@ -303,7 +344,7 @@ impl AdapterSelector {
         compatible_surface: Option<&wgpu::Surface<'static>>,
     ) -> Result<AdapterInfo, AdapterSelectionError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: crate::gpu::backend_ladder::instance_backends(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
@@ -459,7 +500,12 @@ impl fmt::Display for AdapterSelectionError {
 }
 #[cfg(not(feature = "mini"))]
 impl std::error::Error for AdapterSelectionError {}
-/// Detects if running in a browser environment with forced integrated GPU
+/// Detects if running in a browser environment with forced integrated GPU.
+///
+/// This keys off the compilation *target architecture*, not the operating system:
+/// wasm32 code always runs inside a browser, where discrete adapters are not
+/// reachable. That is a property of the architecture, so principle #36 (which
+/// bans OS branching outside `src/platform/`) does not apply.
 #[cfg(target_arch = "wasm32")]
 pub fn detect_browser_forced_integrated_gpu() -> bool {
     // In WASM/browser, we often can't access discrete GPU due to browser restrictions
@@ -469,34 +515,6 @@ pub fn detect_browser_forced_integrated_gpu() -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn detect_browser_forced_integrated_gpu() -> bool {
     false // Not in browser
-}
-/// Detects Windows browser environment that forces integrated GPU
-#[cfg(all(target_os = "windows", not(feature = "mini"), not(feature = "embedded")))]
-pub fn detect_windows_browser_forced_igpu() -> Option<String> {
-    use std::env;
-    // Check if we're in a browser environment on Windows
-    // Common browser executables that force iGPU
-    let browser_processes = ["chrome.exe", "firefox.exe", "msedge.exe", "opera.exe"];
-    if let Ok(parent) = env::var("RW_PARENT_PROCESS") {
-        for browser in &browser_processes {
-            if parent.to_lowercase().contains(browser) {
-                return Some(format!("Detected browser: {}", browser));
-            }
-        }
-    }
-    // Check for Electron apps
-    if let Ok(electron) = env::var("RW_ELECTRON_APP") {
-        if !electron.is_empty() {
-            return Some(format!("Detected Electron app: {}", electron));
-        }
-    }
-    None
-}
-/// No browser-heritage detection in the alloc-free `mini`/`embedded` profiles
-/// (no `std::env`), or on non-Windows hosts.
-#[cfg(not(all(target_os = "windows", not(feature = "mini"), not(feature = "embedded"))))]
-pub fn detect_windows_browser_forced_igpu() -> Option<String> {
-    None
 }
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
@@ -545,6 +563,44 @@ mod tests {
         assert_eq!(GpuType::Discrete.description(), "Discrete GPU");
         assert_eq!(GpuType::Integrated.description(), "Integrated GPU");
         assert_eq!(GpuType::Cpu.description(), "CPU Software Rendering");
+    }
+
+    /// `backend_tier` must classify every backend string `from_wgpu` can produce,
+    /// including the synthetic `"CPU"` tag, so a caller never gets a stale answer
+    /// after a fallback.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn adapter_info_backend_tier_covers_every_backend_label() {
+        use crate::gpu::backend_ladder::GpuBackendTier;
+
+        let with_backend = |backend: &str| AdapterInfo {
+            device_type: GpuDeviceType::IntegratedGpu,
+            vendor: "0000".to_string(),
+            name: "test".to_string(),
+            backend: backend.to_string(),
+            driver: String::new(),
+            driver_version: 0,
+            is_selected: true,
+        };
+
+        // The labels `format!("{:?}", wgpu::Backend)` emits for each tier.
+        for primary in ["Vulkan", "Metal", "Dx12", "BrowserWebGpu"] {
+            assert_eq!(
+                with_backend(primary).backend_tier(),
+                GpuBackendTier::Primary,
+                "{primary} must be the primary tier"
+            );
+            assert!(!with_backend(primary).is_degraded_backend());
+        }
+
+        assert_eq!(with_backend("Gl").backend_tier(), GpuBackendTier::OpenGlEs);
+        assert!(with_backend("Gl").is_degraded_backend());
+
+        // The CPU fallback sets `backend = "CPU"`, and `Noop` is the wgpu label
+        // for a no-op backend — both sit on the terminal software rung.
+        assert_eq!(AdapterInfo::cpu_fallback().backend_tier(), GpuBackendTier::Software);
+        assert!(AdapterInfo::cpu_fallback().is_degraded_backend());
+        assert_eq!(with_backend("Noop").backend_tier(), GpuBackendTier::Software);
     }
 }
 /// GPU adapter with detection capabilities

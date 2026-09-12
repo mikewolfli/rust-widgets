@@ -164,3 +164,104 @@ fn embedded_profile_combo_list_state_event_data_roundtrip() {
         Some(WidgetTriggerEvent { widget_id: list, kind: WidgetTriggerKind::SelectionChanged })
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Platform isolation contract (principle #35–#37)
+//
+// OS facts must be answered by the backend through semantic `Platform` methods,
+// never sniffed by a middle layer. These tests pin the default behavior so a
+// backend cannot silently start fabricating values.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A backend with no OS to interrogate must say "unknown", not invent a number.
+/// A fabricated figure would make the adaptive layers size caches against a lie.
+#[test]
+fn stub_reports_unknown_platform_facts_honestly() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert_eq!(platform.total_memory_mb(), None);
+    assert_eq!(platform.process_memory_utilization(), None);
+    assert_eq!(platform.process_cpu_utilization(), None);
+}
+
+/// `is_on_battery` defaults to `false` on backends that cannot tell. That is the
+/// safe direction: a wrong `true` would strip animations from a plugged-in host.
+#[test]
+fn battery_unknown_defaults_to_mains_power() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert!(!platform.is_on_battery());
+}
+
+/// A backend with no spooler must refuse the job rather than report success, so
+/// the caller can surface the failure instead of pretending it printed.
+#[test]
+fn stub_without_spooler_refuses_print_job() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert!(!platform.has_print_support());
+    let result = platform.spawn_print_job(std::path::Path::new("/tmp/does-not-matter.txt"));
+    assert!(result.is_err(), "a backend with no spooler must report the gap, not fake success");
+}
+
+/// Control routing asks the backend which native primitives exist instead of
+/// testing `cfg(target_os)`. A backend publishing nothing therefore yields the
+/// global policy verdict for every kind, including the Win32-only ones.
+#[test]
+fn native_widget_kinds_defaults_to_empty_so_routing_uses_global_policy() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert!(platform.native_widget_kinds().is_empty());
+}
+
+/// Guards the spooler probe against an exit-code false negative.
+///
+/// CUPS `lp` rejects `--version` with status 1 while still printing usage, so a
+/// check keyed on `status.success()` reported "no spooler" on machines that had
+/// one. Presence is proven by the command being spawnable, and this test pins
+/// that `lp` (which ships on every macOS and most Linux installs) is detected
+/// when it exists on `PATH`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn unix_print_probe_detects_cups_client_despite_nonzero_version_exit() {
+    let lp_exists = std::process::Command::new("lp").arg("--help").output().is_ok();
+    let lpr_exists = std::process::Command::new("lpr").arg("--help").output().is_ok();
+    if lp_exists || lpr_exists {
+        assert!(
+            crate::platform::types::unix_print_clients_available(),
+            "a spooler client exists on PATH but was reported missing"
+        );
+    }
+}
+
+/// A backend with no engine must report `None` so `src/web/` uses the simulated
+/// path instead of trying to drive a native view that does not exist.
+#[test]
+fn stub_reports_no_native_web_engine() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert!(platform.create_web_engine().is_none());
+}
+
+/// Shortcut notation is asked of the backend rather than decided by `cfg!` in the
+/// shortcut layer. The stub inherits the build-target default, and on an Apple
+/// host that must be the AppKit symbol style.
+#[test]
+fn shortcut_style_follows_the_backend_not_a_middle_layer_cfg() {
+    use crate::shortcut::PlatformShortcutStyle;
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    let expected = if cfg!(any(target_os = "macos", target_os = "ios")) {
+        PlatformShortcutStyle::Mac
+    } else {
+        PlatformShortcutStyle::Desktop
+    };
+    assert_eq!(platform.shortcut_style(), expected);
+}
+
+/// The format used for menu labels must agree with the backend's declared style,
+/// so `Shortcut::primary` renders `⌘Z` or `Ctrl+Z` as the host expects.
+#[test]
+fn format_shortcut_uses_the_backend_style() {
+    use crate::shortcut::{format_shortcut_for_platform, Key, Shortcut};
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    let shortcut = Shortcut::primary(Key::Z);
+    assert_eq!(
+        platform.format_shortcut(&shortcut),
+        format_shortcut_for_platform(&shortcut, platform.shortcut_style()),
+    );
+}

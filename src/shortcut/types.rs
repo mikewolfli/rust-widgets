@@ -613,12 +613,15 @@ pub enum PlatformShortcutStyle {
 
 impl PlatformShortcutStyle {
     /// The style used by the operating system the library is compiled for.
+    ///
+    /// This is the fallback for backends that do not declare a style of their
+    /// own; the authoritative choice is [`Platform::shortcut_style`]. The
+    /// compile-target mapping itself lives in `src/platform/`, which is the only
+    /// layer allowed to know which OS is being built for (principle #36).
+    ///
+    /// [`Platform::shortcut_style`]: crate::platform::types::Platform::shortcut_style
     pub const fn current() -> Self {
-        if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
-            Self::Mac
-        } else {
-            Self::Desktop
-        }
+        crate::platform::types::compile_target_shortcut_style()
     }
 
     /// Renders `shortcut` in this platform's notation.

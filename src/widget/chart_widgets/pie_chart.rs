@@ -177,7 +177,18 @@ impl PieChart {
         )
     }
 
-    /// Fills a pie sector (center to two arc points) using scanline rasterization.
+    /// Fills a pie/donut sector.
+    ///
+    /// Geometry comes from the shared `sector_polygon` builder in the chart
+    /// engine, so this widget and the SVG chart renderer approximate arcs with
+    /// the same vertex ring instead of maintaining two rasterizers.
+    ///
+    /// This widget rasterizes by scanline because it targets `RenderContext`
+    /// directly; the engine hands back the polygon, and the triangle fan below
+    /// only converts that ring into fills — it no longer computes angles.
+    ///
+    /// Without the `chart` feature (tablet/mobile) the ring is built locally from
+    /// the same angular stepping, so the visual result is identical.
     fn fill_pie_sector(
         context: &mut RenderContext,
         center: Point,
@@ -187,29 +198,94 @@ impl PieChart {
         inner_radius: f32,
         color: Color,
     ) {
-        let segments = 60;
-        let total_angle = end_angle - start_angle;
-        if total_angle.abs() < 0.001 || outer_radius <= 0.0 {
+        let sweep = end_angle - start_angle;
+        if sweep.abs() < 0.001 || outer_radius <= 0.0 {
             return;
         }
-        let step = total_angle / segments as f32;
 
-        let mut prev_outer = Self::point_on_circle(center, outer_radius, start_angle);
-        let mut prev_inner = Self::point_on_circle(center, inner_radius, start_angle);
+        // Angular resolution scales with the swept arc so a wide slice stays
+        // smooth and a sliver stays cheap.
+        let steps = (sweep.abs() * outer_radius / 6.0).ceil() as u32;
+        #[cfg(feature = "chart")]
+        let ring = crate::chart::charts::sector_polygon(
+            center,
+            outer_radius,
+            inner_radius,
+            start_angle,
+            end_angle,
+            steps,
+        );
+        #[cfg(not(feature = "chart"))]
+        let ring = Self::sector_polygon_local(
+            center,
+            outer_radius,
+            inner_radius,
+            start_angle,
+            end_angle,
+            steps,
+        );
 
-        for i in 1..=segments {
-            let angle = start_angle + step * i as f32;
-            let curr_outer = Self::point_on_circle(center, outer_radius, angle);
-            let curr_inner = Self::point_on_circle(center, inner_radius, angle);
-
-            // Fill the quad as two triangles: (prev_outer, curr_outer, prev_inner)
-            // and (curr_outer, curr_inner, prev_inner)
-            Self::fill_triangle_scanline(context, prev_outer, curr_outer, prev_inner, color);
-            Self::fill_triangle_scanline(context, curr_outer, curr_inner, prev_inner, color);
-
-            prev_outer = curr_outer;
-            prev_inner = curr_inner;
+        if ring.len() < 3 {
+            return;
         }
+
+        if inner_radius > 0.0 {
+            // Donut: the ring is outer-arc then inner-arc (reversed). Fill it as
+            // a strip of quads spanning the two arcs.
+            let half = ring.len() / 2;
+            let (outer, inner) = ring.split_at(half);
+            // `inner` is already reversed, so index i of each pairs up.
+            for i in 0..outer.len().saturating_sub(1) {
+                let (o0, o1) = (outer[i], outer[i + 1]);
+                let (i0, i1) = (
+                    inner.get(i).copied().unwrap_or(inner[0]),
+                    inner.get(i + 1).copied().unwrap_or(*inner.last().unwrap_or(&inner[0])),
+                );
+                Self::fill_triangle_scanline(context, o0, o1, i0, color);
+                Self::fill_triangle_scanline(context, o1, i1, i0, color);
+            }
+        } else {
+            // Solid wedge: fan the arc against the apex (the final vertex).
+            let apex = *ring.last().unwrap_or(&center);
+            for pair in ring[..ring.len() - 1].windows(2) {
+                Self::fill_triangle_scanline(context, pair[0], pair[1], apex, color);
+            }
+        }
+    }
+
+    /// Builds the sector vertex ring for builds without the `chart` feature.
+    ///
+    /// Mirrors `chart::charts::sector_polygon` exactly (outer arc, then inner arc
+    /// reversed, or a single apex for a solid wedge) so tablet/mobile render the
+    /// same shape as profiles that use the shared engine.
+    #[cfg(not(feature = "chart"))]
+    fn sector_polygon_local(
+        center: Point,
+        outer_radius: f32,
+        inner_radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+        steps: u32,
+    ) -> Vec<Point> {
+        let sweep = end_angle - start_angle;
+        if sweep.abs() < f32::EPSILON || outer_radius <= 0.0 {
+            return Vec::new();
+        }
+        let steps = steps.clamp(3, 180);
+        let mut vertices = Vec::with_capacity((steps as usize + 1) * 2);
+        for step in 0..=steps {
+            let angle = start_angle + sweep * (step as f32 / steps as f32);
+            vertices.push(Self::point_on_circle(center, outer_radius, angle));
+        }
+        if inner_radius > 0.0 {
+            for step in (0..=steps).rev() {
+                let angle = start_angle + sweep * (step as f32 / steps as f32);
+                vertices.push(Self::point_on_circle(center, inner_radius, angle));
+            }
+        } else {
+            vertices.push(center);
+        }
+        vertices
     }
 
     /// Fills a triangle using scanline rasterization (each row is a 1px fill_rect).
@@ -506,5 +582,46 @@ mod tests {
         let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
         pc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+    }
+
+    /// Sector geometry must come from the shared engine, and the fill must still
+    /// produce real pixels — not just avoid panicking.
+    ///
+    /// The rendered output must contain filled rows (`<rect>` scanlines) for both
+    /// slices, proving the polygon ring is being converted into coverage rather
+    /// than silently dropped by the refactor.
+    #[test]
+    fn pie_chart_sector_fill_produces_pixels() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
+        pc.add_slice(PieSlice::new("A", 50.0, Color::RED));
+        pc.add_slice(PieSlice::new("B", 50.0, Color::BLUE));
+        pc.set_show_labels(false);
+        pc.set_show_percentages(false);
+
+        let svg = render_to_svg(&mut pc);
+
+        // Scanline fills are emitted as `<rect>` elements; a dropped sector would
+        // leave none.
+        let scanlines = svg.matches("<rect").count();
+        assert!(
+            scanlines > 50,
+            "expected the two sectors to be rasterized into many scanlines, got {scanlines}"
+        );
+    }
+
+    /// Donut mode must fill the ring between the two radii, which exercises the
+    /// inner-arc branch of the shared polygon builder.
+    #[test]
+    fn pie_chart_donut_mode_produces_ring_pixels() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
+        pc.add_slice(PieSlice::new("A", 100.0, Color::RED));
+        pc.set_donut_mode(true);
+        pc.set_donut_ratio(0.5);
+        pc.set_show_labels(false);
+        pc.set_show_percentages(false);
+
+        let svg = render_to_svg(&mut pc);
+        let scanlines = svg.matches("<rect").count();
+        assert!(scanlines > 50, "donut ring should still rasterize, got {scanlines}");
     }
 }

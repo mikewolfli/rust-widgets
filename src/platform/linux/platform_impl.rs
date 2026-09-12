@@ -36,6 +36,107 @@ impl Platform for LinuxPlatform {
         PlatformFamily::Desktop
     }
 
+    /// Reads `MemTotal` from `/proc/meminfo` — the Linux kernel's own accounting
+    /// of installed physical memory.
+    fn total_memory_mb(&self) -> Option<u64> {
+        let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in content.lines() {
+            let Some(rest) = line.strip_prefix("MemTotal:") else {
+                continue;
+            };
+            let kb = rest.trim().trim_end_matches("kB").trim().parse::<u64>().ok()?;
+            return Some(kb / 1024);
+        }
+        None
+    }
+
+    /// Walks `/sys/class/power_supply` for a battery reporting `Discharging`.
+    ///
+    /// Machines with no battery (the common desktop/server case) simply find no
+    /// matching entry and report `false`.
+    fn is_on_battery(&self) -> bool {
+        let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let status_path = entry.path().join("status");
+            if let Ok(status) = std::fs::read_to_string(&status_path) {
+                if status.trim() == "Discharging" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Samples RSS/VmSize for this process from `/proc/self/status`.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let mut vmrss_kb: u64 = 0;
+        let mut vmsize_kb: u64 = 0;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                vmrss_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            } else if let Some(rest) = line.strip_prefix("VmSize:") {
+                vmsize_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            }
+        }
+        if vmsize_kb == 0 {
+            return None;
+        }
+        Some((vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0))
+    }
+
+    /// Estimates CPU load as thread count over twice the available cores.
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            let Some(rest) = line.strip_prefix("Threads:") else {
+                continue;
+            };
+            let threads = rest.trim().parse::<f32>().ok()?;
+            // A well-utilized 4-core system runs roughly 8 active threads.
+            let cores = std::thread::available_parallelism().map(|n| n.get() as f32).unwrap_or(4.0);
+            return Some((threads / (cores * 2.0)).clamp(0.0, 1.0));
+        }
+        None
+    }
+
+    /// Submits via `lpr`, falling back to `lp`.
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        if let Ok(status) = std::process::Command::new("lpr").arg(job_file).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        if let Ok(status) = std::process::Command::new("lp").arg(job_file).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        Err("no available system print command succeeded (tried: lpr, lp)".to_string())
+    }
+
+    /// `lp` or `lpr` must be present for the system print backend to work.
+    fn has_print_support(&self) -> bool {
+        crate::platform::types::unix_print_clients_available()
+    }
+
+    /// Hands back a real `webkit2gtk::WebView` wrapper when the `webkit-engine`
+    /// feature is on and GTK can create one.
+    ///
+    /// `None` on a headless host or a build without the feature, which tells
+    /// `src/web/` to use its simulated navigation path.
+    #[cfg(all(
+        target_os = "linux",
+        feature = "webkit-engine",
+        not(any(feature = "mini", feature = "embedded"))
+    ))]
+    fn create_web_engine(&self) -> Option<Box<dyn crate::platform::types::NativeWebEngine>> {
+        super::webkit_engine::WebKitEngine::new()
+            .map(|engine| Box::new(engine) as Box<dyn crate::platform::types::NativeWebEngine>)
+    }
+
     /// A self-drawn widget gets a `gtk::DrawingArea` inside the window's content
     /// container; its `draw` signal blits a frame from `widget::runtime`.
     /// See `linux/canvas.rs`.

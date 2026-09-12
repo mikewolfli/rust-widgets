@@ -17,6 +17,74 @@ impl Platform for HarmonyPlatform {
         PlatformFamily::Desktop
     }
 
+    /// Reads `MemTotal` from `/proc/meminfo`; HarmonyOS runs on a Linux-derived
+    /// kernel that provides it.
+    fn total_memory_mb(&self) -> Option<u64> {
+        let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in content.lines() {
+            let Some(rest) = line.strip_prefix("MemTotal:") else {
+                continue;
+            };
+            let kb = rest.trim().trim_end_matches("kB").trim().parse::<u64>().ok()?;
+            return Some(kb / 1024);
+        }
+        None
+    }
+
+    /// Walks `/sys/class/power_supply` for a battery reporting `Discharging`.
+    fn is_on_battery(&self) -> bool {
+        let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let status_path = entry.path().join("status");
+            if let Ok(status) = std::fs::read_to_string(&status_path) {
+                if status.trim() == "Discharging" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Samples RSS/VmSize for this process from `/proc/self/status`.
+    fn process_memory_utilization(&self) -> Option<f32> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let mut vmrss_kb: u64 = 0;
+        let mut vmsize_kb: u64 = 0;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                vmrss_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            } else if let Some(rest) = line.strip_prefix("VmSize:") {
+                vmsize_kb = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            }
+        }
+        if vmsize_kb == 0 {
+            return None;
+        }
+        Some((vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0))
+    }
+
+    /// Estimates CPU load as thread count over twice the available cores.
+    fn process_cpu_utilization(&self) -> Option<f32> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            let Some(rest) = line.strip_prefix("Threads:") else {
+                continue;
+            };
+            let threads = rest.trim().parse::<f32>().ok()?;
+            let cores = std::thread::available_parallelism().map(|n| n.get() as f32).unwrap_or(4.0);
+            return Some((threads / (cores * 2.0)).clamp(0.0, 1.0));
+        }
+        None
+    }
+
+    /// HarmonyOS printing is served by the ArkUI print service, which this state
+    /// backend does not bind; it reports the gap instead of faking success.
+    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
+        Err("HarmonyOS printing requires the ArkUI print service (not bound)".to_string())
+    }
+
     /// Capabilities published by the Harmony backend.
     ///
     /// The backend is state-driven: widget state, layout, events and menu

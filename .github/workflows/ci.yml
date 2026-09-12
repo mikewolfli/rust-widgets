@@ -219,6 +219,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: WASM check
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
+      # The JavaScript engine pulls `rand` 0.8 -> `getrandom` 0.2, which refuses to
+      # build for wasm32 without its entropy backend enabled. `Cargo.toml` turns
+      # that feature on for this target, and this step keeps the combination from
+      # regressing silently: the plain `wasm` build above does not cover it.
+      - name: WASM check (with JavaScript engine)
+        run: >-
+          cargo check --target wasm32-unknown-unknown
+          --no-default-features --features wasm,js-engine
 
   android-cross-check:
     name: Android NDK cross-compile check
