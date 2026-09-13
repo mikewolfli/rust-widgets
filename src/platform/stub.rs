@@ -5,7 +5,7 @@
 use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::core::{ObjectId, PlatformFamily};
-use crate::platform::state::BackendState;
+use crate::platform::state::{BackendState, WindowStateRecord};
 use crate::platform::types::*;
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
@@ -185,7 +185,11 @@ impl Platform for StubPlatform {
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.state.create_widget(StubHandleKind::Window, title, x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::Window, title, x, y, width, height);
+        // Mark this record as a window and seed the state a fresh OS window has:
+        // restored, visible, windowed, resizable and decorated.
+        self.state.init_window_state(id, WindowStateRecord::new_window());
+        id
     }
 
     fn create_button(
@@ -1185,6 +1189,32 @@ impl Platform for StubPlatform {
 
     fn widget_max_length(&self, widget_id: ObjectId) -> Option<u32> {
         self.state.max_length(widget_id)
+    }
+
+    fn set_window_state(&self, widget_id: ObjectId, flag: WindowStateFlag, on: bool) -> bool {
+        // Only a window has window state; the state record is `None` for every
+        // other widget, so a control honestly reports refusal here.
+        self.state.set_window_state(widget_id, flag, on)
+    }
+
+    fn is_window_in_state(&self, widget_id: ObjectId, flag: WindowStateFlag) -> Option<bool> {
+        self.state.window_state(widget_id, flag)
+    }
+
+    fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        self.state.set_window_min_size(widget_id, width, height)
+    }
+
+    fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        self.state.window_min_size(widget_id)
+    }
+
+    fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
+        self.state.set_window_icon(widget_id, path)
+    }
+
+    fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
+        self.state.window_icon(widget_id)
     }
 
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {

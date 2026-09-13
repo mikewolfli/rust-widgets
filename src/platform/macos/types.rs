@@ -360,6 +360,26 @@ impl MacOSPlatform {
             | NSWindowStyleMask::NSResizableWindowMask
             | NSWindowStyleMask::NSMiniaturizableWindowMask
     }
+
+    /// Returns an `NSWindow` style mask with `bit` set or cleared, preserving
+    /// every other bit.
+    ///
+    /// `setStyleMask:` replaces the whole mask, so toggling a single style
+    /// (resizable, titled) requires reading the current value first — otherwise
+    /// the window would silently lose its other attributes.
+    ///
+    /// # Safety
+    ///
+    /// `window` must be a live `NSWindow` and the caller must be on the AppKit
+    /// main thread.
+    pub(crate) unsafe fn style_mask_with(window: id, bit: u64, on: bool) -> u64 {
+        let current: u64 = msg_send![window, styleMask];
+        if on {
+            current | bit
+        } else {
+            current & !bit
+        }
+    }
     /// Records a menu item's accelerator text.
     ///
     /// Called from both the native and the state-only path of `menu_add_item` so

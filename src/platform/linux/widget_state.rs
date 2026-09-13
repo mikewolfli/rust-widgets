@@ -515,8 +515,174 @@ impl LinuxPlatform {
                     return Some(if limit < 0 { u32::MAX } else { limit as u32 });
                 }
             }
+            // A window is not in `native.widgets`; fall through to the state model.
+            if native.windows.contains_key(&widget_id) {
+                return self.state.max_length(widget_id);
+            }
         }
         self.state.max_length(widget_id)
+    }
+
+    pub(crate) fn set_window_state_impl(
+        &self,
+        widget_id: u64,
+        flag: crate::platform::WindowStateFlag,
+        on: bool,
+    ) -> bool {
+        use crate::platform::WindowStateFlag;
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return false;
+        }
+        self.state.set_window_state(widget_id, flag, on);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(window) = native.windows.get(&widget_id) {
+                match flag {
+                    WindowStateFlag::Maximized => {
+                        if on {
+                            window.maximize();
+                        } else {
+                            window.unmaximize();
+                        }
+                    }
+                    WindowStateFlag::Minimized => {
+                        if on {
+                            window.iconify();
+                        } else {
+                            window.deiconify();
+                        }
+                    }
+                    WindowStateFlag::Fullscreen => {
+                        if on {
+                            window.fullscreen();
+                        } else {
+                            window.unfullscreen();
+                        }
+                    }
+                    WindowStateFlag::Resizable => window.set_resizable(on),
+                    WindowStateFlag::Decorated => window.set_decorated(on),
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn is_window_in_state_impl(
+        &self,
+        widget_id: u64,
+        flag: crate::platform::WindowStateFlag,
+    ) -> Option<bool> {
+        use crate::platform::WindowStateFlag;
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(window) = native.windows.get(&widget_id) {
+                let value = match flag {
+                    WindowStateFlag::Maximized => window.is_maximized(),
+                    // GTK has no `is_iconified`; `gdk::Window::state()` would report
+                    // it but requires a realized GdkWindow. The state model is the
+                    // honest answer available without that round-trip.
+                    WindowStateFlag::Minimized => return self.state.window_state(widget_id, flag),
+                    // GTK 0.18 exposes `fullscreen()`/`unfullscreen()` but **no**
+                    // `is_fullscreen()`, so the write is mirrored and read back from
+                    // the state model. Do not invent a GdkWindow query here.
+                    WindowStateFlag::Fullscreen => return self.state.window_state(widget_id, flag),
+                    WindowStateFlag::Resizable => window.is_resizable(),
+                    WindowStateFlag::Decorated => window.is_decorated(),
+                };
+                return Some(value);
+            }
+        }
+        self.state.window_state(widget_id, flag)
+    }
+
+    pub(crate) fn set_window_min_size_impl(&self, widget_id: u64, width: u32, height: u32) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return false;
+        }
+        self.state.set_window_min_size(widget_id, width, height);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            use gdk::WindowHints;
+            let native = self.native.lock_guard();
+            if let Some(window) = native.windows.get(&widget_id) {
+                // `set_geometry_hints` replaces the whole hint set, so merge the new
+                // minimum into the window's current hints instead of passing only
+                // MIN_SIZE — otherwise a later call would drop the maximum, aspect
+                // or increment constraints that were set before.
+                let hints = gdk::Geometry::new(
+                    width as i32,
+                    height as i32,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    gdk::Gravity::NorthWest,
+                );
+                window.set_geometry_hints(
+                    None::<&gtk::Widget>,
+                    Some(&hints),
+                    WindowHints::MIN_SIZE,
+                );
+            }
+        }
+        true
+    }
+
+    pub(crate) fn window_min_size_impl(&self, widget_id: u64) -> Option<(u32, u32)> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return None;
+        }
+        // GTK's `get_geometry_hints` is not exposed by the safe bindings, so the
+        // recorded request is the answer; it is exactly what was applied above.
+        self.state.window_min_size(widget_id)
+    }
+
+    pub(crate) fn set_window_icon_impl(&self, widget_id: u64, path: &str) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return false;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(window) = native.windows.get(&widget_id) {
+                // GTK returns a `glib::Error` when the file cannot be decoded; that
+                // is a real failure the caller must see, not a silent no-op.
+                if let Err(error) = window.set_icon_from_file(std::path::Path::new(path)) {
+                    log::warn!("[rust_widgets][linux] set_window_icon: '{path}' rejected: {error}");
+                    return false;
+                }
+            }
+        }
+        self.state.set_window_icon(widget_id, path);
+        true
+    }
+
+    pub(crate) fn window_icon_impl(&self, widget_id: u64) -> Option<String> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Window) {
+            return None;
+        }
+        self.state.window_icon(widget_id)
     }
 
     pub(crate) fn set_widget_ime_enabled_impl(&self, widget_id: u64, enabled: bool) -> bool {

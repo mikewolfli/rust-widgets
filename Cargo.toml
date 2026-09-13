@@ -511,3 +511,9 @@ required-features = ["desktop"]
 [[example]]
 name = "control_property_uniform"
 required-features = ["desktop"]
+
+# Measurement probe for the macOS window-state async contract; needs a real
+# backend and the `app` module, so it is gated the same way.
+[[example]]
+name = "macos_window_state_async_probe"
+required-features = ["desktop"]

@@ -408,3 +408,142 @@ fn contract_step_indeterminate_read_only_shape() {
         );
     }
 }
+
+/// Window state follows the same shape rules and must not be reported for a
+/// non-window widget.
+#[test]
+fn contract_window_state_shape() {
+    use crate::platform::WindowStateFlag;
+
+    let platform = get_platform();
+    platform.init();
+    let bogus = 33_333_333u64;
+    assert!(!Platform::set_window_state(platform, bogus, WindowStateFlag::Maximized, true));
+    assert_eq!(Platform::is_window_in_state(platform, bogus, WindowStateFlag::Maximized), None);
+
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    assert_ne!(window, 0);
+
+    // A freshly created window is restored, windowed, resizable and decorated.
+    assert_eq!(
+        Platform::is_window_in_state(platform, window, WindowStateFlag::Resizable),
+        Some(true),
+        "{}: a new window is resizable",
+        platform.backend_name()
+    );
+    assert_eq!(
+        Platform::is_window_in_state(platform, window, WindowStateFlag::Decorated),
+        Some(true),
+        "{}: a new window is decorated",
+        platform.backend_name()
+    );
+
+    // Every state must round-trip when the backend accepts the write.
+    for flag in [
+        WindowStateFlag::Maximized,
+        WindowStateFlag::Minimized,
+        WindowStateFlag::Fullscreen,
+        WindowStateFlag::Resizable,
+        WindowStateFlag::Decorated,
+    ] {
+        if Platform::set_window_state(platform, window, flag, true) {
+            assert_eq!(
+                Platform::is_window_in_state(platform, window, flag),
+                Some(true),
+                "{}: {flag:?} must read back after a successful write",
+                platform.backend_name()
+            );
+        }
+        if Platform::set_window_state(platform, window, flag, false) {
+            assert_eq!(
+                Platform::is_window_in_state(platform, window, flag),
+                Some(false),
+                "{}: {flag:?} must clear after a successful write",
+                platform.backend_name()
+            );
+        }
+    }
+}
+
+/// A non-window widget must refuse window state rather than silently recording
+/// it — the whole point of the state model marking windows explicitly.
+#[test]
+fn contract_non_window_refuses_window_state() {
+    use crate::platform::WindowStateFlag;
+
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let button = Platform::create_button(platform, window, "ok", 0, 0, 80, 24);
+    assert_ne!(button, 0);
+
+    assert!(
+        !Platform::set_window_state(platform, button, WindowStateFlag::Maximized, true),
+        "{}: a button is not a window",
+        platform.backend_name()
+    );
+    assert_eq!(Platform::is_window_in_state(platform, button, WindowStateFlag::Maximized), None);
+}
+
+/// Window minimum size and icon follow the same shape rules as every other
+/// property, and must not be reported for a non-window widget.
+#[test]
+fn contract_window_min_size_and_icon_shape() {
+    let platform = get_platform();
+    platform.init();
+    let bogus = 44_444_444u64;
+    assert!(!Platform::set_window_min_size(platform, bogus, 200, 100));
+    assert_eq!(Platform::window_min_size(platform, bogus), None);
+    assert!(!Platform::set_window_icon(platform, bogus, "/nonexistent.png"));
+    assert_eq!(Platform::window_icon(platform, bogus), None);
+
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    assert_ne!(window, 0);
+
+    // A fresh window has no explicit minimum, which must not be reported as (0, 0).
+    assert_eq!(
+        Platform::window_min_size(platform, window),
+        None,
+        "{}: an unset minimum must read back as None, not (0, 0)",
+        platform.backend_name()
+    );
+
+    if Platform::set_window_min_size(platform, window, 320, 240) {
+        assert_eq!(
+            Platform::window_min_size(platform, window),
+            Some((320, 240)),
+            "{}: a successful minimum-size write must read back",
+            platform.backend_name()
+        );
+    }
+
+    // A missing icon file must fail loudly rather than be recorded as success.
+    let missing = Platform::set_window_icon(platform, window, "/definitely/not/here.png");
+    if missing {
+        // Only a backend that cannot validate the path (state-only window) may
+        // report success; then the recorded path is still readable.
+        assert_eq!(
+            Platform::window_icon(platform, window),
+            Some("/definitely/not/here.png".to_string())
+        );
+    }
+}
+
+/// A button is not a window, so both new capabilities must refuse it.
+#[test]
+fn contract_non_window_refuses_min_size_and_icon() {
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let button = Platform::create_button(platform, window, "ok", 0, 0, 80, 24);
+    assert_ne!(button, 0);
+
+    assert!(
+        !Platform::set_window_min_size(platform, button, 10, 10),
+        "{}: a button is not a window",
+        platform.backend_name()
+    );
+    assert_eq!(Platform::window_min_size(platform, button), None);
+    assert!(!Platform::set_window_icon(platform, button, "/tmp/x.png"));
+    assert_eq!(Platform::window_icon(platform, button), None);
+}

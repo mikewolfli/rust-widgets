@@ -10,14 +10,16 @@ use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
-use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::platform::{
+    DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
+};
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered, NSBezelStyle, NSButton, NSControl, NSRunningApplication, NSTextField,
     NSView, NSWindow,
 };
 use cocoa::base::{id, nil, BOOL, NO, YES};
-use cocoa::foundation::{NSArray, NSAutoreleasePool, NSData, NSPoint, NSString};
+use cocoa::foundation::{NSArray, NSAutoreleasePool, NSData, NSPoint, NSSize, NSString};
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
@@ -234,7 +236,13 @@ impl Platform for MacOSPlatform {
         // aborts the process. Register a state-only handle instead so every
         // caller still receives a valid, text/geometry-consistent widget id.
         if !super::types::is_main_thread() {
-            return self.register_state_only_handle(HandleKind::Window, title, x, y, width, height);
+            let id =
+                self.register_state_only_handle(HandleKind::Window, title, x, y, width, height);
+            // `window_style()` is titled + closable + resizable + miniaturizable,
+            // so a fresh macOS window starts resizable and decorated.
+            self.state
+                .init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
+            return id;
         }
         // SAFETY: Cocoa APIs require the main thread, guaranteed by the platform contract.
         // NSAutoreleasePool::new(nil) is safe with nil argument. All Objective-C messages
@@ -290,6 +298,8 @@ impl Platform for MacOSPlatform {
                 height,
                 window as usize,
             );
+            self.state
+                .init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
             pool.drain();
             id
         }
@@ -1963,6 +1973,215 @@ impl Platform for MacOSPlatform {
             }
         }
         self.state.read_only(widget_id)
+    }
+
+    fn set_window_state(&self, widget_id: u64, flag: WindowStateFlag, on: bool) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::Window) {
+            return false;
+        }
+        // Mirror first: the state model stays authoritative for state-only
+        // windows (created off the AppKit main thread, ptr == 0) and for the
+        // pending window of a deferred transition (see `is_window_in_state`).
+        self.state.set_window_state(widget_id, flag, on);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSWindow; every selector below is declared
+        // by NSWindow and the calls are on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            match flag {
+                // NSWindow's `zoom:` toggles between the standard (zoomed) frame
+                // and the user's saved frame — the AppKit equivalent of maximise.
+                WindowStateFlag::Maximized => {
+                    let is_zoomed: BOOL = msg_send![native, isZoomed];
+                    if on != (is_zoomed != NO) {
+                        let _: () = msg_send![native, zoom: nil];
+                    }
+                }
+                // `miniaturize:` applies on the next run-loop turn, so the effect
+                // is not observable until the host calls `Platform::run`.
+                WindowStateFlag::Minimized => {
+                    if on {
+                        let _: () = msg_send![native, miniaturize: nil];
+                    } else {
+                        let _: () = msg_send![native, deminiaturize: nil];
+                    }
+                }
+                // `toggleFullScreen:` ignores its argument (it toggles) and runs a
+                // transition that only completes on the run loop. Compare against
+                // the *mirrored* intent, not the native style mask: during the
+                // transition the mask still reports the old value, which would
+                // make the guard below skip a needed toggle.
+                WindowStateFlag::Fullscreen => {
+                    let already_requested = self
+                        .state
+                        .window_state(widget_id, WindowStateFlag::Fullscreen)
+                        .unwrap_or(false);
+                    if already_requested != on {
+                        let _: () = msg_send![native, toggleFullScreen: nil];
+                    }
+                }
+                WindowStateFlag::Resizable => {
+                    // NSWindowStyleMaskResizable == 1 << 3.
+                    let _: () =
+                        msg_send![native, setStyleMask: Self::style_mask_with(native, 1 << 3, on)];
+                }
+                WindowStateFlag::Decorated => {
+                    // NSWindowStyleMaskTitled == 1 << 0; dropping it removes the
+                    // title bar and the borders that go with it.
+                    let _: () =
+                        msg_send![native, setStyleMask: Self::style_mask_with(native, 1 << 0, on)];
+                }
+            }
+        }
+        true
+    }
+
+    fn is_window_in_state(&self, widget_id: u64, flag: WindowStateFlag) -> Option<bool> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::Window) {
+            return None;
+        }
+        let mirrored = self.state.window_state(widget_id, flag);
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: handle.ptr is a live NSWindow; the getters below are declared
+            // by NSWindow and the calls are on the AppKit main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let from_native = match flag {
+                    WindowStateFlag::Maximized => {
+                        let v: BOOL = msg_send![native, isZoomed];
+                        v != NO
+                    }
+                    // `miniaturize:`/`toggleFullScreen:` are deferred until the run
+                    // loop turns. Before the transition lands, AppKit still reports
+                    // the previous value, so the mirror (the requested state) is the
+                    // honest answer. Once they agree the native value is used, which
+                    // keeps a user-initiated change from being masked by the mirror.
+                    WindowStateFlag::Minimized => {
+                        let v: BOOL = msg_send![native, isMiniaturized];
+                        v != NO
+                    }
+                    WindowStateFlag::Fullscreen => {
+                        let flags: u64 = msg_send![native, styleMask];
+                        (flags & (1 << 14)) != 0
+                    }
+                    WindowStateFlag::Resizable => {
+                        let flags: u64 = msg_send![native, styleMask];
+                        (flags & (1 << 3)) != 0
+                    }
+                    WindowStateFlag::Decorated => {
+                        let flags: u64 = msg_send![native, styleMask];
+                        (flags & (1 << 0)) != 0
+                    }
+                };
+                // Prefer the native answer whenever it is already conclusive, and
+                // fall back to the mirror for the states AppKit applies on the run
+                // loop (where native is still the pre-transition value).
+                let deferred =
+                    matches!(flag, WindowStateFlag::Minimized | WindowStateFlag::Fullscreen);
+                if !deferred || from_native == mirrored.unwrap_or(from_native) {
+                    return Some(from_native);
+                }
+                return mirrored.or(Some(from_native));
+            }
+        }
+        mirrored
+    }
+
+    fn set_window_min_size(&self, widget_id: u64, width: u32, height: u32) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::Window) {
+            return false;
+        }
+        self.state.set_window_min_size(widget_id, width, height);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSWindow; `setContentMinSize:` is the
+        // content-area minimum (as opposed to the frame minimum) and the call is
+        // on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let size = NSSize::new(f64::from(width), f64::from(height));
+            let _: () = msg_send![native, setContentMinSize: size];
+        }
+        true
+    }
+
+    fn window_min_size(&self, widget_id: u64) -> Option<(u32, u32)> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::Window) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSWindow; `contentMinSize` is a valid getter on the main
+            // thread. AppKit reports (0, 0) when no minimum was set, which is
+            // *not* a real constraint, so map it back to `None`.
+            unsafe {
+                let native = Self::as_id(handle);
+                let size: NSSize = msg_send![native, contentMinSize];
+                let w = size.width.max(0.0) as u32;
+                let h = size.height.max(0.0) as u32;
+                if w == 0 && h == 0 {
+                    return self.state.window_min_size(widget_id);
+                }
+                return Some((w, h));
+            }
+        }
+        self.state.window_min_size(widget_id)
+    }
+
+    fn set_window_icon(&self, widget_id: u64, path: &str) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::Window) {
+            return false;
+        }
+        // Mirror first so a state-only window still records the request.
+        self.state.set_window_icon(widget_id, path);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSWindow. `NSImage::alloc` +
+        // `initWithContentsOfFile:` is the documented two-step load, and
+        // `setRepresentation:` is how a window adopts an icon. A missing or
+        // unreadable file yields a nil image, which is reported as failure rather
+        // than silently ignored.
+        unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+            let ns_path = NSString::alloc(nil).init_str(path);
+            // `class!(NSImage)` + `alloc`/`initWithContentsOfFile:` avoids an
+            // ambiguity between the cocoa traits that both expose `alloc`.
+            let image: id = msg_send![class!(NSImage), alloc];
+            let image: id = msg_send![image, initWithContentsOfFile: ns_path];
+            if image == nil {
+                pool.drain();
+                log::warn!("[macos] set_window_icon: could not load image from '{path}'");
+                return false;
+            }
+            let native = Self::as_id(handle);
+            let _: () = msg_send![native, setRepresentation: image];
+            pool.drain();
+        }
+        true
+    }
+
+    fn window_icon(&self, widget_id: u64) -> Option<String> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::Window) {
+            return None;
+        }
+        // AppKit cannot hand an icon back as a path, so the state model's record
+        // of what the caller supplied is the only honest answer here.
+        self.state.window_icon(widget_id)
     }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)

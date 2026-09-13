@@ -825,6 +825,52 @@ pub fn set_widget_max_length(widget_id: crate::core::ObjectId, max_length: u32) 
 pub fn widget_max_length(widget_id: crate::core::ObjectId) -> Option<u32> {
     platform::get_platform().widget_max_length(widget_id)
 }
+
+/// Apply or clear a window state (maximised, minimised, full-screen, ...).
+///
+/// Returns `false` when the id is not a window or the backend cannot honour the
+/// state on its toolkit.
+#[cfg(not(feature = "mini"))]
+pub fn set_window_state(
+    widget_id: crate::core::ObjectId,
+    flag: platform::WindowStateFlag,
+    on: bool,
+) -> bool {
+    platform::get_platform().set_window_state(widget_id, flag, on)
+}
+
+/// Read a window state, or `None` when the id is not a window.
+#[cfg(not(feature = "mini"))]
+pub fn is_window_in_state(
+    widget_id: crate::core::ObjectId,
+    flag: platform::WindowStateFlag,
+) -> Option<bool> {
+    platform::get_platform().is_window_in_state(widget_id, flag)
+}
+
+/// Set a window's minimum content size.
+#[cfg(not(feature = "mini"))]
+pub fn set_window_min_size(widget_id: crate::core::ObjectId, width: u32, height: u32) -> bool {
+    platform::get_platform().set_window_min_size(widget_id, width, height)
+}
+
+/// Read a window's minimum content size.
+#[cfg(not(feature = "mini"))]
+pub fn window_min_size(widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+    platform::get_platform().window_min_size(widget_id)
+}
+
+/// Set a window's icon from a file path.
+#[cfg(not(feature = "mini"))]
+pub fn set_window_icon(widget_id: crate::core::ObjectId, path: &str) -> bool {
+    platform::get_platform().set_window_icon(widget_id, path)
+}
+
+/// Read a window's icon path, if one was set.
+#[cfg(not(feature = "mini"))]
+pub fn window_icon(widget_id: crate::core::ObjectId) -> Option<String> {
+    platform::get_platform().window_icon(widget_id)
+}
 // ComboBox operations
 #[cfg(not(feature = "mini"))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
@@ -1068,5 +1114,5 @@ pub use platform::{
 pub use platform::{
     CapabilityContract, DesktopBackend, DropEvent, EmbeddedCapabilityContract, MobileBackend,
     NativeCapabilityContract, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
-    WidgetTriggerKind,
+    WidgetTriggerKind, WindowStateFlag,
 };

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Shared backend state model used by platform adapters.
-use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
+use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag};
 use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::core::ObjectId;
@@ -64,6 +64,87 @@ pub struct WidgetRecord<K> {
     /// Maximum accepted character count for text-entry controls. `None` means the
     /// control has no settable limit here.
     pub max_length: Option<u32>,
+    /// Window state flags for window handles (maximised, minimised, full-screen,
+    /// resizable, decorated). `None` means the widget is not a window on this
+    /// backend, which is what keeps `is_window_in_state` honest for controls.
+    pub window_state: Option<WindowStateRecord>,
+}
+
+/// The togglable states of a window, as stored by a backend.
+///
+/// Captured as a small record instead of five parallel `Option<bool>` fields so
+/// the whole window state travels together and cannot drift out of sync. It also
+/// carries the two non-boolean window attributes (minimum size, icon path), which
+/// share the "is this a window?" gate that `WidgetRecord::window_state` provides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
+pub struct WindowStateRecord {
+    /// Window is maximised rather than restored.
+    pub maximized: bool,
+    /// Window is minimised.
+    pub minimized: bool,
+    /// Window is full-screen.
+    pub fullscreen: bool,
+    /// Window is user-resizable.
+    pub resizable: bool,
+    /// Window is OS-decorated.
+    pub decorated: bool,
+    /// Minimum content size. `None` until the caller sets one, so a read can tell
+    /// "no explicit constraint" from a real request.
+    pub min_size: Option<(u32, u32)>,
+    /// Icon path supplied to `set_window_icon`. `None` until set.
+    pub icon: Option<String>,
+}
+
+impl WindowStateRecord {
+    /// The state a freshly created OS window starts in: restored, windowed,
+    /// resizable, decorated, with no explicit minimum size and no icon.
+    ///
+    /// This is the single source of truth for window defaults — every backend's
+    /// `create_window` uses it, so a new field cannot be added in one place and
+    /// silently left unset in another.
+    pub fn new_window() -> Self {
+        Self {
+            maximized: false,
+            minimized: false,
+            fullscreen: false,
+            resizable: true,
+            decorated: true,
+            min_size: None,
+            icon: None,
+        }
+    }
+
+    /// Read one flag.
+    pub fn get(&self, flag: WindowStateFlag) -> bool {
+        match flag {
+            WindowStateFlag::Maximized => self.maximized,
+            WindowStateFlag::Minimized => self.minimized,
+            WindowStateFlag::Fullscreen => self.fullscreen,
+            WindowStateFlag::Resizable => self.resizable,
+            WindowStateFlag::Decorated => self.decorated,
+        }
+    }
+
+    /// Write one flag.
+    pub fn set(&mut self, flag: WindowStateFlag, on: bool) {
+        match flag {
+            WindowStateFlag::Maximized => self.maximized = on,
+            WindowStateFlag::Minimized => self.minimized = on,
+            WindowStateFlag::Fullscreen => self.fullscreen = on,
+            WindowStateFlag::Resizable => self.resizable = on,
+            WindowStateFlag::Decorated => self.decorated = on,
+        }
+    }
+}
+
+impl Default for WindowStateRecord {
+    fn default() -> Self {
+        Self::new_window()
+    }
 }
 /// Thread-safe state model split from native handle adapters.
 #[cfg_attr(
@@ -190,6 +271,7 @@ where
                 indeterminate: None,
                 read_only: None,
                 max_length: None,
+                window_state: None,
             },
         );
     }
@@ -495,6 +577,90 @@ where
             .expect("backend state widget lock poisoned")
             .get(&widget_id)
             .and_then(|widget| widget.max_length)
+    }
+
+    /// Mark a widget as a window and seed its initial window state.
+    ///
+    /// Called by a backend's `create_window`. Until this runs the widget has
+    /// `window_state == None`, so `is_window_in_state` correctly reports "not a
+    /// window" for every non-window control.
+    pub fn init_window_state(&self, widget_id: ObjectId, initial: WindowStateRecord) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.window_state = Some(initial);
+            return true;
+        }
+        false
+    }
+
+    /// Store one window state flag, returning `false` when the id is not a window.
+    pub fn set_window_state(&self, widget_id: ObjectId, flag: WindowStateFlag, on: bool) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            if let Some(state) = widget.window_state.as_mut() {
+                state.set(flag, on);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read one window state flag, or `None` when the id is not a window.
+    pub fn window_state(&self, widget_id: ObjectId, flag: WindowStateFlag) -> Option<bool> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.window_state.as_ref())
+            .map(|state| state.get(flag))
+    }
+
+    /// Store a window's minimum content size, returning `false` for a non-window.
+    pub fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            if let Some(state) = widget.window_state.as_mut() {
+                state.min_size = Some((width, height));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read a window's minimum content size, or `None` when it has none.
+    pub fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.window_state.as_ref())
+            .and_then(|state| state.min_size)
+    }
+
+    /// Store a window's icon path, returning `false` for a non-window.
+    pub fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            if let Some(state) = widget.window_state.as_mut() {
+                state.icon = Some(path.to_string());
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read a window's icon path, or `None` when it has none.
+    pub fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.window_state.as_ref())
+            .and_then(|state| state.icon.clone())
     }
 
     // ─── Backend event methods ─────────────────────────────────────────────────

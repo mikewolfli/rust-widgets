@@ -119,6 +119,34 @@ pub struct DropEvent {
     /// Opaque drag payload bytes.
     pub payload: Vec<u8>,
 }
+
+/// A togglable window state that a native backend can apply and read back.
+///
+/// These are modelled as an enum rather than a handful of `set_window_*`
+/// booleans so a caller can express "toggle the state the user asked for" in one
+/// call, and so a backend dispatches with a `match` instead of a chain of
+/// `if`/`else` — the Rust-idiomatic form of C's `void*` + type tag (principle
+/// #31).
+///
+/// Not every state is meaningful on every toolkit, which is expected: the
+/// backend reports `false` from the setter when it cannot honour one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
+pub enum WindowStateFlag {
+    /// Maximised (zoomed) rather than restored.
+    Maximized,
+    /// Minimised (iconified).
+    Minimized,
+    /// Full-screen rather than windowed.
+    Fullscreen,
+    /// User can resize the window by dragging its edges.
+    Resizable,
+    /// Window has a title bar / borders drawn by the OS.
+    Decorated,
+}
 /// Supported desktop backend families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopBackend {
@@ -1068,6 +1096,63 @@ pub trait Platform: Send + Sync {
 
     /// Read a text-entry control's maximum accepted length.
     fn widget_max_length(&self, _widget_id: ObjectId) -> Option<u32> {
+        None
+    }
+
+    /// Apply or clear a window state (maximised, minimised, full-screen, ...).
+    ///
+    /// Returns `true` when the backend changed the real OS window. Returns
+    /// `false` when the id is not a window, the state is not meaningful on this
+    /// toolkit, or the window is state-only (created off the UI thread). The
+    /// caller must treat `false` as "the window state did not change".
+    fn set_window_state(&self, _widget_id: ObjectId, _flag: WindowStateFlag, _on: bool) -> bool {
+        false
+    }
+
+    /// Read a window state.
+    ///
+    /// `None` when the id is not a window or the state is not meaningful on this
+    /// toolkit (so it cannot be reported honestly).
+    fn is_window_in_state(&self, _widget_id: ObjectId, _flag: WindowStateFlag) -> Option<bool> {
+        None
+    }
+
+    /// Set a window's minimum content size.
+    ///
+    /// Implemented natively by AppKit (`setContentMinSize:`), Win32 (the
+    /// `WM_GETMINMAXINFO` handler) and GTK (`set_geometry_hints` with
+    /// `GDK_HINT_MIN_SIZE`). Returns `false` when the id is not a window, the
+    /// window is state-only, or the backend has no native constraint mechanism.
+    fn set_window_min_size(&self, _widget_id: ObjectId, _width: u32, _height: u32) -> bool {
+        false
+    }
+
+    /// Read a window's minimum content size.
+    ///
+    /// `None` when the id is not a window. A window without an explicit minimum
+    /// reports the platform default rather than a made-up zero, because `(0, 0)`
+    /// is what the OS treats as "no constraint" and would be indistinguishable
+    /// from a real request.
+    fn window_min_size(&self, _widget_id: ObjectId) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Set a window's icon from a file path.
+    ///
+    /// AppKit loads an `NSImage` and assigns it with `setRepresentation:`, Win32
+    /// loads an `HICON` with `LoadImageW` and sends `WM_SETICON`, GTK uses
+    /// `set_icon_from_file`. Returns `false` when the id is not a window, the
+    /// path cannot be loaded, or the backend has no icon concept.
+    fn set_window_icon(&self, _widget_id: ObjectId, _path: &str) -> bool {
+        false
+    }
+
+    /// Read a window's icon path, if one was set.
+    ///
+    /// This reports the *path the caller supplied*, not decoded pixels — no
+    /// desktop toolkit hands an icon back as a path, so this is the state model's
+    /// answer and is documented as such.
+    fn window_icon(&self, _widget_id: ObjectId) -> Option<String> {
         None
     }
 

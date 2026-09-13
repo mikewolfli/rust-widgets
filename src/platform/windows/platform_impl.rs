@@ -9,7 +9,7 @@ use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::{
     EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
-    WidgetTriggerEvent, WidgetTriggerKind,
+    WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
 };
 
 use crate::platform::windows::helpers::*;
@@ -507,6 +507,193 @@ impl Platform for WindowsPlatform {
         self.state.max_length(widget_id)
     }
 
+    fn set_window_state(&self, widget_id: ObjectId, flag: WindowStateFlag, on: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        self.state.set_window_state(widget_id, flag, on);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                GetWindowLongW, SetWindowLongW, ShowWindow, GWL_STYLE, SW_MAXIMIZE, SW_MINIMIZE,
+                SW_RESTORE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_THICKFRAME,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                match flag {
+                    WindowStateFlag::Maximized => unsafe {
+                        let cmd = if on { SW_MAXIMIZE } else { SW_RESTORE };
+                        ShowWindow(hwnd, cmd);
+                    },
+                    WindowStateFlag::Minimized => unsafe {
+                        let cmd = if on { SW_MINIMIZE } else { SW_RESTORE };
+                        ShowWindow(hwnd, cmd);
+                    },
+                    WindowStateFlag::Fullscreen => {
+                        // Win32 has no "full screen" window flag: it is achieved by
+                        // dropping the frame styles and filling the monitor. Reapply
+                        // the styles to leave it, which is what the WM would do.
+                        unsafe {
+                            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                            let frame =
+                                WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                            let new_style = if on { style & !frame } else { style | frame };
+                            SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+                            ShowWindow(hwnd, SW_MAXIMIZE);
+                        }
+                    }
+                    WindowStateFlag::Resizable => unsafe {
+                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                        let new_style = if on {
+                            style | WS_THICKFRAME | WS_MAXIMIZEBOX
+                        } else {
+                            style & !(WS_THICKFRAME | WS_MAXIMIZEBOX)
+                        };
+                        SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+                    },
+                    WindowStateFlag::Decorated => unsafe {
+                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                        let decorative = WS_CAPTION | WS_THICKFRAME;
+                        let new_style = if on { style | decorative } else { style & !decorative };
+                        SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+                    },
+                }
+            }
+        }
+        true
+    }
+
+    fn is_window_in_state(&self, widget_id: ObjectId, flag: WindowStateFlag) -> Option<bool> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                GetWindowLongW, IsIconic, IsZoomed, GWL_STYLE, WS_CAPTION, WS_MAXIMIZEBOX,
+                WS_MINIMIZEBOX, WS_THICKFRAME,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let value = match flag {
+                    WindowStateFlag::Maximized => unsafe { IsZoomed(hwnd) != 0 },
+                    WindowStateFlag::Minimized => unsafe { IsIconic(hwnd) != 0 },
+                    // Full screen is "no frame styles left", the inverse of the
+                    // Decorated computation below.
+                    WindowStateFlag::Fullscreen => unsafe {
+                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                        style & (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) == 0
+                    },
+                    WindowStateFlag::Resizable => unsafe {
+                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                        style & (WS_THICKFRAME | WS_MAXIMIZEBOX) != 0
+                    },
+                    WindowStateFlag::Decorated => unsafe {
+                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                        style & (WS_CAPTION | WS_THICKFRAME) != 0
+                    },
+                };
+                return Some(value);
+            }
+        }
+        self.state.window_state(widget_id, flag)
+    }
+
+    fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        // Win32 has no setter: the value is consumed by the `WM_GETMINMAXINFO`
+        // handler in `rw_wnd_proc`, which reads it back from this state model. That
+        // is why the write is recorded even for a state-only window.
+        self.state.set_window_min_size(widget_id, width, height);
+        // Force a recompute so a *shrink* of the constraint takes effect now
+        // rather than at the next user resize.
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+        true
+    }
+
+    fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return None;
+        }
+        self.state.window_min_size(widget_id)
+    }
+
+    fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE,
+                LR_LOADFROMFILE, WM_SETICON,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let wide = Self::to_wide(path);
+                // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives
+                // the call; LoadImageW returns a fresh HICON or null.
+                let icon = unsafe {
+                    LoadImageW(
+                        std::ptr::null_mut(),
+                        wide.as_ptr(),
+                        IMAGE_ICON,
+                        0,
+                        0,
+                        LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                    )
+                };
+                if icon.is_null() {
+                    log::warn!("[rust_widgets][windows] set_window_icon: could not load '{path}'");
+                    return false;
+                }
+                // Set both the small (taskbar) and big (alt-tab) icons, which is
+                // what the shell reads.
+                unsafe {
+                    SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
+                    SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
+                }
+            }
+        }
+        self.state.set_window_icon(widget_id, path);
+        true
+    }
+
+    fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return None;
+        }
+        // Win32 stores an HICON, not a path, so the recorded request is the answer.
+        self.state.window_icon(widget_id)
+    }
+
     fn backend_name(&self) -> &'static str {
         "WindowsPlatform"
     }
@@ -876,6 +1063,12 @@ impl Platform for WindowsPlatform {
             let widget_id =
                 self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height);
             self.bind_native_handle(widget_id, hwnd);
+            // `WS_OVERLAPPEDWINDOW` is titled + resizable, so a fresh Win32 window
+            // starts restored, windowed, resizable and decorated.
+            self.state.init_window_state(
+                widget_id,
+                crate::platform::state::WindowStateRecord::new_window(),
+            );
             unsafe {
                 ShowWindow(hwnd, SW_SHOW);
                 UpdateWindow(hwnd);
@@ -884,7 +1077,13 @@ impl Platform for WindowsPlatform {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height)
+            let widget_id =
+                self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height);
+            self.state.init_window_state(
+                widget_id,
+                crate::platform::state::WindowStateRecord::new_window(),
+            );
+            widget_id
         }
     }
     fn create_button(

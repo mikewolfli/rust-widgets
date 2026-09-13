@@ -31,6 +31,7 @@
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
 use rust_widgets::core::ObjectId;
 use rust_widgets::platform::get_platform;
+use rust_widgets::WindowStateFlag;
 
 fn main() {
     App::new().init();
@@ -91,6 +92,37 @@ fn main() {
     let ro = platform.set_widget_read_only(entry, true);
     println!("lineedit read only  -> {ro}");
     println!("lineedit is ro      -> {:?}", platform.is_widget_read_only(entry));
+
+    // ── Window state: the same call shape as every other property ────────
+    for flag in [
+        WindowStateFlag::Maximized,
+        WindowStateFlag::Minimized,
+        WindowStateFlag::Fullscreen,
+        WindowStateFlag::Resizable,
+        WindowStateFlag::Decorated,
+    ] {
+        let set_on = platform.set_window_state(parent, flag, true);
+        let read_on = platform.is_window_in_state(parent, flag);
+        let set_off = platform.set_window_state(parent, flag, false);
+        let read_off = platform.is_window_in_state(parent, flag);
+        println!(
+            "window  {flag:<10} on={set_on}/{read_on:?} off={set_off}/{read_off:?}",
+            flag = format!("{flag:?}")
+        );
+    }
+
+    // ── A control must refuse window state, not silently record it ───────
+    let refused = platform.set_window_state(button, WindowStateFlag::Maximized, true);
+    println!("button  set maximized -> {refused} (a button is not a window)");
+
+    // ── Window minimum size and icon ─────────────────────────────────────
+    println!("window  min size (unset) -> {:?}", platform.window_min_size(parent));
+    let set_min = platform.set_window_min_size(parent, 320, 240);
+    println!("window  set min 320x240  -> {set_min}/{:?}", platform.window_min_size(parent));
+
+    // A path that cannot be decoded must fail rather than be recorded as success.
+    let bad_icon = platform.set_window_icon(parent, "/definitely/not/here.png");
+    println!("window  bad icon        -> {bad_icon} (must be false)");
 
     // Same call shape through the type-safe handle layer — still no `cfg`.
     let boxed = CheckBoxHandle::from_raw(check);

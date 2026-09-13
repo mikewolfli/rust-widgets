@@ -11,7 +11,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Orientation, Rect};
-use crate::platform::WidgetTriggerKind;
+use crate::platform::{WidgetTriggerKind, WindowStateFlag};
 
 // ═══════════════════════════════════════════════════════════════
 // Supporting types used by widget handles
@@ -399,6 +399,40 @@ pub trait WidgetHandle: Sized {
     /// Read a text-entry control's maximum accepted length.
     fn max_length(&self) -> Option<u32> {
         crate::platform::get_platform().widget_max_length(self.raw_id())
+    }
+
+    /// Apply or clear a window state (maximised, minimised, full-screen, ...).
+    ///
+    /// Returns `false` when this handle is not a window (or the backend cannot
+    /// honour the state), so a control can share the call shape without
+    /// pretending the write landed.
+    fn set_window_state(&self, flag: WindowStateFlag, on: bool) -> bool {
+        crate::platform::get_platform().set_window_state(self.raw_id(), flag, on)
+    }
+
+    /// Read a window state, or `None` when this handle is not a window.
+    fn is_window_in_state(&self, flag: WindowStateFlag) -> Option<bool> {
+        crate::platform::get_platform().is_window_in_state(self.raw_id(), flag)
+    }
+
+    /// Set a window's minimum content size.
+    fn set_window_min_size(&self, width: u32, height: u32) -> bool {
+        crate::platform::get_platform().set_window_min_size(self.raw_id(), width, height)
+    }
+
+    /// Read a window's minimum content size.
+    fn window_min_size(&self) -> Option<(u32, u32)> {
+        crate::platform::get_platform().window_min_size(self.raw_id())
+    }
+
+    /// Set a window's icon from a file path.
+    fn set_window_icon(&self, path: &str) -> bool {
+        crate::platform::get_platform().set_window_icon(self.raw_id(), path)
+    }
+
+    /// Read a window's icon path, if one was set.
+    fn window_icon(&self) -> Option<String> {
+        crate::platform::get_platform().window_icon(self.raw_id())
     }
 
     /// Register a callback for the "clicked" trigger.
@@ -1961,91 +1995,172 @@ impl WindowHandle {
     }
 
     /// Set the window icon from a file path.
-    pub fn set_icon(&self, path: &str) {
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_icon`] (AppKit
+    /// `setRepresentation:`, Win32 `WM_SETICON`, GTK `set_icon_from_file`) as well
+    /// as into the in-process mirror. Returns `false` when the backend could not
+    /// load the file, so a bad path is visible instead of silently ignored.
+    pub fn set_icon(&self, path: &str) -> bool {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).icon =
                 path.to_owned();
         });
+        crate::platform::get_platform().set_window_icon(self.raw_id(), path)
     }
 
     /// Set the minimum window size.
-    pub fn set_min_size(&self, w: u32, h: u32) {
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_min_size`]
+    /// (`setContentMinSize:` on macOS, the `WM_GETMINMAXINFO` handler on Windows,
+    /// `set_geometry_hints` on GTK) as well as into the in-process mirror.
+    pub fn set_min_size(&self, w: u32, h: u32) -> bool {
         WINDOW_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.min_w = w;
             state.min_h = h;
         });
+        crate::platform::get_platform().set_window_min_size(self.raw_id(), w, h)
+    }
+
+    /// Read the minimum window size the backend has recorded, if any.
+    pub fn min_size(&self) -> Option<(u32, u32)> {
+        crate::platform::get_platform().window_min_size(self.raw_id())
+    }
+
+    /// Read the icon path this window was given, if any.
+    pub fn icon(&self) -> Option<String> {
+        crate::platform::get_platform().window_icon(self.raw_id())
     }
 
     /// Maximize or restore the window.
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// (`zoom:` on macOS, `ShowWindow(SW_MAXIMIZE)` on Windows, `maximize()` on
+    /// GTK) as well as into the in-process mirror. `is_maximized` reports what
+    /// the OS window actually is when a native window exists.
     pub fn set_maximized(&self, maximized: bool) {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).maximized =
                 maximized;
         });
+        crate::platform::get_platform().set_window_state(
+            self.raw_id(),
+            WindowStateFlag::Maximized,
+            maximized,
+        );
     }
 
     /// Return whether the window is maximized.
     pub fn is_maximized(&self) -> bool {
-        WINDOW_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.maximized).unwrap_or(false))
+        crate::platform::get_platform()
+            .is_window_in_state(self.raw_id(), WindowStateFlag::Maximized)
+            .unwrap_or_else(|| self.mirrored_flag(|s| s.maximized, false))
     }
 
     /// Minimize or restore the window.
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// (`miniaturize:`/`deminiaturize:` on macOS, `SW_MINIMIZE`/`SW_RESTORE` on
+    /// Windows, `iconify()`/`deiconify()` on GTK).
     pub fn set_minimized(&self, minimized: bool) {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).minimized =
                 minimized;
         });
+        crate::platform::get_platform().set_window_state(
+            self.raw_id(),
+            WindowStateFlag::Minimized,
+            minimized,
+        );
     }
 
     /// Return whether the window is minimized.
     pub fn is_minimized(&self) -> bool {
-        WINDOW_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.minimized).unwrap_or(false))
+        crate::platform::get_platform()
+            .is_window_in_state(self.raw_id(), WindowStateFlag::Minimized)
+            .unwrap_or_else(|| self.mirrored_flag(|s| s.minimized, false))
     }
 
     /// Set fullscreen mode.
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// (`toggleFullScreen:` on macOS, frame-style manipulation on Windows,
+    /// `fullscreen()`/`unfullscreen()` on GTK).
     pub fn set_fullscreen(&self, fullscreen: bool) {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).fullscreen =
                 fullscreen;
         });
+        crate::platform::get_platform().set_window_state(
+            self.raw_id(),
+            WindowStateFlag::Fullscreen,
+            fullscreen,
+        );
     }
 
     /// Return whether the window is fullscreen.
     pub fn is_fullscreen(&self) -> bool {
-        WINDOW_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.fullscreen).unwrap_or(false))
+        crate::platform::get_platform()
+            .is_window_in_state(self.raw_id(), WindowStateFlag::Fullscreen)
+            .unwrap_or_else(|| self.mirrored_flag(|s| s.fullscreen, false))
     }
 
     /// Set whether the window is resizable.
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_state`], which
+    /// toggles `NSWindowStyleMaskResizable` on macOS, `WS_THICKFRAME` on
+    /// Windows, and `set_resizable` on GTK.
     pub fn set_resizable(&self, resizable: bool) {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).resizable =
                 resizable;
         });
+        crate::platform::get_platform().set_window_state(
+            self.raw_id(),
+            WindowStateFlag::Resizable,
+            resizable,
+        );
     }
 
     /// Return whether the window is resizable.
     pub fn is_resizable(&self) -> bool {
-        WINDOW_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.resizable).unwrap_or(true))
+        crate::platform::get_platform()
+            .is_window_in_state(self.raw_id(), WindowStateFlag::Resizable)
+            .unwrap_or_else(|| self.mirrored_flag(|s| s.resizable, true))
     }
 
     /// Set whether the window has window decorations (title bar, borders).
+    ///
+    /// Pushed to the OS through [`crate::Platform::set_window_state`], which
+    /// toggles `NSWindowStyleMaskTitled` on macOS, `WS_CAPTION` on Windows, and
+    /// `set_decorated` on GTK.
     pub fn set_decorated(&self, decorated: bool) {
         WINDOW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).decorated =
                 decorated;
         });
+        crate::platform::get_platform().set_window_state(
+            self.raw_id(),
+            WindowStateFlag::Decorated,
+            decorated,
+        );
     }
 
     /// Is the window decorated?
     pub fn is_decorated(&self) -> bool {
-        WINDOW_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.decorated).unwrap_or(true))
+        crate::platform::get_platform()
+            .is_window_in_state(self.raw_id(), WindowStateFlag::Decorated)
+            .unwrap_or_else(|| self.mirrored_flag(|s| s.decorated, true))
+    }
+
+    /// Read one window flag from the in-process mirror.
+    ///
+    /// Used as the fallback when the backend reports `None` — which happens when
+    /// the window was created off the UI thread and has no native object to
+    /// query. `default` is the value a fresh OS window would have.
+    fn mirrored_flag(&self, pick: fn(&WindowState) -> bool, default: bool) -> bool {
+        WINDOW_STATES.with(|map| map.borrow().get(&self.raw_id()).map(pick).unwrap_or(default))
     }
 
     /// Register a callback invoked when the window is about to close.

@@ -40,6 +40,12 @@ TARGET_FNS = [
     "is_widget_read_only_impl",
     "set_widget_max_length_impl",
     "widget_max_length_impl",
+    "set_window_state_impl",
+    "is_window_in_state_impl",
+    "set_window_min_size_impl",
+    "window_min_size_impl",
+    "set_window_icon_impl",
+    "window_icon_impl",
 ]
 
 CARGO_TOML = """[package]
@@ -49,17 +55,29 @@ edition = "2021"
 
 [dependencies]
 gtk = "0.18"
+gdk = "0.18"
 """
 
 SHIM = """// Auto-generated shim for the GTK property compile check. Do not edit.
 #![allow(dead_code, unused_variables, unused_imports)]
 use gtk::prelude::*;
 
+/// Stands in for the `log` crate so the error paths type-check.
+#[allow(unused_macros)]
+#[macro_use]
+pub mod log {
+    macro_rules! log_warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+    macro_rules! log_error { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }} }
+    pub(crate) use log_warn as warn;
+    pub(crate) use log_error as error;
+}
+
 pub type ObjectId = u64;
 
 /// Stand-in for the backend's per-widget kind discriminator.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LinuxHandleKind {
+    Window,
     Slider,
     ProgressBar,
     ComboBox,
@@ -92,10 +110,36 @@ impl BackendState {
     pub fn read_only(&self, _id: u64) -> Option<bool> { None }
     pub fn set_max_length(&self, _id: u64, _v: u32) -> bool { true }
     pub fn max_length(&self, _id: u64) -> Option<u32> { None }
+    pub fn window_state(&self, _id: u64, _flag: crate::shim::WindowStateFlag) -> Option<bool> {
+        None
+    }
+    pub fn set_window_state(
+        &self,
+        _id: u64,
+        _flag: crate::shim::WindowStateFlag,
+        _on: bool,
+    ) -> bool {
+        true
+    }
+    pub fn set_window_min_size(&self, _id: u64, _w: u32, _h: u32) -> bool { true }
+    pub fn window_min_size(&self, _id: u64) -> Option<(u32, u32)> { None }
+    pub fn set_window_icon(&self, _id: u64, _p: &str) -> bool { true }
+    pub fn window_icon(&self, _id: u64) -> Option<String> { None }
+}
+
+/// Stand-in for the platform window-state enum.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WindowStateFlag {
+    Maximized,
+    Minimized,
+    Fullscreen,
+    Resizable,
+    Decorated,
 }
 
 pub struct LinuxNativeState {
     pub widgets: std::collections::HashMap<u64, gtk::Widget>,
+    pub windows: std::collections::HashMap<u64, gtk::Window>,
 }
 
 pub struct NativeGuard;
@@ -135,6 +179,8 @@ def extract_target_fns(src: str) -> str:
         '#[cfg(all(target_os = "linux", feature = "gtk-native"))]',
         "",
     )
+    # The shim *is* the crate root here, so internal platform paths resolve to it.
+    src = src.replace("crate::platform::", "crate::shim::")
 
     out = []
     for name in TARGET_FNS:

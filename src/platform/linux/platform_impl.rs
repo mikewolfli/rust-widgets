@@ -269,6 +269,8 @@ impl Platform for LinuxPlatform {
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
+        // A fresh GTK toplevel is restored, windowed, resizable and decorated.
+        self.state.init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
@@ -633,6 +635,33 @@ impl Platform for LinuxPlatform {
     }
     fn widget_max_length(&self, widget_id: u64) -> Option<u32> {
         self.widget_max_length_impl(widget_id)
+    }
+    fn set_window_state(
+        &self,
+        widget_id: u64,
+        flag: crate::platform::WindowStateFlag,
+        on: bool,
+    ) -> bool {
+        self.set_window_state_impl(widget_id, flag, on)
+    }
+    fn is_window_in_state(
+        &self,
+        widget_id: u64,
+        flag: crate::platform::WindowStateFlag,
+    ) -> Option<bool> {
+        self.is_window_in_state_impl(widget_id, flag)
+    }
+    fn set_window_min_size(&self, widget_id: u64, width: u32, height: u32) -> bool {
+        self.set_window_min_size_impl(widget_id, width, height)
+    }
+    fn window_min_size(&self, widget_id: u64) -> Option<(u32, u32)> {
+        self.window_min_size_impl(widget_id)
+    }
+    fn set_window_icon(&self, widget_id: u64, path: &str) -> bool {
+        self.set_window_icon_impl(widget_id, path)
+    }
+    fn window_icon(&self, widget_id: u64) -> Option<String> {
+        self.window_icon_impl(widget_id)
     }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.set_widget_ime_enabled_impl(widget_id, enabled)

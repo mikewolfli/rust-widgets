@@ -17,7 +17,8 @@ pub(crate) unsafe extern "system" fn rw_wnd_proc(
 ) -> isize {
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
-        DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY, WM_NOTIFY,
+        DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY, WM_GETMINMAXINFO,
+        WM_NOTIFY,
     };
     match msg {
         WM_COMMAND => {
@@ -85,12 +86,45 @@ pub(crate) unsafe extern "system" fn rw_wnd_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        // Win32 has no `SetWindowMinSize` API: the minimum is enforced by writing
+        // `ptMinTrackSize` into the MINMAXINFO the system passes before a resize or
+        // maximise. Returning 0 here after filling it in tells the system the
+        // constraint was applied.
+        WM_GETMINMAXINFO => {
+            if let Some(platform) = notify::active_windows_platform() {
+                if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd) {
+                    if let Some((min_w, min_h)) = platform.state.window_min_size(widget_id) {
+                        if !lparam_is_null(lparam) {
+                            let info = lparam as *mut winapi::um::winuser::MINMAXINFO;
+                            // SAFETY: Win32 passes a valid MINMAXINFO pointer in
+                            // lParam for WM_GETMINMAXINFO for the duration of the
+                            // call; we only write into it.
+                            unsafe {
+                                (*info).ptMinTrackSize.x = min_w as i32;
+                                (*info).ptMinTrackSize.y = min_h as i32;
+                            }
+                            return 0;
+                        }
+                    }
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// Whether the message's `lParam` is a null pointer.
+///
+/// Kept as a tiny helper so the `WM_GETMINMAXINFO` arm reads clearly and the
+/// cast-and-compare happens in exactly one place.
+#[cfg(target_os = "windows")]
+fn lparam_is_null(lparam: isize) -> bool {
+    lparam == 0
 }
 #[cfg(target_os = "windows")]
 impl WindowsPlatform {
